@@ -1,0 +1,70 @@
+agents:
+  # keyless claude-cli runner
+  - id: haiku
+    kind: claude-cli
+    model: claude-haiku-4-5-20251001
+    effort: low
+  # keyless codex-cli runner
+  - id: gpt-3.5
+    kind: codex-cli
+    model: gpt-3.5-turbo-16k
+    effort: low
+  # openai key runner
+  - id: gpt-4
+    kind: openai
+    model: gpt-4
+    key: $OPENAI_API_KEY
+
+# tasks are the things to do
+tasks:
+  - id: write-readme-simple
+    prepare: scripts/prepare.sh --simple
+    collect: scripts/collect.sh --simple
+  - id: write-readme-complex
+    prepare: scripts/prepare.sh --complex
+    collect: scripts/collect.sh --complex
+
+scorers:
+  - id: has-expected-output
+    kind: regex
+    pattern: ".*expected output.*"
+  
+  - id: has-no-error
+    kind: python
+    file: has-no-error.py
+    entrypoint: has_no_error
+    weight: 0.5
+  
+  - id: has-no-exception
+    kind: bash
+    file: has-no-exception.sh
+    weight: 0.5
+
+  - id: result-code-style-matches
+    kind: agent
+    agent-id: gpt-4
+    prompt-file: result-code-style-matches.txt
+
+# only haiku and gpt-3.5 are used in the test-matrix
+# gpt-4 is used only for the agent
+test-matrix: 
+  - task: write-readme-simple
+    agent: haiku
+    weight: 0.5
+  - task: write-readme-simple
+    agent: gpt-3.5
+
+# the matrices are cumbersome to write, but for now its ok -- it is explicit, 
+# clear and general, and we can always add sugar later.
+scorer-matrix:
+  - task: write-readme-simple
+    scorer: has-expected-output
+  - task: write-readme-simple
+    scorer: has-no-error
+    weight: 0.8
+  - task: write-readme-simple
+    scorer: has-no-exception
+    weight: 0.3
+  - task: write-readme-simple
+    scorer: result-code-style-matches
+    weight: 0.3

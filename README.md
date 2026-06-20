@@ -10,6 +10,8 @@ finally, `pats.yaml` sets up the test and score matrices. `test-matrix` defines 
 
 there are two (and a half) stages of a pats workflow. `pats run` runs your test-matrix your agents across all your tasks, and saves the result to `.pats/runs/<date_slug>-<run_number>/` -- that usually takes a hot moment. then `pats score` scores the most recent run, or you can ofc instruct it to test an older run too. note that this is not intended as a way to keep old historic runs and therefore, if you change the scorers and rerun on the old run, you *are* going to just run the new scorers. finally, if you have any agentic scorers they are not run by default, but only with `--agentic` flag.
 
+the agents are always run in a `bwrap` or `container` sandbox.
+
 ### example
 
 an agent is `claude-haiku-4-5` provided by openrouters through an api key.
