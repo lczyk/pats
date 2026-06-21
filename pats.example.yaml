@@ -1,70 +1,115 @@
+# agents -- the things under test (and/or used to score).
+# three kinds:
+#   harness -- an agent cli that runs the agentic loop in a sandbox. can run
+#              tasks AND act as a scorer. pats ships an adapter per provider
+#              (claude-cli, codex-cli, opencode). named adapters also collect
+#              thinking + tool-call logs where the harness exposes them.
+#   adhoc   -- like harness, but no preset: pats just runs `command`. only gets
+#              raw stdout/stderr (no stream parsing -> no thinking/tool logs).
+#   api     -- a raw model endpoint. no agentic loop, so it cannot run tasks --
+#              scorer-only (use it for `kind: agent` scorers).
 agents:
-  # keyless claude-cli runner
+  # the model under test: claude-haiku, run through the claude-cli harness.
   - id: haiku
-    kind: claude-cli
+    kind: harness
+    provider: claude-cli
     model: claude-haiku-4-5-20251001
     effort: low
-  # keyless codex-cli runner
-  - id: gpt-3.5
-    kind: codex-cli
-    model: gpt-3.5-turbo-16k
-    effort: low
-  # openai key runner
-  - id: gpt-4
-    kind: openai
-    model: gpt-4
-    key: $OPENAI_API_KEY
 
-# tasks are the things to do
+  # the same model under a different harness -- isolates harness effect from
+  # model effect (the comparison BYOH unlocks).
+  - id: haiku-opencode
+    kind: harness
+    provider: opencode
+    model: claude-haiku-4-5-20251001
+
+  # the scorer agent: a stronger model (sonnet) to judge the weaker one (haiku).
+  # api -> scorer-only, never appears in the test-matrix.
+  - id: sonnet
+    kind: api
+    provider: anthropic
+    model: claude-sonnet-4-6
+    key: $ANTHROPIC_API_KEY
+
+  # --- other kinds, for reference (not used by the matrices below) ---
+
+  # adhoc agent -- pats just runs `command` (via sh -c) in the sandbox. context
+  # comes through PATS_* env: PATS_MODEL, PATS_PROMPT_FILE, PATS_OUTPUT_DIR, etc.
+  - id: custom
+    kind: adhoc
+    command: my-agent run --model "$PATS_MODEL" --prompt-file "$PATS_PROMPT_FILE"
+
+  # local llama via ollama (openai-compatible endpoint). api -> scorer-only.
+  - id: llama
+    kind: api
+    provider: ollama
+    model: llama3.1
+    base-url: http://localhost:11434/v1
+
+# tasks -- a scenario handed to a harness agent. these test readme-authorship.
+#   prompt-file -- the instruction the agent acts on.
+#   prepare     -- seed the sandbox before the agent runs (ground truth, fixtures).
+#   collect     -- gather the outputs to score after the agent finishes.
 tasks:
   - id: write-readme-simple
+    prompt-file: prompts/write-readme-simple.txt
     prepare: scripts/prepare.sh --simple
     collect: scripts/collect.sh --simple
-  - id: write-readme-complex
-    prepare: scripts/prepare.sh --complex
-    collect: scripts/collect.sh --complex
+  - id: write-readme-hard
+    prompt-file: prompts/write-readme-hard.txt
+    prepare: scripts/prepare.sh --hard
+    collect: scripts/collect.sh --hard
+  - id: write-readme-monorepo
+    prompt-file: prompts/write-readme-monorepo.txt
+    prepare: scripts/prepare.sh --monorepo
+    collect: scripts/collect.sh --monorepo
 
+# scorers -- score one aspect of a task's collected output, 0.0 - 1.0.
+# pats stays dumb here: it hands the collected files to the scorer; the user
+# writes the scorer. two kinds:
+#   bash  -- run a script (trampoline to python/spacy/whatever inside it).
+#   agent -- ask an agent (harness or api) to score (nondeterministic).
 scorers:
-  - id: has-expected-output
-    kind: regex
-    pattern: ".*expected output.*"
-  
-  - id: has-no-error
-    kind: python
-    file: has-no-error.py
-    entrypoint: has_no_error
-    weight: 0.5
-  
-  - id: has-no-exception
+  # imperative: deduct 0.1 per excessive-whitespace occurrence.
+  - id: only-ascii
     kind: bash
-    file: has-no-exception.sh
-    weight: 0.5
+    file: scorers/only-ascii.sh
 
-  - id: result-code-style-matches
+  # imperative + close to binary: 1.0 if the title is right, else 0.0.
+  - id: title-correct
+    kind: bash
+    file: scorers/title-correct.sh
+
+  # fuzzy: a bash scorer that trampolines to python + spacy (NLP).
+  - id: no-finite-verbs
+    kind: bash
+    file: scorers/no-finite-verbs.sh
+
+  # fuzzy + agentic: ask sonnet to judge. nondeterministic; only runs under
+  # `pats score --agentic`.
+  - id: no-colloquialisms
     kind: agent
-    agent-id: gpt-4
-    prompt-file: result-code-style-matches.txt
+    agent-id: sonnet
+    prompt-file: prompts/no-colloquialisms.txt
 
-# only haiku and gpt-3.5 are used in the test-matrix
-# gpt-4 is used only for the agent
-test-matrix: 
-  - task: write-readme-simple
-    agent: haiku
-    weight: 0.5
-  - task: write-readme-simple
-    agent: gpt-3.5
+# test-matrix -- which agent x task pairs to run. each row is a cross-product:
+# `agent` and `task` take a scalar, a list, or `"*"` (all). weight (omitted ->
+# 1.0) applies to the whole row and tunes each pair's contribution to the
+# agent's overall score -- split into rows when the weight differs.
+test-matrix:
+  # both haiku harnesses across every task.
+  - agent: [haiku, haiku-opencode]
+    task: "*"
 
-# the matrices are cumbersome to write, but for now its ok -- it is explicit, 
-# clear and general, and we can always add sugar later.
+# scorer-matrix -- which task x scorer pairs to run. same cross-product +
+# scalar/list/`"*"` rules. weight (omitted -> 1.0) tunes the scorer's
+# contribution to the task's score for this pairing.
 scorer-matrix:
-  - task: write-readme-simple
-    scorer: has-expected-output
-  - task: write-readme-simple
-    scorer: has-no-error
-    weight: 0.8
-  - task: write-readme-simple
-    scorer: has-no-exception
-    weight: 0.3
-  - task: write-readme-simple
-    scorer: result-code-style-matches
-    weight: 0.3
+  - scorer: [only-ascii, title-correct]
+    task: "*"
+  - scorer: no-finite-verbs
+    task: "*"
+    weight: 0.5
+  - scorer: no-colloquialisms
+    task: "*"
+    weight: 0.5
