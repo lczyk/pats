@@ -1,3 +1,6 @@
+# secrets
+.env
+
 # build / run artifacts
 /bin/
 .stamp/

@@ -32,6 +32,10 @@ case "$flavour" in
             --file "images/Dockerfile.sandbox-$ver" \
             --platform "linux/$arch" \
             .
+        # also apply the plain (arch-less) tag so a local `pats.yaml` image ref
+        # of `:$ver` resolves offline. multiarch manifests for the plain tag
+        # are assembled separately at publish time.
+        "$DOCKER" tag "$REGISTRY/sandbox:$ver-$arch" "$REGISTRY/sandbox:$ver"
         ;;
     *)
         echo "unknown flavour: $flavour" >&2
