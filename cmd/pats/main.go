@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	flags "github.com/jessevdk/go-flags"
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/eval"
 	"github.com/lczyk/pats/internal/version"
 	ver "github.com/lczyk/version/go"
 )
@@ -32,16 +35,12 @@ func (r *RunCommand) Execute(args []string) error {
 	if err != nil {
 		return err
 	}
-	pairs, err := cfg.ExpandTestMatrix()
-	if err != nil {
-		return fmt.Errorf("expand test-matrix:\n%w", err)
-	}
-	fmt.Printf("test-matrix: %d pair(s)\n", len(pairs))
-	for _, p := range pairs {
-		fmt.Printf("  %-20s x %-24s  w=%.2f\n", p.Agent, p.Task, p.Weight)
-	}
-	fmt.Fprintln(os.Stderr, "\npats run: execution not implemented yet (phase 1 prints the plan)")
-	return nil
+	_, err = eval.Run(cfg, eval.Options{
+		ConfigDir: filepath.Dir(r.Config),
+		Now:       time.Now(),
+		Out:       os.Stdout,
+	})
+	return err
 }
 
 // ScoreCommand scores the most recent run.
