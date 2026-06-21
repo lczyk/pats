@@ -1,0 +1,34 @@
+# pats sandbox image: ubuntu 26.04 + every agent harness cli pats can drive.
+# "fat" image -- one sandbox serves all harnesses (claude-cli, codex-cli,
+# opencode). pin the harness versions via the ARGs below so a rebuilt
+# `:26.04` tag stays reproducible; pats also records the resolved digest per run.
+FROM docker.io/library/ubuntu:26.04
+
+# base tooling the harnesses + task prepare/collect scripts expect.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        ripgrep \
+        python3 \
+        python3-pip \
+        nodejs \
+        npm && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- agent harnesses ---
+# NOTE: all three ship npm packages, so we install via npm for one pinnable
+# mechanism. package names + versions are best-effort -- verify and pin to real
+# versions (not `latest`) before publishing, else the hash-stamp can't see drift.
+ARG CLAUDE_CLI_VERSION=latest
+ARG CODEX_CLI_VERSION=latest
+ARG OPENCODE_VERSION=latest
+RUN npm install -g \
+        "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
+        "@openai/codex@${CODEX_CLI_VERSION}" \
+        "opencode-ai@${OPENCODE_VERSION}" && \
+    npm cache clean --force
+
+CMD ["/bin/bash"]

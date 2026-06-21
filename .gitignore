@@ -1,0 +1,11 @@
+# build / run artifacts
+.stamp/
+.cache/
+.pats/
+
+# python (legacy wip, pending go rewrite)
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
