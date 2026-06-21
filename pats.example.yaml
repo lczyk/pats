@@ -1,3 +1,11 @@
+sandboxes:
+  - id: docker
+    kind: container
+    driver: docker
+    image: ghcr.io/lczyk/pats/sandbox:26.04
+  - id: bwrap
+    kind: bwrap
+
 # agents -- the things under test (and/or used to score).
 # three kinds:
 #   harness -- an agent cli that runs the agentic loop in a sandbox. can run
@@ -10,8 +18,9 @@
 #              scorer-only (use it for `kind: agent` scorers).
 agents:
   # the model under test: claude-haiku, run through the claude-cli harness.
-  - id: haiku
+  - id: haiku-claude-cli
     kind: harness
+    sandbox: docker
     provider: claude-cli
     model: claude-haiku-4-5-20251001
     effort: low
@@ -20,6 +29,7 @@ agents:
   # model effect (the comparison BYOH unlocks).
   - id: haiku-opencode
     kind: harness
+    sandbox: docker
     provider: opencode
     model: claude-haiku-4-5-20251001
 
@@ -37,6 +47,7 @@ agents:
   # comes through PATS_* env: PATS_MODEL, PATS_PROMPT_FILE, PATS_OUTPUT_DIR, etc.
   - id: custom
     kind: adhoc
+    sandbox: bwrap
     command: my-agent run --model "$PATS_MODEL" --prompt-file "$PATS_PROMPT_FILE"
 
   # local llama via ollama (openai-compatible endpoint). api -> scorer-only.
@@ -98,7 +109,7 @@ scorers:
 # agent's overall score -- split into rows when the weight differs.
 test-matrix:
   # both haiku harnesses across every task.
-  - agent: [haiku, haiku-opencode]
+  - agent: [haiku-claude-cli, haiku-opencode]
     task: "*"
 
 # scorer-matrix -- which task x scorer pairs to run. same cross-product +

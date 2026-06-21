@@ -4,7 +4,7 @@ score-based testing framework for testing and scoring agent tasks.
 
 to use pats, put `pats.yaml` in your project root. see [`pats.example.yaml`](./pats.example.yaml) for an example of such a configuration. 
 
-`pats.yaml` sets up three "vectors": `agents`, `tasks`, and `scorers`. a task is a single scenario given to the model under test. a scorer is a task to run on the output of the agent run which scores how well did the particular agent perform at a certain specific aspect of a task. each scorer outputs a value between 0.0 - 1.0. the primary way to refer to each of these is by their `id` which doubles as a human-readable name.
+`pats.yaml` sets up its "vectors": `agents`, `tasks`, and `scorers` (plus `sandboxes`, covered below). a task is a single scenario given to the model under test. a scorer is a task to run on the output of the agent run which scores how well did the particular agent perform at a certain specific aspect of a task. each scorer outputs a value between 0.0 - 1.0. the primary way to refer to each of these is by their `id` which doubles as a human-readable name.
 
 an `agent` comes in three kinds. a `harness` is an agent cli that runs the agentic loop in a sandbox -- pats ships an adapter per provider (`claude-cli`, `codex-cli`, `opencode`). an `adhoc` agent is the same idea with no preset: pats just runs a `command` you give it. an `api` agent is a raw model endpoint with no agentic loop. the key rule: only `harness` and `adhoc` agents can run tasks; an `api` agent has no loop to do work, so it's scorer-only -- bring your own harness if you want to test a model behind a key. scorers themselves are just `bash` (run a script -- trampoline to python/spacy/whatever inside it) or `agent` (ask an agent to judge).
 
@@ -12,7 +12,7 @@ finally, `pats.yaml` sets up the test and scorer matrices. `test-matrix` defines
 
 there are two (and a half) stages of a pats workflow. `pats run` runs your test-matrix your agents across all your tasks, and saves the result to `.pats/runs/<date_slug>-<run_number>/` -- that usually takes a hot moment. then `pats score` scores the most recent run, or you can ofc instruct it to test an older run too. note that this is not intended as a way to keep old historic runs and therefore, if you change the scorers and rerun on the old run, you *are* going to just run the new scorers. finally, if you have any agentic scorers they are not run by default, but only with `--agentic` flag.
 
-task-running agents are always run in a `bwrap` or `container` sandbox. (api scorer agents don't run tasks, so they don't get a sandbox.)
+task-running agents are always run in a sandbox -- we never run without one. (api scorer agents don't run tasks, so they don't need a sandbox.) the `sandboxes` vector defines the available ones; each `harness`/`adhoc` agent names the sandbox it wants via `sandbox: <id>` (if only one sandbox is defined, it's the default). a sandbox has a `kind` (`container` or `bwrap`) and, for container kinds, a `driver` (`docker` now, `podman` later) and an `image`. pats publishes a ready-made ubuntu-based fat image carrying all the harness clis at `ghcr.io/lczyk/pats/sandbox:<ubuntu-ver>` -- or point `image` at your own. `bwrap` is linux-only; `container` works anywhere docker does (incl. macos, where docker is itself a linux vm).
 
 ### example
 
