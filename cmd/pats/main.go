@@ -43,9 +43,10 @@ func (r *RunCommand) Execute(args []string) error {
 	return err
 }
 
-// ScoreCommand scores the most recent run.
+// ScoreCommand scores a run (the latest by default).
 type ScoreCommand struct {
 	Config  string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	Run     string `long:"run" short:"r" description:"run dir to score (default: latest under .pats/runs)"`
 	Agentic bool   `long:"agentic" description:"also run agent-kind scorers"`
 }
 
@@ -54,16 +55,13 @@ func (s *ScoreCommand) Execute(args []string) error {
 	if err != nil {
 		return err
 	}
-	pairs, err := cfg.ExpandScorerMatrix()
-	if err != nil {
-		return fmt.Errorf("expand scorer-matrix:\n%w", err)
-	}
-	fmt.Printf("scorer-matrix: %d pair(s) (agentic=%v)\n", len(pairs), s.Agentic)
-	for _, p := range pairs {
-		fmt.Printf("  %-24s x %-24s  w=%.2f\n", p.Task, p.Scorer, p.Weight)
-	}
-	fmt.Fprintln(os.Stderr, "\npats score: scoring not implemented yet (phase 1 prints the plan)")
-	return nil
+	_, err = eval.Score(cfg, eval.ScoreOptions{
+		ConfigDir: filepath.Dir(s.Config),
+		RunDir:    s.Run,
+		Agentic:   s.Agentic,
+		Out:       os.Stdout,
+	})
+	return err
 }
 
 func load(path string) (*config.Config, error) {
