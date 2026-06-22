@@ -19,6 +19,11 @@ build: ./bin/pats  ## Build the pats binary into ./bin (upx-compressed if availa
 generate-version:  ## Generate internal/version/version.go from VERSION + git
 	go run github.com/lczyk/version/go/cmd/generate-version -out ./internal/version/version.go -pkg version
 
+.PHONY: install
+install: ./bin/pats  ## Symlink the binary into ~/.local/bin
+	mkdir -p $(HOME)/.local/bin
+	ln -sf "$(PWD)/bin/pats" "$(HOME)/.local/bin/pats"
+
 .PHONY: test
 test: generate-version  ## Run the test suite with the race detector
 	go test -race ./...
