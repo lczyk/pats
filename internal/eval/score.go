@@ -42,6 +42,11 @@ type ScoreCell struct {
 
 // Score runs the scorer-matrix over a run's collected outputs and aggregates.
 func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
+	// absolute config dir: scorers run with cwd=ConfigDir; their file path +
+	// PATS_OUTPUT_DIR must resolve regardless of that cwd.
+	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
+		opts.ConfigDir = abs
+	}
 	runDir := opts.RunDir
 	if runDir == "" {
 		latest, err := latestRunDir(filepath.Join(opts.ConfigDir, runsSubdir))
