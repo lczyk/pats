@@ -16,11 +16,8 @@ func TestExampleConfig(t *testing.T) {
 
 	test, err := c.ExpandTestMatrix()
 	require.NoError(t, err)
-	// [haiku, haiku-opencode] x "*" (3 tasks) = 6 pairs.
+	// 2 agents x "*" (3 tasks) = 6 pairs.
 	assert.Len(t, test, 6)
-	for _, p := range test {
-		assert.That(t, p.Agent != "sonnet" && p.Agent != "llama", "api agent leaked into test-matrix:", p.Agent)
-	}
 
 	score, err := c.ExpandScorerMatrix()
 	require.NoError(t, err)
@@ -48,7 +45,7 @@ test-matrix:
 func TestWeightDefault(t *testing.T) {
 	c := parseT(t, `
 agents:
-  - {id: a, kind: adhoc, command: "echo hi", sandbox: s}
+  - {id: a, kind: opencode-openrouter, model: m, sandbox: s}
 sandboxes:
   - {id: s, kind: bwrap}
 tasks:
@@ -62,7 +59,7 @@ test-matrix:
 }
 
 func TestUnknownFieldRejected(t *testing.T) {
-	_, err := parse([]byte("agents:\n  - {id: a, kind: api, provider: openai, bogus: 1}\n"))
+	_, err := parse([]byte("agents:\n  - {id: a, kind: opencode-openrouter, bogus: 1}\n"))
 	assert.Error(t, err, assert.AnyError)
 }
 
@@ -73,33 +70,31 @@ func TestValidateErrors(t *testing.T) {
 		want string
 	}{
 		{
-			name: "api agent in test-matrix",
+			name: "unknown agent kind",
 			src: `
 sandboxes: [{id: s, kind: bwrap}]
 agents:
-  - {id: gpt, kind: api, provider: openai}
-tasks: [{id: t, prompt-file: p.txt}]
-test-matrix: [{agent: gpt, task: t}]
+  - {id: a, kind: bogus, model: m, sandbox: s}
 `,
-			want: "scorer-only",
+			want: "unknown kind",
 		},
 		{
-			name: "api agent with sandbox",
+			name: "agent missing model",
 			src: `
 sandboxes: [{id: s, kind: bwrap}]
 agents:
-  - {id: gpt, kind: api, provider: openai, sandbox: s}
+  - {id: a, kind: opencode-openrouter, sandbox: s}
 `,
-			want: "must not set a sandbox",
+			want: "model is required",
 		},
 		{
-			name: "harness missing sandbox, many defined",
+			name: "agent missing sandbox, many defined",
 			src: `
 sandboxes:
   - {id: a, kind: bwrap}
   - {id: b, kind: bwrap}
 agents:
-  - {id: h, kind: harness, provider: claude-cli}
+  - {id: h, kind: claude-cli-keyless, model: m}
 `,
 			want: "no sandbox set",
 		},
@@ -108,7 +103,7 @@ agents:
 			src: `
 sandboxes: [{id: s, kind: container, driver: docker}]
 agents:
-  - {id: h, kind: harness, provider: claude-cli, sandbox: s}
+  - {id: h, kind: claude-cli-keyless, model: m, sandbox: s}
 `,
 			want: "needs an image",
 		},
@@ -124,7 +119,7 @@ scorers:
 			name: "duplicate test pair",
 			src: `
 sandboxes: [{id: s, kind: bwrap}]
-agents: [{id: a, kind: adhoc, command: "x", sandbox: s}]
+agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
 tasks: [{id: t, prompt-file: p.txt}]
 test-matrix:
   - {agent: a, task: t}
@@ -145,9 +140,8 @@ func TestWildcardResolution(t *testing.T) {
 	c := parseT(t, `
 sandboxes: [{id: s, kind: bwrap}]
 agents:
-  - {id: h1, kind: harness, provider: claude-cli, sandbox: s}
-  - {id: h2, kind: adhoc, command: "x", sandbox: s}
-  - {id: api, kind: api, provider: openai}
+  - {id: h1, kind: claude-cli-keyless, model: m, sandbox: s}
+  - {id: h2, kind: opencode-openrouter, model: m, sandbox: s}
 tasks:
   - {id: t1, prompt-file: p.txt}
   - {id: t2, prompt-file: p.txt}
@@ -156,6 +150,6 @@ test-matrix:
 `)
 	pairs, err := c.ExpandTestMatrix()
 	require.NoError(t, err)
-	// "*" agents = 2 task-capable (api excluded) x 2 tasks = 4.
+	// "*" agents = 2 x 2 tasks = 4.
 	assert.Len(t, pairs, 4)
 }

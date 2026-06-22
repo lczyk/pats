@@ -34,6 +34,11 @@ type Options struct {
 // Run executes every test-matrix pair and returns the run dir it wrote to.
 // a single pair failing is logged and skipped -- it does not abort the run.
 func Run(cfg *config.Config, opts Options) (string, error) {
+	// absolute config dir: prepare/collect run with cwd=ConfigDir, and the
+	// PATS_*_DIR paths must resolve regardless of that cwd.
+	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
+		opts.ConfigDir = abs
+	}
 	pairs, err := cfg.ExpandTestMatrix()
 	if err != nil {
 		return "", err
@@ -122,21 +127,18 @@ func runPair(
 	cenv, hasToken := agent.CredEnv()
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 
-	var mounts []sandbox.Mount
-	if a.Kind == "harness" {
-		hs, herr := harnessHome(opts, p, env, hasToken)
-		if herr != nil {
-			return herr
-		}
-		mounts = hs.mounts
-		defer hs.cleanup()
+	// every agent is a harness: give it a writable HOME + wire creds.
+	hs, herr := harnessHome(opts, p, env, hasToken)
+	if herr != nil {
+		return herr
 	}
+	defer hs.cleanup()
 
 	spec, err := agent.Spec(a, workDir, env)
 	if err != nil {
 		return err
 	}
-	spec.Mounts = mounts
+	spec.Mounts = hs.mounts
 
 	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
 	if err != nil {

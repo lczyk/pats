@@ -18,7 +18,7 @@ func (c *Config) Validate() error {
 	c.validateScorers(add, agents)
 
 	// matrix expansion doubles as referential validation (dangling refs,
-	// api-in-test-matrix, dup pairs, "*" against empty vectors).
+	// dup pairs, "*" against empty vectors).
 	if _, err := c.ExpandTestMatrix(); err != nil {
 		errs = append(errs, err)
 	}
@@ -71,46 +71,26 @@ func (c *Config) validateAgents(add func(string, ...any), sandboxes map[string]S
 		}
 		out[a.ID] = a
 
-		switch a.Kind {
-		case "harness":
-			if a.Provider == "" {
-				add("agent %q: harness needs a provider", a.ID)
-			}
-			if a.Command != "" {
-				add("agent %q: harness must not set command (that's adhoc)", a.ID)
-			}
-			if a.Key != "" || a.BaseURL != "" {
-				add("agent %q: harness must not set key/base-url (that's api)", a.ID)
-			}
-			c.checkSandboxRef(add, a, sandboxes)
-		case "adhoc":
-			if a.Command == "" {
-				add("agent %q: adhoc needs a command", a.ID)
-			}
-			if a.Provider != "" {
-				add("agent %q: adhoc must not set provider (it has no preset)", a.ID)
-			}
-			if a.Key != "" || a.BaseURL != "" {
-				add("agent %q: adhoc must not set key/base-url (that's api)", a.ID)
-			}
-			c.checkSandboxRef(add, a, sandboxes)
-		case "api":
-			if a.Provider == "" {
-				add("agent %q: api needs a provider", a.ID)
-			}
-			if a.Sandbox != "" {
-				add("agent %q: api agent is scorer-only and must not set a sandbox", a.ID)
-			}
-			if a.Command != "" {
-				add("agent %q: api must not set command", a.ID)
-			}
-		case "":
-			add("agent %q: missing kind (harness|adhoc|api)", a.ID)
-		default:
+		switch {
+		case a.Kind == "":
+			add("agent %q: missing kind (opencode-openrouter|claude-cli-keyless)", a.ID)
+		case !agentKinds[a.Kind]:
 			add("agent %q: unknown kind %q", a.ID, a.Kind)
 		}
+		if a.Model == "" {
+			add("agent %q: model is required", a.ID)
+		}
+		c.checkSandboxRef(add, a, sandboxes)
 	}
 	return out
+}
+
+// agentKinds is the set of supported agent kinds. the kind->command mapping
+// lives in the agent package; config can't import it (would cycle), so the
+// names are repeated here for validation.
+var agentKinds = map[string]bool{
+	"opencode-openrouter": true,
+	"claude-cli-keyless":  true,
 }
 
 // checkSandboxRef validates the agent's sandbox selection (explicit id must

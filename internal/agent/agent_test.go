@@ -24,18 +24,18 @@ func dockerOrSkip(t *testing.T) {
 	}
 }
 
-// first sandboxed e2e of the agent layer: an adhoc agent runs in docker, sees
-// its PATS_* env, and writes a file into the mounted workdir (visible on host).
-func TestAdhocThroughSandbox(t *testing.T) {
+// first sandboxed e2e of the agent layer: a harness runs in docker, sees its
+// PATS_* env, and writes a file into the mounted workdir (visible on host).
+// the kind's command is overridden with a no-cred stand-in so the test needs
+// no real cli/creds.
+func TestHarnessThroughSandbox(t *testing.T) {
 	dockerOrSkip(t)
 	dir := t.TempDir()
 
-	a := config.Agent{
-		ID:      "x",
-		Kind:    "adhoc",
-		Model:   "m1",
-		Command: `echo "model=$PATS_MODEL"; echo "prompt=$PATS_PROMPT_FILE"; echo hello > out.txt`,
-	}
+	defer overrideCmd("opencode-openrouter",
+		`echo "model=$PATS_MODEL"; echo "prompt=$PATS_PROMPT_FILE"; echo hello > out.txt`)()
+
+	a := config.Agent{ID: "x", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s"}
 	env := Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount)
 	spec, err := Spec(a, dir, env)
 	require.NoError(t, err)
@@ -55,19 +55,22 @@ func TestAdhocThroughSandbox(t *testing.T) {
 	assert.ContainsString(t, string(b), "hello")
 }
 
+// overrideCmd swaps a kind's command for the duration of a test; the returned
+// func restores it.
+func overrideCmd(kind, cmd string) func() {
+	old := HarnessCmds[kind]
+	HarnessCmds[kind] = cmd
+	return func() { HarnessCmds[kind] = old }
+}
+
 func TestSpecClaudeCli(t *testing.T) {
-	spec, err := Spec(config.Agent{ID: "h", Kind: "harness", Provider: "claude-cli", Sandbox: "s"}, "/tmp", nil)
+	spec, err := Spec(config.Agent{ID: "h", Kind: "claude-cli-keyless", Sandbox: "s"}, "/tmp", nil)
 	require.NoError(t, err)
 	assert.Equal(t, spec.Argv[0], "sh")
 	assert.ContainsString(t, spec.Argv[len(spec.Argv)-1], "claude --print")
 }
 
-func TestSpecHarnessProviderNotImplemented(t *testing.T) {
-	_, err := Spec(config.Agent{ID: "h", Kind: "harness", Provider: "codex-cli", Sandbox: "s"}, "/tmp", nil)
-	assert.Error(t, err, "not implemented")
-}
-
-func TestSpecApiCannotRunTasks(t *testing.T) {
-	_, err := Spec(config.Agent{ID: "a", Kind: "api", Provider: "openai"}, "/tmp", nil)
-	assert.Error(t, err, "cannot run tasks")
+func TestSpecUnsupportedKind(t *testing.T) {
+	_, err := Spec(config.Agent{ID: "h", Kind: "codex-cli", Sandbox: "s"}, "/tmp", nil)
+	assert.Error(t, err, "unsupported kind")
 }

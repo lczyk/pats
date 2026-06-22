@@ -1,8 +1,8 @@
 // Command pats runs a score-based test matrix of agents over tasks, then
 // scores the outputs. see the repo README + pats.example.yaml.
 //
-// phase 1: `run` and `score` load + validate the config and print the plan.
-// the actual sandbox execution + scoring land in later phases.
+// `run` executes every test-matrix pair in a sandbox and collects outputs into
+// a run dir; `score` runs the scorer-matrix over a run and aggregates.
 package main
 
 import (

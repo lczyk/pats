@@ -47,27 +47,15 @@ func (s Sandbox) ResolvedDriver() string {
 	return ""
 }
 
-// Agent is a thing under test and/or a thing that scores.
+// Agent is a harness (an agent cli) under test, run in a sandbox. two kinds:
 //
-//	harness -- preset agent cli, runs tasks in a sandbox + can score
-//	adhoc   -- bring-your-own command, runs tasks in a sandbox + can score
-//	api     -- raw model endpoint, scorer-only (no agentic loop)
+//	opencode-openrouter -- opencode cli, models via openrouter (OPENROUTER_API_KEY)
+//	claude-cli-keyless  -- claude cli, keyless oauth creds (~/.claude/.credentials.json)
 type Agent struct {
-	ID       string `yaml:"id"`
-	Kind     string `yaml:"kind"`     // harness | adhoc | api
-	Provider string `yaml:"provider"` // harness: claude-cli|codex-cli|opencode ; api: openai|anthropic|ollama
-	Model    string `yaml:"model"`
-	Effort   string `yaml:"effort"`   // harness/adhoc
-	Sandbox  string `yaml:"sandbox"`  // harness/adhoc: sandbox id
-	Command  string `yaml:"command"`  // adhoc
-	Key      string `yaml:"key"`      // api
-	BaseURL  string `yaml:"base-url"` // api
-}
-
-// TaskCapable reports whether the agent can run tasks (harness/adhoc).
-// api agents have no agentic loop, so they are scorer-only.
-func (a Agent) TaskCapable() bool {
-	return a.Kind == "harness" || a.Kind == "adhoc"
+	ID      string `yaml:"id"`
+	Kind    string `yaml:"kind"`
+	Model   string `yaml:"model"`
+	Sandbox string `yaml:"sandbox"`
 }
 
 // Task is one scenario handed to a task-running agent.

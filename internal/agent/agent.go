@@ -1,8 +1,5 @@
 // Package agent turns an agent definition into a sandbox execution. it knows
-// the provider-specific argv shape; the sandbox package handles isolation.
-//
-// wired: adhoc, and the claude-cli harness. codex-cli / opencode harnesses and
-// the api scoring client land later.
+// the per-kind argv shape; the sandbox package handles isolation.
 package agent
 
 import (
@@ -18,36 +15,29 @@ import (
 // bypassed for non-interactive use. each edits files in the cwd (/workspace),
 // which the task's collect step then gathers; assistant text goes to stdout.
 const (
-	// claude-cli: model is an anthropic id; auth via creds file / token env.
-	claudeCmd = `claude --print --model "$PATS_MODEL" --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"`
-	// opencode: model is provider/model (e.g. openrouter/...); reads <PROVIDER>_API_KEY from env.
-	opencodeCmd = `opencode run --model "$PATS_MODEL" --dangerously-skip-permissions "$(cat "$PATS_PROMPT_FILE")"`
+	// claude-cli, keyless: model is an anthropic id; auth via oauth creds file
+	// (~/.claude/.credentials.json), mounted into HOME by the run phase.
+	claudeKeylessCmd = `claude --print --model "$PATS_MODEL" --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"`
+	// opencode via openrouter: reads OPENROUTER_API_KEY from env. the openrouter/
+	// prefix is added here so the config model stays e.g. openai/gpt-4o-mini.
+	opencodeOpenrouterCmd = `opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions "$(cat "$PATS_PROMPT_FILE")"`
 )
 
-// harnessCmds maps a harness provider to its one-shot shell command.
-var harnessCmds = map[string]string{
-	"claude-cli": claudeCmd,
-	"opencode":   opencodeCmd,
+// HarnessCmds maps an agent kind to its one-shot shell command -- the registry
+// of supported kinds. (tests may temporarily override an entry to run a
+// no-cred stand-in through the sandbox.)
+var HarnessCmds = map[string]string{
+	"claude-cli-keyless":  claudeKeylessCmd,
+	"opencode-openrouter": opencodeOpenrouterCmd,
 }
 
 // Spec builds the sandboxed execution for a task-running agent.
 func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, error) {
-	if !a.TaskCapable() {
-		return sandbox.Spec{}, fmt.Errorf("agent %q (kind %s) cannot run tasks", a.ID, a.Kind)
+	cmd, ok := HarnessCmds[a.Kind]
+	if !ok {
+		return sandbox.Spec{}, fmt.Errorf("agent %q: unsupported kind %q", a.ID, a.Kind)
 	}
-	switch a.Kind {
-	case "adhoc":
-		// run the user command under a shell so PATS_* env + redirection work.
-		return sandbox.Spec{Argv: []string{"sh", "-c", a.Command}, Workdir: workdir, Env: env}, nil
-	case "harness":
-		cmd, ok := harnessCmds[a.Provider]
-		if !ok {
-			return sandbox.Spec{}, fmt.Errorf("harness provider %q not implemented yet", a.Provider)
-		}
-		return sandbox.Spec{Argv: []string{"sh", "-c", cmd}, Workdir: workdir, Env: env}, nil
-	default:
-		return sandbox.Spec{}, fmt.Errorf("agent %q: unhandled kind %q", a.ID, a.Kind)
-	}
+	return sandbox.Spec{Argv: []string{"sh", "-c", cmd}, Workdir: workdir, Env: env}, nil
 }
 
 // Env assembles the PATS_* environment handed to a task-running agent.
@@ -70,8 +60,6 @@ var credKeys = []string{
 	"ANTHROPIC_AUTH_TOKEN",
 	"CLAUDE_CODE_OAUTH_TOKEN",
 	"ANTHROPIC_BASE_URL",
-	"OPENAI_API_KEY",
-	"OPENAI_BASE_URL",
 	"OPENROUTER_API_KEY",
 }
 
@@ -82,7 +70,7 @@ func CredEnv() (env map[string]string, hasToken bool) {
 	for _, k := range credKeys {
 		if v, ok := os.LookupEnv(k); ok && v != "" {
 			env[k] = v
-			if k != "ANTHROPIC_BASE_URL" && k != "OPENAI_BASE_URL" {
+			if k != "ANTHROPIC_BASE_URL" {
 				hasToken = true
 			}
 		}

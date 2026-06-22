@@ -22,17 +22,11 @@ type ScorePair struct {
 const wildcard = "*"
 
 // ExpandTestMatrix cross-products every row into (agent, task) pairs. "*"
-// resolves to all task-capable agents / all tasks. weight defaults to 1.0.
-// dangling refs, api agents, and duplicate pairs are errors.
+// resolves to all agents / all tasks. weight defaults to 1.0.
+// dangling refs and duplicate pairs are errors.
 func (c *Config) ExpandTestMatrix() ([]TestPair, error) {
-	taskCapable := make([]string, 0, len(c.Agents))
-	agents := map[string]Agent{}
-	for _, a := range c.Agents {
-		agents[a.ID] = a
-		if a.TaskCapable() {
-			taskCapable = append(taskCapable, a.ID)
-		}
-	}
+	allAgents := ids(len(c.Agents), func(i int) string { return c.Agents[i].ID })
+	agentSet := set(allAgents)
 	allTasks := ids(len(c.Tasks), func(i int) string { return c.Tasks[i].ID })
 	taskSet := set(allTasks)
 
@@ -41,7 +35,7 @@ func (c *Config) ExpandTestMatrix() ([]TestPair, error) {
 	var errs errList
 
 	for ri, row := range c.TestMatrix {
-		rowAgents := resolve(row.Agent, wildcard, taskCapable)
+		rowAgents := resolve(row.Agent, wildcard, allAgents)
 		rowTasks := resolve(row.Task, wildcard, allTasks)
 		if len(row.Agent) == 0 {
 			errs.add("test-matrix row %d: missing agent", ri)
@@ -54,13 +48,8 @@ func (c *Config) ExpandTestMatrix() ([]TestPair, error) {
 			errs.add("test-matrix row %d: weight must be > 0", ri)
 		}
 		for _, ag := range rowAgents {
-			a, ok := agents[ag]
-			switch {
-			case !ok:
+			if !agentSet[ag] {
 				errs.add("test-matrix row %d: unknown agent %q", ri, ag)
-				continue
-			case !a.TaskCapable():
-				errs.add("test-matrix row %d: agent %q is %s (scorer-only), cannot run tasks", ri, ag, a.Kind)
 				continue
 			}
 			for _, tk := range rowTasks {

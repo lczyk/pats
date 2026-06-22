@@ -29,7 +29,7 @@ func TestScoreBash(t *testing.T) {
 
 	cfg := &config.Config{
 		Sandboxes:    []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:       []config.Agent{{ID: "a", Kind: "adhoc", Command: "x", Sandbox: "s"}},
+		Agents:       []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
 		Tasks:        []config.Task{{ID: "t1", PromptFile: "p.txt"}, {ID: "t2", PromptFile: "p.txt"}},
 		Scorers:      []config.Scorer{{ID: "has-good", Kind: "bash", File: "has-good.sh"}},
 		TestMatrix:   []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"*"}}},
@@ -63,7 +63,7 @@ func TestScoreWeightedScorers(t *testing.T) {
 	w3 := 3.0
 	cfg := &config.Config{
 		Sandboxes:  []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:     []config.Agent{{ID: "a", Kind: "adhoc", Command: "x", Sandbox: "s"}},
+		Agents:     []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
 		Tasks:      []config.Task{{ID: "t", PromptFile: "p.txt"}},
 		Scorers:    []config.Scorer{{ID: "one", Kind: "bash", File: "one.sh"}, {ID: "zero", Kind: "bash", File: "zero.sh"}},
 		TestMatrix: []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"t"}}},

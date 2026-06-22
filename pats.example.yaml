@@ -6,56 +6,35 @@ sandboxes:
   - id: bwrap
     kind: bwrap
 
-# agents -- the things under test (and/or used to score).
-# three kinds:
-#   harness -- an agent cli that runs the agentic loop in a sandbox. can run
-#              tasks AND act as a scorer. pats ships an adapter per provider
-#              (claude-cli, codex-cli, opencode). named adapters also collect
-#              thinking + tool-call logs where the harness exposes them.
-#   adhoc   -- like harness, but no preset: pats just runs `command`. only gets
-#              raw stdout/stderr (no stream parsing -> no thinking/tool logs).
-#   api     -- a raw model endpoint. no agentic loop, so it cannot run tasks --
-#              scorer-only (use it for `kind: agent` scorers).
+# agents -- the harnesses (agent clis) under test, run in a sandbox. two kinds:
+#   opencode-openrouter -- the opencode cli, models served via openrouter.
+#                          reads OPENROUTER_API_KEY from the env. the model is
+#                          written without the openrouter/ prefix (added for you).
+#   claude-cli-keyless  -- the claude cli, keyless: oauth creds
+#                          (~/.claude/.credentials.json) are mounted into the
+#                          sandbox. the model is a raw anthropic id.
+# an agent not named in the test-matrix is never run as a task -- it can still
+# act as a `kind: agent` scorer (see `judge` below).
 agents:
-  # the model under test: claude-haiku, run through the claude-cli harness.
+  # the model under test: claude-haiku, run through the claude cli.
   - id: haiku-claude-cli
-    kind: harness
+    kind: claude-cli-keyless
     sandbox: docker
-    provider: claude-cli
     model: claude-haiku-4-5-20251001
-    effort: low
 
   # the same model under a different harness -- isolates harness effect from
   # model effect (the comparison BYOH unlocks).
   - id: haiku-opencode
-    kind: harness
+    kind: opencode-openrouter
     sandbox: docker
-    provider: opencode
-    model: claude-haiku-4-5-20251001
+    model: anthropic/claude-haiku-4.5
 
   # the scorer agent: a stronger model (sonnet) to judge the weaker one (haiku).
-  # api -> scorer-only, never appears in the test-matrix.
-  - id: sonnet
-    kind: api
-    provider: anthropic
+  # not in the test-matrix -> only ever runs as a `kind: agent` scorer.
+  - id: judge
+    kind: claude-cli-keyless
+    sandbox: docker
     model: claude-sonnet-4-6
-    key: $ANTHROPIC_API_KEY
-
-  # --- other kinds, for reference (not used by the matrices below) ---
-
-  # adhoc agent -- pats just runs `command` (via sh -c) in the sandbox. context
-  # comes through PATS_* env: PATS_MODEL, PATS_PROMPT_FILE, PATS_OUTPUT_DIR, etc.
-  - id: custom
-    kind: adhoc
-    sandbox: bwrap
-    command: my-agent run --model "$PATS_MODEL" --prompt-file "$PATS_PROMPT_FILE"
-
-  # local llama via ollama (openai-compatible endpoint). api -> scorer-only.
-  - id: llama
-    kind: api
-    provider: ollama
-    model: llama3.1
-    base-url: http://localhost:11434/v1
 
 # tasks -- a scenario handed to a harness agent. these test readme-authorship.
 #   prompt-file -- the instruction the agent acts on.
@@ -79,7 +58,7 @@ tasks:
 # pats stays dumb here: it hands the collected files to the scorer; the user
 # writes the scorer. two kinds:
 #   bash  -- run a script (trampoline to python/spacy/whatever inside it).
-#   agent -- ask an agent (harness or api) to score (nondeterministic).
+#   agent -- ask an agent to score (nondeterministic).
 scorers:
   # imperative: deduct 0.1 per excessive-whitespace occurrence.
   - id: only-ascii
@@ -96,11 +75,11 @@ scorers:
     kind: bash
     file: scorers/no-finite-verbs.sh
 
-  # fuzzy + agentic: ask sonnet to judge. nondeterministic; only runs under
-  # `pats score --agentic`.
+  # fuzzy + agentic: ask the judge agent to score. nondeterministic; only runs
+  # under `pats score --agentic`.
   - id: no-colloquialisms
     kind: agent
-    agent-id: sonnet
+    agent-id: judge
     prompt-file: prompts/no-colloquialisms.txt
 
 # test-matrix -- which agent x task pairs to run. each row is a cross-product:

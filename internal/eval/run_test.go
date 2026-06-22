@@ -10,6 +10,7 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 )
 
@@ -23,21 +24,25 @@ func dockerOrSkip(t *testing.T) {
 	}
 }
 
-// full run-phase e2e: an adhoc agent runs in a sandbox, reads the staged
+// full run-phase e2e: a harness agent runs in a sandbox, reads the staged
 // prompt, writes a result; the collect script copies it to the output dir;
-// metadata records ok. proves prepare/agent/collect + run-dir layout.
-func TestRunAdhocE2E(t *testing.T) {
+// metadata records ok. proves prepare/agent/collect + run-dir layout. the
+// kind's command is overridden with a no-cred stand-in.
+func TestRunE2E(t *testing.T) {
 	dockerOrSkip(t)
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("do the thing"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ncp \"$PATS_WORKDIR/result.txt\" \"$PATS_OUTPUT_DIR/\"\n"), 0o755))
 
+	old := agent.HarnessCmds["opencode-openrouter"]
+	agent.HarnessCmds["opencode-openrouter"] = `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`
+	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
+
 	cfg := &config.Config{
 		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "ubuntu:26.04"}},
 		Agents: []config.Agent{{
-			ID: "a", Kind: "adhoc", Model: "m1", Sandbox: "s",
-			Command: `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`,
+			ID: "a", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s",
 		}},
 		Tasks:      []config.Task{{ID: "t", PromptFile: "prompt.txt", Collect: "sh collect.sh"}},
 		TestMatrix: []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"t"}}},
