@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"syscall"
+	"time"
 )
 
 // WorkMount is the in-sandbox path the host Workdir is bound to + used as cwd.
@@ -98,6 +100,11 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 	cmd := exec.CommandContext(ctx, c.bin, args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	// on ctx cancel (ctrl+C), SIGTERM the docker client so it stops the
+	// container (--rm then removes it) instead of orphaning it on SIGKILL.
+	// WaitDelay forces a hard kill if it doesn't exit in time.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
 
 	switch err := cmd.Run(); {
 	case err == nil:

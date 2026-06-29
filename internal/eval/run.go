@@ -11,9 +11,11 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lczyk/pats/internal/agent"
@@ -53,8 +55,16 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	}
 	fmt.Fprintf(opts.Out, "run dir: %s\n", runDir)
 
+	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	for _, p := range pairs {
-		if err := runPair(cfg, opts, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes); err != nil {
+		if ctx.Err() != nil {
+			fmt.Fprintf(opts.Out, "interrupted -- stopping\n")
+			break
+		}
+		if err := runPair(ctx, cfg, opts, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes); err != nil {
 			fmt.Fprintf(opts.Out, "  [%s x %s] ERROR: %v\n", p.Agent, p.Task, err)
 		}
 	}
@@ -75,7 +85,7 @@ type pairMeta struct {
 }
 
 func runPair(
-	cfg *config.Config, opts Options, runDir string, p config.TestPair,
+	ctx context.Context, cfg *config.Config, opts Options, runDir string, p config.TestPair,
 	a config.Agent, t config.Task, sandboxes map[string]config.Sandbox,
 ) error {
 	outDir := filepath.Join(runDir, p.Agent, p.Task)
@@ -151,8 +161,10 @@ func runPair(
 	}
 	defer stderrF.Close()
 
+	// agent output goes to the log files only -- keep the run terminal to pats'
+	// own progress lines. (stream-json still lands in stdout.log for later.)
 	t0 := time.Now()
-	code, runErr := box.Run(context.Background(), spec, stdoutF, stderrF)
+	code, runErr := box.Run(ctx, spec, stdoutF, stderrF)
 	dur := time.Since(t0).Seconds()
 
 	status, errStr := "ok", ""
