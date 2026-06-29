@@ -56,6 +56,7 @@ type Agent struct {
 	Kind    string `yaml:"kind"`
 	Model   string `yaml:"model"`
 	Sandbox string `yaml:"sandbox"`
+	Effort  string `yaml:"effort"` // optional reasoning effort (claude: low|medium|high)
 }
 
 // Task is one scenario handed to a task-running agent.

@@ -17,7 +17,12 @@ import (
 const (
 	// claude-cli, keyless: model is an anthropic id; auth via oauth creds file
 	// (~/.claude/.credentials.json), mounted into HOME by the run phase.
-	claudeKeylessCmd = `claude --print --model "$PATS_MODEL" --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"`
+	// stream-json + verbose + partial messages make claude emit ndjson events as
+	// they happen (plain --print buffers to exit), so the run-phase tee shows the
+	// agent live. raw ndjson lands in stdout.log; scoring reads collected files,
+	// not the stream, so the format change is harmless.
+	// ${PATS_EFFORT:+...} adds --effort only when an effort is set (empty -> omitted).
+	claudeKeylessCmd = `claude --print --output-format stream-json --verbose --include-partial-messages ${PATS_EFFORT:+--effort "$PATS_EFFORT"} --model "$PATS_MODEL" --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"`
 	// opencode via openrouter: reads OPENROUTER_API_KEY from env. the openrouter/
 	// prefix is added here so the config model stays e.g. openai/gpt-4o-mini.
 	opencodeOpenrouterCmd = `opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions "$(cat "$PATS_PROMPT_FILE")"`
@@ -47,6 +52,7 @@ func Env(a config.Agent, promptFile, outputDir string) map[string]string {
 		"PATS_MODEL":       a.Model,
 		"PATS_PROMPT_FILE": promptFile,
 		"PATS_OUTPUT_DIR":  outputDir,
+		"PATS_EFFORT":      a.Effort,
 	}
 }
 
