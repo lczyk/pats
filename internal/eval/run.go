@@ -4,6 +4,7 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,8 +14,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +34,7 @@ type Options struct {
 	ConfigDir string    // dir holding pats.yaml -- prompt/script paths resolve against it
 	Now       time.Time // wall clock, for the run-dir slug (injectable for tests)
 	Out       io.Writer // progress + host script output
+	Jobs      int       // max concurrent pairs; 0 -> serial (1), negative -> auto (see resolveJobs)
 }
 
 // Run executes every test-matrix pair and returns the run dir it wrote to.
@@ -69,16 +73,79 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	}
 	fmt.Fprintf(opts.Out, "run dir: %s\n", runDir)
 
+	jobs := resolveJobs(opts.Jobs)
+	if jobs > 1 {
+		fmt.Fprintf(opts.Out, "running %d pairs, up to %d in parallel\n", len(pairs), jobs)
+	}
+
+	// bounded worker pool. a failing pair is logged + skipped, never aborts
+	// siblings -- so a plain semaphore (not errgroup's cancel-on-error). when
+	// jobs>1 each pair writes to its own buffer, flushed atomically on completion
+	// so concurrent progress + host-script output don't interleave; at jobs==1 we
+	// write straight to opts.Out to keep host-script output live-streaming.
+	sem := make(chan struct{}, jobs)
+	var wg sync.WaitGroup
+	var outMu sync.Mutex
 	for _, p := range pairs {
 		if ctx.Err() != nil {
 			fmt.Fprintf(opts.Out, "interrupted -- stopping\n")
 			break
 		}
-		if err := runPair(ctx, cfg, opts, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes); err != nil {
-			fmt.Fprintf(opts.Out, "  [%s x %s] ERROR: %v\n", p.Agent, p.Task, err)
-		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(p config.TestPair) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			po := opts
+			var buf bytes.Buffer
+			if jobs > 1 {
+				po.Out = &buf
+			}
+			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes); err != nil {
+				fmt.Fprintf(po.Out, "  [%s x %s] ERROR: %v\n", p.Agent, p.Task, err)
+			}
+			if jobs > 1 {
+				outMu.Lock()
+				opts.Out.Write(buf.Bytes())
+				outMu.Unlock()
+			}
+		}(p)
 	}
+	wg.Wait()
 	return runDir, nil
+}
+
+// resolveJobs maps the Jobs option to a concrete worker count.
+//
+//	>0  -> that many
+//	0   -> 1 (serial; the zero-value default)
+//	<0  -> auto: docker's own cpu count (vm-accurate on macos), falling back to
+//	       host cpus, clamped to [1,8]. pairs are network-bound (model
+//	       round-trips), so cpu is a rough proxy, not a real limit -- the clamp
+//	       stops a big box from hammering the daemon + tripping rate-limits.
+func resolveJobs(j int) int {
+	if j > 0 {
+		return j
+	}
+	if j == 0 {
+		return 1
+	}
+	n := dockerNCPU()
+	if n < 1 {
+		n = runtime.NumCPU()
+	}
+	return min(max(n, 1), 8)
+}
+
+// dockerNCPU returns the docker daemon's cpu count, or 0 if it can't be read.
+func dockerNCPU() int {
+	out, err := exec.Command("docker", "info", "--format", "{{.NCPU}}").Output()
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return n
 }
 
 type pairMeta struct {

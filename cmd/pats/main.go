@@ -28,6 +28,7 @@ type Options struct {
 // RunCommand runs the test-matrix.
 type RunCommand struct {
 	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	Jobs   int    `long:"jobs" short:"j" default:"1" description:"max pairs to run in parallel; -1 for auto"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -39,6 +40,7 @@ func (r *RunCommand) Execute(args []string) error {
 		ConfigDir: filepath.Dir(r.Config),
 		Now:       time.Now(),
 		Out:       os.Stdout,
+		Jobs:      r.Jobs,
 	})
 	return err
 }
