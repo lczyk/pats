@@ -259,7 +259,7 @@ func runHost(opts Options, command string, env map[string]string) error {
 	return cmd.Run()
 }
 
-// nextRunDir creates and returns base/<yyyymmdd>-<n>, n = highest existing + 1.
+// nextRunDir creates and returns base/<yyyymmdd>-<nnn>, n = highest existing + 1, zero-padded to width 3.
 func nextRunDir(base string, now time.Time) (string, error) {
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
@@ -273,7 +273,7 @@ func nextRunDir(base string, now time.Time) (string, error) {
 			max = n
 		}
 	}
-	dir := filepath.Join(base, fmt.Sprintf("%s-%d", date, max+1))
+	dir := filepath.Join(base, fmt.Sprintf("%s-%03d", date, max+1))
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
