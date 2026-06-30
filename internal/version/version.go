@@ -4,7 +4,7 @@ package version
 
 var (
 	Version   = "0.1.0"
-	CommitSHA = "98aabfd8f4df5fb4ed34e9e9fd38a46f320f059f"
-	BuildDate = "2026-06-30T11:11:47Z"
+	CommitSHA = "ec869e29625706241546fd2e98364606586b5f67"
+	BuildDate = "2026-06-30T14:13:17Z"
 	BuildInfo = "dirty"
 )
