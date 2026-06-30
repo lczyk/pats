@@ -23,6 +23,7 @@ import (
 type Options struct {
 	Run   RunCommand   `command:"run" description:"run the test-matrix (agents x tasks)"`
 	Score ScoreCommand `command:"score" description:"score the most recent run (tasks x scorers)"`
+	List  ListCommand  `command:"list" description:"list configured sandboxes, agents, tasks, or scorers"`
 }
 
 // RunCommand runs the test-matrix.
@@ -64,6 +65,56 @@ func (s *ScoreCommand) Execute(args []string) error {
 		Out:       os.Stdout,
 	})
 	return err
+}
+
+// ListCommand groups the per-vector list subcommands.
+type ListCommand struct {
+	Sandboxes ListSandboxesCommand `command:"sandboxes" description:"list configured sandboxes"`
+	Agents    ListAgentsCommand    `command:"agents" description:"list configured agents"`
+	Tasks     ListTasksCommand     `command:"tasks" description:"list configured tasks"`
+	Scorers   ListScorersCommand   `command:"scorers" description:"list configured scorers"`
+}
+
+type ListSandboxesCommand struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+}
+type ListAgentsCommand struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+}
+type ListTasksCommand struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+}
+type ListScorersCommand struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+}
+
+func (c *ListSandboxesCommand) Execute(args []string) error {
+	cfg, err := load(c.Config)
+	if err != nil {
+		return err
+	}
+	return eval.ListSandboxes(cfg, os.Stdout)
+}
+func (c *ListAgentsCommand) Execute(args []string) error {
+	cfg, err := load(c.Config)
+	if err != nil {
+		return err
+	}
+	return eval.ListAgents(cfg, os.Stdout)
+}
+func (c *ListTasksCommand) Execute(args []string) error {
+	cfg, err := load(c.Config)
+	if err != nil {
+		return err
+	}
+	return eval.ListTasks(cfg, os.Stdout)
+}
+func (c *ListScorersCommand) Execute(args []string) error {
+	cfg, err := load(c.Config)
+	if err != nil {
+		return err
+	}
+	return eval.ListScorers(cfg, os.Stdout)
 }
 
 func load(path string) (*config.Config, error) {
