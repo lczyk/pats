@@ -116,6 +116,47 @@ func resolve(field StrList, star string, all []string) []string {
 	return field
 }
 
+// FilterPairs narrows expanded test pairs to the given agent and/or task ids
+// (an empty list = no filter on that axis). it errors on a filter value that
+// matches no pair (typo guard), or when the combined filter selects nothing.
+func FilterPairs(pairs []TestPair, agents, tasks []string) ([]TestPair, error) {
+	haveA, haveT := map[string]bool{}, map[string]bool{}
+	for _, p := range pairs {
+		haveA[p.Agent] = true
+		haveT[p.Task] = true
+	}
+	var errs errList
+	for _, a := range agents {
+		if !haveA[a] {
+			errs.add("--agent %q: no such agent in the test-matrix", a)
+		}
+	}
+	for _, t := range tasks {
+		if !haveT[t] {
+			errs.add("--task %q: no such task in the test-matrix", t)
+		}
+	}
+	if err := errs.err(); err != nil {
+		return nil, err
+	}
+
+	aset, tset := set(agents), set(tasks)
+	var out []TestPair
+	for _, p := range pairs {
+		if len(agents) > 0 && !aset[p.Agent] {
+			continue
+		}
+		if len(tasks) > 0 && !tset[p.Task] {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no pairs match the agent/task filter")
+	}
+	return out, nil
+}
+
 func ids(n int, at func(int) string) []string {
 	out := make([]string, n)
 	for i := range out {

@@ -25,11 +25,7 @@ const preflightTimeout = 90 * time.Second
 // through its real sandbox + egress + creds path, and fails if any can't
 // authenticate. catches expired/missing creds up front instead of after a
 // per-pair clone + container spin. returns the first failing agent's error.
-func Preflight(ctx context.Context, cfg *config.Config, opts Options) error {
-	pairs, err := cfg.ExpandTestMatrix()
-	if err != nil {
-		return err
-	}
+func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
 
@@ -42,7 +38,7 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options) error {
 		if err := preflightAgent(ctx, cfg, opts, agents[p.Agent], sandboxes); err != nil {
 			return fmt.Errorf("agent %q failed credential preflight: %w", p.Agent, err)
 		}
-		fmt.Fprintf(opts.Out, "preflight: %s ok\n", p.Agent)
+		logw{opts.Out, opts.Color}.info("preflight: %s ok", p.Agent)
 	}
 	return nil
 }

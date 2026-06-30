@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -80,6 +81,21 @@ type Task struct {
 	Prompt  string `yaml:"prompt"`  // the instruction: exec a file, read a file, or the literal text (see resolvePrompt)
 	Prepare string `yaml:"prepare"` // seed the sandbox (optional)
 	Collect string `yaml:"collect"` // gather outputs (optional)
+	Timeout string `yaml:"timeout"` // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
+}
+
+// DefaultTimeout bounds an agent run when a task sets no timeout.
+const DefaultTimeout = 10 * time.Minute
+
+// TimeoutDuration is the task's per-pair wall-clock limit: its own timeout, the
+// 10m default when unset, or 0 (no limit) when explicitly "0". assumes the string
+// validated (Validate parses it).
+func (t Task) TimeoutDuration() time.Duration {
+	if t.Timeout == "" {
+		return DefaultTimeout
+	}
+	d, _ := time.ParseDuration(t.Timeout)
+	return d
 }
 
 // Scorer scores one aspect of a task's collected output, 0.0 - 1.0.

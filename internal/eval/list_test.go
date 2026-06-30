@@ -2,6 +2,8 @@ package eval
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -58,4 +60,34 @@ func TestListScorers(t *testing.T) {
 	assert.ContainsString(t, s, "exact.sh") // exec -> file
 	assert.ContainsString(t, s, "judge")    // agent scorer id
 	assert.ContainsString(t, s, "agent")    // agent -> agent-id source
+}
+
+func TestListRuns(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(run, task, status string) {
+		od := filepath.Join(dir, runsSubdir, run, "a", task)
+		require.NoError(t, os.MkdirAll(od, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(od, "metadata.json"),
+			[]byte(`{"status":"`+status+`"}`), 0o644))
+	}
+	mk("20260101-001", "t1", "ok")
+	mk("20260101-001", "t2", "ok")
+	mk("20260101-002", "t1", "ok")
+	mk("20260101-002", "t2", "error")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "20260101-001", "scores.json"),
+		[]byte(`{"overall":0.5}`), 0o644))
+
+	var out bytes.Buffer
+	require.NoError(t, ListRuns(dir, &out))
+	s := out.String()
+	assert.ContainsString(t, s, "20260101-001")
+	assert.ContainsString(t, s, "2 ok")          // tally
+	assert.ContainsString(t, s, "0.50")          // scored
+	assert.ContainsString(t, s, "1 ok, 1 error") // mixed-status tally, ordered
+}
+
+// no runs dir -> no error, empty-ish output.
+func TestListRunsEmpty(t *testing.T) {
+	var out bytes.Buffer
+	require.NoError(t, ListRuns(t.TempDir(), &out))
 }

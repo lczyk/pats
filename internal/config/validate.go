@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Validate checks the whole config: vector well-formedness, cross-references,
@@ -120,6 +121,11 @@ func (c *Config) validateTasks(add func(string, ...any)) map[string]Task {
 		out[t.ID] = t
 		if t.Prompt == "" {
 			add("task %q: prompt is required", t.ID)
+		}
+		if t.Timeout != "" {
+			if _, err := time.ParseDuration(t.Timeout); err != nil {
+				add("task %q: bad timeout %q (use e.g. 10m, 300s)", t.ID, t.Timeout)
+			}
 		}
 	}
 	return out

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,6 +37,9 @@ type Options struct {
 	Now       time.Time // wall clock, for the run-dir slug (injectable for tests)
 	Out       io.Writer // progress + host script output
 	Jobs      int       // max concurrent pairs; 0 -> serial (1), negative -> auto (see resolveJobs)
+	Color     bool      // colour log tags (set internally from Out's tty-ness)
+	Agents    []string  // filter the matrix to these agents (empty -> all)
+	Tasks     []string  // filter the matrix to these tasks (empty -> all)
 }
 
 // Run executes every test-matrix pair and returns the run dir it wrote to.
@@ -45,6 +50,8 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
 		opts.ConfigDir = abs
 	}
+	opts.Color = useColor(opts.Out) // decided once from the real terminal; po copies inherit it
+	lg := logw{opts.Out, opts.Color}
 	unlock, err := lockConfigDir(opts.ConfigDir)
 	if err != nil {
 		return "", err
@@ -52,6 +59,9 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	defer unlock()
 	pairs, err := cfg.ExpandTestMatrix()
 	if err != nil {
+		return "", err
+	}
+	if pairs, err = config.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
 		return "", err
 	}
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
@@ -63,8 +73,8 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	defer stop()
 
 	// fail fast on bad/expired creds before spinning per-pair containers.
-	fmt.Fprintf(opts.Out, "preflight: checking agent credentials\n")
-	if err := Preflight(ctx, cfg, opts); err != nil {
+	lg.info("preflight: checking agent credentials")
+	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
 		return "", err
 	}
 
@@ -72,24 +82,41 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(opts.Out, "run dir: %s\n", relToCwd(runDir))
+	lg.info("run dir: %s", relToCwd(runDir))
 
 	jobs := resolveJobs(opts.Jobs)
-	if jobs > 1 {
-		fmt.Fprintf(opts.Out, "running %d pairs, up to %d in parallel\n", len(pairs), jobs)
+
+	// on a tty, draw a sticky progress region (total bar + a live line per
+	// in-flight pair); otherwise (pipe/ci/tee) print plain per-pair lines.
+	var bar *progress
+	if isProgressTTY(opts.Out) {
+		labelW := 0
+		for _, p := range pairs {
+			if w := len(p.Agent) + len(" x ") + len(p.Task); w > labelW {
+				labelW = w
+			}
+		}
+		bar = newProgress(opts.Out, len(pairs), labelW)
+		defer bar.close()
+	} else if jobs > 1 {
+		lg.info("running %d pairs, up to %d in parallel", len(pairs), jobs)
 	}
 
 	// bounded worker pool. a failing pair is logged + skipped, never aborts
 	// siblings -- so a plain semaphore (not errgroup's cancel-on-error). when
-	// jobs>1 each pair writes to its own buffer, flushed atomically on completion
-	// so concurrent progress + host-script output don't interleave; at jobs==1 we
-	// write straight to opts.Out to keep host-script output live-streaming.
+	// buffered (bar active, or jobs>1) each pair writes to its own buffer,
+	// emitted atomically on completion so concurrent progress + host-script
+	// output don't interleave; serial non-tty writes straight to opts.Out.
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
 	for _, p := range pairs {
 		if ctx.Err() != nil {
-			fmt.Fprintf(opts.Out, "interrupted -- stopping\n")
+			if bar != nil {
+				bar.log(lg.line(lvWarn, "interrupted -- stopping"))
+			} else {
+				lg.warn("interrupted -- stopping")
+			}
 			break
 		}
 		sem <- struct{}{}
@@ -98,15 +125,26 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			label := p.Agent + " x " + p.Task
 			po := opts
 			var buf bytes.Buffer
-			if jobs > 1 {
+			if bar != nil || jobs > 1 {
 				po.Out = &buf
 			}
-			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes); err != nil {
-				fmt.Fprintf(po.Out, "  [%s x %s] ERROR: %v\n", p.Agent, p.Task, err)
+			// always track per-pair counters: the bar shows them live, and the
+			// completion line logs the final out/tool/net regardless of tty.
+			stat := &pairStat{}
+			if bar != nil {
+				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
+				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Kind) != nil)
 			}
-			if jobs > 1 {
+			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes, stat); err != nil {
+				logw{po.Out, opts.Color}.error("[%s x %s] %v", p.Agent, p.Task, err)
+			}
+			switch {
+			case bar != nil:
+				bar.finish(label, buf.String())
+			case jobs > 1:
 				outMu.Lock()
 				opts.Out.Write(buf.Bytes())
 				outMu.Unlock()
@@ -162,6 +200,8 @@ type pairMeta struct {
 	// hosts the agent tried to reach but egress denied (proxy mode). a non-empty
 	// list flags attempted cheating / unexpected fetches.
 	DeniedEgress []string `json:"denied_egress,omitempty"`
+	// per-kind digest parsed from the harness log: cost, tokens, turns, tools.
+	Summary *runSummary `json:"summary,omitempty"`
 }
 
 // deniedEgress reads the proxy audit log (one json line per request) and
@@ -192,7 +232,7 @@ func deniedEgress(auditPath string) []string {
 
 func runPair(
 	ctx context.Context, cfg *config.Config, opts Options, runDir string, p config.TestPair,
-	a config.Agent, t config.Task, sandboxes map[string]config.Sandbox,
+	a config.Agent, t config.Task, sandboxes map[string]config.Sandbox, stat *pairStat,
 ) error {
 	outDir := filepath.Join(runDir, p.Agent, p.Task)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -275,30 +315,48 @@ func runPair(
 	}
 	defer stderrF.Close()
 
-	// agent output goes to the log files only -- keep the run terminal to pats'
-	// own progress lines. (stream-json still lands in stdout.log for later.)
+	// agent output goes to the log file. when a progress bar is active we also
+	// tap it through statTap for the in-run counters (out lines + per-kind tool
+	// parse) -- the full stdout.log is still written intact.
+	var stdoutW io.Writer = stdoutF
+	if stat != nil {
+		stdoutW = io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Kind)})
+	}
+	// bound the agent run with the configured timeout (0 = none) so a stuck pair
+	// gets killed rather than hanging the whole run. ctx cancel tears down the
+	// container (same path as ctrl+C).
+	rctx := ctx
+	if to := t.TimeoutDuration(); to > 0 {
+		var cancel context.CancelFunc
+		rctx, cancel = context.WithTimeout(ctx, to)
+		defer cancel()
+	}
 	t0 := time.Now()
-	code, runErr := box.Run(ctx, spec, stdoutF, stderrF)
+	code, runErr := box.Run(rctx, spec, stdoutW, stderrF)
 	dur := time.Since(t0).Seconds()
 
 	status, errStr := "ok", ""
 	switch {
+	case runErr != nil && errors.Is(rctx.Err(), context.DeadlineExceeded):
+		status, errStr = "timeout", fmt.Sprintf("timed out after %s", t.TimeoutDuration())
 	case runErr != nil:
 		status, errStr = "error", runErr.Error()
 	case code != 0:
 		status = "nonzero"
 	}
 
+	lg := logw{opts.Out, opts.Color}
+
 	// collect only if the agent ran (a launch failure left nothing to gather).
 	if runErr == nil && t.Collect != "" {
 		if err := runHost(opts, expandID(t.Collect, t.ID), hostEnv); err != nil {
-			fmt.Fprintf(opts.Out, "  [%s x %s] collect: %v\n", p.Agent, p.Task, err)
+			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
 		}
 	}
 
 	denied := deniedEgress(filepath.Join(outDir, "egress.log"))
 	if len(denied) > 0 {
-		fmt.Fprintf(opts.Out, "  [%s x %s] egress denied: %s\n", p.Agent, p.Task, strings.Join(denied, ", "))
+		lg.warn("[%s x %s] egress denied: %s", p.Agent, p.Task, strings.Join(denied, ", "))
 	}
 
 	meta := pairMeta{
@@ -306,11 +364,32 @@ func runPair(
 		Sandbox: sbID, Image: sb.Image,
 		ExitCode: code, DurationS: round2(dur), Status: status, Error: errStr,
 		PatsVersion: version.Version, DeniedEgress: denied,
+		Summary: summarize(a.Kind, filepath.Join(outDir, "stdout.log")),
 	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err
 	}
-	fmt.Fprintf(opts.Out, "  [%s x %s] %s (exit %d, %.1fs)\n", p.Agent, p.Task, status, code, dur)
+
+	// final net count straight from the audit log (the bar's poll may lag).
+	if n, err := countLines(filepath.Join(outDir, "egress.log")); err == nil {
+		atomic.StoreInt64(&stat.net, int64(n))
+		atomic.StoreInt32(&stat.netSeen, 1)
+	}
+	// line 1: the verdict (level by status). line 2: the stats, indented under it.
+	statusLine := fmt.Sprintf("[%s x %s] %s (exit %d, %.1fs)", p.Agent, p.Task, status, code, dur)
+	switch status {
+	case "ok":
+		lg.info("%s", statusLine)
+	case "nonzero", "timeout":
+		lg.warn("%s", statusLine)
+	default:
+		lg.error("%s", statusLine)
+	}
+	stats := stat.cols(statScanner(a.Kind) != nil)
+	if s := meta.Summary; s != nil {
+		stats += fmt.Sprintf("  %s tok  $%.2f  %d turns", humanK(s.OutputTokens), s.CostUSD, s.NumTurns)
+	}
+	lg.info("[%s x %s] %s", p.Agent, p.Task, stats)
 	return nil
 }
 
@@ -348,7 +427,7 @@ func harnessHome(opts Options, p config.TestPair, env map[string]string, hasToke
 		hasCreds = true
 	}
 	if !hasCreds {
-		fmt.Fprintf(opts.Out, "  [%s x %s] WARNING: no creds forwarded (no token env, no ~/.claude/.credentials.json); the harness may fail on auth\n", p.Agent, p.Task)
+		logw{opts.Out, opts.Color}.warn("[%s x %s] no creds forwarded (no token env, no ~/.claude/.credentials.json); the harness may fail on auth", p.Agent, p.Task)
 	}
 	return harnessSetup{
 		mounts:  []sandbox.Mount{{Host: homeDir, Container: homeMount}},
@@ -498,6 +577,14 @@ func writeJSON(path string, v any) error {
 }
 
 func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
+
+// humanK renders a token count compactly: 412 -> "412", 9213 -> "9.2k".
+func humanK(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	return fmt.Sprintf("%.1fk", float64(n)/1000)
+}
 
 func index[T any](xs []T, key func(T) string) map[string]T {
 	m := make(map[string]T, len(xs))

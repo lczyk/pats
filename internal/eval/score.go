@@ -21,6 +21,7 @@ type ScoreOptions struct {
 	RunDir    string // explicit run dir, or "" for the latest under .pats/runs
 	Agentic   bool   // also run agent-kind scorers
 	Out       io.Writer
+	Color     bool // colour log tags (set internally from Out's tty-ness)
 }
 
 // ScoreReport is the aggregated result of scoring a run.
@@ -47,6 +48,8 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
 		opts.ConfigDir = abs
 	}
+	opts.Color = useColor(opts.Out)
+	lg := logw{opts.Out, opts.Color}
 	unlock, err := lockConfigDir(opts.ConfigDir)
 	if err != nil {
 		return nil, err
@@ -60,7 +63,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}
 		runDir = latest
 	}
-	fmt.Fprintf(opts.Out, "scoring: %s\n", relToCwd(runDir))
+	lg.info("scoring: %s", relToCwd(runDir))
 
 	testPairs, err := cfg.ExpandTestMatrix()
 	if err != nil {
@@ -95,13 +98,13 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			score, serr := runScorer(opts, sc, outDir, tp.Agent, tp.Task, agentModel[tp.Agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
-				fmt.Fprintf(opts.Out, "  [%s x %s] %s = n/a\n", tp.Agent, tp.Task, sc.ID)
+				lg.info("[%s x %s] %s = n/a", tp.Agent, tp.Task, sc.ID)
 				continue // not applicable -- dropped from aggregation
 			case serr != nil:
-				fmt.Fprintf(opts.Out, "  [%s x %s] %s: %v\n", tp.Agent, tp.Task, sc.ID, serr)
+				lg.error("[%s x %s] %s: %v", tp.Agent, tp.Task, sc.ID, serr)
 				continue
 			}
-			fmt.Fprintf(opts.Out, "  [%s x %s] %s = %.4f\n", tp.Agent, tp.Task, sc.ID, score)
+			lg.info("[%s x %s] %s = %.4f", tp.Agent, tp.Task, sc.ID, score)
 			cells = append(cells, ScoreCell{tp.Agent, tp.Task, sc.ID, score})
 		}
 	}

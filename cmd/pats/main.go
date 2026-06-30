@@ -28,8 +28,10 @@ type Options struct {
 
 // RunCommand runs the test-matrix.
 type RunCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-	Jobs   int    `long:"jobs" short:"j" default:"1" description:"max pairs to run in parallel; -1 for auto"`
+	Config string   `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	Jobs   int      `long:"jobs" short:"j" default:"1" description:"max pairs to run in parallel; -1 for auto"`
+	Agents []string `long:"agent" short:"a" description:"only run these agents (repeatable); default: all"`
+	Tasks  []string `long:"task" short:"t" description:"only run these tasks (repeatable); default: all"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -42,6 +44,8 @@ func (r *RunCommand) Execute(args []string) error {
 		Now:       time.Now(),
 		Out:       os.Stdout,
 		Jobs:      r.Jobs,
+		Agents:    r.Agents,
+		Tasks:     r.Tasks,
 	})
 	return err
 }
@@ -73,6 +77,7 @@ type ListCommand struct {
 	Agents    ListAgentsCommand    `command:"agents" description:"list configured agents"`
 	Tasks     ListTasksCommand     `command:"tasks" description:"list configured tasks"`
 	Scorers   ListScorersCommand   `command:"scorers" description:"list configured scorers"`
+	Runs      ListRunsCommand      `command:"runs" description:"list past runs under .pats/runs"`
 }
 
 type ListSandboxesCommand struct {
@@ -85,6 +90,9 @@ type ListTasksCommand struct {
 	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 }
 type ListScorersCommand struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+}
+type ListRunsCommand struct {
 	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 }
 
@@ -115,6 +123,11 @@ func (c *ListScorersCommand) Execute(args []string) error {
 		return err
 	}
 	return eval.ListScorers(cfg, os.Stdout)
+}
+
+// runs reads run artifacts only -- no config load, so it works on a broken pats.yaml.
+func (c *ListRunsCommand) Execute(args []string) error {
+	return eval.ListRuns(filepath.Dir(c.Config), os.Stdout)
 }
 
 func load(path string) (*config.Config, error) {
