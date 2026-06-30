@@ -54,15 +54,20 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
 
+	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// fail fast on bad/expired creds before spinning per-pair containers.
+	if err := Preflight(ctx, cfg, opts); err != nil {
+		return "", err
+	}
+
 	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
 	if err != nil {
 		return "", err
 	}
 	fmt.Fprintf(opts.Out, "run dir: %s\n", runDir)
-
-	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	for _, p := range pairs {
 		if ctx.Err() != nil {
