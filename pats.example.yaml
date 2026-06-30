@@ -90,23 +90,18 @@ scorers:
     prompt: prompts/no-colloquialisms.txt
 
 # test-matrix -- which agent x task pairs to run. each row is a cross-product:
-# `agent` and `task` take a scalar, a list, or `"*"` (all). weight (omitted ->
-# 1.0) applies to the whole row and tunes each pair's contribution to the
-# agent's overall score -- split into rows when the weight differs.
+# `agent` and `task` take a scalar, a list, or `"*"` (all).
 test-matrix:
   # both haiku harnesses across every task.
   - agent: [haiku-claude-cli, haiku-opencode]
     task: "*"
 
 # scorer-matrix -- which task x scorer pairs to run. same cross-product +
-# scalar/list/`"*"` rules. weight (omitted -> 1.0) tunes the scorer's
-# contribution to the task's score for this pairing.
+# scalar/list/`"*"` rules. a task's score is the mean over the scorers run on it.
 scorer-matrix:
   - scorer: [only-ascii, title-correct]
     task: "*"
   - scorer: no-finite-verbs
     task: "*"
-    weight: 0.5
   - scorer: no-colloquialisms
     task: "*"
-    weight: 0.5

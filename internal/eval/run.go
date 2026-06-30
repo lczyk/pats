@@ -72,7 +72,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(opts.Out, "run dir: %s\n", runDir)
+	fmt.Fprintf(opts.Out, "run dir: %s\n", relToCwd(runDir))
 
 	jobs := resolveJobs(opts.Jobs)
 	if jobs > 1 {
@@ -152,7 +152,6 @@ func dockerNCPU() int {
 type pairMeta struct {
 	Agent       string  `json:"agent"`
 	Task        string  `json:"task"`
-	Weight      float64 `json:"weight"`
 	Sandbox     string  `json:"sandbox"`
 	Image       string  `json:"image"`
 	ExitCode    int     `json:"exit_code"`
@@ -303,7 +302,7 @@ func runPair(
 	}
 
 	meta := pairMeta{
-		Agent: p.Agent, Task: p.Task, Weight: p.Weight,
+		Agent: p.Agent, Task: p.Task,
 		Sandbox: sbID, Image: sb.Image,
 		ExitCode: code, DurationS: round2(dur), Status: status, Error: errStr,
 		PatsVersion: version.Version, DeniedEgress: denied,
@@ -367,6 +366,17 @@ func copyFile(src, dst string) error {
 
 // expandID substitutes ${id} in a run-field value with the owning entity's id.
 func expandID(s, id string) string { return strings.ReplaceAll(s, "${id}", id) }
+
+// relToCwd renders a path relative to the working dir for display; falls back to
+// the input if that's not possible (e.g. different volume).
+func relToCwd(p string) string {
+	if wd, err := os.Getwd(); err == nil {
+		if rel, err := filepath.Rel(wd, p); err == nil {
+			return rel
+		}
+	}
+	return p
+}
 
 // commandFor tokenizes a run-field value (POSIX-sh quoting, no shell/expansion)
 // and returns an *exec.Cmd that runs argv[0] -- a +x regular file resolved

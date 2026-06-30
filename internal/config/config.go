@@ -104,20 +104,11 @@ func (s Scorer) ExecFile() string {
 }
 
 // Row is one cross-product row of a matrix. Agent/Task/Scorer each take a
-// scalar, a list, or "*" (all); Weight defaults to 1.0 when omitted.
+// scalar, a list, or "*" (all).
 type Row struct {
-	Agent  StrList  `yaml:"agent"`
-	Task   StrList  `yaml:"task"`
-	Scorer StrList  `yaml:"scorer"`
-	Weight *float64 `yaml:"weight"`
-}
-
-// WeightOr returns the row weight, or def when omitted.
-func (r Row) WeightOr(def float64) float64 {
-	if r.Weight == nil {
-		return def
-	}
-	return *r.Weight
+	Agent  StrList `yaml:"agent"`
+	Task   StrList `yaml:"task"`
+	Scorer StrList `yaml:"scorer"`
 }
 
 // StrList accepts a yaml scalar or sequence and stores it as []string. the

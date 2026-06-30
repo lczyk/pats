@@ -12,7 +12,7 @@ import (
 )
 
 // score phase, no docker: an exec scorer reads each pair's stdout.log and emits
-// a float; pats aggregates per (agent,task) then per agent (test-matrix weight).
+// a float; pats aggregates per (agent,task) then per agent.
 func TestScoreExec(t *testing.T) {
 	dir := t.TempDir()
 	// scorer: 1.0 if the output contains "good", else 0.0.
@@ -42,7 +42,7 @@ func TestScoreExec(t *testing.T) {
 
 	assert.Equal(t, rep.PerPair["a/t1"], 1.0)
 	assert.Equal(t, rep.PerPair["a/t2"], 0.0)
-	assert.Equal(t, rep.PerAgent["a"], 0.5) // equal task weights
+	assert.Equal(t, rep.PerAgent["a"], 0.5) // mean of the two tasks
 	assert.Equal(t, rep.Overall, 0.5)
 
 	// scores.json written into the run dir.
@@ -50,7 +50,8 @@ func TestScoreExec(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestScoreWeightedScorers(t *testing.T) {
+// per-pair score is the plain mean over the scorers run on that pair.
+func TestScoreMultipleScorers(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "zero.sh"), []byte("#!/bin/sh\necho 0.0\n"), 0o755))
@@ -60,7 +61,6 @@ func TestScoreWeightedScorers(t *testing.T) {
 	require.NoError(t, os.MkdirAll(od, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
-	w3 := 3.0
 	cfg := &config.Config{
 		Sandboxes:  []config.Sandbox{{ID: "s", Kind: "bwrap"}},
 		Agents:     []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
@@ -68,16 +68,16 @@ func TestScoreWeightedScorers(t *testing.T) {
 		Scorers:    []config.Scorer{{ID: "one", Score: "one.sh"}, {ID: "zero", Score: "zero.sh"}},
 		TestMatrix: []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"t"}}},
 		ScorerMatrix: []config.Row{
-			{Scorer: config.StrList{"one"}, Task: config.StrList{"t"}, Weight: &w3}, // weight 3 -> 1.0
-			{Scorer: config.StrList{"zero"}, Task: config.StrList{"t"}},             // weight 1 -> 0.0
+			{Scorer: config.StrList{"one"}, Task: config.StrList{"t"}},
+			{Scorer: config.StrList{"zero"}, Task: config.StrList{"t"}},
 		},
 	}
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
 	require.NoError(t, err)
-	// (3*1.0 + 1*0.0) / (3+1) = 0.75
-	assert.Equal(t, rep.PerPair["a/t"], 0.75)
+	// (1.0 + 0.0) / 2 = 0.5
+	assert.Equal(t, rep.PerPair["a/t"], 0.5)
 }
 
 func TestParseScore(t *testing.T) {

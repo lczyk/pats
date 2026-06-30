@@ -42,22 +42,6 @@ test-matrix:
 	assert.EqualArrays(t, []string(c.TestMatrix[0].Task), []string{"a", "b"})
 }
 
-func TestWeightDefault(t *testing.T) {
-	c := parseT(t, `
-agents:
-  - {id: a, kind: opencode-openrouter, model: m, sandbox: s}
-sandboxes:
-  - {id: s, kind: bwrap}
-tasks:
-  - {id: t, prompt: p.txt}
-test-matrix:
-  - {agent: a, task: t}
-  - {agent: a, task: t2, weight: 2.5}
-`)
-	assert.Equal(t, c.TestMatrix[0].WeightOr(1.0), 1.0)
-	assert.Equal(t, c.TestMatrix[1].WeightOr(1.0), 2.5)
-}
-
 func TestUnknownFieldRejected(t *testing.T) {
 	_, err := parse([]byte("agents:\n  - {id: a, kind: opencode-openrouter, bogus: 1}\n"))
 	assert.Error(t, err, assert.AnyError)

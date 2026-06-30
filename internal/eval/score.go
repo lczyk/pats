@@ -27,7 +27,7 @@ type ScoreOptions struct {
 type ScoreReport struct {
 	RunDir   string             `json:"run_dir"`
 	Cells    []ScoreCell        `json:"cells"`
-	PerPair  map[string]float64 `json:"per_pair"` // "agent/task" -> weighted mean over scorers
+	PerPair  map[string]float64 `json:"per_pair"` // "agent/task" -> mean over scorers
 	PerAgent map[string]float64 `json:"per_agent"`
 	Overall  float64            `json:"overall"`
 }
@@ -38,7 +38,6 @@ type ScoreCell struct {
 	Task   string  `json:"task"`
 	Scorer string  `json:"scorer"`
 	Score  float64 `json:"score"`
-	Weight float64 `json:"weight"`
 }
 
 // Score runs the scorer-matrix over a run's collected outputs and aggregates.
@@ -61,7 +60,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}
 		runDir = latest
 	}
-	fmt.Fprintf(opts.Out, "scoring: %s\n", runDir)
+	fmt.Fprintf(opts.Out, "scoring: %s\n", relToCwd(runDir))
 
 	testPairs, err := cfg.ExpandTestMatrix()
 	if err != nil {
@@ -76,7 +75,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	for _, a := range cfg.Agents {
 		agentModel[a.ID] = a.Model
 	}
-	// task -> scorers (with weight) to run on it.
+	// task -> scorers to run on it.
 	byTask := map[string][]config.ScorePair{}
 	for _, sp := range scorePairs {
 		byTask[sp.Task] = append(byTask[sp.Task], sp)
@@ -94,14 +93,16 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 				continue // agentic scorers gated behind --agentic
 			}
 			score, serr := runScorer(opts, sc, outDir, tp.Agent, tp.Task, agentModel[tp.Agent])
-			if errors.Is(serr, errScorerNA) {
-				continue // not applicable to this cell -- dropped silently
-			}
-			if serr != nil {
-				fmt.Fprintf(opts.Out, "  [%s x %s] scorer %s: %v\n", tp.Agent, tp.Task, sc.ID, serr)
+			switch {
+			case errors.Is(serr, errScorerNA):
+				fmt.Fprintf(opts.Out, "  [%s x %s] %s = n/a\n", tp.Agent, tp.Task, sc.ID)
+				continue // not applicable -- dropped from aggregation
+			case serr != nil:
+				fmt.Fprintf(opts.Out, "  [%s x %s] %s: %v\n", tp.Agent, tp.Task, sc.ID, serr)
 				continue
 			}
-			cells = append(cells, ScoreCell{tp.Agent, tp.Task, sc.ID, score, sp.Weight})
+			fmt.Fprintf(opts.Out, "  [%s x %s] %s = %.4f\n", tp.Agent, tp.Task, sc.ID, score)
+			cells = append(cells, ScoreCell{tp.Agent, tp.Task, sc.ID, score})
 		}
 	}
 
@@ -174,8 +175,11 @@ func parseScore(s string) (float64, error) {
 }
 
 func aggregate(runDir string, cells []ScoreCell, testPairs []config.TestPair) *ScoreReport {
-	// per (agent,task): weighted mean over scorers.
-	type acc struct{ wsum, sum float64 }
+	// per (agent,task): mean over scorers.
+	type acc struct {
+		n   int
+		sum float64
+	}
 	pair := map[string]*acc{}
 	for _, c := range cells {
 		k := c.Agent + "/" + c.Task
@@ -184,17 +188,17 @@ func aggregate(runDir string, cells []ScoreCell, testPairs []config.TestPair) *S
 			a = &acc{}
 			pair[k] = a
 		}
-		a.wsum += c.Weight
-		a.sum += c.Weight * c.Score
+		a.n++
+		a.sum += c.Score
 	}
 	perPair := map[string]float64{}
 	for k, a := range pair {
-		if a.wsum > 0 {
-			perPair[k] = a.sum / a.wsum
+		if a.n > 0 {
+			perPair[k] = a.sum / float64(a.n)
 		}
 	}
 
-	// per agent: weighted mean over tasks, using test-matrix weight.
+	// per agent: mean over its tasks.
 	agent := map[string]*acc{}
 	for _, tp := range testPairs {
 		k := tp.Agent + "/" + tp.Task
@@ -207,14 +211,14 @@ func aggregate(runDir string, cells []ScoreCell, testPairs []config.TestPair) *S
 			a = &acc{}
 			agent[tp.Agent] = a
 		}
-		a.wsum += tp.Weight
-		a.sum += tp.Weight * ts
+		a.n++
+		a.sum += ts
 	}
 	perAgent := map[string]float64{}
 	var osum float64
 	for id, a := range agent {
-		if a.wsum > 0 {
-			perAgent[id] = a.sum / a.wsum
+		if a.n > 0 {
+			perAgent[id] = a.sum / float64(a.n)
 			osum += perAgent[id]
 		}
 	}
