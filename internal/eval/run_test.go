@@ -74,10 +74,10 @@ func TestNextRunDirIncrements(t *testing.T) {
 	now := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
 	d1, err := nextRunDir(base, now)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Base(d1), "20260621-1")
+	assert.Equal(t, filepath.Base(d1), "20260621-001")
 	d2, err := nextRunDir(base, now)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Base(d2), "20260621-2")
+	assert.Equal(t, filepath.Base(d2), "20260621-002")
 }
 
 func TestResolveJobs(t *testing.T) {
