@@ -82,6 +82,35 @@ type pairMeta struct {
 	Status      string  `json:"status"` // ok | nonzero | error
 	Error       string  `json:"error,omitempty"`
 	PatsVersion string  `json:"pats_version"`
+	// hosts the agent tried to reach but egress denied (proxy mode). a non-empty
+	// list flags attempted cheating / unexpected fetches.
+	DeniedEgress []string `json:"denied_egress,omitempty"`
+}
+
+// deniedEgress reads the proxy audit log (one json line per request) and
+// returns the unique hosts that were denied. missing file -> nil (not proxy mode).
+func deniedEgress(auditPath string) []string {
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var e struct {
+			Host    string `json:"host"`
+			Allowed bool   `json:"allowed"`
+		}
+		if json.Unmarshal([]byte(line), &e) != nil || e.Allowed || seen[e.Host] {
+			continue
+		}
+		seen[e.Host] = true
+		out = append(out, e.Host)
+	}
+	return out
 }
 
 func runPair(
@@ -149,6 +178,14 @@ func runPair(
 		return err
 	}
 	spec.Mounts = hs.mounts
+	spec.Egress = sandbox.Egress{
+		Mode:      sb.Egress.Mode,
+		Default:   sb.Egress.Default,
+		Allow:     sb.Egress.Allow,
+		Deny:      sb.Egress.Deny,
+		Image:     sb.Egress.Image,
+		AuditPath: filepath.Join(outDir, "egress.log"),
+	}
 
 	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
 	if err != nil {
@@ -182,11 +219,16 @@ func runPair(
 		}
 	}
 
+	denied := deniedEgress(filepath.Join(outDir, "egress.log"))
+	if len(denied) > 0 {
+		fmt.Fprintf(opts.Out, "  [%s x %s] egress denied: %s\n", p.Agent, p.Task, strings.Join(denied, ", "))
+	}
+
 	meta := pairMeta{
 		Agent: p.Agent, Task: p.Task, Weight: p.Weight,
 		Sandbox: sbID, Image: sb.Image,
 		ExitCode: code, DurationS: round2(dur), Status: status, Error: errStr,
-		PatsVersion: version.Version,
+		PatsVersion: version.Version, DeniedEgress: denied,
 	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err

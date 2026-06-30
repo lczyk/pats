@@ -1,0 +1,15 @@
+# pats egress proxy: filters sandbox outbound traffic by host, audits requests.
+# built + run by the run phase when a sandbox sets `egress: {mode: proxy}`.
+#
+# build locally (not published yet):
+#   docker build -t pats/egress-proxy:latest -f images/Dockerfile.egress-proxy .
+FROM docker.io/library/golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/egress-proxy ./cmd/egress-proxy
+RUN CGO_ENABLED=0 go build -o /egress-proxy ./cmd/egress-proxy
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /egress-proxy /egress-proxy
+ENTRYPOINT ["/egress-proxy"]

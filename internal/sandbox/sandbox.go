@@ -25,6 +25,17 @@ type Spec struct {
 	Workdir string            // host dir bound at WorkMount and used as cwd
 	Env     map[string]string // environment (PATS_* + passthrough)
 	Mounts  []Mount           // extra host->container binds (e.g. creds, home)
+	Egress  Egress            // outbound network policy (zero value = open)
+}
+
+// Egress is the resolved network policy for one run (from config.Sandbox.Egress).
+type Egress struct {
+	Mode      string // "" | off | none | proxy
+	Default   string // proxy: deny | allow
+	Allow     []string
+	Deny      []string
+	Image     string // proxy image
+	AuditPath string // where to write the proxy's json audit log (proxy mode)
 }
 
 // Mount is an extra host path bound into the sandbox.
@@ -69,6 +80,15 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 	if err != nil {
 		return -1, fmt.Errorf("resolve workdir: %w", err)
 	}
+	// egress policy: none -> no network; proxy -> sidecar on an internal net.
+	netArgs, teardown, err := c.setupEgress(ctx, spec)
+	if err != nil {
+		return -1, err
+	}
+	if teardown != nil {
+		defer teardown()
+	}
+
 	args := []string{
 		"run", "--rm",
 		"--init", // reap zombies if the agent spawns children
@@ -80,6 +100,7 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 		"-w", WorkMount,
 		"-v", abs + ":" + WorkMount,
 	}
+	args = append(args, netArgs...)
 	for _, m := range spec.Mounts {
 		mh, err := filepath.Abs(m.Host)
 		if err != nil {

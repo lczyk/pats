@@ -31,6 +31,20 @@ type Sandbox struct {
 	Kind   string `yaml:"kind"`   // container | bwrap
 	Driver string `yaml:"driver"` // container: docker|podman (defaults docker); bwrap: bwrap
 	Image  string `yaml:"image"`  // container only
+	Egress Egress `yaml:"egress"` // outbound network policy (default: open)
+}
+
+// Egress is a sandbox's outbound network policy. see docs/proposals/network-egress.md.
+//
+//	off   -- open network (default, back-compat)
+//	none  -- no network (--network none); only for agents needing no egress
+//	proxy -- filter through a sidecar proxy by host, allow/deny + audit
+type Egress struct {
+	Mode    string   `yaml:"mode"`        // off | none | proxy
+	Default string   `yaml:"default"`     // proxy: deny (allowlist) | allow (denylist)
+	Allow   []string `yaml:"allow"`       // hosts reachable when default: deny
+	Deny    []string `yaml:"deny"`        // hosts blocked when default: allow
+	Image   string   `yaml:"proxy-image"` // override proxy image (default pats/egress-proxy:latest)
 }
 
 // ResolvedDriver fills the per-kind default when driver is omitted.
