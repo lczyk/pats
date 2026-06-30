@@ -49,7 +49,7 @@ agents:
 sandboxes:
   - {id: s, kind: bwrap}
 tasks:
-  - {id: t, prompt-file: p.txt}
+  - {id: t, prompt: p.txt}
 test-matrix:
   - {agent: a, task: t}
   - {agent: a, task: t2, weight: 2.5}
@@ -111,7 +111,7 @@ agents:
 			name: "dangling scorer agent-id",
 			src: `
 scorers:
-  - {id: sc, kind: agent, agent-id: ghost, prompt-file: p.txt}
+  - {id: sc, kind: agent, agent-id: ghost, prompt: p.txt}
 `,
 			want: "unknown agent-id",
 		},
@@ -120,7 +120,7 @@ scorers:
 			src: `
 sandboxes: [{id: s, kind: bwrap}]
 agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
-tasks: [{id: t, prompt-file: p.txt}]
+tasks: [{id: t, prompt: p.txt}]
 test-matrix:
   - {agent: a, task: t}
   - {agent: a, task: t}
@@ -143,8 +143,8 @@ agents:
   - {id: h1, kind: claude-cli-keyless, model: m, sandbox: s}
   - {id: h2, kind: opencode-openrouter, model: m, sandbox: s}
 tasks:
-  - {id: t1, prompt-file: p.txt}
-  - {id: t2, prompt-file: p.txt}
+  - {id: t1, prompt: p.txt}
+  - {id: t2, prompt: p.txt}
 test-matrix:
   - {agent: "*", task: "*"}
 `)
@@ -152,4 +152,13 @@ test-matrix:
 	require.NoError(t, err)
 	// "*" agents = 2 x 2 tasks = 4.
 	assert.Len(t, pairs, 4)
+}
+
+func TestScorerExecFile(t *testing.T) {
+	// ${id} in the score path is replaced by the scorer id.
+	assert.Equal(t, Scorer{ID: "x", Score: "scorers/${id}.py"}.ExecFile(), "scorers/x.py")
+	// no ${id} -> path used verbatim.
+	assert.Equal(t, Scorer{ID: "x", Score: "custom.py"}.ExecFile(), "custom.py")
+	// no score -> empty.
+	assert.Equal(t, Scorer{ID: "x"}.ExecFile(), "")
 }

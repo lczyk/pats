@@ -18,9 +18,9 @@ func listTestConfig() *config.Config {
 		Agents: []config.Agent{
 			{ID: "claude", Kind: "claude-cli-keyless", Model: "opus", Sandbox: "box", Effort: "high"},
 		},
-		Tasks: []config.Task{{ID: "refactor", PromptFile: "refactor.txt"}},
+		Tasks: []config.Task{{ID: "refactor", Prompt: "refactor.txt"}},
 		Scorers: []config.Scorer{
-			{ID: "exact", Kind: "bash", File: "exact.sh"},
+			{ID: "exact", Score: "exact.sh"}, // default kind -> exec
 			{ID: "judge", Kind: "agent", AgentID: "claude"},
 		},
 	}
@@ -55,7 +55,7 @@ func TestListScorers(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, ListScorers(listTestConfig(), &out))
 	s := out.String()
-	assert.ContainsString(t, s, "exact.sh") // bash -> file
+	assert.ContainsString(t, s, "exact.sh") // exec -> file
 	assert.ContainsString(t, s, "judge")    // agent scorer id
 	assert.ContainsString(t, s, "agent")    // agent -> agent-id source
 }

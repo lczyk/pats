@@ -118,8 +118,8 @@ func (c *Config) validateTasks(add func(string, ...any)) map[string]Task {
 			add("duplicate task id: %s", t.ID)
 		}
 		out[t.ID] = t
-		if t.PromptFile == "" {
-			add("task %q: prompt-file is required", t.ID)
+		if t.Prompt == "" {
+			add("task %q: prompt is required", t.ID)
 		}
 	}
 	return out
@@ -137,9 +137,9 @@ func (c *Config) validateScorers(add func(string, ...any), agents map[string]Age
 		}
 		out[s.ID] = s
 		switch s.Kind {
-		case "bash":
-			if s.File == "" {
-				add("scorer %q: bash kind needs a file", s.ID)
+		case "":
+			if s.Score == "" {
+				add("scorer %q: needs a score script", s.ID)
 			}
 		case "agent":
 			if s.AgentID == "" {
@@ -147,13 +147,11 @@ func (c *Config) validateScorers(add func(string, ...any), agents map[string]Age
 			} else if _, ok := agents[s.AgentID]; !ok {
 				add("scorer %q: unknown agent-id %q", s.ID, s.AgentID)
 			}
-			if s.PromptFile == "" {
-				add("scorer %q: agent kind needs a prompt-file", s.ID)
+			if s.Prompt == "" {
+				add("scorer %q: agent kind needs a prompt", s.ID)
 			}
-		case "":
-			add("scorer %q: missing kind (bash|agent)", s.ID)
 		default:
-			add("scorer %q: unknown kind %q", s.ID, s.Kind)
+			add("scorer %q: unknown kind %q (omit kind for an exec scorer, or use agent)", s.ID, s.Kind)
 		}
 	}
 	return out

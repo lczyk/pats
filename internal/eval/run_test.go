@@ -44,7 +44,7 @@ func TestRunE2E(t *testing.T) {
 		Agents: []config.Agent{{
 			ID: "a", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s",
 		}},
-		Tasks:      []config.Task{{ID: "t", PromptFile: "prompt.txt", Collect: "sh collect.sh"}},
+		Tasks:      []config.Task{{ID: "t", Prompt: "prompt.txt", Collect: "collect.sh"}},
 		TestMatrix: []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"t"}}},
 	}
 	require.NoError(t, cfg.Validate())
@@ -87,4 +87,32 @@ func TestResolveJobs(t *testing.T) {
 	// auto (<0): docker cpu or host-cpu fallback, clamped to [1,8].
 	got := resolveJobs(-1)
 	assert.That(t, got >= 1 && got <= 8, "auto jobs in [1,8], got", got)
+}
+
+func TestResolvePrompt(t *testing.T) {
+	dir := t.TempDir()
+	// plain file -> contents.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.txt"), []byte("from file\n"), 0o644))
+	got, err := resolvePrompt(dir, "p.txt", nil)
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "from file\n")
+
+	// executable file -> its stdout, with env + args passed through.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gen.sh"),
+		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_ID $1\"\n"), 0o755))
+	got, err = resolvePrompt(dir, "gen.sh --flavour spicy", map[string]string{"PATS_TASK_ID": "t1"})
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "gen t1 --flavour\n")
+
+	// not a file -> the spec is the literal prompt (even with quotes/apostrophes).
+	got, err = resolvePrompt(dir, "just write a readme", nil)
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "just write a readme")
+	got, err = resolvePrompt(dir, "it's a literal prompt", nil) // bad quoting -> literal
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "it's a literal prompt")
+
+	// non-executable file named WITH args -> error, not a silent arg-drop.
+	_, err = resolvePrompt(dir, "p.txt --flag", nil)
+	assert.Error(t, err, assert.AnyError)
 }

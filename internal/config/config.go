@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -75,22 +76,31 @@ type Agent struct {
 
 // Task is one scenario handed to a task-running agent.
 type Task struct {
-	ID         string `yaml:"id"`
-	PromptFile string `yaml:"prompt-file"` // the instruction
-	Prepare    string `yaml:"prepare"`     // seed the sandbox (optional)
-	Collect    string `yaml:"collect"`     // gather outputs (optional)
+	ID      string `yaml:"id"`
+	Prompt  string `yaml:"prompt"`  // the instruction: exec a file, read a file, or the literal text (see resolvePrompt)
+	Prepare string `yaml:"prepare"` // seed the sandbox (optional)
+	Collect string `yaml:"collect"` // gather outputs (optional)
 }
 
 // Scorer scores one aspect of a task's collected output, 0.0 - 1.0.
 //
-//	bash  -- run a script
-//	agent -- ask an agent to judge
+//	(default) -- exec the Score file directly; its shebang picks the interpreter
+//	             + deps. exit 0 + first stdout line = float [0,1] or "na" (skip);
+//	             exit != 0 = failure.
+//	agent     -- ask an agent to judge
 type Scorer struct {
-	ID         string `yaml:"id"`
-	Kind       string `yaml:"kind"`        // bash | agent
-	File       string `yaml:"file"`        // bash
-	AgentID    string `yaml:"agent-id"`    // agent
-	PromptFile string `yaml:"prompt-file"` // agent
+	ID      string `yaml:"id"`
+	Kind    string `yaml:"kind"`     // "" (exec a file) | agent
+	Score   string `yaml:"score"`    // file scorer: the script to exec; ${id} -> scorer id
+	AgentID string `yaml:"agent-id"` // agent
+	Prompt  string `yaml:"prompt"`   // agent: the judging instruction (see resolvePrompt)
+}
+
+// ExecFile returns the path a file scorer (default kind) execs: its Score script
+// with ${id} replaced by the scorer id. relative to the config dir; empty when
+// Score is unset.
+func (s Scorer) ExecFile() string {
+	return strings.ReplaceAll(s.Score, "${id}", s.ID)
 }
 
 // Row is one cross-product row of a matrix. Agent/Task/Scorer each take a

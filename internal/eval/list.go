@@ -24,11 +24,11 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 	return w.Flush()
 }
 
-// ListTasks prints id and prompt-file per task.
+// ListTasks prints id and prompt per task.
 func ListTasks(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	for _, t := range cfg.Tasks {
-		fmt.Fprintf(w, "%s\t%s\n", t.ID, t.PromptFile)
+		fmt.Fprintf(w, "%s\t%s\n", t.ID, t.Prompt)
 	}
 	return w.Flush()
 }
@@ -46,15 +46,18 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	return w.Flush()
 }
 
-// ListScorers prints id, kind, and the source (bash file or agent id).
+// ListScorers prints id, kind, and the source (exec file or agent id).
 func ListScorers(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	for _, s := range cfg.Scorers {
-		src := s.File
-		if s.Kind == "agent" {
+		kind, src := s.Kind, s.Score
+		switch s.Kind {
+		case "":
+			kind, src = "exec", s.ExecFile()
+		case "agent":
 			src = s.AgentID
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", s.ID, s.Kind, src)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", s.ID, kind, src)
 	}
 	return w.Flush()
 }

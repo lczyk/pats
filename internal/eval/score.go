@@ -1,11 +1,12 @@
 package eval
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -93,6 +94,9 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 				continue // agentic scorers gated behind --agentic
 			}
 			score, serr := runScorer(opts, sc, outDir, tp.Agent, tp.Task, agentModel[tp.Agent])
+			if errors.Is(serr, errScorerNA) {
+				continue // not applicable to this cell -- dropped silently
+			}
 			if serr != nil {
 				fmt.Fprintf(opts.Out, "  [%s x %s] scorer %s: %v\n", tp.Agent, tp.Task, sc.ID, serr)
 				continue
@@ -109,25 +113,33 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	return rep, nil
 }
 
+// errScorerNA is the silent-skip signal: a scorer printed "na", meaning it
+// doesn't apply to this cell. dropped from aggregation, not logged as an error.
+var errScorerNA = errors.New("scorer reported n/a")
+
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
-// bash scorers run on the host (trusted user scripts); agent scorers pending.
+// file scorers exec directly on the host (trusted user scripts); the shebang
+// picks the interpreter. agent scorers pending.
 func runScorer(opts ScoreOptions, sc config.Scorer, outDir, agent, task, model string) (float64, error) {
 	switch sc.Kind {
-	case "bash":
-		cmd := exec.Command("sh", filepath.Join(opts.ConfigDir, sc.File))
-		cmd.Dir = opts.ConfigDir
-		cmd.Env = append(os.Environ(),
-			"PATS_OUTPUT_DIR="+outDir,
-			"PATS_AGENT="+agent,
-			"PATS_TASK="+task,
-			"PATS_SCORER="+sc.ID,
-			"PATS_MODEL="+model,
-		)
-		out, err := cmd.Output()
+	case "":
+		cmd, err := commandFor(opts.ConfigDir, sc.ExecFile(), map[string]string{
+			"PATS_OUTPUT_DIR": outDir,
+			"PATS_AGENT_ID":   agent,
+			"PATS_TASK_ID":    task,
+			"PATS_SCORER_ID":  sc.ID,
+			"PATS_MODEL":      model,
+		})
 		if err != nil {
-			return 0, fmt.Errorf("run: %w", err)
+			return 0, err
 		}
-		return parseScore(string(out))
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr // NOTE: captured but unused for now; TODO(lczyk): persist scorer logs
+		if err := cmd.Run(); err != nil {
+			return 0, fmt.Errorf("run: %w", err) // non-zero exit = failure
+		}
+		return parseScore(stdout.String())
 	case "agent":
 		return 0, fmt.Errorf("agent scorer not implemented yet")
 	default:
@@ -135,22 +147,25 @@ func runScorer(opts ScoreOptions, sc config.Scorer, outDir, agent, task, model s
 	}
 }
 
-// parseScore reads a [0,1] float from the scorer's last non-empty output line.
+// parseScore reads a scorer's verdict from the first non-empty stdout line: a
+// [0,1] float, or "na" -> errScorerNA (a silent skip).
 func parseScore(s string) (float64, error) {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	last := ""
-	for i := len(lines) - 1; i >= 0; i-- {
-		if t := strings.TrimSpace(lines[i]); t != "" {
-			last = t
+	first := ""
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			first = t
 			break
 		}
 	}
-	if last == "" {
+	if first == "" {
 		return 0, fmt.Errorf("no output")
 	}
-	f, err := strconv.ParseFloat(last, 64)
+	if strings.EqualFold(first, "na") {
+		return 0, errScorerNA
+	}
+	f, err := strconv.ParseFloat(first, 64)
 	if err != nil {
-		return 0, fmt.Errorf("output %q is not a float", last)
+		return 0, fmt.Errorf("output %q is not a float or na", first)
 	}
 	if math.IsNaN(f) || f < 0 || f > 1 {
 		return 0, fmt.Errorf("score %v out of [0,1]", f)

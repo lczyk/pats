@@ -37,50 +37,57 @@ agents:
     model: claude-sonnet-4-6
 
 # tasks -- a scenario handed to a harness agent. these test readme-authorship.
-#   prompt-file -- the instruction the agent acts on.
-#   prepare     -- seed the sandbox before the agent runs (ground truth, fixtures).
-#   collect     -- gather the outputs to score after the agent finishes.
+# prepare/collect/prompt run a file directly (no shell): the value is tokenised
+# (posix quoting, no $-expansion or globbing) and argv[0] is exec'd with the rest
+# as args. they get PATS_*_ID + PATS_WORKDIR/OUTPUT_DIR in env, and ${id} -> the
+# task id.
+#   prompt  -- the instruction the agent acts on: an executable file (its stdout
+#              is the prompt), a plain file (its contents), or literal text.
+#   prepare -- seed the sandbox before the agent runs (ground truth, fixtures).
+#   collect -- gather the outputs to score after the agent finishes.
 tasks:
   - id: write-readme-simple
-    prompt-file: prompts/write-readme-simple.txt
+    prompt: prompts/write-readme-simple.txt
     prepare: scripts/prepare.sh --simple
     collect: scripts/collect.sh --simple
   - id: write-readme-hard
-    prompt-file: prompts/write-readme-hard.txt
+    prompt: prompts/write-readme-hard.txt
     prepare: scripts/prepare.sh --hard
     collect: scripts/collect.sh --hard
   - id: write-readme-monorepo
-    prompt-file: prompts/write-readme-monorepo.txt
+    prompt: prompts/write-readme-monorepo.txt
     prepare: scripts/prepare.sh --monorepo
     collect: scripts/collect.sh --monorepo
 
 # scorers -- score one aspect of a task's collected output, 0.0 - 1.0.
 # pats stays dumb here: it hands the collected files to the scorer; the user
 # writes the scorer. two kinds:
-#   bash  -- run a script (trampoline to python/spacy/whatever inside it).
-#   agent -- ask an agent to score (nondeterministic).
+#   (default) -- exec a file directly. the shebang picks the interpreter + deps
+#                (e.g. `#!/usr/bin/env -S uv run --script` with inline deps).
+#                exit 0 + first stdout line = float [0,1] or `na` (skip); a
+#                non-zero exit = failure. the file must be executable (chmod +x).
+#   agent     -- ask an agent to score (nondeterministic). NOT IMPLEMENTED YET.
+# each file scorer names its own `score:` script; ${id} -> the scorer's id, so a
+# uniform layout reads `score: scorers/${id}.sh`.
 scorers:
   # imperative: deduct 0.1 per excessive-whitespace occurrence.
   - id: only-ascii
-    kind: bash
-    file: scorers/only-ascii.sh
+    score: scorers/${id}.sh
 
   # imperative + close to binary: 1.0 if the title is right, else 0.0.
   - id: title-correct
-    kind: bash
-    file: scorers/title-correct.sh
+    score: scorers/${id}.sh
 
-  # fuzzy: a bash scorer that trampolines to python + spacy (NLP).
+  # fuzzy: a script that trampolines to python + spacy (NLP) via its shebang.
   - id: no-finite-verbs
-    kind: bash
-    file: scorers/no-finite-verbs.sh
+    score: scorers/${id}.sh
 
   # fuzzy + agentic: ask the judge agent to score. nondeterministic; only runs
-  # under `pats score --agentic`.
+  # under `pats score --agentic`. NOTE: agent scorers aren't implemented yet.
   - id: no-colloquialisms
     kind: agent
     agent-id: judge
-    prompt-file: prompts/no-colloquialisms.txt
+    prompt: prompts/no-colloquialisms.txt
 
 # test-matrix -- which agent x task pairs to run. each row is a cross-product:
 # `agent` and `task` take a scalar, a list, or `"*"` (all). weight (omitted ->
