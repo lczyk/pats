@@ -41,6 +41,11 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
 		opts.ConfigDir = abs
 	}
+	unlock, err := lockConfigDir(opts.ConfigDir)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	pairs, err := cfg.ExpandTestMatrix()
 	if err != nil {
 		return "", err

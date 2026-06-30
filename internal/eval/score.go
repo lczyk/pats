@@ -47,6 +47,11 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
 		opts.ConfigDir = abs
 	}
+	unlock, err := lockConfigDir(opts.ConfigDir)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	runDir := opts.RunDir
 	if runDir == "" {
 		latest, err := latestRunDir(filepath.Join(opts.ConfigDir, runsSubdir))
