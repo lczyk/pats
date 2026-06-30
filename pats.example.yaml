@@ -45,6 +45,7 @@ agents:
 #              is the prompt), a plain file (its contents), or literal text.
 #   prepare -- seed the sandbox before the agent runs (ground truth, fixtures).
 #   collect -- gather the outputs to score after the agent finishes.
+#   timeout -- per-pair wall-clock limit (e.g. 15m); default 10m, "0" = never.
 tasks:
   - id: write-readme-simple
     prompt: prompts/write-readme-simple.txt
