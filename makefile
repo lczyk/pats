@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-SRCS := $(shell find ./cmd ./internal -name '*.go' ! -name 'version.go')
+SRCS := $(shell find ./cmd ./internal -name '*.go')
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -8,16 +8,12 @@ help:  ## Show this help
 .PHONY: build
 build: ./bin/pats  ## Build the pats binary into ./bin (upx-compressed if available)
 
-./bin/pats: $(SRCS) generate-version makefile go.mod go.sum
+./bin/pats: $(SRCS) makefile go.mod go.sum
 	mkdir -p ./bin
 	go build -o ./bin/pats ./cmd/pats
 	@if command -v upx >/dev/null 2>&1; then \
 		upx ./bin/pats || echo "upx failed, skipping compression"; \
 	fi
-
-.PHONY: generate-version
-generate-version:  ## Generate internal/version/version.go from VERSION + git
-	go run github.com/lczyk/version/go/cmd/generate-version -out ./internal/version/version.go -pkg version
 
 .PHONY: install
 install: ./bin/pats  ## Symlink the binary into ~/.local/bin
@@ -25,7 +21,7 @@ install: ./bin/pats  ## Symlink the binary into ~/.local/bin
 	ln -sf "$(PWD)/bin/pats" "$(HOME)/.local/bin/pats"
 
 .PHONY: test
-test: generate-version  ## Run the test suite with the race detector
+test:  ## Run the test suite with the race detector
 	go test -race ./...
 
 .PHONY: lint
