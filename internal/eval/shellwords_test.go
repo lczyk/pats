@@ -30,11 +30,11 @@ func TestSplitArgs(t *testing.T) {
 
 		// double quotes.
 		{"\"a b\"", []string{"a b"}},
-		{"\"a\\\"b\"", []string{"a\"b"}},   // \" -> "
-		{"\"a\\\\b\"", []string{"a\\b"}},   // \\ -> \
-		{"\"a\\nb\"", []string{"a\\nb"}},   // \n stays literal backslash-n
-		{"\"a$b\"", []string{"a$b"}},       // no expansion
-		{"\"a\\$b\"", []string{"a$b"}},     // \$ -> $
+		{"\"a\\\"b\"", []string{"a\"b"}}, // \" -> "
+		{"\"a\\\\b\"", []string{"a\\b"}}, // \\ -> \
+		{"\"a\\nb\"", []string{"a\\nb"}}, // \n stays literal backslash-n
+		{"\"a$b\"", []string{"a$b"}},     // no expansion
+		{"\"a\\$b\"", []string{"a$b"}},   // \$ -> $
 
 		// adjacency / concatenation.
 		{"a\"b\"c", []string{"abc"}},
@@ -63,11 +63,11 @@ func TestSplitArgs(t *testing.T) {
 	}
 
 	bad := []string{
-		"'abc",     // unterminated single quote
-		"\"abc",    // unterminated double quote
-		"a'b",      // unterminated single quote mid-word
-		"abc\\",    // trailing backslash
-		"a \"b\\",  // trailing backslash inside dquote (consumed escape, then EOF)
+		"'abc",    // unterminated single quote
+		"\"abc",   // unterminated double quote
+		"a'b",     // unterminated single quote mid-word
+		"abc\\",   // trailing backslash
+		"a \"b\\", // trailing backslash inside dquote (consumed escape, then EOF)
 	}
 	for _, in := range bad {
 		_, err := splitArgs(in)

@@ -43,7 +43,7 @@ func TestStatTap(t *testing.T) {
 	// an assistant turn with two tool calls (claude-code stream-json shape).
 	tap.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use"},{"type":"text"},{"type":"tool_use"}]}}` + "\n"))
 	tap.Write([]byte(`{"type":"stream_event","event":{"type":"content_block_delta"}}` + "\n")) // envelope -> not a tool
-	tap.Write([]byte("parti")) // no newline -> not counted until completed
+	tap.Write([]byte("parti"))                                                                 // no newline -> not counted until completed
 	tap.Write([]byte("al\n"))
 	assert.Equal(t, atomic.LoadInt64(&s.out), int64(3))
 	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))

@@ -81,9 +81,9 @@ func TestNextRunDirIncrements(t *testing.T) {
 }
 
 func TestResolveJobs(t *testing.T) {
-	assert.Equal(t, resolveJobs(4), 4)  // explicit count passes through
-	assert.Equal(t, resolveJobs(1), 1)  // serial
-	assert.Equal(t, resolveJobs(0), 1)  // zero-value -> serial
+	assert.Equal(t, resolveJobs(4), 4) // explicit count passes through
+	assert.Equal(t, resolveJobs(1), 1) // serial
+	assert.Equal(t, resolveJobs(0), 1) // zero-value -> serial
 	// auto (<0): docker cpu or host-cpu fallback, clamped to [1,8].
 	got := resolveJobs(-1)
 	assert.That(t, got >= 1 && got <= 8, "auto jobs in [1,8], got", got)

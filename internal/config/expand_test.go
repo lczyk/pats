@@ -9,9 +9,9 @@ import (
 )
 
 func TestTaskTimeout(t *testing.T) {
-	assert.Equal(t, Task{}.TimeoutDuration(), DefaultTimeout)                 // unset -> 5m default
-	assert.Equal(t, Task{Timeout: "10m"}.TimeoutDuration(), 10*time.Minute)  // explicit
-	assert.Equal(t, Task{Timeout: "0"}.TimeoutDuration(), time.Duration(0))  // 0 -> never timeout
+	assert.Equal(t, Task{}.TimeoutDuration(), DefaultTimeout)               // unset -> 5m default
+	assert.Equal(t, Task{Timeout: "10m"}.TimeoutDuration(), 10*time.Minute) // explicit
+	assert.Equal(t, Task{Timeout: "0"}.TimeoutDuration(), time.Duration(0)) // 0 -> never timeout
 }
 
 func TestFilterPairs(t *testing.T) {
