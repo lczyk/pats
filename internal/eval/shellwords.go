@@ -22,8 +22,8 @@ func splitArgs(s string) ([]string, error) {
 
 	for i := 0; i < len(r); {
 		c := r[i]
-		switch {
-		case c == '\'':
+		switch c {
+		case '\'':
 			started = true
 			i++
 			for i < len(r) && r[i] != '\'' {
@@ -35,7 +35,7 @@ func splitArgs(s string) ([]string, error) {
 			}
 			i++ // closing '
 
-		case c == '"':
+		case '"':
 			started = true
 			i++
 			for i < len(r) && r[i] != '"' {
@@ -55,7 +55,7 @@ func splitArgs(s string) ([]string, error) {
 			}
 			i++ // closing "
 
-		case c == '\\':
+		case '\\':
 			if i+1 >= len(r) {
 				return nil, fmt.Errorf("trailing backslash")
 			}
@@ -63,7 +63,7 @@ func splitArgs(s string) ([]string, error) {
 			buf = append(buf, r[i+1])
 			i += 2
 
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+		case ' ', '\t', '\n', '\r':
 			if started {
 				args = append(args, string(buf))
 				buf = buf[:0]
