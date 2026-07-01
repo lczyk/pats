@@ -13,11 +13,7 @@ import (
 //go:embed VERSION
 var versionFile string
 
-var info = ver.Read(strings.TrimSpace(versionFile))
-
-var (
-	Version   = info.Version
-	CommitSHA = info.CommitSHA
-	BuildDate = info.BuildDate
-	BuildInfo = info.BuildInfo
-)
+// Info is the resolved build info: VERSION as the fallback version, commit/build
+// facts from the toolchain's vcs stamp. print it directly for the full line, or
+// read Info.Version for just the number.
+var Info = ver.Read(strings.TrimSpace(versionFile))

@@ -16,7 +16,6 @@ import (
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/eval"
 	"github.com/lczyk/pats/internal/version"
-	ver "github.com/lczyk/version/go"
 )
 
 // Options is the global command structure parsed by go-flags.
@@ -147,7 +146,7 @@ func main() {
 	// handle --version before parsing -- go-flags would otherwise demand a command.
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" || arg == "-v" {
-			fmt.Println(ver.FormatVersion(version.Version, version.CommitSHA, version.BuildDate, version.BuildInfo))
+			fmt.Println(version.Info)
 			os.Exit(0)
 		}
 	}

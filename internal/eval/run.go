@@ -363,7 +363,7 @@ func runPair(
 		Agent: p.Agent, Task: p.Task,
 		Sandbox: sbID, Image: sb.Image,
 		ExitCode: code, DurationS: round2(dur), Status: status, Error: errStr,
-		PatsVersion: version.Version, DeniedEgress: denied,
+		PatsVersion: version.Info.Version, DeniedEgress: denied,
 		Summary: summarize(a.Kind, filepath.Join(outDir, "stdout.log")),
 	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
