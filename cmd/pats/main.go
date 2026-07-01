@@ -54,6 +54,7 @@ func (r *RunCommand) Execute(args []string) error {
 type ScoreCommand struct {
 	Config  string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 	Run     string `long:"run" short:"r" description:"run dir to score (default: latest under .pats/runs)"`
+	Jobs    int    `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
 	Agentic bool   `long:"agentic" description:"also run agent-kind scorers"`
 }
 
@@ -65,6 +66,7 @@ func (s *ScoreCommand) Execute(args []string) error {
 	_, err = eval.Score(cfg, eval.ScoreOptions{
 		ConfigDir: filepath.Dir(s.Config),
 		RunDir:    s.Run,
+		Jobs:      s.Jobs,
 		Agentic:   s.Agentic,
 		Out:       os.Stdout,
 	})

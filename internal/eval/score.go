@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/lczyk/pats/internal/config"
 )
@@ -19,6 +20,7 @@ import (
 type ScoreOptions struct {
 	ConfigDir string // dir holding pats.yaml -- scorer paths resolve against it
 	RunDir    string // explicit run dir, or "" for the latest under .pats/runs
+	Jobs      int    // max concurrent scorer cells; 0 -> serial (1), negative -> auto (see resolveJobs)
 	Agentic   bool   // also run agent-kind scorers
 	Out       io.Writer
 	Color     bool // colour log tags (set internally from Out's tty-ness)
@@ -84,7 +86,13 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		byTask[sp.Task] = append(byTask[sp.Task], sp)
 	}
 
-	var cells []ScoreCell
+	// flatten to one job per (pair, scorer) cell so jobs can run concurrently.
+	type scoreJob struct {
+		agent, task string
+		outDir      string
+		sc          config.Scorer
+	}
+	var jobs []scoreJob
 	for _, tp := range testPairs {
 		outDir := filepath.Join(runDir, tp.Agent, tp.Task)
 		if _, err := os.Stat(outDir); err != nil {
@@ -95,19 +103,73 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			if sc.Kind == "agent" && !opts.Agentic {
 				continue // agentic scorers gated behind --agentic
 			}
-			score, serr := runScorer(opts, sc, outDir, tp.Agent, tp.Task, agentModel[tp.Agent])
-			switch {
-			case errors.Is(serr, errScorerNA):
-				lg.info("[%s x %s] %s = n/a", tp.Agent, tp.Task, sc.ID)
-				continue // not applicable -- dropped from aggregation
-			case serr != nil:
-				lg.error("[%s x %s] %s: %v", tp.Agent, tp.Task, sc.ID, serr)
-				continue
-			}
-			lg.info("[%s x %s] %s = %.4f", tp.Agent, tp.Task, sc.ID, score)
-			cells = append(cells, ScoreCell{tp.Agent, tp.Task, sc.ID, score})
+			jobs = append(jobs, scoreJob{tp.Agent, tp.Task, outDir, sc})
 		}
 	}
+
+	njobs := resolveJobs(opts.Jobs)
+	var bar *progress
+	if isProgressTTY(opts.Out) {
+		labelW := 0
+		for _, j := range jobs {
+			if w := len(j.agent) + len(" x ") + len(j.task) + len(" x ") + len(j.sc.ID); w > labelW {
+				labelW = w
+			}
+		}
+		bar = newProgress(opts.Out, len(jobs), labelW)
+		defer bar.close()
+	} else if njobs > 1 {
+		lg.info("scoring %d cells, up to %d in parallel", len(jobs), njobs)
+	}
+
+	// same bounded-worker-pool pattern as Run: buffered per-job output emitted
+	// atomically on completion so concurrent progress/log writes don't interleave.
+	sem := make(chan struct{}, njobs)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var cells []ScoreCell
+	for _, j := range jobs {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(j scoreJob) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			label := j.agent + " x " + j.task + " x " + j.sc.ID
+			po := opts
+			var buf bytes.Buffer
+			if bar != nil || njobs > 1 {
+				po.Out = &buf
+			}
+			jlg := logw{po.Out, opts.Color}
+			if bar != nil {
+				bar.start(label, &pairStat{}, "", false)
+			}
+
+			score, serr := runScorer(po, j.sc, j.outDir, j.agent, j.task, agentModel[j.agent])
+			switch {
+			case errors.Is(serr, errScorerNA):
+				jlg.info("[%s x %s] %s = n/a", j.agent, j.task, j.sc.ID)
+			case serr != nil:
+				jlg.error("[%s x %s] %s: %v", j.agent, j.task, j.sc.ID, serr)
+			default:
+				jlg.info("[%s x %s] %s = %.4f", j.agent, j.task, j.sc.ID, score)
+				mu.Lock()
+				cells = append(cells, ScoreCell{j.agent, j.task, j.sc.ID, score})
+				mu.Unlock()
+			}
+
+			switch {
+			case bar != nil:
+				bar.finish(label, buf.String())
+			case njobs > 1:
+				mu.Lock()
+				opts.Out.Write(buf.Bytes())
+				mu.Unlock()
+			}
+		}(j)
+	}
+	wg.Wait()
 
 	rep := aggregate(runDir, cells, testPairs)
 	report(opts.Out, rep)
