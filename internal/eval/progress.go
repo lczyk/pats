@@ -238,9 +238,15 @@ func (p *progress) regionLines() []string {
 	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
 	lines := []string{fmt.Sprintf("[%s] %d/%d  %d running  %s",
 		bar, p.done, p.total, len(p.active), mmss(time.Since(p.began)))}
+	w := 0
+	for _, a := range p.active {
+		if len(a.label) > w {
+			w = len(a.label)
+		}
+	}
 	for _, a := range p.active {
 		sp := spinner[int(a.spin)%len(spinner)]
-		lines = append(lines, fmt.Sprintf("  %c [%-*s]  %s", sp, p.labelW, a.label, a.stat.cols(a.showTools)))
+		lines = append(lines, fmt.Sprintf("  %c [%-*s]  %s", sp, w, a.label, a.stat.cols(a.showTools)))
 	}
 	return lines
 }
