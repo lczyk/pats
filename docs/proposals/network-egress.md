@@ -185,9 +185,14 @@ egress:
     - "raw.githubusercontent.com/*/chisel-releases*"
 ```
 
-`*` in a pattern matches anything, `/` included. rules are deny-only for now
-(`allow-urls` under an allowlisting host would be the inverse -- add when a
-task needs it).
+`*` in a pattern matches anything, `/` included. `allow-urls` is the inverse:
+a host with allow rules only passes matching urls (deny rules always win;
+hosts with no url rules are unaffected). e.g. allow github but only one org:
+
+```yaml
+  allow-urls:
+    - "github.com/canonical/*"
+```
 
 known ceilings: mitm'd connections are http/1.1 only (the proxy declines h2 in
 alpn; clients downgrade). cert-pinning tools break on mitm'd hosts -- that's
