@@ -1,5 +1,12 @@
 # pats
 
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/lczyk/pats)
+![GitHub Tag](https://img.shields.io/github/v/tag/lczyk/pats?label=release)
+[![lint_and_test](https://github.com/lczyk/pats/actions/workflows/lint_and_test.yml/badge.svg)](https://github.com/lczyk/pats/actions/workflows/lint_and_test.yml)
+![GitHub License](https://img.shields.io/github/license/lczyk/pats)
+
+<img src="assets/logo.png" alt="pats logo" width="320">
+
 score-based testing framework for testing and scoring agent tasks.
 
 to use pats, put `pats.yaml` in your project root. see [`pats.example.yaml`](./pats.example.yaml) for an example of such a configuration. 
