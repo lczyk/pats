@@ -210,7 +210,8 @@ type pairMeta struct {
 }
 
 // deniedEgress reads the proxy audit log (one json line per request) and
-// returns the unique hosts that were denied. missing file -> nil (not proxy mode).
+// returns the unique denied targets -- the full url for mitm'd requests, the
+// host otherwise. missing file -> nil (not proxy mode).
 func deniedEgress(auditPath string) []string {
 	data, err := os.ReadFile(auditPath)
 	if err != nil {
@@ -224,13 +225,21 @@ func deniedEgress(auditPath string) []string {
 		}
 		var e struct {
 			Host    string `json:"host"`
+			URL     string `json:"url"`
 			Allowed bool   `json:"allowed"`
 		}
-		if json.Unmarshal([]byte(line), &e) != nil || e.Allowed || seen[e.Host] {
+		if json.Unmarshal([]byte(line), &e) != nil || e.Allowed {
 			continue
 		}
-		seen[e.Host] = true
-		out = append(out, e.Host)
+		target := e.Host
+		if e.URL != "" {
+			target = e.URL
+		}
+		if seen[target] {
+			continue
+		}
+		seen[target] = true
+		out = append(out, target)
 	}
 	return out
 }
@@ -454,10 +463,11 @@ func egressFor(sb config.Sandbox, kind, auditPath string) sandbox.Egress {
 		Default:   sb.Egress.Default,
 		Allow:     sb.Egress.Allow,
 		Deny:      sb.Egress.Deny,
+		DenyURLs:  sb.Egress.DenyURLs,
 		Image:     sb.Egress.Image,
 		AuditPath: auditPath,
 	}
-	if eg.Mode == "proxy" && eg.Default != "allow" {
+	if (eg.Mode == "proxy" || eg.Mode == "mitm-proxy") && eg.Default != "allow" {
 		eg.Allow = mergeHosts(eg.Allow, agent.RequiredHosts[kind])
 	}
 	return eg
@@ -596,22 +606,32 @@ func runHost(opts Options, command string, env map[string]string) error {
 	return cmd.Run()
 }
 
-// nextRunDir creates and returns base/<yyyymmdd>-<nnn>, n = highest existing + 1, zero-padded to width 3.
+// nextRunDir creates and returns base/<nnn>-<yyyymmdd>-<adj>-<noun>: a
+// globally monotonic counter (highest existing + 1), the date, and a friendly
+// name derived deterministically from the numeric prefix. zero-padded to
+// width 3 so lexical sort follows the counter.
 func nextRunDir(base string, now time.Time) (string, error) {
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
 	}
 	date := now.UTC().Format("20060102")
-	prefix := date + "-"
 	max := 0
 	entries, _ := os.ReadDir(base)
 	for _, e := range entries {
-		if n, err := strconv.Atoi(strings.TrimPrefix(e.Name(), prefix)); err == nil && strings.HasPrefix(e.Name(), prefix) && n > max {
+		if _, n, ok := splitRunName(e.Name()); ok && n > max {
 			max = n
 		}
 	}
-	dir := filepath.Join(base, fmt.Sprintf("%s-%03d", date, max+1))
-	return dir, os.MkdirAll(dir, 0o755)
+	prefix := fmt.Sprintf("%03d-%s", max+1, date)
+	dir := filepath.Join(base, prefix+"-"+generateName(prefix))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	// best-effort "latest" symlink; relative target so .pats stays copyable
+	link := filepath.Join(base, "latest")
+	_ = os.Remove(link)
+	_ = os.Symlink(filepath.Base(dir), link)
+	return dir, nil
 }
 
 func writeJSON(path string, v any) error {

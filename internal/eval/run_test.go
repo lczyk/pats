@@ -74,10 +74,26 @@ func TestNextRunDirIncrements(t *testing.T) {
 	now := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
 	d1, err := nextRunDir(base, now)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Base(d1), "20260621-001")
+	assert.ContainsString(t, filepath.Base(d1), "001-20260621-")
+	// words are deterministic from the numeric prefix.
+	assert.Equal(t, filepath.Base(d1), "001-20260621-"+generateName("001-20260621"))
 	d2, err := nextRunDir(base, now)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Base(d2), "20260621-002")
+	assert.ContainsString(t, filepath.Base(d2), "002-20260621-")
+
+	// "latest" symlink tracks the newest run dir.
+	target, err := os.Readlink(filepath.Join(base, "latest"))
+	require.NoError(t, err)
+	assert.Equal(t, target, filepath.Base(d2))
+}
+
+func TestNextRunDirCountsAcrossDates(t *testing.T) {
+	// the counter is global, not per-date.
+	base := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "007-20260620-woven-sock"), 0o755))
+	d, err := nextRunDir(base, time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	assert.ContainsString(t, filepath.Base(d), "008-20260621-")
 }
 
 func TestResolveJobs(t *testing.T) {

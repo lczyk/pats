@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	flags "github.com/jessevdk/go-flags"
@@ -20,9 +21,10 @@ import (
 
 // Options is the global command structure parsed by go-flags.
 type Options struct {
-	Run   RunCommand   `command:"run" description:"run the test-matrix (agents x tasks)"`
-	Score ScoreCommand `command:"score" description:"score the most recent run (tasks x scorers)"`
-	List  ListCommand  `command:"list" description:"list configured sandboxes, agents, tasks, or scorers"`
+	Run    RunCommand    `command:"run" description:"run the test-matrix (agents x tasks)"`
+	Score  ScoreCommand  `command:"score" description:"score the most recent run (tasks x scorers)"`
+	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
+	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, or scorers"`
 }
 
 // RunCommand runs the test-matrix.
@@ -52,7 +54,7 @@ func (r *RunCommand) Execute(args []string) error {
 // ScoreCommand scores a run (the latest by default).
 type ScoreCommand struct {
 	Config  string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-	Run     string `long:"run" short:"r" description:"run dir to score (default: latest under .pats/runs)"`
+	Run     string `long:"run" short:"r" description:"run to score: a dir, or a friendly name like fluffy-bunny (default: latest under .pats/runs)"`
 	Jobs    int    `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
 	Agentic bool   `long:"agentic" description:"also run agent-kind scorers"`
 }
@@ -70,6 +72,17 @@ func (s *ScoreCommand) Execute(args []string) error {
 		Out:       os.Stdout,
 	})
 	return err
+}
+
+// ReportCommand reprints a run's report from its scores.json (the latest run
+// by default). reads run artifacts only -- no config load, like `list runs`.
+type ReportCommand struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	Run    string `long:"run" short:"r" description:"run to report: a dir, or a friendly name like fluffy-bunny (default: latest under .pats/runs)"`
+}
+
+func (c *ReportCommand) Execute(args []string) error {
+	return eval.Report(filepath.Dir(c.Config), c.Run, os.Stdout)
 }
 
 // ListCommand groups the per-vector list subcommands.
@@ -152,16 +165,42 @@ func main() {
 	}
 
 	var opts Options
-	parser := flags.NewParser(&opts, flags.Default)
+	// PrintErrors stripped so we can colourise the help text ourselves.
+	parser := flags.NewParser(&opts, flags.Default&^flags.PrintErrors)
 	parser.Name = "pats"
 	parser.Usage = "[OPTIONS] COMMAND"
 
 	if _, err := parser.Parse(); err != nil {
-		// go-flags already prints the error.
 		var flagsErr *flags.Error
 		if errors.As(err, &flagsErr) && flagsErr.Type == flags.ErrHelp {
+			help := flagsErr.Message
+			if useColor(os.Stdout) {
+				help = colorize(help)
+			}
+			fmt.Println(help)
 			os.Exit(0)
 		}
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// useColor reports whether f is a terminal and NO_COLOR is unset (no-color.org).
+func useColor(f *os.File) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+var (
+	helpHeader = regexp.MustCompile(`(?m)^\S.*:$`)                       // "Usage:", "Available commands:", ...
+	helpToken  = regexp.MustCompile(`(?m)^(  +)(-\S+(?: --\S+)?|\w\S*)`) // leading flag or command name
+)
+
+// colorize bolds section headers and cyans flag/command names in go-flags help text.
+func colorize(help string) string {
+	help = helpHeader.ReplaceAllString(help, "\x1b[1m$0\x1b[0m")
+	return helpToken.ReplaceAllString(help, "$1\x1b[36m$2\x1b[0m")
 }

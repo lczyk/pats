@@ -2,6 +2,7 @@ package eval
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -57,13 +58,9 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		return nil, err
 	}
 	defer unlock()
-	runDir := opts.RunDir
-	if runDir == "" {
-		latest, err := latestRunDir(filepath.Join(opts.ConfigDir, runsSubdir))
-		if err != nil {
-			return nil, err
-		}
-		runDir = latest
+	runDir, err := resolveRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.RunDir)
+	if err != nil {
+		return nil, err
 	}
 	lg.info("scoring: %s", relToCwd(runDir))
 
@@ -172,11 +169,31 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	wg.Wait()
 
 	rep := aggregate(runDir, cells, testPairs)
-	report(opts.Out, rep)
+	report(opts.Out, rep, opts.Color)
 	if err := writeJSON(filepath.Join(runDir, "scores.json"), rep); err != nil {
 		return rep, err
 	}
 	return rep, nil
+}
+
+// Report reprints the scoring report of a past run from its scores.json.
+// runArg resolves like `pats score -r`: "" -> latest, else dir or run name.
+func Report(configDir, runArg string, out io.Writer) error {
+	runDir, err := resolveRunDir(filepath.Join(configDir, runsSubdir), runArg)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "scores.json"))
+	if err != nil {
+		return fmt.Errorf("no scores for %s (run `pats score` first): %w", relToCwd(runDir), err)
+	}
+	var rep ScoreReport
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return fmt.Errorf("parse scores.json: %w", err)
+	}
+	logw{out, useColor(out)}.info("report: %s", relToCwd(runDir))
+	report(out, &rep, useColor(out))
+	return nil
 }
 
 // errScorerNA is the silent-skip signal: a scorer printed "na", meaning it
@@ -297,27 +314,139 @@ func aggregate(runDir string, cells []ScoreCell, testPairs []config.TestPair) *S
 	}
 }
 
-func report(w io.Writer, r *ScoreReport) {
-	fmt.Fprintln(w, "---")
-	for _, agent := range sortedKeys(r.PerAgent) {
-		fmt.Fprintf(w, "%s  %.2f\n", agent, r.PerAgent[agent])
-		// tasks for this agent
-		for _, k := range sortedKeys(r.PerPair) {
-			a, task, _ := strings.Cut(k, "/")
-			if a != agent {
-				continue
+const scoreBarW = 7
+
+// scoreBar renders "[####---]" with s in [0,1] filling the width.
+func scoreBar(s float64) string {
+	filled := min(scoreBarW, max(0, int(s*scoreBarW+0.5)))
+	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", scoreBarW-filled) + "]"
+}
+
+// scoreColor picks red/yellow/green ansi by score threshold.
+func scoreColor(s float64) string {
+	switch {
+	case s < 0.5:
+		return "\033[31m"
+	case s < 0.8:
+		return "\033[33m"
+	default:
+		return "\033[32m"
+	}
+}
+
+// report prints a tasks x agents pivot table -- each cell a coloured
+// "0.85 [######-]" -- with per-agent averages, the overall score, and a
+// per-scorer breakdown for imperfect pairs (worst first).
+func report(w io.Writer, r *ScoreReport, color bool) {
+	agents := sortedKeys(r.PerAgent)
+	taskSet := map[string]bool{}
+	for k := range r.PerPair {
+		_, task, _ := strings.Cut(k, "/")
+		taskSet[task] = true
+	}
+	tasks := make([]string, 0, len(taskSet))
+	for t := range taskSet {
+		tasks = append(tasks, t)
+	}
+	// worst-first: min cell across agents, ascending; name breaks ties.
+	minOf := func(task string) float64 {
+		m := math.Inf(1)
+		for _, a := range agents {
+			if s, ok := r.PerPair[a+"/"+task]; ok && s < m {
+				m = s
 			}
-			fmt.Fprintf(w, "  %-24s %.2f", task, r.PerPair[k])
-			var parts []string
-			for _, c := range r.Cells {
-				if c.Agent == agent && c.Task == task {
-					parts = append(parts, fmt.Sprintf("%s=%.2f", c.Scorer, c.Score))
-				}
+		}
+		return m
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		mi, mj := minOf(tasks[i]), minOf(tasks[j])
+		if mi != mj {
+			return mi < mj
+		}
+		return tasks[i] < tasks[j]
+	})
+
+	labelW := len("overall")
+	for _, t := range tasks {
+		labelW = max(labelW, len(t))
+	}
+	cellW := len("0.00 ") + scoreBarW + len("[]")
+	colW := make([]int, len(agents))
+	for i, a := range agents {
+		colW[i] = max(cellW, len(a))
+	}
+
+	fmt.Fprintf(w, "%-*s", labelW, "")
+	for i, a := range agents {
+		fmt.Fprintf(w, "  %*s", colW[i], a)
+	}
+	fmt.Fprintln(w)
+
+	// cell colours applied after padding so ansi bytes don't skew alignment.
+	row := func(label string, get func(agent string) (float64, bool)) {
+		fmt.Fprintf(w, "%-*s", labelW, label)
+		for i, a := range agents {
+			s, ok := get(a)
+			cell, c := "-", "\033[2m" // missing -> dim dash
+			if ok {
+				cell, c = fmt.Sprintf("%.2f %s", s, scoreBar(s)), scoreColor(s)
 			}
-			fmt.Fprintf(w, "  (%s)\n", strings.Join(parts, ", "))
+			pad := strings.Repeat(" ", colW[i]-len(cell))
+			if color {
+				cell = c + cell + "\033[0m"
+			}
+			fmt.Fprintf(w, "  %s%s", pad, cell)
+		}
+		fmt.Fprintln(w)
+	}
+
+	for _, t := range tasks {
+		row(t, func(a string) (float64, bool) { s, ok := r.PerPair[a+"/"+t]; return s, ok })
+	}
+	row("avg", func(a string) (float64, bool) { s, ok := r.PerAgent[a]; return s, ok })
+
+	overall := fmt.Sprintf("%.2f %s", r.Overall, scoreBar(r.Overall))
+	if color {
+		overall = scoreColor(r.Overall) + overall + "\033[0m"
+	}
+	fmt.Fprintf(w, "%-*s  %s\n", labelW, "overall", overall)
+
+	// per-scorer breakdown, imperfect pairs only, worst first.
+	var imperfect []string
+	for _, k := range sortedKeys(r.PerPair) {
+		if r.PerPair[k] < 0.999 {
+			imperfect = append(imperfect, k)
 		}
 	}
-	fmt.Fprintf(w, "overall  %.2f\n", r.Overall)
+	if len(imperfect) == 0 {
+		return
+	}
+	sort.Slice(imperfect, func(i, j int) bool {
+		si, sj := r.PerPair[imperfect[i]], r.PerPair[imperfect[j]]
+		if si != sj {
+			return si < sj
+		}
+		return imperfect[i] < imperfect[j]
+	})
+	fmt.Fprintln(w, "\nimperfect pairs (scorer breakdown):")
+	kw := 0
+	for _, k := range imperfect {
+		kw = max(kw, len(k))
+	}
+	for _, k := range imperfect {
+		agent, task, _ := strings.Cut(k, "/")
+		var parts []string
+		for _, c := range r.Cells {
+			if c.Agent == agent && c.Task == task {
+				p := fmt.Sprintf("%s=%.2f", c.Scorer, c.Score)
+				if color {
+					p = scoreColor(c.Score) + p + "\033[0m"
+				}
+				parts = append(parts, p)
+			}
+		}
+		fmt.Fprintf(w, "  %-*s  %s\n", kw, k, strings.Join(parts, ", "))
+	}
 }
 
 func sortedKeys(m map[string]float64) []string {
@@ -327,6 +456,38 @@ func sortedKeys(m map[string]float64) []string {
 	}
 	sort.Strings(ks)
 	return ks
+}
+
+// resolveRunDir maps the -r argument to a run dir: "" -> the latest run, an
+// existing dir (name or path) -> itself, anything else -> a run whose friendly
+// words match (so `-r fluffy-bunny` works). ambiguous words are an error.
+func resolveRunDir(base, arg string) (string, error) {
+	if arg == "" {
+		return latestRunDir(base)
+	}
+	for _, dir := range []string{arg, filepath.Join(base, arg)} {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir, nil
+		}
+	}
+	names, err := sortedRunNames(base)
+	if err != nil {
+		return "", fmt.Errorf("run %q not found under %s: %w", arg, base, err)
+	}
+	var matches []string
+	for _, name := range names {
+		if strings.HasSuffix(name, "-"+arg) {
+			matches = append(matches, name)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return filepath.Join(base, matches[0]), nil
+	case 0:
+		return "", fmt.Errorf("run %q not found under %s (not a dir, no name matches)", arg, base)
+	default:
+		return "", fmt.Errorf("run name %q is ambiguous: %s", arg, strings.Join(matches, ", "))
+	}
 }
 
 // latestRunDir returns the highest-sorted run dir under base.
@@ -355,8 +516,8 @@ func sortedRunNames(base string) ([]string, error) {
 		}
 	}
 	sort.Slice(names, func(i, j int) bool {
-		di, ni := splitRunName(names[i])
-		dj, nj := splitRunName(names[j])
+		di, ni, _ := splitRunName(names[i])
+		dj, nj, _ := splitRunName(names[j])
 		if di != dj {
 			return di < dj
 		}
@@ -365,8 +526,14 @@ func sortedRunNames(base string) ([]string, error) {
 	return names, nil
 }
 
-func splitRunName(name string) (date string, n int) {
-	date, num, _ := strings.Cut(name, "-")
-	n, _ = strconv.Atoi(num)
-	return date, n
+// splitRunName parses a run dir name, <nnn>-<yyyymmdd>-<adj>-<noun>. non-run
+// entries (e.g. the "latest" symlink) come back ok=false.
+func splitRunName(name string) (date string, n int, ok bool) {
+	first, rest, _ := strings.Cut(name, "-")
+	n, err := strconv.Atoi(first)
+	if err != nil {
+		return "", 0, false
+	}
+	date, _, _ = strings.Cut(rest, "-")
+	return date, n, true
 }

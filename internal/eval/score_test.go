@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -97,4 +98,49 @@ func TestParseScore(t *testing.T) {
 		_, err := parseScore(bad)
 		assert.Error(t, err, assert.AnyError)
 	}
+}
+
+func TestReportPivot(t *testing.T) {
+	r := &ScoreReport{
+		Cells: []ScoreCell{
+			{Agent: "a1", Task: "t1", Scorer: "s1", Score: 1.0},
+			{Agent: "a1", Task: "t2", Scorer: "s1", Score: 0.5},
+			{Agent: "a1", Task: "t2", Scorer: "s2", Score: 0.0},
+			{Agent: "a2", Task: "t1", Scorer: "s1", Score: 0.9},
+			// a2/t2 missing -> dim dash cell
+		},
+		PerPair:  map[string]float64{"a1/t1": 1.0, "a1/t2": 0.25, "a2/t1": 0.9},
+		PerAgent: map[string]float64{"a1": 0.625, "a2": 0.9},
+		Overall:  0.7625,
+	}
+	var buf bytes.Buffer
+	report(&buf, r, false)
+	out := buf.String()
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	assert.ContainsString(t, lines[0], "a1")
+	assert.ContainsString(t, lines[0], "a2")
+	// worst-first: t2 (0.25) row before t1.
+	assert.ContainsString(t, lines[1], "t2")
+	assert.ContainsString(t, lines[1], "0.25 [##-----]")
+	assert.ContainsString(t, lines[1], "-") // missing a2/t2 cell
+	assert.ContainsString(t, lines[2], "t1")
+	assert.ContainsString(t, lines[2], "1.00 [#######]")
+	assert.ContainsString(t, lines[2], "0.90 [######-]")
+	assert.ContainsString(t, lines[3], "avg")
+	assert.ContainsString(t, lines[4], "overall")
+	assert.ContainsString(t, lines[4], "0.76")
+
+	// breakdown lists only imperfect pairs, worst first.
+	assert.ContainsString(t, out, "imperfect pairs")
+	assert.ContainsString(t, out, "a1/t2")
+	assert.ContainsString(t, out, "s1=0.50, s2=0.00")
+	assert.That(t, !strings.Contains(out, "a1/t1  "), "perfect pair a1/t1 not in breakdown")
+
+	// no ansi when color off; ansi present when on.
+	assert.That(t, !strings.Contains(out, "\033["), "no ansi in plain output")
+	buf.Reset()
+	report(&buf, r, true)
+	assert.ContainsString(t, buf.String(), "\033[32m")
+	assert.ContainsString(t, buf.String(), "\033[31m")
 }
