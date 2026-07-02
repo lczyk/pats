@@ -18,6 +18,7 @@ import (
 // ListAgents prints id, kind, model, resolved sandbox, and effort per agent.
 func ListAgents(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "AGENT\tKIND\tMODEL\tSANDBOX\tEFFORT")
 	for _, a := range cfg.Agents {
 		sb, err := cfg.ResolveSandbox(a)
 		if err != nil {
@@ -31,6 +32,7 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 // ListTasks prints id and prompt per task.
 func ListTasks(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TASK\tPROMPT")
 	for _, t := range cfg.Tasks {
 		fmt.Fprintf(w, "%s\t%s\n", t.ID, t.ResolvedPrompt())
 	}
@@ -40,6 +42,7 @@ func ListTasks(cfg *config.Config, out io.Writer) error {
 // ListSandboxes prints id, kind, resolved driver, image, and egress mode.
 func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SANDBOX\tKIND\tDRIVER\tIMAGE\tEGRESS")
 	for _, s := range cfg.Sandboxes {
 		mode := s.Egress.Mode
 		if mode == "" {
@@ -57,6 +60,7 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 // ListScorers prints id, kind, and the source (exec file or agent id).
 func ListScorers(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SCORER\tKIND\tSOURCE")
 	for _, s := range cfg.Scorers {
 		kind, src := s.Kind, s.Score
 		switch s.Kind {
