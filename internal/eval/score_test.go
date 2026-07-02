@@ -132,11 +132,13 @@ func TestReportPivot(t *testing.T) {
 	assert.ContainsString(t, lines[4], "overall")
 	assert.ContainsString(t, lines[4], "0.76")
 
-	// breakdown lists only imperfect pairs, worst first.
-	assert.ContainsString(t, out, "imperfect pairs")
+	// breakdown covers every pair, worst first; deviants indented per line,
+	// worst first (no mode tally here -- each pair's scores are all distinct).
+	assert.ContainsString(t, out, "scorer breakdown:")
 	assert.ContainsString(t, out, "a1/t2")
-	assert.ContainsString(t, out, "s1=0.50, s2=0.00")
-	assert.That(t, !strings.Contains(out, "a1/t1  "), "perfect pair a1/t1 not in breakdown")
+	assert.ContainsString(t, out, "\n    s2=0.00\n    s1=0.50\n")
+	assert.ContainsString(t, out, "a1/t1") // perfect pairs listed too
+	assert.ContainsString(t, out, "\n    s1=1.00\n")
 
 	// no ansi when color off; ansi present when on.
 	assert.That(t, !strings.Contains(out, "\033["), "no ansi in plain output")
