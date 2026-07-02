@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const defaultProxyImage = "pats/egress-proxy:latest"
+const defaultProxyImage = "ghcr.io/lczyk/pats/egress-proxy:latest"
 
 // setupEgress applies a Spec's egress policy and returns the extra `docker run`
 // args for the agent container, plus a teardown (nil when nothing to tear down).

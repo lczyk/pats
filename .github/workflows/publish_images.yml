@@ -1,0 +1,53 @@
+# on tag push: build the sandbox + egress-proxy images multiarch (amd64+arm64,
+# qemu+buildx on one runner) and push to ghcr. deliberately simple -- no
+# per-arch native runners, no tarball stitching, no signing; see spread-bread's
+# push-ghcr.yaml for the sophisticated version if this ever needs to grow.
+name: publish_images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/pats
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Enable qemu (arm64) + buildx
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64
+          docker buildx create --use
+
+      # tagged :latest (the in-code default) and :<git-tag> (pin-able). the
+      # proxy protocol is coupled to the pats version, hence the version tag.
+      - name: Build + push egress-proxy
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+              --file images/Dockerfile.egress-proxy \
+              --tag "$REGISTRY/egress-proxy:latest" \
+              --tag "$REGISTRY/egress-proxy:${GITHUB_REF_NAME}" \
+              --push .
+
+      # rolling :<ubuntu-ver> tag, as referenced by pats.yaml image: fields.
+      # contents float (cli versions are unpinned), so republishing moves it.
+      - name: Build + push sandbox
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+              --file images/Dockerfile.sandbox-26.04 \
+              --tag "$REGISTRY/sandbox:26.04" \
+              --push .
