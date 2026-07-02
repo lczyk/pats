@@ -20,8 +20,12 @@ import (
 	"github.com/lczyk/pats/internal/version"
 )
 
-// Options is the global command structure parsed by go-flags.
+// Options is the global command structure parsed by go-flags. Config is
+// global (`pats -c <path> <command>`); go-flags also accepts it after the
+// command name.
 type Options struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+
 	Run    RunCommand    `command:"run" description:"run the suites (agents x tasks)"`
 	Score  ScoreCommand  `command:"score" description:"score the most recent run (tasks x scorers)"`
 	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
@@ -30,7 +34,6 @@ type Options struct {
 
 // RunCommand runs the suites.
 type RunCommand struct {
-	Config string   `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 	Jobs   int      `long:"jobs" short:"j" default:"1" description:"max pairs to run in parallel; -1 for auto"`
 	Agents []string `long:"agent" short:"a" description:"only run these agents (repeatable); default: all"`
 	Tasks  []string `long:"task" short:"t" description:"only run these tasks (repeatable); default: all"`
@@ -38,12 +41,12 @@ type RunCommand struct {
 }
 
 func (r *RunCommand) Execute(args []string) error {
-	cfg, err := load(r.Config)
+	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
 	_, err = eval.Run(cfg, eval.Options{
-		ConfigDir: filepath.Dir(r.Config),
+		ConfigDir: filepath.Dir(opts.Config),
 		Now:       time.Now(),
 		Out:       os.Stdout,
 		Jobs:      r.Jobs,
@@ -56,7 +59,6 @@ func (r *RunCommand) Execute(args []string) error {
 
 // ScoreCommand scores a run (the latest by default).
 type ScoreCommand struct {
-	Config  string   `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 	Run     string   `long:"run" short:"r" description:"run to score: a dir, a friendly name like fluffy-bunny, a number (1 = run 001; 0 = latest, -1 = second to last; default: latest), or all"`
 	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
 	Agentic bool     `long:"agentic" description:"also run agent-kind scorers"`
@@ -64,12 +66,12 @@ type ScoreCommand struct {
 }
 
 func (s *ScoreCommand) Execute(args []string) error {
-	cfg, err := load(s.Config)
+	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
 	_, err = eval.Score(cfg, eval.ScoreOptions{
-		ConfigDir: filepath.Dir(s.Config),
+		ConfigDir: filepath.Dir(opts.Config),
 		RunDir:    s.Run,
 		Jobs:      s.Jobs,
 		Agentic:   s.Agentic,
@@ -82,12 +84,11 @@ func (s *ScoreCommand) Execute(args []string) error {
 // ReportCommand reprints a run's report from its scores.json (the latest run
 // by default). reads run artifacts only -- no config load, like `list runs`.
 type ReportCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-	Run    string `long:"run" short:"r" description:"run to report: a dir, a friendly name like fluffy-bunny, or a number (1 = run 001; 0 = latest, -1 = second to last; default: latest)"`
+	Run string `long:"run" short:"r" description:"run to report: a dir, a friendly name like fluffy-bunny, or a number (1 = run 001; 0 = latest, -1 = second to last; default: latest)"`
 }
 
 func (c *ReportCommand) Execute(args []string) error {
-	return eval.Report(filepath.Dir(c.Config), c.Run, os.Stdout)
+	return eval.Report(filepath.Dir(opts.Config), c.Run, os.Stdout)
 }
 
 // ListCommand groups the per-vector list subcommands.
@@ -100,55 +101,43 @@ type ListCommand struct {
 	Runs      ListRunsCommand      `command:"runs" description:"list past runs under .pats/runs"`
 }
 
-type ListSandboxesCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-}
-type ListAgentsCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-}
-type ListTasksCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-}
-type ListScorersCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-}
-type ListSuitesCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-}
-type ListRunsCommand struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-}
+type ListSandboxesCommand struct{}
+type ListAgentsCommand struct{}
+type ListTasksCommand struct{}
+type ListScorersCommand struct{}
+type ListSuitesCommand struct{}
+type ListRunsCommand struct{}
 
 func (c *ListSandboxesCommand) Execute(args []string) error {
-	cfg, err := load(c.Config)
+	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
 	return eval.ListSandboxes(cfg, os.Stdout)
 }
 func (c *ListAgentsCommand) Execute(args []string) error {
-	cfg, err := load(c.Config)
+	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
 	return eval.ListAgents(cfg, os.Stdout)
 }
 func (c *ListTasksCommand) Execute(args []string) error {
-	cfg, err := load(c.Config)
+	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
 	return eval.ListTasks(cfg, os.Stdout)
 }
 func (c *ListScorersCommand) Execute(args []string) error {
-	cfg, err := load(c.Config)
+	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
 	return eval.ListScorers(cfg, os.Stdout)
 }
 func (c *ListSuitesCommand) Execute(args []string) error {
-	cfg, err := load(c.Config)
+	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
@@ -157,7 +146,7 @@ func (c *ListSuitesCommand) Execute(args []string) error {
 
 // runs reads run artifacts only -- no config load, so it works on a broken pats.yaml.
 func (c *ListRunsCommand) Execute(args []string) error {
-	return eval.ListRuns(filepath.Dir(c.Config), os.Stdout)
+	return eval.ListRuns(filepath.Dir(opts.Config), os.Stdout)
 }
 
 func load(path string) (*config.Config, error) {
@@ -171,6 +160,9 @@ func load(path string) (*config.Config, error) {
 	return cfg, nil
 }
 
+// opts is package-level so command Execute methods can read the global flags.
+var opts Options
+
 func main() {
 	// handle --version before parsing -- go-flags would otherwise demand a command.
 	for _, arg := range os.Args[1:] {
@@ -180,7 +172,6 @@ func main() {
 		}
 	}
 
-	var opts Options
 	// PrintErrors stripped so we can colourise the help text ourselves.
 	parser := flags.NewParser(&opts, flags.Default&^flags.PrintErrors)
 	parser.Name = "pats"
