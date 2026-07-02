@@ -29,12 +29,14 @@ func TestScoreExec(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		Sandboxes:    []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:       []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:        []config.Task{{ID: "t1", Prompt: "p.txt"}, {ID: "t2", Prompt: "p.txt"}},
-		Scorers:      []config.Scorer{{ID: "has-good", Score: "has-good.sh"}},
-		TestMatrix:   []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"*"}}},
-		ScorerMatrix: []config.Row{{Scorer: config.StrList{"has-good"}, Task: config.StrList{"*"}}},
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t1", Prompt: "p.txt"}, {ID: "t2", Prompt: "p.txt"}},
+		Scorers:   []config.Scorer{{ID: "has-good", Score: "has-good.sh"}},
+		Suites: []config.Suite{{
+			ID: "su", Agents: config.StrList{"a"},
+			Tasks: config.StrList{"t1", "t2"}, Scorers: config.StrList{"has-good"},
+		}},
 	}
 
 	var out bytes.Buffer
@@ -63,15 +65,14 @@ func TestScoreMultipleScorers(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
 	cfg := &config.Config{
-		Sandboxes:  []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:     []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:      []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:    []config.Scorer{{ID: "one", Score: "one.sh"}, {ID: "zero", Score: "zero.sh"}},
-		TestMatrix: []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"t"}}},
-		ScorerMatrix: []config.Row{
-			{Scorer: config.StrList{"one"}, Task: config.StrList{"t"}},
-			{Scorer: config.StrList{"zero"}, Task: config.StrList{"t"}},
-		},
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
+		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}, {ID: "zero", Score: "zero.sh"}},
+		Suites: []config.Suite{{
+			ID: "su", Agents: config.StrList{"a"},
+			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one", "zero"},
+		}},
 	}
 
 	var out bytes.Buffer

@@ -70,6 +70,19 @@ func ListScorers(cfg *config.Config, out io.Writer) error {
 	return w.Flush()
 }
 
+// ListSuites prints id and axis sizes per suite, plus the pair counts its
+// cross-products expand to.
+func ListSuites(cfg *config.Config, out io.Writer) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS")
+	for _, s := range cfg.Suites {
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\n",
+			s.ID, len(s.Agents), len(s.Tasks), len(s.Scorers),
+			len(s.Agents)*len(s.Tasks), len(s.Tasks)*len(s.Scorers))
+	}
+	return w.Flush()
+}
+
 // ListRuns prints one line per run dir under .pats/runs (oldest first): the run
 // name, how many pairs it has + a status tally, and the overall score if scored.
 // it reads run artifacts only -- no pats.yaml needed, so it works on a broken config.

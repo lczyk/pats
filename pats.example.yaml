@@ -46,7 +46,7 @@ sandboxes:
 #   claude-cli-keyless  -- the claude cli, keyless: oauth creds
 #                          (~/.claude/.credentials.json) are mounted into the
 #                          sandbox. the model is a raw anthropic id.
-# an agent not named in the test-matrix is never run as a task -- it can still
+# an agent not named in any suite is never run as a task -- it can still
 # act as a `kind: agent` scorer (see `judge` below).
 agents:
   # the model under test: claude-haiku, run through the claude cli.
@@ -63,11 +63,13 @@ agents:
     model: anthropic/claude-haiku-4.5
 
   # the scorer agent: a stronger model (sonnet) to judge the weaker one (haiku).
-  # not in the test-matrix -> only ever runs as a `kind: agent` scorer.
-  - id: judge
-    kind: claude-cli-keyless
-    sandbox: docker
-    model: claude-sonnet-4-6
+  # not in any suite -> only ever runs as a `kind: agent` scorer. commented out
+  # with its scorer (`no-colloquialisms` below) until agent scorers are
+  # implemented -- an agent in no suite and no scorer is an orphan error.
+  # - id: judge
+  #   kind: claude-cli-keyless
+  #   sandbox: docker
+  #   model: claude-sonnet-4-6
 
 # tasks -- a scenario handed to a harness agent. these test readme-authorship.
 # prepare/collect/prompt run a file directly (no shell): the value is tokenised
@@ -124,19 +126,19 @@ scorers:
   #   agent-id: judge
   #   prompt: prompts/no-colloquialisms.txt
 
-# test-matrix -- which agent x task pairs to run. each row is a cross-product:
-# `agent` and `task` take a scalar, a list, or `"*"` (all).
-test-matrix:
-  # both haiku harnesses across every task.
-  - agent: [haiku-claude-cli, haiku-opencode]
-    task: "*"
-
-# scorer-matrix -- which task x scorer pairs to run. same cross-product +
-# scalar/list/`"*"` rules. a task's score is the mean over the scorers run on it.
-scorer-matrix:
-  - scorer: [only-ascii, title-correct]
-    task: "*"
-  - scorer: no-finite-verbs
-    task: "*"
-  # - scorer: no-colloquialisms
-  #   task: "*"
+# suites -- named (agents, tasks, scorers) groups. both cross-products are
+# implied within a suite: run = agents x tasks, score = tasks x scorers. every
+# id is explicit -- no wildcards; reuse a list across suites with a yaml anchor
+# (`agents: &all [...]` / `agents: *all`). each axis takes a scalar or a list;
+# scorers may be empty (a run-only suite). every agent/task/scorer must appear
+# in at least one suite (agents referenced by a `kind: agent` scorer are
+# exempt) -- an orphaned entry is a validation error, so forgetting to wire a
+# new task or scorer in fails at load instead of silently never running.
+# a task's score is the mean over the scorers run on it. narrow a run or score
+# to one suite with `-m <id>`.
+suites:
+  - id: readme
+    agents: [haiku-claude-cli, haiku-opencode]
+    tasks: [write-readme-simple, write-readme-hard, write-readme-monorepo]
+    scorers: [only-ascii, title-correct, no-finite-verbs]
+    # scorers: [..., no-colloquialisms]  # once agent scorers are implemented

@@ -5,115 +5,125 @@ import (
 	"fmt"
 )
 
-// TestPair is one expanded (agent, task) cell of the test matrix.
+// TestPair is one expanded (agent, task) cell of a suite.
 type TestPair struct {
 	Agent string
 	Task  string
 }
 
-// ScorePair is one expanded (task, scorer) cell of the scorer matrix.
+// ScorePair is one expanded (task, scorer) cell of a suite.
 type ScorePair struct {
 	Task   string
 	Scorer string
 }
 
-const wildcard = "*"
+// SelectSuites resolves a suite-id filter: empty -> all suites, otherwise the
+// named ones (order preserved from the config). unknown ids are errors.
+func (c *Config) SelectSuites(only []string) ([]Suite, error) {
+	if len(only) == 0 {
+		return c.Suites, nil
+	}
+	byID := map[string]Suite{}
+	for _, s := range c.Suites {
+		byID[s.ID] = s
+	}
+	var errs errList
+	want := set(only)
+	var out []Suite
+	for _, s := range c.Suites {
+		if want[s.ID] {
+			out = append(out, s)
+			delete(want, s.ID)
+		}
+	}
+	for _, id := range only {
+		if want[id] {
+			errs.add("--suite %q: no such suite", id)
+		}
+	}
+	return out, errs.err()
+}
 
-// ExpandTestMatrix cross-products every row into (agent, task) pairs. "*"
-// resolves to all agents / all tasks. dangling refs and duplicate pairs are errors.
-func (c *Config) ExpandTestMatrix() ([]TestPair, error) {
-	allAgents := ids(len(c.Agents), func(i int) string { return c.Agents[i].ID })
-	agentSet := set(allAgents)
-	allTasks := ids(len(c.Tasks), func(i int) string { return c.Tasks[i].ID })
-	taskSet := set(allTasks)
+// ExpandTestPairs crosses each selected suite's agents x tasks. dangling refs
+// and duplicate ids within one suite's list are errors; the same pair from two
+// suites is fine (suites may overlap deliberately) and deduped.
+func (c *Config) ExpandTestPairs(only ...string) ([]TestPair, error) {
+	suites, err := c.SelectSuites(only)
+	if err != nil {
+		return nil, err
+	}
+	agentSet := set(ids(len(c.Agents), func(i int) string { return c.Agents[i].ID }))
+	taskSet := set(ids(len(c.Tasks), func(i int) string { return c.Tasks[i].ID }))
 
 	var out []TestPair
-	seen := map[string]bool{}
+	seen := map[TestPair]bool{}
 	var errs errList
-
-	for ri, row := range c.TestMatrix {
-		rowAgents := resolve(row.Agent, wildcard, allAgents)
-		rowTasks := resolve(row.Task, wildcard, allTasks)
-		if len(row.Agent) == 0 {
-			errs.add("test-matrix row %d: missing agent", ri)
-		}
-		if len(row.Task) == 0 {
-			errs.add("test-matrix row %d: missing task", ri)
-		}
-		for _, ag := range rowAgents {
-			if !agentSet[ag] {
-				errs.add("test-matrix row %d: unknown agent %q", ri, ag)
-				continue
-			}
-			for _, tk := range rowTasks {
-				if !taskSet[tk] {
-					errs.add("test-matrix row %d: unknown task %q", ri, tk)
-					continue
+	for _, s := range suites {
+		agents := checkAxis(&errs, s.ID, "agents", "agent", s.Agents, agentSet)
+		tasks := checkAxis(&errs, s.ID, "tasks", "task", s.Tasks, taskSet)
+		for _, ag := range agents {
+			for _, tk := range tasks {
+				p := TestPair{Agent: ag, Task: tk}
+				if seen[p] {
+					continue // overlap across suites (e.g. smoke within full)
 				}
-				key := ag + "\x00" + tk
-				if seen[key] {
-					errs.add("test-matrix: duplicate pair %s x %s", ag, tk)
-					continue
-				}
-				seen[key] = true
-				out = append(out, TestPair{Agent: ag, Task: tk})
+				seen[p] = true
+				out = append(out, p)
 			}
 		}
 	}
 	return out, errs.err()
 }
 
-// ExpandScorerMatrix cross-products every row into (task, scorer) pairs. "*"
-// resolves to all tasks / all scorers.
-func (c *Config) ExpandScorerMatrix() ([]ScorePair, error) {
-	allTasks := ids(len(c.Tasks), func(i int) string { return c.Tasks[i].ID })
-	taskSet := set(allTasks)
-	allScorers := ids(len(c.Scorers), func(i int) string { return c.Scorers[i].ID })
-	scorerSet := set(allScorers)
+// ExpandScorePairs crosses each selected suite's tasks x scorers. same rules
+// as ExpandTestPairs.
+func (c *Config) ExpandScorePairs(only ...string) ([]ScorePair, error) {
+	suites, err := c.SelectSuites(only)
+	if err != nil {
+		return nil, err
+	}
+	taskSet := set(ids(len(c.Tasks), func(i int) string { return c.Tasks[i].ID }))
+	scorerSet := set(ids(len(c.Scorers), func(i int) string { return c.Scorers[i].ID }))
 
 	var out []ScorePair
-	seen := map[string]bool{}
+	seen := map[ScorePair]bool{}
 	var errs errList
-
-	for ri, row := range c.ScorerMatrix {
-		rowTasks := resolve(row.Task, wildcard, allTasks)
-		rowScorers := resolve(row.Scorer, wildcard, allScorers)
-		if len(row.Task) == 0 {
-			errs.add("scorer-matrix row %d: missing task", ri)
-		}
-		if len(row.Scorer) == 0 {
-			errs.add("scorer-matrix row %d: missing scorer", ri)
-		}
-		for _, tk := range rowTasks {
-			if !taskSet[tk] {
-				errs.add("scorer-matrix row %d: unknown task %q", ri, tk)
-				continue
-			}
-			for _, sc := range rowScorers {
-				if !scorerSet[sc] {
-					errs.add("scorer-matrix row %d: unknown scorer %q", ri, sc)
+	for _, s := range suites {
+		tasks := checkAxis(&errs, s.ID, "tasks", "task", s.Tasks, taskSet)
+		scorers := checkAxis(&errs, s.ID, "scorers", "scorer", s.Scorers, scorerSet)
+		for _, tk := range tasks {
+			for _, sc := range scorers {
+				p := ScorePair{Task: tk, Scorer: sc}
+				if seen[p] {
 					continue
 				}
-				key := tk + "\x00" + sc
-				if seen[key] {
-					errs.add("scorer-matrix: duplicate pair %s x %s", tk, sc)
-					continue
-				}
-				seen[key] = true
-				out = append(out, ScorePair{Task: tk, Scorer: sc})
+				seen[p] = true
+				out = append(out, p)
 			}
 		}
 	}
 	return out, errs.err()
 }
 
-// resolve turns a row field into a concrete list: the "*" sentinel expands to
-// all, anything else passes through verbatim.
-func resolve(field StrList, star string, all []string) []string {
-	if len(field) == 1 && field[0] == star {
-		return all
+// checkAxis validates one suite axis: every id must exist in the vector, and
+// must not repeat within the list. returns the valid ids (bad ones dropped so
+// expansion can keep collecting errors).
+func checkAxis(errs *errList, suite, axis, noun string, xs StrList, known map[string]bool) []string {
+	var out []string
+	dup := map[string]bool{}
+	for _, x := range xs {
+		if !known[x] {
+			errs.add("suite %q: unknown %s %q", suite, noun, x)
+			continue
+		}
+		if dup[x] {
+			errs.add("suite %q: duplicate %s %q in %s", suite, noun, x, axis)
+			continue
+		}
+		dup[x] = true
+		out = append(out, x)
 	}
-	return field
+	return out
 }
 
 // FilterPairs narrows expanded test pairs to the given agent and/or task ids
@@ -128,12 +138,12 @@ func FilterPairs(pairs []TestPair, agents, tasks []string) ([]TestPair, error) {
 	var errs errList
 	for _, a := range agents {
 		if !haveA[a] {
-			errs.add("--agent %q: no such agent in the test-matrix", a)
+			errs.add("--agent %q: no such agent in any suite", a)
 		}
 	}
 	for _, t := range tasks {
 		if !haveT[t] {
-			errs.add("--task %q: no such task in the test-matrix", t)
+			errs.add("--task %q: no such task in any suite", t)
 		}
 	}
 	if err := errs.err(); err != nil {

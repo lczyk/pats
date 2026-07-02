@@ -38,11 +38,12 @@ type Options struct {
 	Out       io.Writer // progress + host script output
 	Jobs      int       // max concurrent pairs; 0 -> serial (1), negative -> auto (see resolveJobs)
 	Color     bool      // colour log tags (set internally from Out's tty-ness)
-	Agents    []string  // filter the matrix to these agents (empty -> all)
-	Tasks     []string  // filter the matrix to these tasks (empty -> all)
+	Agents    []string  // filter the pairs to these agents (empty -> all)
+	Tasks     []string  // filter the pairs to these tasks (empty -> all)
+	Suites    []string  // only expand these suites (empty -> all)
 }
 
-// Run executes every test-matrix pair and returns the run dir it wrote to.
+// Run executes every suite (agent, task) pair and returns the run dir it wrote to.
 // a single pair failing is logged and skipped -- it does not abort the run.
 func Run(cfg *config.Config, opts Options) (string, error) {
 	// absolute config dir: prepare/collect run with cwd=ConfigDir, and the
@@ -57,7 +58,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 		return "", err
 	}
 	defer unlock()
-	pairs, err := cfg.ExpandTestMatrix()
+	pairs, err := cfg.ExpandTestPairs(opts.Suites...)
 	if err != nil {
 		return "", err
 	}

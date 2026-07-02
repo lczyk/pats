@@ -19,10 +19,11 @@ import (
 
 // ScoreOptions configures the score phase.
 type ScoreOptions struct {
-	ConfigDir string // dir holding pats.yaml -- scorer paths resolve against it
-	RunDir    string // explicit run dir, or "" for the latest under .pats/runs
-	Jobs      int    // max concurrent scorer cells; 0 -> serial (1), negative -> auto (see resolveJobs)
-	Agentic   bool   // also run agent-kind scorers
+	ConfigDir string   // dir holding pats.yaml -- scorer paths resolve against it
+	RunDir    string   // explicit run dir, or "" for the latest under .pats/runs
+	Jobs      int      // max concurrent scorer cells; 0 -> serial (1), negative -> auto (see resolveJobs)
+	Agentic   bool     // also run agent-kind scorers
+	Suites    []string // only expand these suites (empty -> all)
 	Out       io.Writer
 	Color     bool // colour log tags (set internally from Out's tty-ness)
 }
@@ -44,7 +45,7 @@ type ScoreCell struct {
 	Score  float64 `json:"score"`
 }
 
-// Score runs the scorer-matrix over a run's collected outputs and aggregates.
+// Score runs each suite's tasks x scorers over a run's collected outputs and aggregates.
 func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	// absolute config dir: scorers run with cwd=ConfigDir; their file path +
 	// PATS_OUTPUT_DIR must resolve regardless of that cwd.
@@ -64,11 +65,11 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	}
 	lg.info("scoring: %s", relToCwd(runDir))
 
-	testPairs, err := cfg.ExpandTestMatrix()
+	testPairs, err := cfg.ExpandTestPairs(opts.Suites...)
 	if err != nil {
 		return nil, err
 	}
-	scorePairs, err := cfg.ExpandScorerMatrix()
+	scorePairs, err := cfg.ExpandScorePairs(opts.Suites...)
 	if err != nil {
 		return nil, err
 	}

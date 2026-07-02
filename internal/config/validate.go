@@ -8,7 +8,7 @@ import (
 )
 
 // Validate checks the whole config: vector well-formedness, cross-references,
-// kind/field consistency, and that both matrices expand cleanly. all problems
+// kind/field consistency, and that the suites expand cleanly. all problems
 // are collected and returned together so one run surfaces every error.
 func (c *Config) Validate() error {
 	var errs []error
@@ -16,20 +16,81 @@ func (c *Config) Validate() error {
 
 	sandboxes := c.validateSandboxes(add)
 	agents := c.validateAgents(add, sandboxes)
-	tasks := c.validateTasks(add)
-	c.validateScorers(add, agents)
+	c.validateTasks(add)
+	scorers := c.validateScorers(add, agents)
+	c.validateSuites(add, scorers)
 
-	// matrix expansion doubles as referential validation (dangling refs,
-	// dup pairs, "*" against empty vectors).
-	if _, err := c.ExpandTestMatrix(); err != nil {
+	// suite expansion doubles as referential validation (dangling refs,
+	// in-suite duplicate ids).
+	if _, err := c.ExpandTestPairs(); err != nil {
 		errs = append(errs, err)
 	}
-	if _, err := c.ExpandScorerMatrix(); err != nil {
+	if _, err := c.ExpandScorePairs(); err != nil {
 		errs = append(errs, err)
 	}
-	_ = tasks
 
 	return errors.Join(errs...)
+}
+
+// validateSuites checks suite well-formedness (ids, required axes) and that no
+// vector entry is orphaned -- a task/scorer/agent in no suite would silently
+// never run, which is exactly the forgetting the explicit lists invite.
+// exemption: an agent referenced by a `kind: agent` scorer legitimately lives
+// outside every suite (it judges, it isn't judged).
+func (c *Config) validateSuites(add func(string, ...any), scorers map[string]Scorer) {
+	seen := map[string]bool{}
+	inAgents, inTasks, inScorers := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, s := range c.Suites {
+		if s.ID == "" {
+			add("suite with empty id")
+			continue
+		}
+		if seen[s.ID] {
+			add("duplicate suite id: %s", s.ID)
+		}
+		seen[s.ID] = true
+		if len(s.Agents) == 0 {
+			add("suite %q: agents is required", s.ID)
+		}
+		if len(s.Tasks) == 0 {
+			add("suite %q: tasks is required", s.ID)
+		}
+		// scorers may be empty: a run-only suite, scored elsewhere or not at all.
+		mark(inAgents, s.Agents)
+		mark(inTasks, s.Tasks)
+		mark(inScorers, s.Scorers)
+	}
+	if len(c.Suites) == 0 {
+		return // vectors-only config (e.g. being assembled); nothing to orphan-check against
+	}
+
+	judges := map[string]bool{}
+	for _, sc := range scorers {
+		if sc.Kind == "agent" && sc.AgentID != "" {
+			judges[sc.AgentID] = true
+		}
+	}
+	for _, a := range c.Agents {
+		if !inAgents[a.ID] && !judges[a.ID] {
+			add("agent %q is in no suite -- it would never run (add it to a suite, or reference it from a kind: agent scorer)", a.ID)
+		}
+	}
+	for _, t := range c.Tasks {
+		if !inTasks[t.ID] {
+			add("task %q is in no suite -- it would never run", t.ID)
+		}
+	}
+	for _, s := range c.Scorers {
+		if !inScorers[s.ID] {
+			add("scorer %q is in no suite -- it would never run", s.ID)
+		}
+	}
+}
+
+func mark(m map[string]bool, xs StrList) {
+	for _, x := range xs {
+		m[x] = true
+	}
 }
 
 func (c *Config) validateSandboxes(add func(string, ...any)) map[string]Sandbox {

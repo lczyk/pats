@@ -1,8 +1,8 @@
 // Package config loads, validates, and expands a pats.yaml.
 //
 // the file declares four "vectors" -- sandboxes, agents, tasks, scorers --
-// plus two matrices (test, scorer) that cross-product agents/tasks/scorers
-// into the pairs the run + score phases drive.
+// plus suites, each crossing its agents/tasks/scorers into the pairs the
+// run + score phases drive.
 package config
 
 import (
@@ -19,12 +19,11 @@ import (
 // (driver, single-sandbox) resolve via the helper methods, and Validate
 // checks the whole thing.
 type Config struct {
-	Sandboxes    []Sandbox `yaml:"sandboxes"`
-	Agents       []Agent   `yaml:"agents"`
-	Tasks        []Task    `yaml:"tasks"`
-	Scorers      []Scorer  `yaml:"scorers"`
-	TestMatrix   []Row     `yaml:"test-matrix"`
-	ScorerMatrix []Row     `yaml:"scorer-matrix"`
+	Sandboxes []Sandbox `yaml:"sandboxes"`
+	Agents    []Agent   `yaml:"agents"`
+	Tasks     []Task    `yaml:"tasks"`
+	Scorers   []Scorer  `yaml:"scorers"`
+	Suites    []Suite   `yaml:"suites"`
 }
 
 // Sandbox is an isolation environment a task-running agent executes in.
@@ -134,16 +133,18 @@ func (s Scorer) ExecFile() string {
 	return strings.ReplaceAll(s.Score, "${id}", s.ID)
 }
 
-// Row is one cross-product row of a matrix. Agent/Task/Scorer each take a
-// scalar, a list, or "*" (all).
-type Row struct {
-	Agent  StrList `yaml:"agent"`
-	Task   StrList `yaml:"task"`
-	Scorer StrList `yaml:"scorer"`
+// Suite is a named (agents, tasks, scorers) group. both cross-products are
+// implied within it: run = agents x tasks, score = tasks x scorers. every id
+// is explicit -- no wildcards; yaml anchors cover list reuse across suites.
+// scorers may be empty (a run-only suite); agents and tasks may not.
+type Suite struct {
+	ID      string  `yaml:"id"`
+	Agents  StrList `yaml:"agents"`
+	Tasks   StrList `yaml:"tasks"`
+	Scorers StrList `yaml:"scorers"`
 }
 
-// StrList accepts a yaml scalar or sequence and stores it as []string. the
-// sentinel "*" (a single-element list) means "all", resolved at expansion.
+// StrList accepts a yaml scalar or sequence and stores it as []string.
 type StrList []string
 
 func (s *StrList) UnmarshalYAML(node *yaml.Node) error {

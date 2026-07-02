@@ -1,8 +1,9 @@
-// Command pats runs a score-based test matrix of agents over tasks, then
-// scores the outputs. see the repo README + pats.example.yaml.
+// Command pats runs score-based suites of agents over tasks, then scores the
+// outputs. see the repo README + pats.example.yaml.
 //
-// `run` executes every test-matrix pair in a sandbox and collects outputs into
-// a run dir; `score` runs the scorer-matrix over a run and aggregates.
+// `run` executes every suite's (agent, task) pairs in a sandbox and collects
+// outputs into a run dir; `score` runs each suite's tasks x scorers over a run
+// and aggregates.
 package main
 
 import (
@@ -21,18 +22,19 @@ import (
 
 // Options is the global command structure parsed by go-flags.
 type Options struct {
-	Run    RunCommand    `command:"run" description:"run the test-matrix (agents x tasks)"`
+	Run    RunCommand    `command:"run" description:"run the suites (agents x tasks)"`
 	Score  ScoreCommand  `command:"score" description:"score the most recent run (tasks x scorers)"`
 	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
-	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, or scorers"`
+	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
 }
 
-// RunCommand runs the test-matrix.
+// RunCommand runs the suites.
 type RunCommand struct {
 	Config string   `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 	Jobs   int      `long:"jobs" short:"j" default:"1" description:"max pairs to run in parallel; -1 for auto"`
 	Agents []string `long:"agent" short:"a" description:"only run these agents (repeatable); default: all"`
 	Tasks  []string `long:"task" short:"t" description:"only run these tasks (repeatable); default: all"`
+	Suites []string `long:"suite" short:"m" description:"only run these suites (repeatable); default: all"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -47,16 +49,18 @@ func (r *RunCommand) Execute(args []string) error {
 		Jobs:      r.Jobs,
 		Agents:    r.Agents,
 		Tasks:     r.Tasks,
+		Suites:    r.Suites,
 	})
 	return err
 }
 
 // ScoreCommand scores a run (the latest by default).
 type ScoreCommand struct {
-	Config  string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-	Run     string `long:"run" short:"r" description:"run to score: a dir, or a friendly name like fluffy-bunny (default: latest under .pats/runs)"`
-	Jobs    int    `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
-	Agentic bool   `long:"agentic" description:"also run agent-kind scorers"`
+	Config  string   `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	Run     string   `long:"run" short:"r" description:"run to score: a dir, or a friendly name like fluffy-bunny (default: latest under .pats/runs)"`
+	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
+	Agentic bool     `long:"agentic" description:"also run agent-kind scorers"`
+	Suites  []string `long:"suite" short:"m" description:"only score these suites (repeatable); default: all"`
 }
 
 func (s *ScoreCommand) Execute(args []string) error {
@@ -69,6 +73,7 @@ func (s *ScoreCommand) Execute(args []string) error {
 		RunDir:    s.Run,
 		Jobs:      s.Jobs,
 		Agentic:   s.Agentic,
+		Suites:    s.Suites,
 		Out:       os.Stdout,
 	})
 	return err
@@ -91,6 +96,7 @@ type ListCommand struct {
 	Agents    ListAgentsCommand    `command:"agents" description:"list configured agents"`
 	Tasks     ListTasksCommand     `command:"tasks" description:"list configured tasks"`
 	Scorers   ListScorersCommand   `command:"scorers" description:"list configured scorers"`
+	Suites    ListSuitesCommand    `command:"suites" description:"list configured suites"`
 	Runs      ListRunsCommand      `command:"runs" description:"list past runs under .pats/runs"`
 }
 
@@ -104,6 +110,9 @@ type ListTasksCommand struct {
 	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 }
 type ListScorersCommand struct {
+	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+}
+type ListSuitesCommand struct {
 	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 }
 type ListRunsCommand struct {
@@ -137,6 +146,13 @@ func (c *ListScorersCommand) Execute(args []string) error {
 		return err
 	}
 	return eval.ListScorers(cfg, os.Stdout)
+}
+func (c *ListSuitesCommand) Execute(args []string) error {
+	cfg, err := load(c.Config)
+	if err != nil {
+		return err
+	}
+	return eval.ListSuites(cfg, os.Stdout)
 }
 
 // runs reads run artifacts only -- no config load, so it works on a broken pats.yaml.

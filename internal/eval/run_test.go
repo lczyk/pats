@@ -44,8 +44,8 @@ func TestRunE2E(t *testing.T) {
 		Agents: []config.Agent{{
 			ID: "a", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s",
 		}},
-		Tasks:      []config.Task{{ID: "t", Prompt: "prompt.txt", Collect: "collect.sh"}},
-		TestMatrix: []config.Row{{Agent: config.StrList{"a"}, Task: config.StrList{"t"}}},
+		Tasks:  []config.Task{{ID: "t", Prompt: "prompt.txt", Collect: "collect.sh"}},
+		Suites: []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
 	}
 	require.NoError(t, cfg.Validate())
 

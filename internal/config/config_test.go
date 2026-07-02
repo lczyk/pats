@@ -14,15 +14,15 @@ func TestExampleConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.Validate())
 
-	test, err := c.ExpandTestMatrix()
+	test, err := c.ExpandTestPairs()
 	require.NoError(t, err)
-	// 2 agents x "*" (3 tasks) = 6 pairs.
+	// 2 agents x 3 tasks = 6 pairs.
 	assert.Len(t, test, 6)
 
-	score, err := c.ExpandScorerMatrix()
+	score, err := c.ExpandScorePairs()
 	require.NoError(t, err)
-	// (2 + 1 scorers) each x "*" (3 tasks) = 9 pairs. (the agent scorer is
-	// commented out until agent scorers are implemented.)
+	// 3 scorers x 3 tasks = 9 pairs. (the agent scorer is commented out until
+	// agent scorers are implemented.)
 	assert.Len(t, score, 9)
 }
 
@@ -35,12 +35,13 @@ func parseT(t *testing.T, src string) *Config {
 
 func TestStrListScalarOrList(t *testing.T) {
 	c := parseT(t, `
-test-matrix:
-  - agent: solo
-    task: [a, b]
+suites:
+  - id: s
+    agents: solo
+    tasks: [a, b]
 `)
-	assert.EqualArrays(t, []string(c.TestMatrix[0].Agent), []string{"solo"})
-	assert.EqualArrays(t, []string(c.TestMatrix[0].Task), []string{"a", "b"})
+	assert.EqualArrays(t, []string(c.Suites[0].Agents), []string{"solo"})
+	assert.EqualArrays(t, []string(c.Suites[0].Tasks), []string{"a", "b"})
 }
 
 func TestUnknownFieldRejected(t *testing.T) {
@@ -177,16 +178,76 @@ sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, allow-url
 			want: "allow-urls needs egress mode mitm-proxy",
 		},
 		{
-			name: "duplicate test pair",
+			name: "duplicate id within a suite axis",
 			src: `
 sandboxes: [{id: s, kind: container, image: img}]
 agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
 tasks: [{id: t, prompt: p.txt}]
-test-matrix:
-  - {agent: a, task: t}
-  - {agent: a, task: t}
+suites:
+  - {id: su, agents: [a, a], tasks: t}
 `,
-			want: "duplicate pair",
+			want: "duplicate agent",
+		},
+		{
+			name: "suite missing agents",
+			src: `
+sandboxes: [{id: s, kind: container, image: img}]
+agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
+tasks: [{id: t, prompt: p.txt}]
+suites:
+  - {id: su, tasks: t, scorers: []}
+`,
+			want: "agents is required",
+		},
+		{
+			name: "duplicate suite id",
+			src: `
+sandboxes: [{id: s, kind: container, image: img}]
+agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
+tasks: [{id: t, prompt: p.txt}]
+suites:
+  - {id: su, agents: a, tasks: t}
+  - {id: su, agents: a, tasks: t}
+`,
+			want: "duplicate suite id",
+		},
+		{
+			name: "orphaned task",
+			src: `
+sandboxes: [{id: s, kind: container, image: img}]
+agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
+tasks:
+  - {id: t, prompt: p.txt}
+  - {id: forgotten, prompt: p.txt}
+suites:
+  - {id: su, agents: a, tasks: t}
+`,
+			want: "task \"forgotten\" is in no suite",
+		},
+		{
+			name: "orphaned scorer",
+			src: `
+sandboxes: [{id: s, kind: container, image: img}]
+agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
+tasks: [{id: t, prompt: p.txt}]
+scorers: [{id: sc, score: sc.py}]
+suites:
+  - {id: su, agents: a, tasks: t}
+`,
+			want: "scorer \"sc\" is in no suite",
+		},
+		{
+			name: "orphaned agent",
+			src: `
+sandboxes: [{id: s, kind: container, image: img}]
+agents:
+  - {id: a, kind: opencode-openrouter, model: m, sandbox: s}
+  - {id: idle, kind: opencode-openrouter, model: m, sandbox: s}
+tasks: [{id: t, prompt: p.txt}]
+suites:
+  - {id: su, agents: a, tasks: t}
+`,
+			want: "agent \"idle\" is in no suite",
 		},
 	}
 	for _, tc := range cases {
@@ -197,7 +258,9 @@ test-matrix:
 	}
 }
 
-func TestWildcardResolution(t *testing.T) {
+// yaml anchors are the list-reuse mechanism now that wildcards are gone --
+// pin that a shared anchor round-trips through StrList.
+func TestYamlAnchorReuse(t *testing.T) {
 	c := parseT(t, `
 sandboxes: [{id: s, kind: container, image: img}]
 agents:
@@ -206,12 +269,17 @@ agents:
 tasks:
   - {id: t1, prompt: p.txt}
   - {id: t2, prompt: p.txt}
-test-matrix:
-  - {agent: "*", task: "*"}
+suites:
+  - id: one
+    agents: &all [h1, h2]
+    tasks: [t1]
+  - id: two
+    agents: *all
+    tasks: [t2]
 `)
-	pairs, err := c.ExpandTestMatrix()
+	pairs, err := c.ExpandTestPairs()
 	require.NoError(t, err)
-	// "*" agents = 2 x 2 tasks = 4.
+	// 2 agents x t1 + 2 agents x t2 = 4.
 	assert.Len(t, pairs, 4)
 }
 
