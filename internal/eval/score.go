@@ -417,13 +417,16 @@ func report(w io.Writer, r *ScoreReport, color bool) {
 	for _, t := range tasks {
 		row(t, func(a string) (float64, bool) { s, ok := r.PerPair[a+"/"+t]; return s, ok })
 	}
-	row("avg", func(a string) (float64, bool) { s, ok := r.PerAgent[a]; return s, ok })
+	// a single task row IS the avg row (and overall adds little): skip both.
+	if len(tasks) > 1 {
+		row("avg", func(a string) (float64, bool) { s, ok := r.PerAgent[a]; return s, ok })
 
-	overall := fmt.Sprintf("%.2f %s", r.Overall, scoreBar(r.Overall))
-	if color {
-		overall = scoreColor(r.Overall) + overall + "\033[0m"
+		overall := fmt.Sprintf("%.2f %s", r.Overall, scoreBar(r.Overall))
+		if color {
+			overall = scoreColor(r.Overall) + overall + "\033[0m"
+		}
+		fmt.Fprintf(w, "%-*s  %s\n", labelW, "overall", overall)
 	}
-	fmt.Fprintf(w, "%-*s  %s\n", labelW, "overall", overall)
 
 	// per-scorer breakdown, every pair, worst first.
 	pairs := sortedKeys(r.PerPair)
