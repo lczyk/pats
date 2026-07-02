@@ -77,8 +77,8 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		"-e", "PROXY_DENY=" + strings.Join(spec.Egress.Deny, ","),
 	}
 
-	// mitm: per-run CA. key is mounted into the proxy only; the agent gets the
-	// cert + a merged trust bundle (image roots + run CA) over the canonical path.
+	// mitm: per-run CA. key goes to the proxy inline (env, never on disk); the
+	// agent gets the cert + a merged trust bundle (image roots + run CA).
 	var agentTLSArgs []string
 	if spec.Egress.Mode == "mitm-proxy" && len(spec.Egress.DenyURLs)+len(spec.Egress.AllowURLs) > 0 {
 		var err error
@@ -148,11 +148,7 @@ func (c *container) setupMitm(ctx context.Context, spec Spec, caDir string, penv
 		return nil, nil, fmt.Errorf("egress: gen mitm ca: %w", err)
 	}
 	certPath := filepath.Join(caDir, "ca.pem")
-	keyPath := filepath.Join(caDir, "ca-key.pem")
 	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
-		return nil, nil, err
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		return nil, nil, err
 	}
 
@@ -167,12 +163,15 @@ func (c *container) setupMitm(ctx context.Context, spec Spec, caDir string, penv
 		return nil, nil, err
 	}
 
+	// cert + key go inline over env, not a mount: the key never touches disk,
+	// and the proxy needs no fs access at all -- it runs as a non-root user in
+	// a distroless image. env is visible via docker inspect, but that needs
+	// docker-socket access, which is root-equivalent anyway.
 	proxyEnv = append(penv,
-		"-v", caDir+":/pats-ca:ro",
 		"-e", "PROXY_DENY_URLS="+strings.Join(spec.Egress.DenyURLs, ","),
 		"-e", "PROXY_ALLOW_URLS="+strings.Join(spec.Egress.AllowURLs, ","),
-		"-e", "PROXY_CA_CERT=/pats-ca/ca.pem",
-		"-e", "PROXY_CA_KEY=/pats-ca/ca-key.pem",
+		"-e", "PROXY_CA_CERT="+string(certPEM),
+		"-e", "PROXY_CA_KEY="+string(keyPEM),
 	)
 	agentArgs = []string{
 		"-v", bundlePath + ":" + agentBundlePath + ":ro",

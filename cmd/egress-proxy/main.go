@@ -14,8 +14,9 @@
 //	                 tls terminated with a leaf signed by the run CA.
 //	PROXY_ALLOW_URLS -//-; a host with allow rules only passes matching urls
 //	                 (deny rules win). hosts named here are mitm'd too.
-//	PROXY_CA_CERT    path to the run CA cert (pem); required with url rules
-//	PROXY_CA_KEY     path to the run CA key (pem);  -//-
+//	PROXY_CA_CERT    run CA cert: a pem file path, or the pem itself inline;
+//	                 required with url rules
+//	PROXY_CA_KEY     run CA key;  -//-
 //
 // host entries match exactly, or as a suffix when written ".example.com" or
 // "*.example.com" (so ".ubuntu.com" covers archive.ubuntu.com).

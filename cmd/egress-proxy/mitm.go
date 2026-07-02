@@ -102,8 +102,11 @@ type signer struct {
 	cache map[string]*tls.Certificate
 }
 
-func newSigner(certPath, keyPath string) (*signer, error) {
-	ca, err := tls.LoadX509KeyPair(certPath, keyPath)
+// newSigner accepts the CA cert/key as either a file path or inline PEM
+// (detected by the PEM header). inline keeps the key out of any mounted or
+// image path, so the proxy can run as a non-root user with no fs access.
+func newSigner(certSpec, keySpec string) (*signer, error) {
+	ca, err := loadKeyPair(certSpec, keySpec)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +115,13 @@ func newSigner(certPath, keyPath string) (*signer, error) {
 		return nil, err
 	}
 	return &signer{ca: ca, caX: caX, cache: map[string]*tls.Certificate{}}, nil
+}
+
+func loadKeyPair(certSpec, keySpec string) (tls.Certificate, error) {
+	if strings.Contains(certSpec, "-----BEGIN") || strings.Contains(keySpec, "-----BEGIN") {
+		return tls.X509KeyPair([]byte(certSpec), []byte(keySpec))
+	}
+	return tls.LoadX509KeyPair(certSpec, keySpec)
 }
 
 func (s *signer) leaf(host string) (*tls.Certificate, error) {

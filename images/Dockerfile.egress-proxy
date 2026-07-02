@@ -1,9 +1,14 @@
 # pats egress proxy: filters sandbox outbound traffic by host, audits requests.
-# built + run by the run phase when a sandbox sets `egress: {mode: proxy}` (or
+# run by the run phase when a sandbox sets `egress: {mode: proxy}` (or
 # `mitm-proxy`, which additionally terminates tls for hosts with url rules).
 #
-# build locally (not published yet):
-#   docker build -t pats/egress-proxy:latest -f images/Dockerfile.egress-proxy .
+# rootless: distroless nonroot (uid 65532), listens on unprivileged :8080,
+# writes nothing (audit goes to stdout), and takes its config -- the mitm CA
+# included -- inline via env, so it needs no fs access at all.
+#
+# published to ghcr.io/lczyk/pats/egress-proxy on tag push (publish-images
+# workflow); local build:
+#   docker build -t ghcr.io/lczyk/pats/egress-proxy:latest -f images/Dockerfile.egress-proxy .
 FROM docker.io/library/golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -11,6 +16,6 @@ RUN go mod download
 COPY cmd/egress-proxy ./cmd/egress-proxy
 RUN CGO_ENABLED=0 go build -o /egress-proxy ./cmd/egress-proxy
 
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /egress-proxy /egress-proxy
 ENTRYPOINT ["/egress-proxy"]

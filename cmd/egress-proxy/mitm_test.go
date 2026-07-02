@@ -114,6 +114,27 @@ func testCA(t *testing.T, dir string) (certPath, keyPath string, pool *x509.Cert
 
 // COVER: end-to-end mitm path -- CONNECT terminates tls with a CA-signed leaf,
 // allowed urls reach the upstream, denied urls die with 403 before leaving.
+// inline pem (the run phase passes the CA over env, not a mount -- the
+// rootless proxy has no fs access) must load the same as file paths.
+func TestNewSignerInlinePEM(t *testing.T) {
+	certPath, keyPath, _ := testCA(t, t.TempDir())
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := newSigner(string(certPEM), string(keyPEM))
+	if err != nil {
+		t.Fatalf("inline pem: %v", err)
+	}
+	if _, err := s.leaf("example.com"); err != nil {
+		t.Fatalf("leaf: %v", err)
+	}
+}
+
 func TestMitmE2E(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "hello:"+r.URL.Path)
