@@ -350,7 +350,7 @@ func scoreColor(s float64) string {
 
 // report prints a tasks x agents pivot table -- each cell a coloured
 // "0.85 [######-]" -- with per-agent averages, the overall score, and a
-// per-scorer breakdown for imperfect pairs (worst first).
+// per-scorer breakdown for every pair (worst first).
 func report(w io.Writer, r *ScoreReport, color bool) {
 	agents := sortedKeys(r.PerAgent)
 	taskSet := map[string]bool{}
@@ -425,41 +425,76 @@ func report(w io.Writer, r *ScoreReport, color bool) {
 	}
 	fmt.Fprintf(w, "%-*s  %s\n", labelW, "overall", overall)
 
-	// per-scorer breakdown, imperfect pairs only, worst first.
-	var imperfect []string
-	for _, k := range sortedKeys(r.PerPair) {
-		if r.PerPair[k] < 0.999 {
-			imperfect = append(imperfect, k)
-		}
-	}
-	if len(imperfect) == 0 {
+	// per-scorer breakdown, every pair, worst first.
+	pairs := sortedKeys(r.PerPair)
+	if len(pairs) == 0 {
 		return
 	}
-	sort.Slice(imperfect, func(i, j int) bool {
-		si, sj := r.PerPair[imperfect[i]], r.PerPair[imperfect[j]]
+	sort.Slice(pairs, func(i, j int) bool {
+		si, sj := r.PerPair[pairs[i]], r.PerPair[pairs[j]]
 		if si != sj {
 			return si < sj
 		}
-		return imperfect[i] < imperfect[j]
+		return pairs[i] < pairs[j]
 	})
-	fmt.Fprintln(w, "\nimperfect pairs (scorer breakdown):")
+	fmt.Fprintln(w, "\nscorer breakdown:")
 	kw := 0
-	for _, k := range imperfect {
+	for _, k := range pairs {
 		kw = max(kw, len(k))
 	}
-	for _, k := range imperfect {
+	for _, k := range pairs {
 		agent, task, _ := strings.Cut(k, "/")
-		var parts []string
+		var cells []ScoreCell
 		for _, c := range r.Cells {
 			if c.Agent == agent && c.Task == task {
-				p := fmt.Sprintf("%s=%.2f", c.Scorer, c.Score)
-				if color {
-					p = scoreColor(c.Score) + p + "\033[0m"
-				}
-				parts = append(parts, p)
+				cells = append(cells, c)
 			}
 		}
-		fmt.Fprintf(w, "  %-*s  %s\n", kw, k, strings.Join(parts, ", "))
+
+		// mode elision: the pair's most common score collapses to a tally;
+		// only the deviants are named. keeps the line proportional to how
+		// interesting the pair is, not to how many scorers exist.
+		counts := map[float64]int{}
+		for _, c := range cells {
+			counts[c.Score]++
+		}
+		mode, modeN := 0.0, 0
+		for score, n := range counts {
+			if n > modeN || (n == modeN && score > mode) {
+				mode, modeN = score, n
+			}
+		}
+
+		summary := ""
+		if modeN > 1 {
+			summary = fmt.Sprintf("%.2f x%d", mode, modeN)
+			if color {
+				summary = scoreColor(mode) + summary + "\033[0m"
+			}
+		}
+		fmt.Fprintf(w, "  %-*s  %s\n", kw, k, summary)
+
+		var devs []ScoreCell
+		for _, c := range cells {
+			if modeN > 1 && c.Score == mode {
+				continue
+			}
+			devs = append(devs, c)
+		}
+		// worst first, so the cap drops the least interesting entries.
+		sort.SliceStable(devs, func(i, j int) bool { return devs[i].Score < devs[j].Score })
+		const maxDevs = 5
+		for i, c := range devs {
+			if i == maxDevs {
+				fmt.Fprintf(w, "    ... +%d more\n", len(devs)-maxDevs)
+				break
+			}
+			p := fmt.Sprintf("%s=%.2f", c.Scorer, c.Score)
+			if color {
+				p = scoreColor(c.Score) + p + "\033[0m"
+			}
+			fmt.Fprintf(w, "    %s\n", p)
+		}
 	}
 }
 
