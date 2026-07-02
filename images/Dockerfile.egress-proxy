@@ -1,5 +1,6 @@
 # pats egress proxy: filters sandbox outbound traffic by host, audits requests.
-# built + run by the run phase when a sandbox sets `egress: {mode: proxy}`.
+# built + run by the run phase when a sandbox sets `egress: {mode: proxy}` (or
+# `mitm-proxy`, which additionally terminates tls for hosts with url rules).
 #
 # build locally (not published yet):
 #   docker build -t pats/egress-proxy:latest -f images/Dockerfile.egress-proxy .

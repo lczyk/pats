@@ -156,6 +156,20 @@ sandboxes: [{id: s, kind: container, image: img, egress: {mode: firewall}}]
 			want: "unknown egress mode",
 		},
 		{
+			name: "deny-urls without mitm-proxy",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, deny-urls: ["github.com/x*"]}}]
+`,
+			want: "deny-urls needs egress mode mitm-proxy",
+		},
+		{
+			name: "deny-urls wildcard host",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: mitm-proxy, deny-urls: ["*/chisel-releases*"]}}]
+`,
+			want: "literal hostname",
+		},
+		{
 			name: "duplicate test pair",
 			src: `
 sandboxes: [{id: s, kind: container, image: img}]

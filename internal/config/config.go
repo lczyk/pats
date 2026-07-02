@@ -41,15 +41,23 @@ type Sandbox struct {
 
 // Egress is a sandbox's outbound network policy. see docs/proposals/network-egress.md.
 //
-//	open  -- open network (the default)
-//	none  -- no network (--network none); only for agents needing no egress
-//	proxy -- filter through a sidecar proxy by host, allow/deny + audit
+//	open       -- open network (the default)
+//	none       -- no network (--network none); only for agents needing no egress
+//	proxy      -- filter through a sidecar proxy by host, allow/deny + audit
+//	mitm-proxy -- proxy, plus url-level deny rules: hosts named in deny-urls
+//	              get their tls terminated with a per-run CA (the agent trusts
+//	              it via a merged bundle) so requests are filtered by full url.
+//	              other hosts stay blind tunnels -- a superset of proxy.
 type Egress struct {
-	Mode    string   `yaml:"mode"`        // open | none | proxy
-	Default string   `yaml:"default"`     // proxy: deny (allowlist) | allow (denylist)
-	Allow   []string `yaml:"allow"`       // hosts reachable when default: deny
-	Deny    []string `yaml:"deny"`        // hosts blocked when default: allow
-	Image   string   `yaml:"proxy-image"` // override proxy image (default pats/egress-proxy:latest)
+	Mode    string   `yaml:"mode"`    // open | none | proxy | mitm-proxy
+	Default string   `yaml:"default"` // proxy: deny (allowlist) | allow (denylist)
+	Allow   []string `yaml:"allow"`   // hosts reachable when default: deny
+	Deny    []string `yaml:"deny"`    // hosts blocked when default: allow
+	// DenyURLs (mitm-proxy only) are host-anchored url patterns; `*` matches
+	// anything, `/` included. the host part must be a literal hostname -- it
+	// picks which hosts get mitm'd. e.g. "github.com/*/chisel-releases*".
+	DenyURLs []string `yaml:"deny-urls"`
+	Image    string   `yaml:"proxy-image"` // override proxy image (default pats/egress-proxy:latest)
 }
 
 // ResolvedDriver fills the per-kind default when driver is omitted.

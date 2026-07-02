@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -66,16 +67,27 @@ func (c *Config) validateSandboxes(add func(string, ...any)) map[string]Sandbox 
 // not mid-run.
 func validateEgress(add func(string, ...any), s Sandbox) {
 	switch s.Egress.Mode {
-	case "", "open", "none", "proxy":
+	case "", "open", "none", "proxy", "mitm-proxy":
 	case "off":
 		add("sandbox %q: egress mode %q was renamed -- use `open`", s.ID, s.Egress.Mode)
 	default:
-		add("sandbox %q: unknown egress mode %q (open|none|proxy)", s.ID, s.Egress.Mode)
+		add("sandbox %q: unknown egress mode %q (open|none|proxy|mitm-proxy)", s.ID, s.Egress.Mode)
 	}
 	switch s.Egress.Default {
 	case "", "deny", "allow":
 	default:
 		add("sandbox %q: unknown egress default %q (deny|allow)", s.ID, s.Egress.Default)
+	}
+	if len(s.Egress.DenyURLs) > 0 && s.Egress.Mode != "mitm-proxy" {
+		add("sandbox %q: deny-urls needs egress mode mitm-proxy (got %q)", s.ID, s.Egress.Mode)
+	}
+	for _, p := range s.Egress.DenyURLs {
+		host, _, _ := strings.Cut(p, "/")
+		// the host part picks which hosts get mitm'd -- a wildcard would mitm
+		// everything (incl. the inference api), so it must be literal.
+		if host == "" || strings.Contains(host, "*") {
+			add("sandbox %q: deny-urls pattern %q must start with a literal hostname", s.ID, p)
+		}
 	}
 }
 

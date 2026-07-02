@@ -1,0 +1,195 @@
+// mitm: for hosts named by a url rule the proxy terminates tls with a leaf
+// signed by the per-run CA, filters each request by full url, and re-dials the
+// real host. everything else stays a blind tunnel (see main.go).
+package main
+
+import (
+	"bufio"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"net"
+	"net/http"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+// urlRule is one host-anchored url pattern, e.g. "github.com/*/chisel-releases*".
+// the host part (up to the first /) is a literal hostname; the rest is a glob
+// where * matches any characters, / included.
+type urlRule struct {
+	host string
+	re   *regexp.Regexp // matches host+path, e.g. "github.com/canonical/chisel-releases/x"
+}
+
+func parseURLRules(pats []string) []urlRule {
+	var out []urlRule
+	for _, p := range pats {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		host, _, _ := strings.Cut(p, "/")
+		// NOTE: wildcard/empty hosts are rejected at config validation; here we
+		// just skip them so a hand-set env can't mitm the world by accident.
+		if host == "" || strings.Contains(host, "*") {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("^")
+		for _, part := range strings.Split(p, "*") {
+			b.WriteString(regexp.QuoteMeta(part))
+			b.WriteString(".*")
+		}
+		re := regexp.MustCompile(strings.TrimSuffix(b.String(), ".*") + "$")
+		out = append(out, urlRule{host: host, re: re})
+	}
+	return out
+}
+
+// mitmHost says whether this host's tls must be terminated (it has url rules).
+func (r rule) mitmHost(host string) bool {
+	host = strings.ToLower(host)
+	for _, u := range r.denyURLs {
+		if u.host == host {
+			return true
+		}
+	}
+	return false
+}
+
+// permitsURL checks host+path (no scheme) against the deny-url rules.
+func (r rule) permitsURL(hostPath string) bool {
+	hostPath = strings.ToLower(hostPath)
+	for _, u := range r.denyURLs {
+		if u.re.MatchString(hostPath) {
+			return false
+		}
+	}
+	return true
+}
+
+// signer mints per-host leaf certs signed by the run CA, cached.
+type signer struct {
+	ca    tls.Certificate
+	caX   *x509.Certificate
+	mu    sync.Mutex
+	cache map[string]*tls.Certificate
+}
+
+func newSigner(certPath, keyPath string) (*signer, error) {
+	ca, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	caX, err := x509.ParseCertificate(ca.Certificate[0])
+	if err != nil {
+		return nil, err
+	}
+	return &signer{ca: ca, caX: caX, cache: map[string]*tls.Certificate{}}, nil
+}
+
+func (s *signer) leaf(host string) (*tls.Certificate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.cache[host]; ok {
+		return c, nil
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: host},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		tmpl.IPAddresses = []net.IP{ip}
+	} else {
+		tmpl.DNSNames = []string{host}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, s.caX, &key.PublicKey, s.ca.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	c := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	s.cache[host] = c
+	return c, nil
+}
+
+// handleMitm terminates the CONNECT tls with a signed leaf, then serves the
+// decrypted requests, filtering each by url and forwarding the allowed ones to
+// the real host via upstream.
+func handleMitm(w http.ResponseWriter, req *http.Request, r rule, s *signer, upstream http.RoundTripper) {
+	host, port := splitHostPort(req.Host)
+	if port == "" {
+		port = "443"
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "cannot hijack", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	raw, _, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer raw.Close()
+
+	tconn := tls.Server(raw, &tls.Config{
+		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if chi.ServerName != "" {
+				return s.leaf(chi.ServerName)
+			}
+			return s.leaf(host)
+		},
+		NextProtos: []string{"http/1.1"}, // NOTE: no h2; clients downgrade fine
+	})
+	defer tconn.Close()
+	if err := tconn.Handshake(); err != nil {
+		return
+	}
+
+	br := bufio.NewReader(tconn)
+	for {
+		inner, err := http.ReadRequest(br)
+		if err != nil {
+			return
+		}
+		hostPath := host + inner.URL.Path
+		if !r.permitsURL(hostPath) {
+			auditURL(host, port, hostPath, false)
+			resp := &http.Response{StatusCode: http.StatusForbidden, ProtoMajor: 1, ProtoMinor: 1,
+				Body: http.NoBody, Header: http.Header{}, Close: true}
+			resp.Write(tconn)
+			return
+		}
+		auditURL(host, port, hostPath, true)
+
+		inner.URL.Scheme = "https"
+		inner.URL.Host = req.Host
+		inner.RequestURI = ""
+		resp, err := upstream.RoundTrip(inner)
+		if err != nil {
+			(&http.Response{StatusCode: http.StatusBadGateway, ProtoMajor: 1, ProtoMinor: 1,
+				Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
+			return
+		}
+		err = resp.Write(tconn)
+		resp.Body.Close()
+		if err != nil || resp.Close || inner.Close {
+			return
+		}
+	}
+}

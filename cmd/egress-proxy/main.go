@@ -4,10 +4,16 @@
 //
 // config via env:
 //
-//	PROXY_ADDR     listen address (default :8080)
-//	PROXY_DEFAULT  "deny" (allowlist) or "allow" (denylist); default "deny"
-//	PROXY_ALLOW    comma-separated hosts reachable when default=deny
-//	PROXY_DENY     comma-separated hosts blocked when default=allow
+//	PROXY_ADDR      listen address (default :8080)
+//	PROXY_DEFAULT   "deny" (allowlist) or "allow" (denylist); default "deny"
+//	PROXY_ALLOW     comma-separated hosts reachable when default=deny
+//	PROXY_DENY      comma-separated hosts blocked when default=allow
+//	PROXY_DENY_URLS comma-separated host-anchored url patterns (mitm mode);
+//	                "*" matches anything, "/" included, e.g.
+//	                "github.com/*/chisel-releases*". hosts named here get their
+//	                tls terminated with a leaf signed by the run CA.
+//	PROXY_CA_CERT   path to the run CA cert (pem); required with deny-urls
+//	PROXY_CA_KEY    path to the run CA key (pem);  -//-
 //
 // host entries match exactly, or as a suffix when written ".example.com" or
 // "*.example.com" (so ".ubuntu.com" covers archive.ubuntu.com).
@@ -24,9 +30,10 @@ import (
 )
 
 type rule struct {
-	def   bool     // true = default allow
-	allow []string // exceptions to deny-default
-	deny  []string // exceptions to allow-default
+	def      bool     // true = default allow
+	allow    []string // exceptions to deny-default
+	deny     []string // exceptions to allow-default
+	denyURLs []urlRule
 }
 
 func (r rule) permits(host string) bool {
@@ -72,15 +79,31 @@ func audit(host, port string, allowed bool) {
 	os.Stdout.Write(append(b, '\n'))
 }
 
+// auditURL is audit + the full url -- only mitm'd requests have one.
+func auditURL(host, port, url string, allowed bool) {
+	b, _ := json.Marshal(map[string]any{
+		"ts": time.Now().UTC().Format(time.RFC3339), "host": host, "port": port, "allowed": allowed, "url": url,
+	})
+	os.Stdout.Write(append(b, '\n'))
+}
+
 func main() {
 	addr := envOr("PROXY_ADDR", ":8080")
 	r := rule{
-		def:   envOr("PROXY_DEFAULT", "deny") == "allow",
-		allow: splitList(os.Getenv("PROXY_ALLOW")),
-		deny:  splitList(os.Getenv("PROXY_DENY")),
+		def:      envOr("PROXY_DEFAULT", "deny") == "allow",
+		allow:    splitList(os.Getenv("PROXY_ALLOW")),
+		deny:     splitList(os.Getenv("PROXY_DENY")),
+		denyURLs: parseURLRules(splitList(os.Getenv("PROXY_DENY_URLS"))),
+	}
+	var s *signer
+	if len(r.denyURLs) > 0 {
+		var err error
+		if s, err = newSigner(os.Getenv("PROXY_CA_CERT"), os.Getenv("PROXY_CA_KEY")); err != nil {
+			panic("deny-urls set but CA unusable: " + err.Error())
+		}
 	}
 
-	srv := &http.Server{Addr: addr, Handler: handler(r)}
+	srv := &http.Server{Addr: addr, Handler: handler(r, s, http.DefaultTransport)}
 	if err := srv.ListenAndServe(); err != nil {
 		panic(err)
 	}
@@ -93,27 +116,33 @@ func envOr(k, def string) string {
 	return def
 }
 
-func handler(r rule) http.HandlerFunc {
+func handler(r rule, s *signer, upstream http.RoundTripper) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodConnect {
-			handleConnect(w, req, r)
+			handleConnect(w, req, r, s, upstream)
 			return
 		}
 		handleHTTP(w, req, r)
 	}
 }
 
-// handleConnect tunnels https. the target is req.Host (host:port).
-func handleConnect(w http.ResponseWriter, req *http.Request, r rule) {
+// handleConnect tunnels https. the target is req.Host (host:port). hosts with
+// url rules are not tunneled blind -- their tls terminates here (mitm) so each
+// request can be filtered by full url.
+func handleConnect(w http.ResponseWriter, req *http.Request, r rule, s *signer, upstream http.RoundTripper) {
 	host, port := splitHostPort(req.Host)
 	if !r.permits(host) {
 		audit(host, port, false)
 		http.Error(w, "egress denied", http.StatusForbidden)
 		return
 	}
+	if s != nil && r.mitmHost(host) {
+		handleMitm(w, req, r, s, upstream)
+		return
+	}
 	audit(host, port, true)
 
-	upstream, err := net.DialTimeout("tcp", req.Host, 30*time.Second)
+	remote, err := net.DialTimeout("tcp", req.Host, 30*time.Second)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -121,16 +150,16 @@ func handleConnect(w http.ResponseWriter, req *http.Request, r rule) {
 	w.WriteHeader(http.StatusOK)
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		upstream.Close()
+		remote.Close()
 		return
 	}
 	client, _, err := hj.Hijack()
 	if err != nil {
-		upstream.Close()
+		remote.Close()
 		return
 	}
-	go pipe(upstream, client)
-	go pipe(client, upstream)
+	go pipe(remote, client)
+	go pipe(client, remote)
 }
 
 // handleHTTP forwards plain http (absolute-URI proxy requests, e.g. apt).
@@ -144,7 +173,15 @@ func handleHTTP(w http.ResponseWriter, req *http.Request, r rule) {
 		http.Error(w, "egress denied", http.StatusForbidden)
 		return
 	}
-	audit(host, port, true)
+	// plain http shows the path w/out mitm -- url rules apply directly, and the
+	// audit gets the full url for free.
+	hostPath := host + req.URL.Path
+	if !r.permitsURL(hostPath) {
+		auditURL(host, port, hostPath, false)
+		http.Error(w, "egress denied", http.StatusForbidden)
+		return
+	}
+	auditURL(host, port, hostPath, true)
 
 	req.RequestURI = ""
 	resp, err := http.DefaultTransport.RoundTrip(req)

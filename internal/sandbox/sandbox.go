@@ -30,12 +30,13 @@ type Spec struct {
 
 // Egress is the resolved network policy for one run (from config.Sandbox.Egress).
 type Egress struct {
-	Mode      string // "" | open | none | proxy
+	Mode      string // "" | open | none | proxy | mitm-proxy
 	Default   string // proxy: deny | allow
 	Allow     []string
 	Deny      []string
-	Image     string // proxy image
-	AuditPath string // where to write the proxy's json audit log (proxy mode)
+	DenyURLs  []string // mitm-proxy: host-anchored url patterns to block
+	Image     string   // proxy image
+	AuditPath string   // where to write the proxy's json audit log (proxy mode)
 }
 
 // Mount is an extra host path bound into the sandbox.
