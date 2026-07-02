@@ -19,18 +19,18 @@ an `agent` is a harness -- an agent cli that runs the agentic loop in a sandbox.
 
 finally, `pats.yaml` sets up the test and scorer matrices. `test-matrix` defines which `agent` x `task` combinations should run. `scorer-matrix` defines which `task` x `scorer` combinations should run. scores aggregate as plain means (per pair over its scorers, then per agent over its tasks). a matrix row is a cross-product -- `agent`/`task`/`scorer` each take a scalar, a list, or `"*"` (all) -- so you rarely write one row per pair.
 
-there are two (and a half) stages of a pats workflow. `pats run` runs your test-matrix your agents across all your tasks, and saves the result to `.pats/runs/<date_slug>-<run_number>/` -- that usually takes a hot moment. then `pats score` scores the most recent run, or you can ofc instruct it to test an older run too. note that this is not intended as a way to keep old historic runs and therefore, if you change the scorers and rerun on the old run, you *are* going to just run the new scorers. finally, if you have any agentic scorers they are not run by default, but only with `--agentic` flag (note: agent scorers aren't implemented yet, so `--agentic` currently has nothing to run).
+there are two (and a half) stages of a pats workflow. `pats run` runs your test-matrix your agents across all your tasks, and saves the result to `.pats/runs/<run_number>-<date_slug>-<friendly-name>/` (e.g. `003-20260701-jacquard-runner`; the two words are generated from the numeric prefix) -- that usually takes a hot moment. then `pats score` scores the most recent run, or you can ofc instruct it to test an older run too. note that this is not intended as a way to keep old historic runs and therefore, if you change the scorers and rerun on the old run, you *are* going to just run the new scorers. finally, if you have any agentic scorers they are not run by default, but only with `--agentic` flag (note: agent scorers aren't implemented yet, so `--agentic` currently has nothing to run).
 
 agents are always run in a sandbox -- we never run without one. the `sandboxes` vector defines the available ones; each agent names the sandbox it wants via `sandbox: <id>` (if only one sandbox is defined, it's the default). a sandbox has a `kind` (`container` or `bwrap`) and, for container kinds, a `driver` (`docker` now, `podman` later) and exactly one of `image` or `build`. pats publishes a ready-made ubuntu-based fat image carrying all the harness clis at `ghcr.io/lczyk/pats/sandbox:<ubuntu-ver>` -- point `image` at that or your own. alternatively `build: <path>` names a docker build context (a dir with a Dockerfile, or a Dockerfile path, relative to `pats.yaml`) that pats builds at the start of every run -- the layer cache makes the no-change case a no-op, and the built image id is recorded in each pair's `metadata.json`. one guard: if the build context contains `.pats/` (run artifacts) and the dockerfile reads the context (a `COPY`/`ADD` not sourced `--from` another stage), the effective `.dockerignore` must exclude it (a literal `.pats/` line) or the run refuses to start -- pats won't bake your run history into the image, and won't edit ignore files for you. a context-less dockerfile (no `COPY`/`ADD`) needs no ignore file. `bwrap` (linux-only) is not implemented yet and is rejected at validation; `container` works anywhere docker does (incl. macos, where docker is itself a linux vm).
 
-a sandbox can also declare an `egress` policy: `mode: open` (the default -- unrestricted network), `mode: none` (`--network none`), or `mode: proxy` -- a filtering sidecar that allows/denies by host (`default: deny` + `allow: [...]`, or `default: allow` + `deny: [...]`) and writes a per-pair audit log (`egress.log`; denied hosts also land in the run metadata, a built-in cheat detector). under an allowlisting proxy, the hosts the harness itself needs -- the inference api, token refresh, opencode's startup fetches -- are merged in automatically per agent kind, so the config only lists what the *task* needs (e.g. apt mirrors). see `docs/proposals/network-egress.md` for the design.
+a sandbox can also declare an `egress` policy: `mode: open` (the default -- unrestricted network), `mode: none` (`--network none`), or `mode: proxy` -- a filtering sidecar that allows/denies by host (`default: deny` + `allow: [...]`, or `default: allow` + `deny: [...]`) and writes a per-pair audit log (`egress.log`; denied hosts also land in the run metadata, a built-in cheat detector). under an allowlisting proxy, the hosts the harness itself needs -- the inference api, token refresh, opencode's startup fetches -- are merged in automatically per agent kind, so the config only lists what the *task* needs (e.g. apt mirrors). when host granularity isn't enough (allow github, but not one specific repo), `mode: mitm-proxy` is a superset of `proxy` adding url-level rules: hosts named in `deny-urls` (host-anchored patterns, e.g. `"github.com/*/chisel-releases*"`) get their tls terminated with a per-run CA the sandbox is told to trust, so each request is filtered by full url; all other hosts stay undecrypted tunnels. see `docs/proposals/network-egress.md` for the design.
 
 ## examples
 
 typical loop -- run the matrix, then score it:
 
 ```sh
-pats run                 # run all agent x task pairs, save to .pats/runs/<date_slug>-<n>/
+pats run                 # run all agent x task pairs, save to .pats/runs/<n>-<date>-<adj>-<noun>/
 pats score               # score the latest run (tasks x scorers)
 ```
 
@@ -39,7 +39,8 @@ narrowing and parallelism:
 ```sh
 pats run -a claude-cli-keyless -t write-readme-simple   # just one pair
 pats run -j-1                                           # parallel pairs, auto job count
-pats score -r .pats/runs/20260701-003                   # score an older run
+pats score -r jacquard-runner                           # score an older run by its friendly name
+pats score -r .pats/runs/003-20260701-jacquard-runner   # ... or by path
 ```
 
 all commands take `-c <path>` to point at a `pats.yaml` other than the one in the cwd.

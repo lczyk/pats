@@ -12,6 +12,25 @@ sandboxes:
     kind: container
     driver: docker
     image: ghcr.io/lczyk/pats/sandbox:26.04
+    # egress -- outbound network policy (omit for open network). modes:
+    #   open       -- unrestricted (the default)
+    #   none       -- no network at all (--network none)
+    #   proxy      -- filtering sidecar: allow/deny by host + a per-pair audit
+    #                 log. the hosts the harness itself needs (inference api,
+    #                 token refresh) are merged into the allowlist for you.
+    #   mitm-proxy -- proxy, plus url-level rules: hosts named in deny-urls get
+    #                 their tls terminated with a per-run CA (the sandbox is
+    #                 given the CA to trust) so requests are filtered by full
+    #                 url; other hosts stay undecrypted tunnels. patterns are
+    #                 host-anchored, `*` matches anything (`/` included).
+    # egress:
+    #   mode: mitm-proxy
+    #   default: deny
+    #   allow:
+    #     - .ubuntu.com   # apt mirrors
+    #     - github.com
+    #   deny-urls:
+    #     - "github.com/*/some-answer-repo*"
   # bwrap (linux-only, no image) is planned but not implemented yet -- a bwrap
   # sandbox is rejected at validation.
   # - id: bwrap

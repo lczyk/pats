@@ -150,6 +150,51 @@ niche (local-model / adhoc). the mason path needs `mode: proxy` directly.
    egress via `--unshare-net` (mode none) now, slirp4netns+filter (mode proxy)
    later.
 
+## extension: url-level filtering (`mode: mitm-proxy`)
+
+status: implemented.
+
+host granularity can't express "allow github, but not the `chisel-releases`
+repo" -- the repo name lives in the https path, which a CONNECT tunnel never
+sees (requirement 4 rules out decryption... for `mode: proxy`). when a task
+legitimately needs *some* of a host but not all of it, there's a separate
+opt-in mode: `mitm-proxy`, a superset of `proxy`.
+
+- **selective decryption.** only hosts named by a `deny-urls` rule get their
+  tls terminated; every other allowed host stays a blind tunnel. the inference
+  api is never decrypted. to make the mitm set computable, url patterns are
+  **host-anchored**: the part before the first `/` must be a literal hostname
+  (a wildcard host would mitm everything -- rejected at validation).
+- **per-run ephemeral CA.** pats generates a CA per pair; the key is mounted
+  into the proxy sidecar only. the agent container gets the cert + a merged
+  trust bundle (image roots + run CA) bind-mounted over
+  `/etc/ssl/certs/ca-certificates.crt`, plus `SSL_CERT_FILE` /
+  `REQUESTS_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` for tools that don't read the
+  system bundle. a tool that still distrusts the CA fails its connection --
+  fail closed, not bypassed.
+- **audit gains urls.** mitm'd requests log the full url (allowed and denied);
+  denied ones land in the run metadata like denied hosts.
+
+```yaml
+egress:
+  mode: mitm-proxy
+  default: deny
+  allow: [archive.ubuntu.com, github.com, raw.githubusercontent.com]
+  deny-urls:
+    - "github.com/*/chisel-releases*"
+    - "raw.githubusercontent.com/*/chisel-releases*"
+```
+
+`*` in a pattern matches anything, `/` included. rules are deny-only for now
+(`allow-urls` under an allowlisting host would be the inverse -- add when a
+task needs it).
+
+known ceilings: mitm'd connections are http/1.1 only (the proxy declines h2 in
+alpn; clients downgrade). cert-pinning tools break on mitm'd hosts -- that's
+inherent, keep pinned hosts out of `deny-urls`. mirror leak remains: a copy of
+the denied content on an un-ruled host isn't caught -- `default: deny` mostly
+moots this since such hosts aren't allowed at all.
+
 ## open questions
 
 - **proxy choice**: off-the-shelf (tinyproxy/squid) vs a small in-tree go
