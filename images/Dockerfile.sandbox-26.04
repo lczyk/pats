@@ -1,7 +1,10 @@
-# pats sandbox image: ubuntu 26.04 + agent harness clis.
-# starts with claude-cli; codex-cli + opencode to follow.
+# pats sandbox image: ubuntu 26.04 + agent harness clis + the tooling agents
+# habitually reach for (git, curl, python3, ripgrep). usable out of the box as
+# a pats sandbox, and as a base for task-specific images -- e.g. mason's adds
+# chisel + dpkg-dev on top. published to ghcr.io/lczyk/pats/sandbox:26.04 on
+# tag push (publish_images workflow).
 #
-# installed globally (npm -g -> /usr/*) so the cli is on PATH for ANY uid --
+# clis installed globally (npm -g -> /usr/*) so they're on PATH for ANY uid --
 # pats runs the container with `--user <host uid>`, which has no home of its
 # own, so a per-user install (~/.local) would be invisible/unwritable.
 # pin CLAUDE_CLI_VERSION before publishing; floating `latest` for now.
@@ -13,7 +16,9 @@ RUN apt-get update && \
         curl \
         git \
         nodejs \
-        npm && \
+        npm \
+        python3 \
+        ripgrep && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ARG CLAUDE_CLI_VERSION=latest
