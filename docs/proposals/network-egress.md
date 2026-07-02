@@ -107,7 +107,7 @@ sandboxes:
     driver: docker
     image: mason-test/sandbox:26.04
     egress:
-      mode: proxy          # off (today) | none (--network none) | proxy
+      mode: proxy          # open (today) | none (--network none) | proxy
       default: deny        # proxy mode: deny (allowlist) | allow (denylist)
       allow:               # reachable hosts when default: deny
         - api.anthropic.com
@@ -117,7 +117,7 @@ sandboxes:
       # deny: [github.com, ...]   # blocked hosts when default: allow
 ```
 
-- `mode: off` -- current behaviour (open network). default, back-compat.
+- `mode: open` -- current behaviour (open network). the default.
 - `mode: none` -- `docker run --network none`. full lockdown, zero deps. **only
   valid for agents that need no network at all** -- a local model or an adhoc
   compute task. a harness agent that calls a remote inference api is dead under
@@ -173,4 +173,4 @@ niche (local-model / adhoc). the mason path needs `mode: proxy` directly.
   proxy` becomes a small orchestrator (create networks, start proxy, run agent,
   collect audit, teardown).
 - run metadata gains a `denied_egress` list per pair.
-- back-compat: absent `egress` == `mode: off`, today's behaviour.
+- back-compat: absent `egress` == `mode: open`, today's behaviour.

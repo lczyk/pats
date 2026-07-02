@@ -30,7 +30,7 @@ type Spec struct {
 
 // Egress is the resolved network policy for one run (from config.Sandbox.Egress).
 type Egress struct {
-	Mode      string // "" | off | none | proxy
+	Mode      string // "" | open | none | proxy
 	Default   string // proxy: deny | allow
 	Allow     []string
 	Deny      []string

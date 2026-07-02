@@ -78,10 +78,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	spec.Mounts = hs.mounts
-	spec.Egress = sandbox.Egress{ // same egress policy as real runs (no audit)
-		Mode: sb.Egress.Mode, Default: sb.Egress.Default,
-		Allow: sb.Egress.Allow, Deny: sb.Egress.Deny, Image: sb.Egress.Image,
-	}
+	spec.Egress = egressFor(sb, a.Kind, "") // same egress policy as real runs (no audit)
 
 	cctx, cancel := context.WithTimeout(ctx, preflightTimeout)
 	defer cancel()

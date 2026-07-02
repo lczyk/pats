@@ -64,13 +64,18 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if pairs, err = config.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
 		return "", err
 	}
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
-	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
-	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
-
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// resolve build: sandboxes to image ids first -- everything after (preflight
+	// included) then runs on the built image.
+	if err := buildImages(ctx, cfg, opts, pairs); err != nil {
+		return "", err
+	}
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
+	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
 
 	// fail fast on bad/expired creds before spinning per-pair containers.
 	lg.info("preflight: checking agent credentials")
@@ -258,6 +263,7 @@ func runPair(
 	// and seed/gather the sandbox via these paths).
 	hostEnv := map[string]string{
 		"PATS_AGENT_ID":   p.Agent,
+		"PATS_AGENT_KIND": a.Kind,
 		"PATS_TASK_ID":    p.Task,
 		"PATS_MODEL":      a.Model,
 		"PATS_WORKDIR":    workDir,
@@ -295,14 +301,7 @@ func runPair(
 		return err
 	}
 	spec.Mounts = hs.mounts
-	spec.Egress = sandbox.Egress{
-		Mode:      sb.Egress.Mode,
-		Default:   sb.Egress.Default,
-		Allow:     sb.Egress.Allow,
-		Deny:      sb.Egress.Deny,
-		Image:     sb.Egress.Image,
-		AuditPath: filepath.Join(outDir, "egress.log"),
-	}
+	spec.Egress = egressFor(sb, a.Kind, filepath.Join(outDir, "egress.log"))
 
 	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
 	if err != nil {
@@ -446,6 +445,39 @@ func copyFile(src, dst string) error {
 // expandID substitutes ${id} in a run-field value with the owning entity's id.
 func expandID(s, id string) string { return strings.ReplaceAll(s, "${id}", id) }
 
+// egressFor renders a sandbox's egress policy for one agent run. under an
+// allowlisting proxy the harness's own hosts (inference, token refresh) are
+// merged in, so pats.yaml only lists what the task needs.
+func egressFor(sb config.Sandbox, kind, auditPath string) sandbox.Egress {
+	eg := sandbox.Egress{
+		Mode:      sb.Egress.Mode,
+		Default:   sb.Egress.Default,
+		Allow:     sb.Egress.Allow,
+		Deny:      sb.Egress.Deny,
+		Image:     sb.Egress.Image,
+		AuditPath: auditPath,
+	}
+	if eg.Mode == "proxy" && eg.Default != "allow" {
+		eg.Allow = mergeHosts(eg.Allow, agent.RequiredHosts[kind])
+	}
+	return eg
+}
+
+// mergeHosts appends extras not already in hosts (exact string match; overlap
+// via wildcards is harmless -- the proxy just sees a redundant entry).
+func mergeHosts(hosts, extras []string) []string {
+	seen := map[string]bool{}
+	for _, h := range hosts {
+		seen[h] = true
+	}
+	for _, e := range extras {
+		if !seen[e] {
+			hosts = append(hosts, e)
+		}
+	}
+	return hosts
+}
+
 // relToCwd renders a path relative to the working dir for display; falls back to
 // the input if that's not possible (e.g. different volume).
 func relToCwd(p string) string {
@@ -530,11 +562,25 @@ func resolvePrompt(configDir, spec string, env map[string]string) ([]byte, error
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = &errb // NOTE: captured but unused for now; TODO(lczyk): persist
+	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("exec prompt %s: %w", argv[0], err)
+		return nil, fmt.Errorf("exec prompt %s: %w%s", argv[0], err, stderrTail(&errb))
 	}
 	return out.Bytes(), nil
+}
+
+// stderrTail renders a failed script's captured stderr for embedding in the
+// error (last few lines -- enough to see the crash, not the whole log).
+func stderrTail(b *bytes.Buffer) string {
+	s := strings.TrimSpace(b.String())
+	if s == "" {
+		return ""
+	}
+	const keep = 10
+	if lines := strings.Split(s, "\n"); len(lines) > keep {
+		s = "... " + strings.Join(lines[len(lines)-keep:], "\n")
+	}
+	return "\nstderr: " + s
 }
 
 // runHost runs a prepare/collect field on the host: it execs the field's file

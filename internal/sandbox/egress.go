@@ -14,13 +14,13 @@ const defaultProxyImage = "pats/egress-proxy:latest"
 // setupEgress applies a Spec's egress policy and returns the extra `docker run`
 // args for the agent container, plus a teardown (nil when nothing to tear down).
 //
-//	off/""  -> open network, no-op
+//	open/"" -> open network, no-op
 //	none    -> --network none
 //	proxy   -> internal network + proxy sidecar; agent reaches the net only via
 //	           the proxy, which allow/denies by host and writes a json audit.
 func (c *container) setupEgress(ctx context.Context, spec Spec) (netArgs []string, teardown func(), err error) {
 	switch spec.Egress.Mode {
-	case "", "off":
+	case "", "open":
 		return nil, nil, nil
 	case "none":
 		return []string{"--network", "none"}, nil, nil

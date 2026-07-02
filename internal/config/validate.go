@@ -44,20 +44,39 @@ func (c *Config) validateSandboxes(add func(string, ...any)) map[string]Sandbox 
 		out[s.ID] = s
 		switch s.Kind {
 		case "container":
-			if s.Image == "" {
-				add("sandbox %q: container kind needs an image", s.ID)
+			if s.Image == "" && s.Build == "" {
+				add("sandbox %q: container kind needs an image or a build context", s.ID)
+			}
+			if s.Image != "" && s.Build != "" {
+				add("sandbox %q: image and build are mutually exclusive", s.ID)
 			}
 		case "bwrap":
-			if s.Image != "" {
-				add("sandbox %q: bwrap kind takes no image", s.ID)
-			}
+			add("sandbox %q: bwrap kind not implemented yet", s.ID)
 		case "":
 			add("sandbox %q: missing kind (container|bwrap)", s.ID)
 		default:
 			add("sandbox %q: unknown kind %q", s.ID, s.Kind)
 		}
+		validateEgress(add, s)
 	}
 	return out
+}
+
+// validateEgress checks a sandbox's egress policy so a bad mode fails at load,
+// not mid-run.
+func validateEgress(add func(string, ...any), s Sandbox) {
+	switch s.Egress.Mode {
+	case "", "open", "none", "proxy":
+	case "off":
+		add("sandbox %q: egress mode %q was renamed -- use `open`", s.ID, s.Egress.Mode)
+	default:
+		add("sandbox %q: unknown egress mode %q (open|none|proxy)", s.ID, s.Egress.Mode)
+	}
+	switch s.Egress.Default {
+	case "", "deny", "allow":
+	default:
+		add("sandbox %q: unknown egress default %q (deny|allow)", s.ID, s.Egress.Default)
+	}
 }
 
 func (c *Config) validateAgents(add func(string, ...any), sandboxes map[string]Sandbox) map[string]Agent {
@@ -75,23 +94,33 @@ func (c *Config) validateAgents(add func(string, ...any), sandboxes map[string]S
 		switch {
 		case a.Kind == "":
 			add("agent %q: missing kind (opencode-openrouter|claude-cli-keyless)", a.ID)
-		case !agentKinds[a.Kind]:
+		case !AgentKinds[a.Kind]:
 			add("agent %q: unknown kind %q", a.ID, a.Kind)
 		}
 		if a.Model == "" {
 			add("agent %q: model is required", a.ID)
+		}
+		if a.Effort != "" && !effortKinds[a.Kind] {
+			add("agent %q: effort is not supported by kind %q", a.ID, a.Kind)
 		}
 		c.checkSandboxRef(add, a, sandboxes)
 	}
 	return out
 }
 
-// agentKinds is the set of supported agent kinds. the kind->command mapping
-// lives in the agent package; config can't import it (would cycle), so the
-// names are repeated here for validation.
-var agentKinds = map[string]bool{
+// AgentKinds is the set of supported agent kinds. the kind->command mapping
+// lives in agent.HarnessCmds; config can't import it (would cycle), so the
+// names are repeated here -- a test in the agent package keeps the two in sync.
+var AgentKinds = map[string]bool{
 	"opencode-openrouter": true,
 	"claude-cli-keyless":  true,
+}
+
+// effortKinds is the set of agent kinds whose cli takes a reasoning-effort
+// flag (claude: --effort; opencode: --variant).
+var effortKinds = map[string]bool{
+	"claude-cli-keyless":  true,
+	"opencode-openrouter": true,
 }
 
 // checkSandboxRef validates the agent's sandbox selection (explicit id must
@@ -148,6 +177,7 @@ func (c *Config) validateScorers(add func(string, ...any), agents map[string]Age
 				add("scorer %q: needs a score script", s.ID)
 			}
 		case "agent":
+			add("scorer %q: agent kind not implemented yet", s.ID)
 			if s.AgentID == "" {
 				add("scorer %q: agent kind needs an agent-id", s.ID)
 			} else if _, ok := agents[s.AgentID]; !ok {

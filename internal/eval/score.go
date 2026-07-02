@@ -201,9 +201,9 @@ func runScorer(opts ScoreOptions, sc config.Scorer, outDir, agent, task, model s
 		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr // NOTE: captured but unused for now; TODO(lczyk): persist scorer logs
-		if err := cmd.Run(); err != nil {
-			return 0, fmt.Errorf("run: %w", err) // non-zero exit = failure
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil { // non-zero exit = failure
+			return 0, fmt.Errorf("run: %w%s", err, stderrTail(&stderr))
 		}
 		return parseScore(stdout.String())
 	case "agent":
@@ -331,9 +331,22 @@ func sortedKeys(m map[string]float64) []string {
 
 // latestRunDir returns the highest-sorted run dir under base.
 func latestRunDir(base string) (string, error) {
-	entries, err := os.ReadDir(base)
+	names, err := sortedRunNames(base)
 	if err != nil {
 		return "", fmt.Errorf("no runs found under %s (run `pats run` first): %w", base, err)
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("no runs found under %s", base)
+	}
+	return filepath.Join(base, names[len(names)-1]), nil
+}
+
+// sortedRunNames lists the run dirs under base, sorted by (date, numeric
+// suffix) so 20260621-10 beats 20260621-2.
+func sortedRunNames(base string) ([]string, error) {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil, err
 	}
 	var names []string
 	for _, e := range entries {
@@ -341,10 +354,6 @@ func latestRunDir(base string) (string, error) {
 			names = append(names, e.Name())
 		}
 	}
-	if len(names) == 0 {
-		return "", fmt.Errorf("no runs found under %s", base)
-	}
-	// sort by (date, numeric suffix) so 20260621-10 beats 20260621-2.
 	sort.Slice(names, func(i, j int) bool {
 		di, ni := splitRunName(names[i])
 		dj, nj := splitRunName(names[j])
@@ -353,7 +362,7 @@ func latestRunDir(base string) (string, error) {
 		}
 		return ni < nj
 	})
-	return filepath.Join(base, names[len(names)-1]), nil
+	return names, nil
 }
 
 func splitRunName(name string) (date string, n int) {

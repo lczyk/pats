@@ -25,7 +25,12 @@ const (
 	claudeKeylessCmd = `claude --print --output-format stream-json --verbose --include-partial-messages ${PATS_EFFORT:+--effort "$PATS_EFFORT"} --model "$PATS_MODEL" --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"`
 	// opencode via openrouter: reads OPENROUTER_API_KEY from env. the openrouter/
 	// prefix is added here so the config model stays e.g. openai/gpt-4o-mini.
-	opencodeOpenrouterCmd = `opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions "$(cat "$PATS_PROMPT_FILE")"`
+	// --format json makes opencode emit one json event per line (tool_use,
+	// step_finish with usage, text, reasoning) instead of bare assistant prose --
+	// same role as claude's stream-json: a parseable stdout.log. --thinking
+	// includes the reasoning events. effort maps to --variant (provider-specific
+	// reasoning effort, e.g. high|max|minimal), same ${PATS_EFFORT:+...} trick.
+	opencodeOpenrouterCmd = `opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions --format json --thinking ${PATS_EFFORT:+--variant "$PATS_EFFORT"} "$(cat "$PATS_PROMPT_FILE")"`
 )
 
 // HarnessCmds maps an agent kind to its one-shot shell command -- the registry
@@ -34,6 +39,22 @@ const (
 var HarnessCmds = map[string]string{
 	"claude-cli-keyless":  claudeKeylessCmd,
 	"opencode-openrouter": opencodeOpenrouterCmd,
+}
+
+// RequiredHosts lists the hosts a harness itself must reach to function at all
+// (inference api, auth/token refresh, startup fetches). the run phase merges
+// these into a proxy-mode allowlist so pats.yaml only lists what the task
+// needs. entries use the proxy's match syntax (".x.com" = x.com + subdomains).
+var RequiredHosts = map[string][]string{
+	"claude-cli-keyless": {
+		".anthropic.com", // inference api
+		".claude.com",    // oauth token refresh (missing it -> 401 mid-run)
+	},
+	"opencode-openrouter": {
+		"openrouter.ai",      // inference
+		"models.dev",         // opencode model catalog
+		"registry.npmjs.org", // opencode runtime plugin/dep fetch
+	},
 }
 
 // Spec builds the sandboxed execution for a task-running agent.
@@ -50,6 +71,7 @@ func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, 
 func Env(a config.Agent, promptFile, outputDir string) map[string]string {
 	return map[string]string{
 		"PATS_MODEL":       a.Model,
+		"PATS_AGENT_KIND":  a.Kind,
 		"PATS_PROMPT_FILE": promptFile,
 		"PATS_OUTPUT_DIR":  outputDir,
 		"PATS_EFFORT":      a.Effort,

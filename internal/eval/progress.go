@@ -312,27 +312,47 @@ func (t *statTap) Write(b []byte) (int, error) {
 // NOTE: this is the one harness-coupled spot -- a stream-format change breaks
 // here, not the run. add a case per new kind.
 func statScanner(kind string) func([]byte, *pairStat) {
-	if kind == "claude-cli-keyless" {
+	switch kind {
+	case "claude-cli-keyless":
 		return scanClaude
+	case "opencode-openrouter":
+		return scanOpencode
 	}
 	return nil
 }
 
-// scanClaude counts tool calls in claude-code's stream-json. each assistant turn
-// arrives as a top-level {"type":"assistant","message":{"content":[...]}} object;
-// a tool call is a content block with type "tool_use". (the raw API
-// content_block_start events are nested under a "stream_event" envelope when
-// --include-partial-messages is set -- the assistant message-level events are
-// present either way, so we key off those.)
+// claudeEvent is one line of claude-code's stream-json -- the single place the
+// format is spelled out; scanClaude (live counters) and claudeSummary (post-run
+// digest) both decode into it. each assistant turn arrives as a top-level
+// {"type":"assistant","message":{"content":[...]}} object; a tool call is a
+// content block with type "tool_use". (the raw API content_block_start events
+// are nested under a "stream_event" envelope when --include-partial-messages is
+// set -- the assistant message-level events are present either way, so we key
+// off those.) the totals arrive on the final {"type":"result"} event.
+type claudeEvent struct {
+	Type    string `json:"type"`
+	Message struct {
+		Content []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"content"`
+	} `json:"message"`
+	NumTurns int     `json:"num_turns"`
+	CostUSD  float64 `json:"total_cost_usd"`
+	TTFTms   int     `json:"ttft_ms"`
+	APIms    int     `json:"duration_api_ms"`
+	IsError  bool    `json:"is_error"`
+	Usage    struct {
+		Input         int `json:"input_tokens"`
+		Output        int `json:"output_tokens"`
+		CacheRead     int `json:"cache_read_input_tokens"`
+		CacheCreation int `json:"cache_creation_input_tokens"`
+	} `json:"usage"`
+}
+
+// scanClaude counts tool calls in claude-code's stream-json (see claudeEvent).
 func scanClaude(line []byte, s *pairStat) {
-	var ev struct {
-		Type    string `json:"type"`
-		Message struct {
-			Content []struct {
-				Type string `json:"type"`
-			} `json:"content"`
-		} `json:"message"`
-	}
+	var ev claudeEvent
 	if json.Unmarshal(line, &ev) != nil || ev.Type != "assistant" {
 		return
 	}
@@ -340,6 +360,39 @@ func scanClaude(line []byte, s *pairStat) {
 		if c.Type == "tool_use" {
 			atomic.AddInt64(&s.tools, 1)
 		}
+	}
+}
+
+// opencodeEvent is one line of `opencode run --format json` output -- the
+// single place that format is spelled out; scanOpencode (live counters) and
+// opencodeSummary (post-run digest) both decode into it. emitted types:
+// tool_use (a completed/errored tool part, name in part.tool), step_start,
+// step_finish (per-step usage: cost + tokens), text, reasoning (only with
+// --thinking), error. usage is per step, so totals are summed across
+// step_finish events.
+type opencodeEvent struct {
+	Type string `json:"type"`
+	Part struct {
+		Tool   string  `json:"tool"`
+		Cost   float64 `json:"cost"`
+		Tokens struct {
+			Input     int `json:"input"`
+			Output    int `json:"output"`
+			Reasoning int `json:"reasoning"`
+			Cache     struct {
+				Read  int `json:"read"`
+				Write int `json:"write"`
+			} `json:"cache"`
+		} `json:"tokens"`
+	} `json:"part"`
+}
+
+// scanOpencode counts tool calls in opencode's json event stream (see
+// opencodeEvent).
+func scanOpencode(line []byte, s *pairStat) {
+	var ev opencodeEvent
+	if json.Unmarshal(line, &ev) == nil && ev.Type == "tool_use" {
+		atomic.AddInt64(&s.tools, 1)
 	}
 }
 
@@ -352,6 +405,7 @@ type runSummary struct {
 	OutputTokens        int            `json:"output_tokens,omitempty"`
 	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int            `json:"cache_creation_tokens,omitempty"`
+	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // opencode splits these out; claude folds them into output
 	TTFTms              int            `json:"ttft_ms,omitempty"`
 	APIDurationMs       int            `json:"api_duration_ms,omitempty"`
 	IsError             bool           `json:"is_error,omitempty"`
@@ -363,15 +417,59 @@ type runSummary struct {
 //
 // NOTE: harness-coupled, like statScanner -- a stream-format change breaks here.
 func summarize(kind, stdoutPath string) *runSummary {
-	if kind == "claude-cli-keyless" {
+	switch kind {
+	case "claude-cli-keyless":
 		return claudeSummary(stdoutPath)
+	case "opencode-openrouter":
+		return opencodeSummary(stdoutPath)
 	}
 	return nil
 }
 
-// claudeSummary parses claude-code stream-json: tool_use names from each
-// assistant turn, and the totals (cost, tokens, turns, ttft) from the final
-// "result" event.
+// opencodeSummary parses opencode's json event stream (see opencodeEvent):
+// tool names from tool_use events, cost + tokens summed over step_finish
+// events (one per model round-trip, so their count doubles as num_turns).
+func opencodeSummary(path string) *runSummary {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	sum := &runSummary{Tools: map[string]int{}}
+	steps := 0
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		var ev opencodeEvent
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "tool_use":
+			sum.Tools[ev.Part.Tool]++
+		case "step_finish":
+			steps++
+			sum.CostUSD += ev.Part.Cost
+			sum.InputTokens += ev.Part.Tokens.Input
+			sum.OutputTokens += ev.Part.Tokens.Output
+			sum.ReasoningTokens += ev.Part.Tokens.Reasoning
+			sum.CacheReadTokens += ev.Part.Tokens.Cache.Read
+			sum.CacheCreationTokens += ev.Part.Tokens.Cache.Write
+		case "error":
+			sum.IsError = true
+		}
+	}
+	sum.NumTurns = steps
+	if steps == 0 && len(sum.Tools) == 0 && !sum.IsError {
+		return nil // empty/garbage log -> nothing worth storing
+	}
+	return sum
+}
+
+// claudeSummary parses claude-code stream-json (see claudeEvent): tool_use
+// names from each assistant turn, and the totals (cost, tokens, turns, ttft)
+// from the final "result" event.
 func claudeSummary(path string) *runSummary {
 	f, err := os.Open(path)
 	if err != nil {
@@ -384,26 +482,7 @@ func claudeSummary(path string) *runSummary {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024) // lines carry base64 sigs -- allow big
 	for sc.Scan() {
-		var ev struct {
-			Type    string `json:"type"`
-			Message struct {
-				Content []struct {
-					Type string `json:"type"`
-					Name string `json:"name"`
-				} `json:"content"`
-			} `json:"message"`
-			NumTurns int     `json:"num_turns"`
-			CostUSD  float64 `json:"total_cost_usd"`
-			TTFTms   int     `json:"ttft_ms"`
-			APIms    int     `json:"duration_api_ms"`
-			IsError  bool    `json:"is_error"`
-			Usage    struct {
-				Input         int `json:"input_tokens"`
-				Output        int `json:"output_tokens"`
-				CacheRead     int `json:"cache_read_input_tokens"`
-				CacheCreation int `json:"cache_creation_input_tokens"`
-			} `json:"usage"`
-		}
+		var ev claudeEvent
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
 			continue
 		}

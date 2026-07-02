@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -44,9 +43,13 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	for _, s := range cfg.Sandboxes {
 		mode := s.Egress.Mode
 		if mode == "" {
-			mode = "off" // default per docs/proposals/network-egress.md
+			mode = "open" // the default: no egress filtering
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Kind, s.ResolvedDriver(), s.Image, mode)
+		image := s.Image
+		if image == "" && s.Build != "" {
+			image = "build:" + s.Build
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Kind, s.ResolvedDriver(), image, mode)
 	}
 	return w.Flush()
 }
@@ -72,24 +75,10 @@ func ListScorers(cfg *config.Config, out io.Writer) error {
 // it reads run artifacts only -- no pats.yaml needed, so it works on a broken config.
 func ListRuns(configDir string, out io.Writer) error {
 	base := filepath.Join(configDir, runsSubdir)
-	entries, err := os.ReadDir(base)
+	names, err := sortedRunNames(base)
 	if err != nil {
 		return nil // no runs yet
 	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Slice(names, func(i, j int) bool {
-		di, ni := splitRunName(names[i])
-		dj, nj := splitRunName(names[j])
-		if di != dj {
-			return di < dj
-		}
-		return ni < nj
-	})
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "RUN\tPAIRS\tSTATUS\tSCORE")

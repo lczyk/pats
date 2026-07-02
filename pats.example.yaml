@@ -1,10 +1,21 @@
 sandboxes:
+  # a container sandbox names its image one of two ways (exactly one):
+  #   image: <ref>   -- use an existing image as-is
+  #   build: <path>  -- a docker build context pats builds at run start: a dir
+  #                     (with a Dockerfile) or a Dockerfile path, relative to
+  #                     this file. the layer cache makes no-change rebuilds
+  #                     cheap. if the context contains .pats/ (run artifacts)
+  #                     and the dockerfile COPYs/ADDs from the context, the
+  #                     effective .dockerignore must exclude it (a literal
+  #                     `.pats/` line) or the run refuses to start.
   - id: docker
     kind: container
     driver: docker
     image: ghcr.io/lczyk/pats/sandbox:26.04
-  - id: bwrap
-    kind: bwrap
+  # bwrap (linux-only, no image) is planned but not implemented yet -- a bwrap
+  # sandbox is rejected at validation.
+  # - id: bwrap
+  #   kind: bwrap
 
 # agents -- the harnesses (agent clis) under test, run in a sandbox. two kinds:
 #   opencode-openrouter -- the opencode cli, models served via openrouter.
@@ -84,11 +95,12 @@ scorers:
     score: scorers/${id}.sh
 
   # fuzzy + agentic: ask the judge agent to score. nondeterministic; only runs
-  # under `pats score --agentic`. NOTE: agent scorers aren't implemented yet.
-  - id: no-colloquialisms
-    kind: agent
-    agent-id: judge
-    prompt: prompts/no-colloquialisms.txt
+  # under `pats score --agentic`. NOTE: agent scorers aren't implemented yet --
+  # configuring one is rejected at validation, hence commented out.
+  # - id: no-colloquialisms
+  #   kind: agent
+  #   agent-id: judge
+  #   prompt: prompts/no-colloquialisms.txt
 
 # test-matrix -- which agent x task pairs to run. each row is a cross-product:
 # `agent` and `task` take a scalar, a list, or `"*"` (all).
@@ -104,5 +116,5 @@ scorer-matrix:
     task: "*"
   - scorer: no-finite-verbs
     task: "*"
-  - scorer: no-colloquialisms
-    task: "*"
+  # - scorer: no-colloquialisms
+  #   task: "*"

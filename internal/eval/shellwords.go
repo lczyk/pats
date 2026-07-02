@@ -10,7 +10,7 @@ import "fmt"
 // rules: unquoted whitespace separates words; '...' is fully literal; "..."
 // is literal except a backslash before " \ $ or `; an unquoted backslash
 // escapes the next char. adjacent quoted/unquoted runs concatenate, and empty
-// quotes yield an empty argument ('' -> one empty arg).
+// quotes yield an empty argument (two adjacent quotes -> one empty arg).
 //
 // NOTE: no line-continuation (backslash-newline) -- field values are single
 // line. unterminated quotes and a trailing backslash are errors.

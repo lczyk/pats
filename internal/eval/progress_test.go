@@ -79,7 +79,58 @@ func TestClaudeSummary(t *testing.T) {
 	assert.Equal(t, s.Tools["Bash"], 2) // per-tool-name counts
 	assert.Equal(t, s.Tools["Read"], 1)
 
-	assert.Nil(t, summarize("opencode-openrouter", p)) // no parser for the kind -> nil
+	assert.Nil(t, summarize("codex-cli", p)) // no parser for the kind -> nil
+}
+
+func TestOpencodeSummary(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "stdout.log")
+	// two steps (usage summed), three tool calls, a reasoning + text part.
+	log := `{"type":"step_start","timestamp":1,"sessionID":"s","part":{"type":"step-start"}}
+{"type":"tool_use","timestamp":2,"sessionID":"s","part":{"type":"tool","tool":"bash","state":{"status":"completed"}}}
+{"type":"tool_use","timestamp":3,"sessionID":"s","part":{"type":"tool","tool":"bash","state":{"status":"error"}}}
+{"type":"reasoning","timestamp":4,"sessionID":"s","part":{"type":"reasoning","text":"hmm"}}
+{"type":"step_finish","timestamp":5,"sessionID":"s","part":{"type":"step-finish","cost":0.01,"tokens":{"input":100,"output":50,"reasoning":25,"cache":{"read":1000,"write":10}}}}
+{"type":"tool_use","timestamp":6,"sessionID":"s","part":{"type":"tool","tool":"read","state":{"status":"completed"}}}
+{"type":"text","timestamp":7,"sessionID":"s","part":{"type":"text","text":"done"}}
+{"type":"step_finish","timestamp":8,"sessionID":"s","part":{"type":"step-finish","cost":0.02,"tokens":{"input":200,"output":150,"reasoning":0,"cache":{"read":2000,"write":20}}}}
+`
+	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
+
+	s := opencodeSummary(p)
+	require.NotNil(t, s)
+	assert.Equal(t, s.NumTurns, 2) // one per step_finish
+	assert.NearlyEqual(t, s.CostUSD, 0.03, 1e-9)
+	assert.Equal(t, s.InputTokens, 300)
+	assert.Equal(t, s.OutputTokens, 200)
+	assert.Equal(t, s.ReasoningTokens, 25)
+	assert.Equal(t, s.CacheReadTokens, 3000)
+	assert.Equal(t, s.CacheCreationTokens, 30)
+	assert.Equal(t, s.Tools["bash"], 2)
+	assert.Equal(t, s.Tools["read"], 1)
+	assert.Equal(t, s.IsError, false)
+
+	// error-only log (e.g. bad model / policy refusal) -> summary with IsError.
+	pe := filepath.Join(dir, "err.log")
+	require.NoError(t, os.WriteFile(pe, []byte(`{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"APIError"}}`+"\n"), 0o644))
+	se := opencodeSummary(pe)
+	require.NotNil(t, se)
+	assert.Equal(t, se.IsError, true)
+
+	// prose/garbage -> nil.
+	pg := filepath.Join(dir, "garbage.log")
+	require.NoError(t, os.WriteFile(pg, []byte("just some prose\n"), 0o644))
+	assert.Nil(t, opencodeSummary(pg))
+}
+
+func TestScanOpencode(t *testing.T) {
+	var s pairStat
+	tap := &statTap{stat: &s, scan: scanOpencode}
+	tap.Write([]byte(`{"type":"tool_use","part":{"type":"tool","tool":"bash"}}` + "\n"))
+	tap.Write([]byte(`{"type":"text","part":{"type":"text","text":"hi"}}` + "\n"))
+	tap.Write([]byte(`{"type":"tool_use","part":{"type":"tool","tool":"read"}}` + "\n"))
+	assert.Equal(t, atomic.LoadInt64(&s.out), int64(3))
+	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
 }
 
 func TestIsProgressTTY(t *testing.T) {

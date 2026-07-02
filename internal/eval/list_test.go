@@ -15,7 +15,7 @@ func listTestConfig() *config.Config {
 	return &config.Config{
 		Sandboxes: []config.Sandbox{
 			{ID: "box", Kind: "container", Image: "ubuntu", Egress: config.Egress{Mode: "proxy"}},
-			{ID: "bare", Kind: "bwrap"}, // egress mode empty -> "off"
+			{ID: "bare", Kind: "bwrap"}, // egress mode empty -> "open"
 		},
 		Agents: []config.Agent{
 			{ID: "claude", Kind: "claude-cli-keyless", Model: "opus", Sandbox: "box", Effort: "high"},
@@ -48,7 +48,7 @@ func TestListSandboxes(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, ListSandboxes(listTestConfig(), &out))
 	s := out.String()
-	for _, want := range []string{"proxy", "docker", "bare", "off"} { // docker = resolved driver, off = default egress
+	for _, want := range []string{"proxy", "docker", "bare", "open"} { // docker = resolved driver, open = default egress
 		assert.ContainsString(t, s, want)
 	}
 }

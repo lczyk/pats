@@ -28,21 +28,24 @@ type Config struct {
 }
 
 // Sandbox is an isolation environment a task-running agent executes in.
+// container kinds name their image one of two ways: `image` (pull/use as-is)
+// or `build` (a docker build context pats builds at run start) -- exactly one.
 type Sandbox struct {
 	ID     string `yaml:"id"`
 	Kind   string `yaml:"kind"`   // container | bwrap
 	Driver string `yaml:"driver"` // container: docker|podman (defaults docker); bwrap: bwrap
-	Image  string `yaml:"image"`  // container only
+	Image  string `yaml:"image"`  // container: existing image to run
+	Build  string `yaml:"build"`  // container: build context -- a dir (with a Dockerfile) or a Dockerfile path, relative to the config dir
 	Egress Egress `yaml:"egress"` // outbound network policy (default: open)
 }
 
 // Egress is a sandbox's outbound network policy. see docs/proposals/network-egress.md.
 //
-//	off   -- open network (default, back-compat)
+//	open  -- open network (the default)
 //	none  -- no network (--network none); only for agents needing no egress
 //	proxy -- filter through a sidecar proxy by host, allow/deny + audit
 type Egress struct {
-	Mode    string   `yaml:"mode"`        // off | none | proxy
+	Mode    string   `yaml:"mode"`        // open | none | proxy
 	Default string   `yaml:"default"`     // proxy: deny (allowlist) | allow (denylist)
 	Allow   []string `yaml:"allow"`       // hosts reachable when default: deny
 	Deny    []string `yaml:"deny"`        // hosts blocked when default: allow
@@ -72,7 +75,7 @@ type Agent struct {
 	Kind    string `yaml:"kind"`
 	Model   string `yaml:"model"`
 	Sandbox string `yaml:"sandbox"`
-	Effort  string `yaml:"effort"` // optional reasoning effort (claude: low|medium|high)
+	Effort  string `yaml:"effort"` // optional reasoning effort (claude --effort: low|medium|high; opencode --variant: provider-specific, e.g. high|max|minimal)
 }
 
 // Task is one scenario handed to a task-running agent.

@@ -21,8 +21,9 @@ func TestExampleConfig(t *testing.T) {
 
 	score, err := c.ExpandScorerMatrix()
 	require.NoError(t, err)
-	// (2 + 1 + 1 scorers) each x "*" (3 tasks) = 12 pairs.
-	assert.Len(t, score, 12)
+	// (2 + 1 scorers) each x "*" (3 tasks) = 9 pairs. (the agent scorer is
+	// commented out until agent scorers are implemented.)
+	assert.Len(t, score, 9)
 }
 
 func parseT(t *testing.T, src string) *Config {
@@ -56,7 +57,7 @@ func TestValidateErrors(t *testing.T) {
 		{
 			name: "unknown agent kind",
 			src: `
-sandboxes: [{id: s, kind: bwrap}]
+sandboxes: [{id: s, kind: container, image: img}]
 agents:
   - {id: a, kind: bogus, model: m, sandbox: s}
 `,
@@ -65,7 +66,7 @@ agents:
 		{
 			name: "agent missing model",
 			src: `
-sandboxes: [{id: s, kind: bwrap}]
+sandboxes: [{id: s, kind: container, image: img}]
 agents:
   - {id: a, kind: opencode-openrouter, sandbox: s}
 `,
@@ -75,8 +76,8 @@ agents:
 			name: "agent missing sandbox, many defined",
 			src: `
 sandboxes:
-  - {id: a, kind: bwrap}
-  - {id: b, kind: bwrap}
+  - {id: a, kind: container, image: img}
+  - {id: b, kind: container, image: img}
 agents:
   - {id: h, kind: claude-cli-keyless, model: m}
 `,
@@ -100,9 +101,64 @@ scorers:
 			want: "unknown agent-id",
 		},
 		{
-			name: "duplicate test pair",
+			name: "container with image and build",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, build: .}]
+`,
+			want: "mutually exclusive",
+		},
+		{
+			name: "container with neither image nor build",
+			src: `
+sandboxes: [{id: s, kind: container}]
+`,
+			want: "needs an image or a build context",
+		},
+		{
+			name: "bwrap not implemented",
 			src: `
 sandboxes: [{id: s, kind: bwrap}]
+`,
+			want: "bwrap kind not implemented",
+		},
+		{
+			name: "agent scorer not implemented",
+			src: `
+scorers:
+  - {id: sc, kind: agent, agent-id: ghost, prompt: p.txt}
+`,
+			want: "agent kind not implemented",
+		},
+		{
+			// both real kinds take an effort flag now (claude --effort, opencode
+			// --variant), so only an unknown kind can trip this today; the check
+			// stays for future effort-less kinds.
+			name: "effort on a kind without it",
+			src: `
+sandboxes: [{id: s, kind: container, image: img}]
+agents:
+  - {id: a, kind: bogus, model: m, sandbox: s, effort: high}
+`,
+			want: "effort is not supported",
+		},
+		{
+			name: "egress mode off renamed",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: off}}]
+`,
+			want: "renamed",
+		},
+		{
+			name: "unknown egress mode",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: firewall}}]
+`,
+			want: "unknown egress mode",
+		},
+		{
+			name: "duplicate test pair",
+			src: `
+sandboxes: [{id: s, kind: container, image: img}]
 agents: [{id: a, kind: opencode-openrouter, model: m, sandbox: s}]
 tasks: [{id: t, prompt: p.txt}]
 test-matrix:
@@ -122,7 +178,7 @@ test-matrix:
 
 func TestWildcardResolution(t *testing.T) {
 	c := parseT(t, `
-sandboxes: [{id: s, kind: bwrap}]
+sandboxes: [{id: s, kind: container, image: img}]
 agents:
   - {id: h1, kind: claude-cli-keyless, model: m, sandbox: s}
   - {id: h2, kind: opencode-openrouter, model: m, sandbox: s}

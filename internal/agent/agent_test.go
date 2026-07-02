@@ -74,3 +74,19 @@ func TestSpecUnsupportedKind(t *testing.T) {
 	_, err := Spec(config.Agent{ID: "h", Kind: "codex-cli", Sandbox: "s"}, "/tmp", nil)
 	assert.Error(t, err, "unsupported kind")
 }
+
+// the kind registry is spelled out twice (config.AgentKinds for validation,
+// HarnessCmds for execution -- an import cycle keeps them apart); this pins
+// them to the same key set.
+func TestKindRegistriesMatch(t *testing.T) {
+	for k := range HarnessCmds {
+		if !config.AgentKinds[k] {
+			t.Errorf("HarnessCmds kind %q missing from config.AgentKinds", k)
+		}
+	}
+	for k := range config.AgentKinds {
+		if _, ok := HarnessCmds[k]; !ok {
+			t.Errorf("config.AgentKinds kind %q missing from HarnessCmds", k)
+		}
+	}
+}
