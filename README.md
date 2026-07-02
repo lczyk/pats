@@ -5,7 +5,7 @@
 [![lint_and_test](https://github.com/lczyk/pats/actions/workflows/lint_and_test.yml/badge.svg)](https://github.com/lczyk/pats/actions/workflows/lint_and_test.yml)
 ![GitHub License](https://img.shields.io/github/license/lczyk/pats)
 
-<img src="assets/logo.png" alt="pats logo" width="320">
+<img src="assets/robot_cat.png" alt="pats logo" width="30">
 
 score-based testing framework for testing and scoring agent tasks.
 
