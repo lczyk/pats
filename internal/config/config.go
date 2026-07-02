@@ -84,9 +84,15 @@ func (s Sandbox) ResolvedDriver() string {
 type Agent struct {
 	ID      string `yaml:"id"`
 	Kind    string `yaml:"kind"`
-	Model   string `yaml:"model"`
+	Model   string `yaml:"model"` // ${id} -> agent id
 	Sandbox string `yaml:"sandbox"`
 	Effort  string `yaml:"effort"` // optional reasoning effort (claude --effort: low|medium|high; opencode --variant: provider-specific, e.g. high|max|minimal)
+}
+
+// ResolvedModel is the agent's model with ${id} replaced by the agent id --
+// for ids that mirror the model name (e.g. id: gpt-5-mini, model: openai/${id}).
+func (a Agent) ResolvedModel() string {
+	return strings.ReplaceAll(a.Model, "${id}", a.ID)
 }
 
 // Task is one scenario handed to a task-running agent.
@@ -96,6 +102,12 @@ type Task struct {
 	Prepare string `yaml:"prepare"` // seed the sandbox (optional)
 	Collect string `yaml:"collect"` // gather outputs (optional)
 	Timeout string `yaml:"timeout"` // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
+}
+
+// ResolvedPrompt is the task's prompt spec with ${id} replaced by the task id
+// (the same substitution run/score apply before resolving the prompt).
+func (t Task) ResolvedPrompt() string {
+	return strings.ReplaceAll(t.Prompt, "${id}", t.ID)
 }
 
 // DefaultTimeout bounds an agent run when a task sets no timeout.

@@ -76,7 +76,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.ID })
 	agentModel := map[string]string{}
 	for _, a := range cfg.Agents {
-		agentModel[a.ID] = a.Model
+		agentModel[a.ID] = a.ResolvedModel()
 	}
 	// task -> scorers to run on it.
 	byTask := map[string][]config.ScorePair{}

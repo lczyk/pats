@@ -23,7 +23,7 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 		if err != nil {
 			sb = "?" // dangling/ambiguous sandbox ref; validate would have caught it
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", a.ID, a.Kind, a.Model, sb, a.Effort)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", a.ID, a.Kind, a.ResolvedModel(), sb, a.Effort)
 	}
 	return w.Flush()
 }
@@ -32,7 +32,7 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 func ListTasks(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	for _, t := range cfg.Tasks {
-		fmt.Fprintf(w, "%s\t%s\n", t.ID, t.Prompt)
+		fmt.Fprintf(w, "%s\t%s\n", t.ID, t.ResolvedPrompt())
 	}
 	return w.Flush()
 }

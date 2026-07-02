@@ -70,7 +70,7 @@ func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, 
 // promptFile + outputDir are in-sandbox paths (see sandbox.WorkMount).
 func Env(a config.Agent, promptFile, outputDir string) map[string]string {
 	return map[string]string{
-		"PATS_MODEL":       a.Model,
+		"PATS_MODEL":       a.ResolvedModel(),
 		"PATS_AGENT_KIND":  a.Kind,
 		"PATS_PROMPT_FILE": promptFile,
 		"PATS_OUTPUT_DIR":  outputDir,

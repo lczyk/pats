@@ -283,6 +283,13 @@ suites:
 	assert.Len(t, pairs, 4)
 }
 
+func TestAgentResolvedModel(t *testing.T) {
+	// ${id} in the model is replaced by the agent id.
+	assert.Equal(t, Agent{ID: "gpt-5-mini", Model: "openai/${id}"}.ResolvedModel(), "openai/gpt-5-mini")
+	// no ${id} -> model used verbatim.
+	assert.Equal(t, Agent{ID: "haiku", Model: "claude-haiku-4-5"}.ResolvedModel(), "claude-haiku-4-5")
+}
+
 func TestScorerExecFile(t *testing.T) {
 	// ${id} in the score path is replaced by the scorer id.
 	assert.Equal(t, Scorer{ID: "x", Score: "scorers/${id}.py"}.ExecFile(), "scorers/x.py")

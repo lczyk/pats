@@ -275,7 +275,7 @@ func runPair(
 		"PATS_AGENT_ID":   p.Agent,
 		"PATS_AGENT_KIND": a.Kind,
 		"PATS_TASK_ID":    p.Task,
-		"PATS_MODEL":      a.Model,
+		"PATS_MODEL":      a.ResolvedModel(),
 		"PATS_WORKDIR":    workDir,
 		"PATS_OUTPUT_DIR": outDir,
 	}
@@ -287,7 +287,7 @@ func runPair(
 	}
 
 	// stage the prompt into the workdir so the agent sees it at a stable path.
-	promptData, err := resolvePrompt(opts.ConfigDir, expandID(t.Prompt, t.ID), hostEnv)
+	promptData, err := resolvePrompt(opts.ConfigDir, t.ResolvedPrompt(), hostEnv)
 	if err != nil {
 		return fmt.Errorf("resolve prompt: %w", err)
 	}
