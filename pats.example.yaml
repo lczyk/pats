@@ -135,7 +135,7 @@ scorers:
 # exempt) -- an orphaned entry is a validation error, so forgetting to wire a
 # new task or scorer in fails at load instead of silently never running.
 # a task's score is the mean over the scorers run on it. narrow a run or score
-# to one suite with `-m <id>`.
+# to one suite with `-s <id>`.
 suites:
   - id: readme
     agents: [haiku-claude-cli, haiku-opencode]

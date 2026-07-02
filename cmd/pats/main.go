@@ -37,7 +37,7 @@ type RunCommand struct {
 	Jobs   int      `long:"jobs" short:"j" default:"1" description:"max pairs to run in parallel; -1 for auto"`
 	Agents []string `long:"agent" short:"a" description:"only run these agents (repeatable); default: all"`
 	Tasks  []string `long:"task" short:"t" description:"only run these tasks (repeatable); default: all"`
-	Suites []string `long:"suite" short:"m" description:"only run these suites (repeatable); default: all"`
+	Suites []string `long:"suite" short:"s" description:"only run these suites (repeatable); default: all"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -62,7 +62,7 @@ type ScoreCommand struct {
 	Run     string   `long:"run" short:"r" description:"run to score: a dir, a friendly name like fluffy-bunny, a number (1 = run 001; 0 = latest, -1 = second to last; default: latest), or all"`
 	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
 	Agentic bool     `long:"agentic" description:"also run agent-kind scorers"`
-	Suites  []string `long:"suite" short:"m" description:"only score these suites (repeatable); default: all"`
+	Suites  []string `long:"suite" short:"s" description:"only score these suites (repeatable); default: all"`
 }
 
 func (s *ScoreCommand) Execute(args []string) error {
