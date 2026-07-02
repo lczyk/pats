@@ -181,6 +181,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	rep := aggregate(runDir, cells, testPairs)
 	if !opts.noReport {
 		report(opts.Out, rep, opts.Color)
+		statsReport(opts.Out, runDir)
 	}
 	if err := writeJSON(filepath.Join(runDir, "scores.json"), rep); err != nil {
 		return rep, err
@@ -205,6 +206,7 @@ func Report(configDir, runArg string, out io.Writer) error {
 	}
 	logw{out, useColor(out)}.info("report: %s", relToCwd(runDir))
 	report(out, &rep, useColor(out))
+	statsReport(out, runDir)
 	return nil
 }
 
