@@ -25,7 +25,33 @@ agents are always run in a sandbox -- we never run without one. the `sandboxes` 
 
 a sandbox can also declare an `egress` policy: `mode: open` (the default -- unrestricted network), `mode: none` (`--network none`), or `mode: proxy` -- a filtering sidecar that allows/denies by host (`default: deny` + `allow: [...]`, or `default: allow` + `deny: [...]`) and writes a per-pair audit log (`egress.log`; denied hosts also land in the run metadata, a built-in cheat detector). under an allowlisting proxy, the hosts the harness itself needs -- the inference api, token refresh, opencode's startup fetches -- are merged in automatically per agent kind, so the config only lists what the *task* needs (e.g. apt mirrors). see `docs/proposals/network-egress.md` for the design.
 
-### example
+## examples
+
+typical loop -- run the matrix, then score it:
+
+```sh
+pats run                 # run all agent x task pairs, save to .pats/runs/<date_slug>-<n>/
+pats score               # score the latest run (tasks x scorers)
+```
+
+narrowing and parallelism:
+
+```sh
+pats run -a claude-cli-keyless -t write-readme-simple   # just one pair
+pats run -j-1                                           # parallel pairs, auto job count
+pats score -r .pats/runs/20260701-003                   # score an older run
+```
+
+all commands take `-c <path>` to point at a `pats.yaml` other than the one in the cwd.
+
+you can also run just with `go run`, no install needed:
+
+```sh
+go run github.com/lczyk/pats/cmd/pats@latest run
+go run github.com/lczyk/pats/cmd/pats@latest score
+```
+
+### example config
 
 the model under test is `claude-haiku-4-5`, run two ways: through the `claude` cli (`claude-cli-keyless`) and through `opencode` over openrouter (`opencode-openrouter`). running the same model under two harnesses isolates the harness's effect from the model's.
 
