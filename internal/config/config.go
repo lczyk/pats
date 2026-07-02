@@ -44,20 +44,24 @@ type Sandbox struct {
 //	open       -- open network (the default)
 //	none       -- no network (--network none); only for agents needing no egress
 //	proxy      -- filter through a sidecar proxy by host, allow/deny + audit
-//	mitm-proxy -- proxy, plus url-level deny rules: hosts named in deny-urls
-//	              get their tls terminated with a per-run CA (the agent trusts
-//	              it via a merged bundle) so requests are filtered by full url.
-//	              other hosts stay blind tunnels -- a superset of proxy.
+//	mitm-proxy -- proxy, plus url-level rules: hosts named in deny-urls or
+//	              allow-urls get their tls terminated with a per-run CA (the
+//	              agent trusts it via a merged bundle) so requests are filtered
+//	              by full url. other hosts stay blind tunnels -- a superset of
+//	              proxy.
 type Egress struct {
 	Mode    string   `yaml:"mode"`    // open | none | proxy | mitm-proxy
 	Default string   `yaml:"default"` // proxy: deny (allowlist) | allow (denylist)
 	Allow   []string `yaml:"allow"`   // hosts reachable when default: deny
 	Deny    []string `yaml:"deny"`    // hosts blocked when default: allow
-	// DenyURLs (mitm-proxy only) are host-anchored url patterns; `*` matches
-	// anything, `/` included. the host part must be a literal hostname -- it
-	// picks which hosts get mitm'd. e.g. "github.com/*/chisel-releases*".
-	DenyURLs []string `yaml:"deny-urls"`
-	Image    string   `yaml:"proxy-image"` // override proxy image (default pats/egress-proxy:latest)
+	// DenyURLs and AllowURLs (mitm-proxy only) are host-anchored url patterns;
+	// `*` matches anything, `/` included. the host part must be a literal
+	// hostname -- it picks which hosts get mitm'd. a deny match always loses
+	// (e.g. "github.com/*/chisel-releases*"); a host with allow rules only
+	// passes matching urls. hosts with no url rules are unaffected.
+	DenyURLs  []string `yaml:"deny-urls"`
+	AllowURLs []string `yaml:"allow-urls"`
+	Image     string   `yaml:"proxy-image"` // override proxy image (default pats/egress-proxy:latest)
 }
 
 // ResolvedDriver fills the per-kind default when driver is omitted.

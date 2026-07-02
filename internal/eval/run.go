@@ -464,6 +464,7 @@ func egressFor(sb config.Sandbox, kind, auditPath string) sandbox.Egress {
 		Allow:     sb.Egress.Allow,
 		Deny:      sb.Egress.Deny,
 		DenyURLs:  sb.Egress.DenyURLs,
+		AllowURLs: sb.Egress.AllowURLs,
 		Image:     sb.Egress.Image,
 		AuditPath: auditPath,
 	}

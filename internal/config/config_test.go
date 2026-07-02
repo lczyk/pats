@@ -170,6 +170,13 @@ sandboxes: [{id: s, kind: container, image: img, egress: {mode: mitm-proxy, deny
 			want: "literal hostname",
 		},
 		{
+			name: "allow-urls without mitm-proxy",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, allow-urls: ["github.com/x*"]}}]
+`,
+			want: "allow-urls needs egress mode mitm-proxy",
+		},
+		{
 			name: "duplicate test pair",
 			src: `
 sandboxes: [{id: s, kind: container, image: img}]

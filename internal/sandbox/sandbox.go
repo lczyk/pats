@@ -34,7 +34,8 @@ type Egress struct {
 	Default   string // proxy: deny | allow
 	Allow     []string
 	Deny      []string
-	DenyURLs  []string // mitm-proxy: host-anchored url patterns to block
+	DenyURLs  []string // mitm-proxy: host-anchored url patterns to block (deny wins)
+	AllowURLs []string // mitm-proxy: a host with allow rules only passes matching urls
 	Image     string   // proxy image
 	AuditPath string   // where to write the proxy's json audit log (proxy mode)
 }

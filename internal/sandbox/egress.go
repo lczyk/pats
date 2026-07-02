@@ -80,7 +80,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// mitm: per-run CA. key is mounted into the proxy only; the agent gets the
 	// cert + a merged trust bundle (image roots + run CA) over the canonical path.
 	var agentTLSArgs []string
-	if spec.Egress.Mode == "mitm-proxy" && len(spec.Egress.DenyURLs) > 0 {
+	if spec.Egress.Mode == "mitm-proxy" && len(spec.Egress.DenyURLs)+len(spec.Egress.AllowURLs) > 0 {
 		var err error
 		if caDir, err = os.MkdirTemp("", "pats-mitm-ca-"); err != nil {
 			teardown()
@@ -170,6 +170,7 @@ func (c *container) setupMitm(ctx context.Context, spec Spec, caDir string, penv
 	proxyEnv = append(penv,
 		"-v", caDir+":/pats-ca:ro",
 		"-e", "PROXY_DENY_URLS="+strings.Join(spec.Egress.DenyURLs, ","),
+		"-e", "PROXY_ALLOW_URLS="+strings.Join(spec.Egress.AllowURLs, ","),
 		"-e", "PROXY_CA_CERT=/pats-ca/ca.pem",
 		"-e", "PROXY_CA_KEY=/pats-ca/ca-key.pem",
 	)

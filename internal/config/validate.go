@@ -78,15 +78,18 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 	default:
 		add("sandbox %q: unknown egress default %q (deny|allow)", s.ID, s.Egress.Default)
 	}
-	if len(s.Egress.DenyURLs) > 0 && s.Egress.Mode != "mitm-proxy" {
-		add("sandbox %q: deny-urls needs egress mode mitm-proxy (got %q)", s.ID, s.Egress.Mode)
-	}
-	for _, p := range s.Egress.DenyURLs {
-		host, _, _ := strings.Cut(p, "/")
-		// the host part picks which hosts get mitm'd -- a wildcard would mitm
-		// everything (incl. the inference api), so it must be literal.
-		if host == "" || strings.Contains(host, "*") {
-			add("sandbox %q: deny-urls pattern %q must start with a literal hostname", s.ID, p)
+	urlRules := map[string][]string{"deny-urls": s.Egress.DenyURLs, "allow-urls": s.Egress.AllowURLs}
+	for field, pats := range urlRules {
+		if len(pats) > 0 && s.Egress.Mode != "mitm-proxy" {
+			add("sandbox %q: %s needs egress mode mitm-proxy (got %q)", s.ID, field, s.Egress.Mode)
+		}
+		for _, p := range pats {
+			host, _, _ := strings.Cut(p, "/")
+			// the host part picks which hosts get mitm'd -- a wildcard would
+			// mitm everything (incl. the inference api), so it must be literal.
+			if host == "" || strings.Contains(host, "*") {
+				add("sandbox %q: %s pattern %q must start with a literal hostname", s.ID, field, p)
+			}
 		}
 	}
 }

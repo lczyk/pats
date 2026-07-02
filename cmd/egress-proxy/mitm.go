@@ -61,10 +61,17 @@ func (r rule) mitmHost(host string) bool {
 			return true
 		}
 	}
+	for _, u := range r.allowURLs {
+		if u.host == host {
+			return true
+		}
+	}
 	return false
 }
 
-// permitsURL checks host+path (no scheme) against the deny-url rules.
+// permitsURL checks host+path (no scheme) against the url rules: a deny match
+// always loses; then, if the host has allow-url rules, only matching urls pass.
+// hosts with no url rules are unaffected.
 func (r rule) permitsURL(hostPath string) bool {
 	hostPath = strings.ToLower(hostPath)
 	for _, u := range r.denyURLs {
@@ -72,7 +79,19 @@ func (r rule) permitsURL(hostPath string) bool {
 			return false
 		}
 	}
-	return true
+	host, _, _ := strings.Cut(hostPath, "/")
+	restricted, matched := false, false
+	for _, u := range r.allowURLs {
+		if u.host != host {
+			continue
+		}
+		restricted = true
+		if u.re.MatchString(hostPath) {
+			matched = true
+			break
+		}
+	}
+	return !restricted || matched
 }
 
 // signer mints per-host leaf certs signed by the run CA, cached.

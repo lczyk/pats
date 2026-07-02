@@ -8,12 +8,14 @@
 //	PROXY_DEFAULT   "deny" (allowlist) or "allow" (denylist); default "deny"
 //	PROXY_ALLOW     comma-separated hosts reachable when default=deny
 //	PROXY_DENY      comma-separated hosts blocked when default=allow
-//	PROXY_DENY_URLS comma-separated host-anchored url patterns (mitm mode);
-//	                "*" matches anything, "/" included, e.g.
-//	                "github.com/*/chisel-releases*". hosts named here get their
-//	                tls terminated with a leaf signed by the run CA.
-//	PROXY_CA_CERT   path to the run CA cert (pem); required with deny-urls
-//	PROXY_CA_KEY    path to the run CA key (pem);  -//-
+//	PROXY_DENY_URLS  comma-separated host-anchored url patterns (mitm mode);
+//	                 "*" matches anything, "/" included, e.g.
+//	                 "github.com/*/chisel-releases*". hosts named here get their
+//	                 tls terminated with a leaf signed by the run CA.
+//	PROXY_ALLOW_URLS -//-; a host with allow rules only passes matching urls
+//	                 (deny rules win). hosts named here are mitm'd too.
+//	PROXY_CA_CERT    path to the run CA cert (pem); required with url rules
+//	PROXY_CA_KEY     path to the run CA key (pem);  -//-
 //
 // host entries match exactly, or as a suffix when written ".example.com" or
 // "*.example.com" (so ".ubuntu.com" covers archive.ubuntu.com).
@@ -30,10 +32,11 @@ import (
 )
 
 type rule struct {
-	def      bool     // true = default allow
-	allow    []string // exceptions to deny-default
-	deny     []string // exceptions to allow-default
-	denyURLs []urlRule
+	def       bool     // true = default allow
+	allow     []string // exceptions to deny-default
+	deny      []string // exceptions to allow-default
+	denyURLs  []urlRule
+	allowURLs []urlRule // per-host allowlist: a host with rules only passes matching urls
 }
 
 func (r rule) permits(host string) bool {
@@ -90,16 +93,17 @@ func auditURL(host, port, url string, allowed bool) {
 func main() {
 	addr := envOr("PROXY_ADDR", ":8080")
 	r := rule{
-		def:      envOr("PROXY_DEFAULT", "deny") == "allow",
-		allow:    splitList(os.Getenv("PROXY_ALLOW")),
-		deny:     splitList(os.Getenv("PROXY_DENY")),
-		denyURLs: parseURLRules(splitList(os.Getenv("PROXY_DENY_URLS"))),
+		def:       envOr("PROXY_DEFAULT", "deny") == "allow",
+		allow:     splitList(os.Getenv("PROXY_ALLOW")),
+		deny:      splitList(os.Getenv("PROXY_DENY")),
+		denyURLs:  parseURLRules(splitList(os.Getenv("PROXY_DENY_URLS"))),
+		allowURLs: parseURLRules(splitList(os.Getenv("PROXY_ALLOW_URLS"))),
 	}
 	var s *signer
-	if len(r.denyURLs) > 0 {
+	if len(r.denyURLs)+len(r.allowURLs) > 0 {
 		var err error
 		if s, err = newSigner(os.Getenv("PROXY_CA_CERT"), os.Getenv("PROXY_CA_KEY")); err != nil {
-			panic("deny-urls set but CA unusable: " + err.Error())
+			panic("url rules set but CA unusable: " + err.Error())
 		}
 	}
 

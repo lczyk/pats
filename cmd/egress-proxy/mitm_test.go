@@ -50,6 +50,34 @@ func TestPermitsURL(t *testing.T) {
 	}
 }
 
+func TestPermitsURLAllowRules(t *testing.T) {
+	r := rule{
+		denyURLs:  parseURLRules([]string{"docs.example.com/internal*"}),
+		allowURLs: parseURLRules([]string{"docs.example.com/public*", "docs.example.com/api*"}),
+	}
+
+	cases := []struct {
+		hostPath string
+		want     bool
+	}{
+		{"docs.example.com/public/guide", true},     // allow match
+		{"docs.example.com/api/v1", true},           // second allow rule
+		{"docs.example.com/private/x", false},       // restricted host, no allow match
+		{"docs.example.com/internal/public", false}, // deny wins even under /internal*... (deny match)
+		{"other.example.com/private/x", true},       // host w/out url rules: unaffected
+	}
+	for _, c := range cases {
+		if got := r.permitsURL(c.hostPath); got != c.want {
+			t.Errorf("permitsURL(%q) = %v, want %v", c.hostPath, got, c.want)
+		}
+	}
+
+	// allow-url hosts are mitm'd too.
+	if !r.mitmHost("docs.example.com") {
+		t.Error("mitmHost: allow-urls host must be mitm'd")
+	}
+}
+
 func TestParseURLRulesRejectsWildcardHost(t *testing.T) {
 	// belt-and-braces vs hand-set env: wildcard/empty host parts are dropped.
 	if got := parseURLRules([]string{"*/chisel*", "/x", "*.github.com/x"}); len(got) != 0 {
