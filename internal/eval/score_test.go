@@ -145,3 +145,73 @@ func TestReportPivot(t *testing.T) {
 	assert.ContainsString(t, buf.String(), "\033[32m")
 	assert.ContainsString(t, buf.String(), "\033[31m")
 }
+
+// numeric -r selectors: positive = run number, 0 = latest, negative = from
+// the latest backwards; out-of-range and missing numbers are errors.
+func TestResolveRunNumber(t *testing.T) {
+	base := t.TempDir()
+	runs := []string{
+		"001-20260701-fluffy-bunny",
+		"002-20260701-jacquard-ribbons",
+		"003-20260702-undyed-purse",
+		"004-20260702-variegated-cuff",
+	}
+	for _, r := range runs {
+		require.NoError(t, os.Mkdir(filepath.Join(base, r), 0o755))
+	}
+
+	for arg, want := range map[string]string{
+		"1":  runs[0], // run number...
+		"01": runs[0], // ...zero-padding immaterial
+		"3":  runs[2],
+		"0":  runs[3], // latest (the "" default)
+		"-1": runs[2], // second to last
+		"-3": runs[0], // oldest of the 4
+	} {
+		got, err := resolveRunDir(base, arg)
+		require.NoError(t, err)
+		assert.Equal(t, got, filepath.Join(base, want))
+	}
+
+	for _, arg := range []string{"-4", "5"} { // past the oldest; no such number
+		_, err := resolveRunDir(base, arg)
+		assert.Error(t, err, assert.AnyError)
+	}
+}
+
+// --run=all scores every run under .pats/runs, not just the latest.
+func TestScoreAllRuns(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))
+
+	runs := []string{"001-20260701-fluffy-bunny", "002-20260702-undyed-purse"}
+	for _, r := range runs {
+		od := filepath.Join(dir, ".pats", "runs", r, "a", "t")
+		require.NoError(t, os.MkdirAll(od, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
+	}
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
+		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}},
+		Suites: []config.Suite{{
+			ID: "su", Agents: config.StrList{"a"},
+			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one"},
+		}},
+	}
+
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: "all", Out: &out})
+	require.NoError(t, err)
+	assert.Equal(t, rep.Overall, 1.0) // the last run's report
+	// no report tables under all -- just the per-cell log lines.
+	assert.That(t, !strings.Contains(out.String(), "overall"), "no report table under all")
+	assert.That(t, !strings.Contains(out.String(), "run stats"), "no stats table under all")
+
+	for _, r := range runs { // every run got its scores.json
+		_, err := os.Stat(filepath.Join(dir, ".pats", "runs", r, "scores.json"))
+		require.NoError(t, err)
+	}
+}

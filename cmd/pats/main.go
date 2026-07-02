@@ -57,7 +57,7 @@ func (r *RunCommand) Execute(args []string) error {
 // ScoreCommand scores a run (the latest by default).
 type ScoreCommand struct {
 	Config  string   `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-	Run     string   `long:"run" short:"r" description:"run to score: a dir, or a friendly name like fluffy-bunny (default: latest under .pats/runs)"`
+	Run     string   `long:"run" short:"r" description:"run to score: a dir, a friendly name like fluffy-bunny, a number (1 = run 001; 0 = latest, -1 = second to last; default: latest), or all"`
 	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
 	Agentic bool     `long:"agentic" description:"also run agent-kind scorers"`
 	Suites  []string `long:"suite" short:"m" description:"only score these suites (repeatable); default: all"`
@@ -83,7 +83,7 @@ func (s *ScoreCommand) Execute(args []string) error {
 // by default). reads run artifacts only -- no config load, like `list runs`.
 type ReportCommand struct {
 	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-	Run    string `long:"run" short:"r" description:"run to report: a dir, or a friendly name like fluffy-bunny (default: latest under .pats/runs)"`
+	Run    string `long:"run" short:"r" description:"run to report: a dir, a friendly name like fluffy-bunny, or a number (1 = run 001; 0 = latest, -1 = second to last; default: latest)"`
 }
 
 func (c *ReportCommand) Execute(args []string) error {

@@ -26,6 +26,10 @@ type ScoreOptions struct {
 	Suites    []string // only expand these suites (empty -> all)
 	Out       io.Writer
 	Color     bool // colour log tags (set internally from Out's tty-ness)
+
+	// noReport skips the report + stats tables (scores.json still written) --
+	// set by scoreAll, where per-run tables would just scroll past.
+	noReport bool
 }
 
 // ScoreReport is the aggregated result of scoring a run.
@@ -45,8 +49,13 @@ type ScoreCell struct {
 	Score  float64 `json:"score"`
 }
 
-// Score runs each suite's tasks x scorers over a run's collected outputs and aggregates.
+// Score runs each suite's tasks x scorers over a run's collected outputs and
+// aggregates. RunDir "all" scores every run under .pats/runs, oldest first,
+// with no report tables printed (the returned report is the last run's).
 func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
+	if opts.RunDir == "all" {
+		return scoreAll(cfg, opts)
+	}
 	// absolute config dir: scorers run with cwd=ConfigDir; their file path +
 	// PATS_OUTPUT_DIR must resolve regardless of that cwd.
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
@@ -170,7 +179,9 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	wg.Wait()
 
 	rep := aggregate(runDir, cells, testPairs)
-	report(opts.Out, rep, opts.Color)
+	if !opts.noReport {
+		report(opts.Out, rep, opts.Color)
+	}
 	if err := writeJSON(filepath.Join(runDir, "scores.json"), rep); err != nil {
 		return rep, err
 	}
@@ -459,12 +470,40 @@ func sortedKeys(m map[string]float64) []string {
 	return ks
 }
 
+// scoreAll scores every run under .pats/runs in order. one run failing stops
+// the loop -- later runs would silently miss from the output otherwise.
+func scoreAll(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
+	configDir, err := filepath.Abs(opts.ConfigDir)
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Join(configDir, runsSubdir)
+	names, err := sortedRunNames(base)
+	if err != nil || len(names) == 0 {
+		return nil, fmt.Errorf("no runs found under %s", base)
+	}
+	var rep *ScoreReport
+	for _, name := range names {
+		o := opts
+		o.RunDir = filepath.Join(base, name)
+		o.noReport = true
+		if rep, err = Score(cfg, o); err != nil {
+			return nil, fmt.Errorf("run %s: %w", name, err)
+		}
+	}
+	return rep, nil
+}
+
 // resolveRunDir maps the -r argument to a run dir: "" -> the latest run, an
-// existing dir (name or path) -> itself, anything else -> a run whose friendly
-// words match (so `-r fluffy-bunny` works). ambiguous words are an error.
+// integer -> by run number (see resolveRunNumber), an existing dir (name or
+// path) -> itself, anything else -> a run whose friendly words match (so
+// `-r fluffy-bunny` works). ambiguous words are an error.
 func resolveRunDir(base, arg string) (string, error) {
 	if arg == "" {
 		return latestRunDir(base)
+	}
+	if n, err := strconv.Atoi(arg); err == nil {
+		return resolveRunNumber(base, n)
 	}
 	for _, dir := range []string{arg, filepath.Join(base, arg)} {
 		if st, err := os.Stat(dir); err == nil && st.IsDir() {
@@ -489,6 +528,29 @@ func resolveRunDir(base, arg string) (string, error) {
 	default:
 		return "", fmt.Errorf("run name %q is ambiguous: %s", arg, strings.Join(matches, ", "))
 	}
+}
+
+// resolveRunNumber maps an integer -r to a run dir. positive n is a run
+// number (the <nnn> prefix, so -r 1 == -r 001); zero and negative index from
+// the latest backwards (0 -> latest, -1 -> second to last, ...).
+func resolveRunNumber(base string, n int) (string, error) {
+	names, err := sortedRunNames(base)
+	if err != nil || len(names) == 0 {
+		return "", fmt.Errorf("no runs found under %s", base)
+	}
+	if n > 0 {
+		for _, name := range names {
+			if _, rn, ok := splitRunName(name); ok && rn == n {
+				return filepath.Join(base, name), nil
+			}
+		}
+		return "", fmt.Errorf("run number %d not found under %s", n, base)
+	}
+	i := len(names) - 1 + n
+	if i < 0 {
+		return "", fmt.Errorf("run %d is out of range: only %d runs under %s", n, len(names), base)
+	}
+	return filepath.Join(base, names[i]), nil
 }
 
 // latestRunDir returns the highest-sorted run dir under base.
