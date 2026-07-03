@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/sandbox"
 )
 
 // buildImages resolves the `build:` sandboxes used by the run's pairs: each is
@@ -30,12 +31,53 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		if !used[sb.ID] || sb.Build == "" {
 			continue
 		}
+		lg.info("building sandbox %q image (%s)...", sb.ID, sb.Build)
 		id, err := buildImage(ctx, sb.ResolvedDriver(), opts.ConfigDir, sb.Build)
 		if err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
 		lg.info("built sandbox %q image: %s", sb.ID, id)
 		cfg.Sandboxes[i].Image = id
+	}
+	return nil
+}
+
+// pullEgressImages pre-pulls the egress proxy image for any proxy-mode sandbox
+// the run uses, so the per-pair (and preflight) proxy start finds it cached --
+// otherwise the first `docker run` of the proxy pulls silently, stalling the
+// run with no output. only images absent locally are pulled: a present one is
+// left alone (no registry round-trip every run).
+func pullEgressImages(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
+	used := map[string]bool{}
+	for _, p := range pairs {
+		if id, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil {
+			used[id] = true
+		}
+	}
+	lg := logw{opts.Out, opts.Color}
+	seen := map[string]bool{}
+	for _, sb := range cfg.Sandboxes {
+		if !used[sb.ID] || (sb.Egress.Mode != "proxy" && sb.Egress.Mode != "mitm-proxy") {
+			continue
+		}
+		driver := sb.ResolvedDriver()
+		img, warn := sandbox.ProxyImage(sb.Egress.Image)
+		key := driver + "\x00" + img
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if warn != "" {
+			lg.warn("%s", warn)
+		}
+		if exec.CommandContext(ctx, driver, "image", "inspect", img).Run() == nil {
+			continue // already local -- skip the pull + its round-trip
+		}
+		lg.info("pulling egress image %q...", img)
+		if out, err := exec.CommandContext(ctx, driver, "pull", img).CombinedOutput(); err != nil {
+			return fmt.Errorf("pull egress image %q: %w\n%s", img, err, strings.TrimSpace(string(out)))
+		}
 	}
 	return nil
 }

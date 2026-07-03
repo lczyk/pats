@@ -65,6 +65,9 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if pairs, err = config.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
 		return "", err
 	}
+	// first output up front: the slow startup steps (image build, preflight) are
+	// otherwise silent, so a bare `pats run` looks hung until the first pair logs.
+	lg.info("%d pair(s) to run", len(pairs))
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,6 +75,11 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	// resolve build: sandboxes to image ids first -- everything after (preflight
 	// included) then runs on the built image.
 	if err := buildImages(ctx, cfg, opts, pairs); err != nil {
+		return "", err
+	}
+	// pre-pull the egress proxy image (if any) before preflight, which itself
+	// starts the proxy -- else the pull stalls the first check silently.
+	if err := pullEgressImages(ctx, cfg, opts, pairs); err != nil {
 		return "", err
 	}
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
