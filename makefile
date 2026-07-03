@@ -51,8 +51,11 @@ format:  ## gofmt the tree in place
 test-bwrap:  ## Run the linux-only bwrap e2e tests in a container (for non-linux dev)
 	docker build -q -t pats-bwrap-test hack/bwrap-test
 	# --privileged: bwrap + the netns helper create user/net/mount namespaces
-	# inside the container, which docker's default seccomp/apparmor block
+	# inside the container, which docker's default seccomp/apparmor block.
+	# non-root user to match the ci runner -- root bwrap takes a different
+	# (privileged) code path and hides non-root-only failures.
 	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
+		--user 1000:1000 -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath \
 		-e GOFLAGS=-buildvcs=false pats-bwrap-test \
 		/usr/local/go/bin/go test -count=1 -v ./src/sandbox/ -run TestBwrap
 
