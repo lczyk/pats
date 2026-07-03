@@ -77,7 +77,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	img, _ := ProxyImage(spec.Egress.Image) // warn (if any) is logged by the pre-pull pass
 
 	// internal network: no gateway, so the agent has no direct route out.
-	if out, err := docker(ctx, c.bin, "network", "create", "--internal", net); err != nil {
+	if out, err := c.docker(ctx, "network", "create", "--internal", net); err != nil {
 		return nil, nil, fmt.Errorf("egress: create network: %w (%s)", err, out)
 	}
 
@@ -96,8 +96,8 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		if auditF != nil {
 			_ = auditF.Close()
 		}
-		_, _ = docker(context.Background(), c.bin, "rm", "-f", proxy)
-		_, _ = docker(context.Background(), c.bin, "network", "rm", net)
+		_, _ = c.docker(context.Background(), "rm", "-f", proxy)
+		_, _ = c.docker(context.Background(), "network", "rm", net)
 		if caDir != "" {
 			_ = os.RemoveAll(caDir)
 		}
@@ -126,13 +126,13 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	}
 	runArgs := append([]string{"run", "-d", "--rm", "--name", proxy, "--network", net}, penv...)
 	runArgs = append(runArgs, img)
-	if out, err := docker(ctx, c.bin, runArgs...); err != nil {
+	if out, err := c.docker(ctx, runArgs...); err != nil {
 		teardown()
 		return nil, nil, fmt.Errorf("egress: start proxy: %w (%s)", err, out)
 	}
 
 	// give the proxy internet via the default bridge (agent stays internal-only).
-	if out, err := docker(ctx, c.bin, "network", "connect", "bridge", proxy); err != nil {
+	if out, err := c.docker(ctx, "network", "connect", "bridge", proxy); err != nil {
 		teardown()
 		return nil, nil, fmt.Errorf("egress: connect proxy to bridge: %w (%s)", err, out)
 	}
@@ -187,7 +187,7 @@ func (c *container) setupMitm(ctx context.Context, spec Spec, caDir string, penv
 
 	// merged bundle: the image's system roots + the run CA. tunneled (non-mitm)
 	// hosts still present real certs, so the system roots must stay in the file.
-	bundle, err := dockerOut(ctx, c.bin, "run", "--rm", "--entrypoint", "cat", c.image, caBundlePath)
+	bundle, err := c.dockerOut(ctx, "run", "--rm", "--entrypoint", "cat", c.image, caBundlePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("egress: read image trust bundle %s (mitm-proxy needs it): %w", caBundlePath, err)
 	}

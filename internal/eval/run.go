@@ -43,6 +43,10 @@ type Options struct {
 	Suites    []string  // only expand these suites (empty -> all)
 }
 
+// newSandbox is sandbox.New, swappable in tests to run the orchestration
+// against a fake sandbox (no docker).
+var newSandbox = sandbox.New
+
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
 // a single pair failing is logged and skipped -- it does not abort the run.
 func Run(cfg *config.Config, opts Options) (string, error) {
@@ -272,7 +276,7 @@ func runPair(
 		return err
 	}
 	sb := sandboxes[sbID]
-	box, err := sandbox.New(sb.ResolvedDriver(), sb.Image)
+	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
 	if err != nil {
 		return err
 	}

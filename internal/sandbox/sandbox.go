@@ -75,6 +75,25 @@ func New(driver, image string) (Sandbox, error) {
 type container struct {
 	bin   string
 	image string
+	// exec/execOut run the cli, swappable in tests (nil -> real exec). they
+	// cover the setup/teardown plumbing (egress etc.); the main agent `run`
+	// streams via exec.CommandContext directly and stays e2e-tested.
+	exec    func(ctx context.Context, bin string, args ...string) (string, error)
+	execOut func(ctx context.Context, bin string, args ...string) ([]byte, error)
+}
+
+func (c *container) docker(ctx context.Context, args ...string) (string, error) {
+	if c.exec != nil {
+		return c.exec(ctx, c.bin, args...)
+	}
+	return docker(ctx, c.bin, args...)
+}
+
+func (c *container) dockerOut(ctx context.Context, args ...string) ([]byte, error) {
+	if c.execOut != nil {
+		return c.execOut(ctx, c.bin, args...)
+	}
+	return dockerOut(ctx, c.bin, args...)
 }
 
 func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error) {

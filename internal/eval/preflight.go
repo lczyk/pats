@@ -49,7 +49,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	sb := sandboxes[sbID]
-	box, err := sandbox.New(sb.ResolvedDriver(), sb.Image)
+	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
 	if err != nil {
 		return err
 	}
