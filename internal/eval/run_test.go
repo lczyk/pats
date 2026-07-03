@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,4 +133,43 @@ func TestResolvePrompt(t *testing.T) {
 	// non-executable file named WITH args -> error, not a silent arg-drop.
 	_, err = resolvePrompt(dir, "p.txt --flag", nil)
 	assert.Error(t, err, assert.AnyError)
+}
+
+func TestHumanK(t *testing.T) {
+	cases := map[int]string{0: "0", 999: "999", 1000: "1.0k", 12345: "12.3k"}
+	for n, want := range cases {
+		if got := humanK(n); got != want {
+			t.Errorf("humanK(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestMergeHosts(t *testing.T) {
+	got := mergeHosts([]string{"a", "b"}, []string{"b", "c"})
+	want := []string{"a", "b", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("mergeHosts = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("mergeHosts = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestStderrTail(t *testing.T) {
+	if got := stderrTail(bytes.NewBufferString("  \n ")); got != "" {
+		t.Errorf("empty buffer: got %q, want \"\"", got)
+	}
+	if got := stderrTail(bytes.NewBufferString("boom")); got != "\nstderr: boom" {
+		t.Errorf("short buffer: got %q", got)
+	}
+	var many []string
+	for i := range 15 {
+		many = append(many, strconv.Itoa(i))
+	}
+	got := stderrTail(bytes.NewBufferString(strings.Join(many, "\n")))
+	if !strings.HasPrefix(got, "\nstderr: ... ") || !strings.HasSuffix(got, "14") {
+		t.Errorf("long buffer not truncated to last 10 lines: got %q", got)
+	}
 }

@@ -91,3 +91,9 @@ func TestListRunsEmpty(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, ListRuns(t.TempDir(), &out))
 }
+
+func TestListSuites(t *testing.T) {
+	var out bytes.Buffer
+	require.NoError(t, ListSuites(listTestConfig(), &out))
+	assert.ContainsString(t, out.String(), "SUITE")
+}
