@@ -45,7 +45,9 @@ clean:  ## Remove build artifacts
 
 # ----- sandbox images -----
 # matrix machinery kept so it scales, but only 26.04 is wired for now.
-DOCKER ?= docker
+DOCKER   ?= docker
+REGISTRY ?= ghcr.io/lczyk/pats
+VERSION  := $(shell cat VERSION)
 
 IMG_VERSIONS := 26.04
 IMG_ARCHES   := amd64 arm64
@@ -75,3 +77,16 @@ images: $(SANDBOX_STAMPS)  ## Build sandbox images (narrow via VER=.. ARCH=..)
 .PHONY: clean-images
 clean-images:  ## Remove image stamps (forces rebuild next run)
 	rm -rf .stamp
+
+# ----- egress proxy image -----
+# build the egress proxy from this checkout, tagged both :latest and the version
+# pin pats resolves to (:v<version>), so a pats installed from this clone finds
+# it locally and skips the ghcr pull. needed when the checkout's version has no
+# published image yet; a released install just pulls it from ghcr on first use.
+.PHONY: egress-image
+egress-image:  ## Build the egress proxy image locally (tags :latest and :v<version>)
+	$(DOCKER) build \
+		--tag "$(REGISTRY)/egress-proxy:latest" \
+		--tag "$(REGISTRY)/egress-proxy:v$(VERSION)" \
+		--file images/Dockerfile.egress-proxy \
+		.
