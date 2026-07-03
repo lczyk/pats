@@ -54,6 +54,15 @@ fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
 bench:  ## Run all benchmarks
 	go test ./... -run - -bench . -benchmem
 
+.PHONY: test-bwrap
+test-bwrap:  ## Run the linux-only bwrap e2e tests in a container (for non-linux dev)
+	docker build -q -t pats-bwrap-test hack/bwrap-test
+	# --privileged: bwrap + the netns helper create user/net/mount namespaces
+	# inside the container, which docker's default seccomp/apparmor block
+	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
+		-e GOFLAGS=-buildvcs=false pats-bwrap-test \
+		/usr/local/go/bin/go test -count=1 -v ./src/sandbox/ -run TestBwrap
+
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test
 
