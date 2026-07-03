@@ -17,6 +17,14 @@ jobs:
       with:
         go-version: '1.26'
 
+    - name: Install bubblewrap
+      # for the bwrap sandbox e2e tests (skipped when bwrap is absent). the
+      # sysctl lifts ubuntu 24.04's apparmor restriction on unprivileged user
+      # namespaces, which the bwrap netns helper needs.
+      run: |
+        sudo apt-get install -y bubblewrap
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
     - name: Build
       run: make build
 
