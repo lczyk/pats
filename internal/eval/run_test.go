@@ -248,3 +248,23 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(stdout), "fine\n")
 }
+
+func TestDeniedEgress(t *testing.T) {
+	assert.That(t, deniedEgress(filepath.Join(t.TempDir(), "nope")) == nil, "missing file -> nil")
+
+	p := filepath.Join(t.TempDir(), "egress.log")
+	require.NoError(t, os.WriteFile(p, []byte(`
+{"host":"ok.example.com","allowed":true}
+{"host":"evil.example.com","allowed":false}
+{"host":"evil.example.com","allowed":false}
+{"host":"gh.com","url":"gh.com/x/secrets","allowed":false}
+not json
+`), 0o644))
+	got := deniedEgress(p)
+	// unique targets, url preferred over host, allowed + malformed skipped.
+	want := []string{"evil.example.com", "gh.com/x/secrets"}
+	require.Equal(t, len(got), len(want))
+	for i := range want {
+		assert.Equal(t, got[i], want[i])
+	}
+}
