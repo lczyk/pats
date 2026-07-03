@@ -62,6 +62,9 @@ func pullEgressImages(ctx context.Context, cfg *config.Config, opts Options, pai
 			continue
 		}
 		driver := sb.ResolvedDriver()
+		if driver == "bwrap" { // no sidecar -- the proxy runs in-process
+			continue
+		}
 		img, warn := sandbox.ProxyImage(sb.Egress.Image)
 		key := driver + "\x00" + img
 		if seen[key] {

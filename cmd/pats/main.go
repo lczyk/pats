@@ -18,6 +18,7 @@ import (
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/eval"
 	"github.com/lczyk/pats/internal/version"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // Options is the global command structure parsed by go-flags. Config is
@@ -164,6 +165,12 @@ func load(path string) (*config.Config, error) {
 var opts Options
 
 func main() {
+	// internal re-exec: the bwrap egress helper (see sandbox.NetnsMain). must
+	// run before any flag parsing -- its argv is not ours.
+	if len(os.Args) > 1 && os.Args[1] == "__sbx-net" {
+		os.Exit(sandbox.NetnsMain(os.Args[2:]))
+	}
+
 	// handle --version before parsing -- go-flags would otherwise demand a command.
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" || arg == "-v" {

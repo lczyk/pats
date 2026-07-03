@@ -60,10 +60,9 @@ func TestContainerExitCode(t *testing.T) {
 }
 
 func TestNewErrors(t *testing.T) {
-	_, err := New("bwrap", "")
-	assert.Error(t, err, "not implemented")
-
-	_, err = New("docker", "")
+	// NOTE: New("bwrap", ...) is env-dependent (linux + bwrap on PATH), so it
+	// has no case here; the bwrap tests cover it.
+	_, err := New("docker", "")
 	assert.Error(t, err, "needs an image")
 
 	_, err = New("nonsense", "x")

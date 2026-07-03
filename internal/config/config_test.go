@@ -117,11 +117,11 @@ sandboxes: [{id: s, kind: container}]
 			want: "needs an image or a build context",
 		},
 		{
-			name: "bwrap not implemented",
+			name: "bwrap with an image",
 			src: `
-sandboxes: [{id: s, kind: bwrap}]
+sandboxes: [{id: s, kind: bwrap, image: ubuntu}]
 `,
-			want: "bwrap kind not implemented",
+			want: "bwrap kind takes no image",
 		},
 		{
 			name: "agent scorer not implemented",

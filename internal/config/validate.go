@@ -113,7 +113,9 @@ func (c *Config) validateSandboxes(add func(string, ...any)) map[string]Sandbox 
 				add("sandbox %q: image and build are mutually exclusive", s.ID)
 			}
 		case "bwrap":
-			add("sandbox %q: bwrap kind not implemented yet", s.ID)
+			if s.Image != "" || s.Build != "" {
+				add("sandbox %q: bwrap kind takes no image or build (the host fs is the rootfs)", s.ID)
+			}
 		case "":
 			add("sandbox %q: missing kind (container|bwrap)", s.ID)
 		default:

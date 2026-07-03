@@ -1,6 +1,6 @@
 // Package sandbox runs a command in an isolated environment: it takes a Spec
 // (argv + workdir + env + mounts + egress policy) and runs it, streaming
-// output. drivers: container (docker/podman) now, bwrap later.
+// output. drivers: container (docker/podman) anywhere, bwrap on linux.
 //
 // the host Workdir is bound at WorkMount and used as the working directory;
 // everything else the process needs goes in via Env and Mounts. a non-zero
@@ -80,8 +80,8 @@ func New(driver, image string) (Sandbox, error) {
 			return nil, fmt.Errorf("sandbox driver %q needs an image", driver)
 		}
 		return &container{bin: driver, image: image}, nil
-	case "bwrap":
-		return nil, errors.New("sandbox driver bwrap not implemented yet")
+	case "bwrap": // linux-only; image unused -- the host fs is the rootfs
+		return newBwrap()
 	case "":
 		return nil, errors.New("sandbox: empty driver")
 	default:
