@@ -48,7 +48,7 @@ func main() {
 		}
 	}
 
-	srv := &http.Server{Addr: addr, Handler: proxy.Handler(r, s, http.DefaultTransport)}
+	srv := &http.Server{Addr: addr, Handler: proxy.Handler(r, s, http.DefaultTransport, os.Stdout)}
 	if err := srv.ListenAndServe(); err != nil {
 		panic(err)
 	}

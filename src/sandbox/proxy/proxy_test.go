@@ -46,7 +46,7 @@ func TestHandleHTTP(t *testing.T) {
 		Allow:    []string{"127.0.0.1"},
 		DenyURLs: ParseURLRules([]string{"127.0.0.1/secret*"}),
 	}
-	proxy := httptest.NewServer(Handler(r, nil, nil))
+	proxy := httptest.NewServer(Handler(r, nil, nil, io.Discard))
 	defer proxy.Close()
 	proxyURL, _ := url.Parse(proxy.URL)
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}

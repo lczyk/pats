@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -159,7 +160,7 @@ func (s *Signer) leaf(host string) (*tls.Certificate, error) {
 // handleMitm terminates the CONNECT tls with a signed leaf, then serves the
 // decrypted requests, filtering each by url and forwarding the allowed ones to
 // the real host via upstream.
-func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, upstream http.RoundTripper) {
+func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, upstream http.RoundTripper, aw io.Writer) {
 	host, port := splitHostPort(req.Host)
 	if port == "" {
 		port = "443"
@@ -198,13 +199,13 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 		}
 		hostPath := host + inner.URL.Path
 		if !r.permitsURL(hostPath) {
-			auditURL(host, port, hostPath, false)
+			auditURL(aw, host, port, hostPath, false)
 			resp := &http.Response{StatusCode: http.StatusForbidden, ProtoMajor: 1, ProtoMinor: 1,
 				Body: http.NoBody, Header: http.Header{}, Close: true}
 			resp.Write(tconn)
 			return
 		}
-		auditURL(host, port, hostPath, true)
+		auditURL(aw, host, port, hostPath, true)
 
 		inner.URL.Scheme = "https"
 		inner.URL.Host = req.Host

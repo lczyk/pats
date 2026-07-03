@@ -153,7 +153,7 @@ func TestMitmE2E(t *testing.T) {
 	}
 
 	// the proxy's upstream transport trusts the test server's self-signed cert.
-	proxy := httptest.NewServer(Handler(r, s, upstream.Client().Transport))
+	proxy := httptest.NewServer(Handler(r, s, upstream.Client().Transport, io.Discard))
 	defer proxy.Close()
 	proxyURL, _ := url.Parse(proxy.URL)
 

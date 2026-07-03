@@ -49,50 +49,55 @@ func matchAny(host string, pats []string) bool {
 	return false
 }
 
-func audit(host, port string, allowed bool) {
+func audit(aw io.Writer, host, port string, allowed bool) {
 	// one json line per request -- the caller collects these as the egress log.
 	b, _ := json.Marshal(map[string]any{
 		"ts": time.Now().UTC().Format(time.RFC3339), "host": host, "port": port, "allowed": allowed,
 	})
-	os.Stdout.Write(append(b, '\n'))
+	aw.Write(append(b, '\n'))
 }
 
 // auditURL is audit + the full url -- only mitm'd requests have one.
-func auditURL(host, port, url string, allowed bool) {
+func auditURL(aw io.Writer, host, port, url string, allowed bool) {
 	b, _ := json.Marshal(map[string]any{
 		"ts": time.Now().UTC().Format(time.RFC3339), "host": host, "port": port, "allowed": allowed, "url": url,
 	})
-	os.Stdout.Write(append(b, '\n'))
+	aw.Write(append(b, '\n'))
 }
 
 // Handler serves the proxy: CONNECT tunnels (mitm'd for hosts with url rules
 // when s is non-nil), absolute-URI plain http otherwise. upstream is the
 // RoundTripper for mitm'd requests (http.DefaultTransport in production).
-func Handler(r Rule, s *Signer, upstream http.RoundTripper) http.HandlerFunc {
+// aw receives the audit (one json line per request); nil means os.Stdout --
+// the sidecar shape, where `docker logs` is the collector.
+func Handler(r Rule, s *Signer, upstream http.RoundTripper, aw io.Writer) http.HandlerFunc {
+	if aw == nil {
+		aw = os.Stdout
+	}
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodConnect {
-			handleConnect(w, req, r, s, upstream)
+			handleConnect(w, req, r, s, upstream, aw)
 			return
 		}
-		handleHTTP(w, req, r)
+		handleHTTP(w, req, r, aw)
 	}
 }
 
 // handleConnect tunnels https. the target is req.Host (host:port). hosts with
 // url rules are not tunneled blind -- their tls terminates here (mitm) so each
 // request can be filtered by full url.
-func handleConnect(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, upstream http.RoundTripper) {
+func handleConnect(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, upstream http.RoundTripper, aw io.Writer) {
 	host, port := splitHostPort(req.Host)
 	if !r.permits(host) {
-		audit(host, port, false)
+		audit(aw, host, port, false)
 		http.Error(w, "egress denied", http.StatusForbidden)
 		return
 	}
 	if s != nil && r.mitmHost(host) {
-		handleMitm(w, req, r, s, upstream)
+		handleMitm(w, req, r, s, upstream, aw)
 		return
 	}
-	audit(host, port, true)
+	audit(aw, host, port, true)
 
 	remote, err := net.DialTimeout("tcp", req.Host, 30*time.Second)
 	if err != nil {
@@ -115,13 +120,13 @@ func handleConnect(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, 
 }
 
 // handleHTTP forwards plain http (absolute-URI proxy requests, e.g. apt).
-func handleHTTP(w http.ResponseWriter, req *http.Request, r Rule) {
+func handleHTTP(w http.ResponseWriter, req *http.Request, r Rule, aw io.Writer) {
 	host, port := splitHostPort(req.Host)
 	if port == "" {
 		port = "80"
 	}
 	if !r.permits(host) {
-		audit(host, port, false)
+		audit(aw, host, port, false)
 		http.Error(w, "egress denied", http.StatusForbidden)
 		return
 	}
@@ -129,11 +134,11 @@ func handleHTTP(w http.ResponseWriter, req *http.Request, r Rule) {
 	// audit gets the full url for free.
 	hostPath := host + req.URL.Path
 	if !r.permitsURL(hostPath) {
-		auditURL(host, port, hostPath, false)
+		auditURL(aw, host, port, hostPath, false)
 		http.Error(w, "egress denied", http.StatusForbidden)
 		return
 	}
-	auditURL(host, port, hostPath, true)
+	auditURL(aw, host, port, hostPath, true)
 
 	req.RequestURI = ""
 	resp, err := http.DefaultTransport.RoundTrip(req)
