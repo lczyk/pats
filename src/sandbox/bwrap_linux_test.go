@@ -26,6 +26,17 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// dumpOnFail prints the sandbox's stderr when the test fails -- bwrap's own
+// errors (namespace perms, mount failures) land there and are invisible
+// otherwise.
+func dumpOnFail(t *testing.T, out, errb *bytes.Buffer) {
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("stdout: %q\nstderr: %q", out.String(), errb.String())
+		}
+	})
+}
+
 func bwrapOrSkip(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("bwrap"); err != nil {
@@ -49,6 +60,7 @@ func TestBwrapRunBasic(t *testing.T) {
 	require.NoError(t, err)
 
 	var out, errb bytes.Buffer
+	dumpOnFail(t, &out, &errb)
 	code, err := sb.Run(context.Background(), Spec{
 		Argv:    []string{"sh", "-c", "echo $PATS_GREETING; cat marker.txt"},
 		Workdir: dir,
@@ -65,6 +77,7 @@ func TestBwrapExitCode(t *testing.T) {
 	sb, err := New("bwrap", "")
 	require.NoError(t, err)
 	var out, errb bytes.Buffer
+	dumpOnFail(t, &out, &errb)
 	code, err := sb.Run(context.Background(), Spec{
 		Argv:    []string{"sh", "-c", "exit 7"},
 		Workdir: t.TempDir(),
@@ -83,6 +96,7 @@ func TestBwrapEgressNone(t *testing.T) {
 	sb, err := New("bwrap", "")
 	require.NoError(t, err)
 	var out, errb bytes.Buffer
+	dumpOnFail(t, &out, &errb)
 	code, err := sb.Run(context.Background(), Spec{
 		Argv:    []string{"sh", "-c", "curl -s --max-time 2 " + upstream.URL + " || echo no-net"},
 		Workdir: t.TempDir(),
@@ -111,6 +125,7 @@ func TestBwrapEgressProxy(t *testing.T) {
 	audit := filepath.Join(t.TempDir(), "audit.jsonl")
 
 	var out, errb bytes.Buffer
+	dumpOnFail(t, &out, &errb)
 	code, err := sb.Run(context.Background(), Spec{
 		Argv: []string{"sh", "-c",
 			// 1: allowed via proxy; 2: denied via proxy (403); 3: bypass attempt
@@ -154,6 +169,7 @@ func TestBwrapEgressMitm(t *testing.T) {
 	require.NoError(t, err)
 
 	var out, errb bytes.Buffer
+	dumpOnFail(t, &out, &errb)
 	code, err := sb.Run(context.Background(), Spec{
 		Argv: []string{"sh", "-c",
 			"curl -s " + upstream.URL + "/open/thing; " +
