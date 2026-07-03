@@ -54,7 +54,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 
-	workDir, err := os.MkdirTemp("", "pats-preflight-")
+	workDir, err := sandbox.MkTemp("pats-preflight-")
 	if err != nil {
 		return err
 	}

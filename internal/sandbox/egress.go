@@ -82,7 +82,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	var agentTLSArgs []string
 	if spec.Egress.Mode == "mitm-proxy" && len(spec.Egress.DenyURLs)+len(spec.Egress.AllowURLs) > 0 {
 		var err error
-		if caDir, err = os.MkdirTemp("", "pats-mitm-ca-"); err != nil {
+		if caDir, err = MkTemp("pats-mitm-ca-"); err != nil {
 			teardown()
 			return nil, nil, fmt.Errorf("egress: mitm ca dir: %w", err)
 		}

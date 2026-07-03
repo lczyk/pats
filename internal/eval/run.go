@@ -253,7 +253,7 @@ func runPair(
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
-	workDir, err := os.MkdirTemp("", "pats-work-")
+	workDir, err := sandbox.MkTemp("pats-work-")
 	if err != nil {
 		return err
 	}
@@ -416,7 +416,7 @@ type harnessSetup struct {
 // claude rotates it) into the home if present. token/key env is forwarded by the
 // caller. warns when no creds are available at all, since the cli then fails auth.
 func harnessHome(opts Options, p config.TestPair, env map[string]string, hasToken bool) (harnessSetup, error) {
-	homeDir, err := os.MkdirTemp("", "pats-home-")
+	homeDir, err := sandbox.MkTemp("pats-home-")
 	if err != nil {
 		return harnessSetup{}, err
 	}
