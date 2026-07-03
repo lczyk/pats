@@ -50,6 +50,10 @@ fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
 	go test ./src/sandbox/proxy -run - -fuzz FuzzPermitsURL -fuzztime $(FUZZTIME)
 	go test ./src/sandbox/proxy -run - -fuzz FuzzParseURLRules -fuzztime $(FUZZTIME)
 
+.PHONY: bench
+bench:  ## Run all benchmarks
+	go test ./... -run - -bench . -benchmem
+
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test
 
