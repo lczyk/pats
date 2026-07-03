@@ -26,7 +26,10 @@ func TestBwrapArgs(t *testing.T) {
 	require.NoError(t, err)
 	s := strings.Join(args, " ")
 
-	assert.ContainsString(t, s, "--ro-bind / /")
+	// host / is bound entry by entry (tmpfs root), never wholesale -- a
+	// wholesale ro-bind would make mkdir of new mountpoints fail with EROFS.
+	assert.That(t, !strings.Contains(s, "--ro-bind / /"), "no wholesale root bind")
+	assert.ContainsString(t, s, "--ro-bind /usr /usr")
 	assert.ContainsString(t, s, "--bind /work "+WorkMount)
 	assert.ContainsString(t, s, "--chdir "+WorkMount)
 	assert.ContainsString(t, s, "--bind /x /in/x")

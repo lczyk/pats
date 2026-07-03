@@ -35,17 +35,54 @@ type bwrapSandbox struct{}
 // one run, so a fixed port cannot collide.
 const proxyAddr = "127.0.0.1:8080"
 
+// rootfsMask is what rootfsArgs does NOT bind from the host /:
+// home/root/run hide user secrets (ssh keys, agent sockets, docker.sock) and
+// come back empty (tmpfs); tmp/dev/proc get fresh instances; the rest is
+// per-entry noise a sandbox shouldn't see. anything the run legitimately
+// needs from a masked area comes back via Mounts.
+var rootfsMask = map[string]bool{
+	"home": true, "root": true, "run": true,
+	"tmp": true, "dev": true, "proc": true,
+	"lost+found": true,
+}
+
+// rootfsArgs binds the host / into the sandbox entry by entry (read-only,
+// symlinks recreated) on top of bwrap's tmpfs root -- binding / wholesale
+// would make the root immutable and mkdir of new mountpoints (WorkMount,
+// /sbx-ca) fail with EROFS.
+func rootfsArgs() ([]string, error) {
+	entries, err := os.ReadDir("/")
+	if err != nil {
+		return nil, fmt.Errorf("read host /: %w", err)
+	}
+	var args []string
+	for _, e := range entries {
+		if rootfsMask[e.Name()] {
+			continue
+		}
+		p := "/" + e.Name()
+		if e.Type()&os.ModeSymlink != 0 { // /bin -> usr/bin etc on merged-usr distros
+			dst, err := os.Readlink(p)
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, "--symlink", dst, p)
+			continue
+		}
+		args = append(args, "--ro-bind", p, p)
+	}
+	return args, nil
+}
+
 // bwrapArgs builds the bwrap argv (options only -- the caller appends
 // spec.Argv). extra carries per-egress-mode additions (--unshare-net, the CA
 // bind + tls env, the proxy env).
 func bwrapArgs(spec Spec, workdir string, extra []string) ([]string, error) {
-	args := []string{
-		// the host fs is the rootfs, read-only. private areas are masked below;
-		// anything the run legitimately needs from them comes back via Mounts.
-		"--ro-bind", "/", "/",
-		// NOTE: masking /home, /root and /run hides user secrets (ssh keys,
-		// agent sockets, docker.sock) from the sandboxed process; the rest of /
-		// stays readable. a tighter allowlist rootfs can replace this later.
+	args, err := rootfsArgs()
+	if err != nil {
+		return nil, err
+	}
+	args = append(args,
 		"--tmpfs", "/home",
 		"--tmpfs", "/root",
 		"--tmpfs", "/run",
@@ -58,7 +95,7 @@ func bwrapArgs(spec Spec, workdir string, extra []string) ([]string, error) {
 		"--die-with-parent",
 		"--new-session",
 		"--clearenv",
-	}
+	)
 	for _, m := range spec.Mounts {
 		mh, err := filepath.Abs(m.Host)
 		if err != nil {
