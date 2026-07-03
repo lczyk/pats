@@ -3,7 +3,9 @@
 SRCS := $(shell find ./cmd ./internal ./src -name '*.go')
 
 help:  ## Show this help
-	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@awk 'BEGIN {FS = ":.*?## "} /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} /^[a-zA-Z_.\/-]+:.*?## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+##@ build
 
 .PHONY: build
 build: ./bin/pats  ## Build the pats binary into ./bin (upx-compressed if available)
@@ -20,6 +22,12 @@ install: ./bin/pats  ## Symlink the binary into ~/.local/bin
 	mkdir -p $(HOME)/.local/bin
 	ln -sf "$(PWD)/bin/pats" "$(HOME)/.local/bin/pats"
 
+.PHONY: clean
+clean:  ## Remove build artifacts
+	rm -f ./bin/pats
+
+##@ checks
+
 .PHONY: test
 test:  ## Run the test suite with the race detector
 	go test -race ./...
@@ -32,9 +40,21 @@ lint:  ## go vet + gofmt check (no writes)
 		echo "unformatted files:"; echo "$$out"; exit 1; \
 	fi
 
+.PHONY: verify
+verify: lint test  ## Aggregate gate: lint + test
+
 .PHONY: format
 format:  ## gofmt the tree in place
 	gofmt -s -w ./cmd ./internal ./src
+
+.PHONY: test-bwrap
+test-bwrap:  ## Run the linux-only bwrap e2e tests in a container (for non-linux dev)
+	docker build -q -t pats-bwrap-test hack/bwrap-test
+	# --privileged: bwrap + the netns helper create user/net/mount namespaces
+	# inside the container, which docker's default seccomp/apparmor block
+	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
+		-e GOFLAGS=-buildvcs=false pats-bwrap-test \
+		/usr/local/go/bin/go test -count=1 -v ./src/sandbox/ -run TestBwrap
 
 .PHONY: cover
 cover:  ## Show test coverage per function in the CLI
@@ -54,23 +74,8 @@ fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
 bench:  ## Run all benchmarks
 	go test ./... -run - -bench . -benchmem
 
-.PHONY: test-bwrap
-test-bwrap:  ## Run the linux-only bwrap e2e tests in a container (for non-linux dev)
-	docker build -q -t pats-bwrap-test hack/bwrap-test
-	# --privileged: bwrap + the netns helper create user/net/mount namespaces
-	# inside the container, which docker's default seccomp/apparmor block
-	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
-		-e GOFLAGS=-buildvcs=false pats-bwrap-test \
-		/usr/local/go/bin/go test -count=1 -v ./src/sandbox/ -run TestBwrap
+##@ images
 
-.PHONY: verify
-verify: lint test  ## Aggregate gate: lint + test
-
-.PHONY: clean
-clean:  ## Remove build artifacts
-	rm -f ./bin/pats
-
-# ----- sandbox images -----
 # matrix machinery kept so it scales, but only 26.04 is wired for now.
 DOCKER   ?= docker
 REGISTRY ?= ghcr.io/lczyk/pats
@@ -105,7 +110,6 @@ images: $(SANDBOX_STAMPS)  ## Build sandbox images (narrow via VER=.. ARCH=..)
 clean-images:  ## Remove image stamps (forces rebuild next run)
 	rm -rf .stamp
 
-# ----- egress proxy image -----
 # build the egress proxy from this checkout, tagged both :latest and the version
 # pin pats resolves to (:v<version>), so a pats installed from this clone finds
 # it locally and skips the ghcr pull. needed when the checkout's version has no
