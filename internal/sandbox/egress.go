@@ -7,9 +7,45 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/lczyk/pats/internal/version"
 )
 
-const defaultProxyImage = "ghcr.io/lczyk/pats/egress-proxy:latest"
+const proxyRepo = "ghcr.io/lczyk/pats/egress-proxy"
+
+// ProxyImage resolves a sandbox's egress proxy image and, when it can't pin to a
+// version, a warning to surface. a configured proxy-image wins. otherwise the
+// default is pinned to this build's pats version (tag `v<version>`, as
+// publish_images.yml tags it) -- the proxy's filtering protocol is coupled to
+// the binary, so `latest` could be a mismatched newer proxy. if the version
+// isn't a clean release (dev/dirty/unset -> no image was published for it), fall
+// back to `latest` and return a warning; the caller logs it once.
+func ProxyImage(configured string) (image, warn string) {
+	if configured != "" {
+		return configured, ""
+	}
+	v := version.Info.Version
+	if !releaseVersion(v) {
+		return proxyRepo + ":latest", fmt.Sprintf("pats version %q is not a release; using egress-proxy:latest, which may not match this build (set a sandbox proxy-image to pin)", v)
+	}
+	return proxyRepo + ":v" + v, ""
+}
+
+// releaseVersion reports whether v is a bare X.Y.Z (digits only) -- the shape
+// that has a published `v<version>` image. anything else (empty, a dev/dirty
+// suffix, a pre-release) has none, so we fall back to latest.
+func releaseVersion(v string) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || strings.IndexFunc(p, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			return false
+		}
+	}
+	return true
+}
 
 // setupEgress applies a Spec's egress policy and returns the extra `docker run`
 // args for the agent container, plus a teardown (nil when nothing to tear down).
@@ -38,10 +74,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	id := filepath.Base(spec.Workdir)
 	net := "pats-egr-" + id
 	proxy := "pats-proxy-" + id
-	img := spec.Egress.Image
-	if img == "" {
-		img = defaultProxyImage
-	}
+	img, _ := ProxyImage(spec.Egress.Image) // warn (if any) is logged by the pre-pull pass
 
 	// internal network: no gateway, so the agent has no direct route out.
 	if out, err := docker(ctx, c.bin, "network", "create", "--internal", net); err != nil {
