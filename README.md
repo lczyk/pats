@@ -25,6 +25,38 @@ agents are always run in a sandbox -- we never run without one. the `sandboxes` 
 
 a sandbox can also declare an `egress` policy: `mode: open` (the default -- unrestricted network), `mode: none` (`--network none`), or `mode: proxy` -- a filtering sidecar that allows/denies by host (`default: deny` + `allow: [...]`, or `default: allow` + `deny: [...]`) and writes a per-pair audit log (`egress.log`; denied hosts also land in the run metadata, a built-in cheat detector). under an allowlisting proxy, the hosts the harness itself needs -- the inference api, token refresh, opencode's startup fetches -- are merged in automatically per agent kind, so the config only lists what the *task* needs (e.g. apt mirrors). when host granularity isn't enough (allow github, but not one specific repo), `mode: mitm-proxy` is a superset of `proxy` adding url-level rules: hosts named in `deny-urls` (host-anchored patterns, e.g. `"github.com/*/chisel-releases*"`) get their tls terminated with a per-run CA the sandbox is told to trust, so each request is filtered by full url; all other hosts stay undecrypted tunnels. see `docs/proposals/network-egress.md` for the design.
 
+## installation
+
+pats is a single go binary. you need go 1.26+ to build it, and docker to run the sandboxes.
+
+put it on your PATH with `go install`:
+
+```sh
+go install github.com/lczyk/pats/cmd/pats@latest    # installs into $(go env GOBIN)
+```
+
+or run it without installing at all:
+
+```sh
+go run github.com/lczyk/pats/cmd/pats@latest run
+go run github.com/lczyk/pats/cmd/pats@latest score
+```
+
+from a clone, `make install` builds the binary (upx-compressed if `upx` is on PATH) and symlinks it into `~/.local/bin`:
+
+```sh
+git clone https://github.com/lczyk/pats && cd pats
+make install
+```
+
+### egress proxy image
+
+a sandbox with `mode: proxy` or `mitm-proxy` runs a filtering sidecar from a published image, pinned to your pats version (`ghcr.io/lczyk/pats/egress-proxy:v<version>`). a released install pulls it from ghcr automatically on first use. if you installed from a clone whose version isn't published yet, build the image locally first so pats finds it instead of trying to pull a missing tag:
+
+```sh
+make egress-image    # builds from this checkout, tags :latest and :v<version>
+```
+
 ## examples
 
 typical loop -- run the suites, then score them:
@@ -45,13 +77,6 @@ pats score -r .pats/runs/003-20260701-jacquard-runner   # ... or by path
 ```
 
 all commands take `-c <path>` to point at a `pats.yaml` other than the one in the cwd.
-
-you can also run just with `go run`, no install needed:
-
-```sh
-go run github.com/lczyk/pats/cmd/pats@latest run
-go run github.com/lczyk/pats/cmd/pats@latest score
-```
 
 ### example config
 
