@@ -145,7 +145,11 @@ func (b *bwrapSandbox) startProxy(spec Spec) (extra []string, sock string, teard
 	return extra, sock, teardown, nil
 }
 
-const capNetAdmin = 12 // CAP_NET_ADMIN
+const (
+	capNetAdmin          = 12 // CAP_NET_ADMIN
+	prCapAmbient         = 47 // PR_CAP_AMBIENT
+	prCapAmbientClearAll = 4  // PR_CAP_AMBIENT_CLEAR_ALL
+)
 
 // NetnsMain is the `pats __sbx-net <sock> -- <cmd...>` helper: it runs inside
 // the fresh user+net namespaces set up by Run, brings loopback up, bridges
@@ -160,6 +164,13 @@ func NetnsMain(args []string) int {
 
 	if err := upLoopback(); err != nil {
 		fmt.Fprintln(os.Stderr, "__sbx-net: loopback up:", err)
+		return 1
+	}
+	// the ambient CAP_NET_ADMIN was only for the ioctl above; drop it before
+	// spawning bwrap, which refuses to start a non-root process that carries
+	// unexpected capabilities ("Unexpected capabilities but not setuid").
+	if _, _, e := syscall.Syscall(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClearAll, 0); e != 0 {
+		fmt.Fprintln(os.Stderr, "__sbx-net: drop ambient caps:", e)
 		return 1
 	}
 	ln, err := net.Listen("tcp", proxyAddr)
