@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-SRCS := $(shell find ./cmd ./internal -name '*.go')
+SRCS := $(shell find ./cmd ./internal ./src -name '*.go')
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -27,14 +27,14 @@ test:  ## Run the test suite with the race detector
 .PHONY: lint
 lint:  ## go vet + gofmt check (no writes)
 	go vet ./...
-	@out=$$(gofmt -s -l ./cmd ./internal); \
+	@out=$$(gofmt -s -l ./cmd ./internal ./src); \
 	if [ -n "$$out" ]; then \
 		echo "unformatted files:"; echo "$$out"; exit 1; \
 	fi
 
 .PHONY: format
 format:  ## gofmt the tree in place
-	gofmt -s -w ./cmd ./internal
+	gofmt -s -w ./cmd ./internal ./src
 
 .PHONY: cover
 cover:  ## Show test coverage per function in the CLI
@@ -47,8 +47,8 @@ FUZZTIME ?= 10s
 fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
 	go test ./internal/config -run - -fuzz FuzzParse -fuzztime $(FUZZTIME)
 	go test ./internal/eval -run - -fuzz FuzzParseScore -fuzztime $(FUZZTIME)
-	go test ./cmd/egress-proxy -run - -fuzz FuzzPermitsURL -fuzztime $(FUZZTIME)
-	go test ./cmd/egress-proxy -run - -fuzz FuzzParseURLRules -fuzztime $(FUZZTIME)
+	go test ./src/sandbox/proxy -run - -fuzz FuzzPermitsURL -fuzztime $(FUZZTIME)
+	go test ./src/sandbox/proxy -run - -fuzz FuzzParseURLRules -fuzztime $(FUZZTIME)
 
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/lczyk/pats/internal/config"
-	"github.com/lczyk/pats/internal/sandbox"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // one-shot harness invocations: model + prompt from PATS_* env, permissions

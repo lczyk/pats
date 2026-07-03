@@ -1,6 +1,23 @@
-// Package sandbox runs a command in an isolated environment. it knows nothing
-// about agents or scoring -- it takes an ExecSpec (argv + cwd + env) and runs
-// it, streaming output. drivers: container (docker/podman) now, bwrap later.
+// Package sandbox runs a command in an isolated environment: it takes a Spec
+// (argv + workdir + env + mounts + egress policy) and runs it, streaming
+// output. drivers: container (docker/podman) now, bwrap later.
+//
+// the host Workdir is bound at WorkMount and used as the working directory;
+// everything else the process needs goes in via Env and Mounts. a non-zero
+// exit is a result, not a Go error -- see Sandbox.
+//
+// egress policy (Spec.Egress) controls the sandbox's network:
+//
+//	open/""    -> unrestricted
+//	none       -> no network at all
+//	proxy      -> no direct route out; an internal-only network plus a
+//	              filtering proxy sidecar (see src/sandbox/proxy) that
+//	              allow/denies by host and audits every request as json
+//	mitm-proxy -> proxy, plus: hosts named by url rules get their tls
+//	              terminated with a per-run CA so requests are filtered by
+//	              full url. the CA key reaches the proxy over env only and
+//	              never touches disk; the sandboxed process gets the CA cert
+//	              and a merged trust bundle, never the key.
 package sandbox
 
 import (
@@ -23,12 +40,13 @@ const WorkMount = "/workspace"
 type Spec struct {
 	Argv    []string          // command + args run inside the sandbox
 	Workdir string            // host dir bound at WorkMount and used as cwd
-	Env     map[string]string // environment (PATS_* + passthrough)
+	Env     map[string]string // environment seen by the command
 	Mounts  []Mount           // extra host->container binds (e.g. creds, home)
 	Egress  Egress            // outbound network policy (zero value = open)
 }
 
-// Egress is the resolved network policy for one run (from config.Sandbox.Egress).
+// Egress is the outbound network policy for one run. see the package doc for
+// the mode semantics.
 type Egress struct {
 	Mode      string // "" | open | none | proxy | mitm-proxy
 	Default   string // proxy: deny | allow
@@ -36,7 +54,7 @@ type Egress struct {
 	Deny      []string
 	DenyURLs  []string // mitm-proxy: host-anchored url patterns to block (deny wins)
 	AllowURLs []string // mitm-proxy: a host with allow rules only passes matching urls
-	Image     string   // proxy image
+	Image     string   // proxy sidecar image; empty -> the published build of src/sandbox/proxy
 	AuditPath string   // where to write the proxy's json audit log (proxy mode)
 }
 

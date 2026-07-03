@@ -73,9 +73,9 @@ func TestStartEgressProxy(t *testing.T) {
 	// agent joins the internal net and gets proxy env, upper+lowercase.
 	joined := strings.Join(netArgs, " ")
 	for _, want := range []string{
-		"--network pats-egr-pats-work-x",
-		"HTTP_PROXY=http://pats-proxy-pats-work-x:8080",
-		"https_proxy=http://pats-proxy-pats-work-x:8080",
+		"--network sbx-egr-pats-work-x",
+		"HTTP_PROXY=http://sbx-proxy-pats-work-x:8080",
+		"https_proxy=http://sbx-proxy-pats-work-x:8080",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("netArgs missing %q in %q", want, joined)
@@ -83,7 +83,7 @@ func TestStartEgressProxy(t *testing.T) {
 	}
 
 	// internal network (no gateway) + proxy run with the policy env.
-	if fd.call("network create --internal pats-egr-pats-work-x") == nil {
+	if fd.call("network create --internal sbx-egr-pats-work-x") == nil {
 		t.Error("no internal network create")
 	}
 	run := strings.Join(fd.call("run -d"), " ")
@@ -91,7 +91,7 @@ func TestStartEgressProxy(t *testing.T) {
 		"PROXY_DEFAULT=deny", // empty default resolves to deny
 		"PROXY_ALLOW=api.example.com",
 		"PROXY_DENY=evil.example.com",
-		"--network pats-egr-pats-work-x",
+		"--network sbx-egr-pats-work-x",
 	} {
 		if !strings.Contains(run, want) {
 			t.Errorf("proxy run missing %q in %q", want, run)
@@ -102,7 +102,7 @@ func TestStartEgressProxy(t *testing.T) {
 	}
 
 	teardown()
-	if fd.call("rm -f pats-proxy-pats-work-x") == nil || fd.call("network rm pats-egr-pats-work-x") == nil {
+	if fd.call("rm -f sbx-proxy-pats-work-x") == nil || fd.call("network rm sbx-egr-pats-work-x") == nil {
 		t.Error("teardown did not remove proxy + network")
 	}
 }
@@ -139,7 +139,7 @@ func TestStartEgressProxyMitm(t *testing.T) {
 
 	// agent side: bundle + cert mounts and the tls env vars, no key anywhere.
 	joined := strings.Join(netArgs, " ")
-	for _, want := range []string{agentBundlePath + ":ro", "/pats-ca/ca.pem:ro", "SSL_CERT_FILE=", "NODE_EXTRA_CA_CERTS="} {
+	for _, want := range []string{agentBundlePath + ":ro", "/sbx-ca/ca.pem:ro", "SSL_CERT_FILE=", "NODE_EXTRA_CA_CERTS="} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("agent args missing %q in %q", want, joined)
 		}
@@ -183,7 +183,7 @@ func TestStartEgressProxyFailureTearsDown(t *testing.T) {
 	if _, _, err := c.startEgressProxy(context.Background(), spec); err == nil {
 		t.Fatal("want error from failed proxy start")
 	}
-	if fd.call("network rm pats-egr-pats-work-f") == nil {
+	if fd.call("network rm sbx-egr-pats-work-f") == nil {
 		t.Error("failure path did not remove the network")
 	}
 }

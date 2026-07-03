@@ -1,7 +1,7 @@
 // mitm: for hosts named by a url rule the proxy terminates tls with a leaf
 // signed by the per-run CA, filters each request by full url, and re-dials the
-// real host. everything else stays a blind tunnel (see main.go).
-package main
+// real host. everything else stays a blind tunnel (see proxy.go).
+package proxy
 
 import (
 	"bufio"
@@ -20,16 +20,16 @@ import (
 	"time"
 )
 
-// urlRule is one host-anchored url pattern, e.g. "github.com/*/chisel-releases*".
+// URLRule is one host-anchored url pattern, e.g. "github.com/*/chisel-releases*".
 // the host part (up to the first /) is a literal hostname; the rest is a glob
 // where * matches any characters, / included.
-type urlRule struct {
+type URLRule struct {
 	host string
 	re   *regexp.Regexp // matches host+path, e.g. "github.com/canonical/chisel-releases/x"
 }
 
-func parseURLRules(pats []string) []urlRule {
-	var out []urlRule
+func ParseURLRules(pats []string) []URLRule {
+	var out []URLRule
 	for _, p := range pats {
 		p = strings.ToLower(strings.TrimSpace(p))
 		if p == "" {
@@ -48,20 +48,20 @@ func parseURLRules(pats []string) []urlRule {
 			b.WriteString(".*")
 		}
 		re := regexp.MustCompile(strings.TrimSuffix(b.String(), ".*") + "$")
-		out = append(out, urlRule{host: host, re: re})
+		out = append(out, URLRule{host: host, re: re})
 	}
 	return out
 }
 
 // mitmHost says whether this host's tls must be terminated (it has url rules).
-func (r rule) mitmHost(host string) bool {
+func (r Rule) mitmHost(host string) bool {
 	host = strings.ToLower(host)
-	for _, u := range r.denyURLs {
+	for _, u := range r.DenyURLs {
 		if u.host == host {
 			return true
 		}
 	}
-	for _, u := range r.allowURLs {
+	for _, u := range r.AllowURLs {
 		if u.host == host {
 			return true
 		}
@@ -72,16 +72,16 @@ func (r rule) mitmHost(host string) bool {
 // permitsURL checks host+path (no scheme) against the url rules: a deny match
 // always loses; then, if the host has allow-url rules, only matching urls pass.
 // hosts with no url rules are unaffected.
-func (r rule) permitsURL(hostPath string) bool {
+func (r Rule) permitsURL(hostPath string) bool {
 	hostPath = strings.ToLower(hostPath)
-	for _, u := range r.denyURLs {
+	for _, u := range r.DenyURLs {
 		if u.re.MatchString(hostPath) {
 			return false
 		}
 	}
 	host, _, _ := strings.Cut(hostPath, "/")
 	restricted, matched := false, false
-	for _, u := range r.allowURLs {
+	for _, u := range r.AllowURLs {
 		if u.host != host {
 			continue
 		}
@@ -94,18 +94,18 @@ func (r rule) permitsURL(hostPath string) bool {
 	return !restricted || matched
 }
 
-// signer mints per-host leaf certs signed by the run CA, cached.
-type signer struct {
+// Signer mints per-host leaf certs signed by the run CA, cached.
+type Signer struct {
 	ca    tls.Certificate
 	caX   *x509.Certificate
 	mu    sync.Mutex
 	cache map[string]*tls.Certificate
 }
 
-// newSigner accepts the CA cert/key as either a file path or inline PEM
+// NewSigner accepts the CA cert/key as either a file path or inline PEM
 // (detected by the PEM header). inline keeps the key out of any mounted or
 // image path, so the proxy can run as a non-root user with no fs access.
-func newSigner(certSpec, keySpec string) (*signer, error) {
+func NewSigner(certSpec, keySpec string) (*Signer, error) {
 	ca, err := loadKeyPair(certSpec, keySpec)
 	if err != nil {
 		return nil, err
@@ -114,7 +114,7 @@ func newSigner(certSpec, keySpec string) (*signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &signer{ca: ca, caX: caX, cache: map[string]*tls.Certificate{}}, nil
+	return &Signer{ca: ca, caX: caX, cache: map[string]*tls.Certificate{}}, nil
 }
 
 func loadKeyPair(certSpec, keySpec string) (tls.Certificate, error) {
@@ -124,7 +124,7 @@ func loadKeyPair(certSpec, keySpec string) (tls.Certificate, error) {
 	return tls.LoadX509KeyPair(certSpec, keySpec)
 }
 
-func (s *signer) leaf(host string) (*tls.Certificate, error) {
+func (s *Signer) leaf(host string) (*tls.Certificate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if c, ok := s.cache[host]; ok {
@@ -159,7 +159,7 @@ func (s *signer) leaf(host string) (*tls.Certificate, error) {
 // handleMitm terminates the CONNECT tls with a signed leaf, then serves the
 // decrypted requests, filtering each by url and forwarding the allowed ones to
 // the real host via upstream.
-func handleMitm(w http.ResponseWriter, req *http.Request, r rule, s *signer, upstream http.RoundTripper) {
+func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, upstream http.RoundTripper) {
 	host, port := splitHostPort(req.Host)
 	if port == "" {
 		port = "443"

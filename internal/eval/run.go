@@ -25,8 +25,8 @@ import (
 
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
-	"github.com/lczyk/pats/internal/sandbox"
 	"github.com/lczyk/pats/internal/version"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 const runsSubdir = ".pats/runs"

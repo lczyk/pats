@@ -11,6 +11,9 @@ import (
 	"github.com/lczyk/pats/internal/version"
 )
 
+// proxyRepo is the published build of the sibling proxy package
+// (src/sandbox/proxy) -- the two speak the PROXY_* env protocol. override via
+// Egress.Image to run your own build.
 const proxyRepo = "ghcr.io/lczyk/pats/egress-proxy"
 
 // ProxyImage resolves a sandbox's egress proxy image and, when it can't pin to a
@@ -47,6 +50,11 @@ func releaseVersion(v string) bool {
 	return true
 }
 
+// namePrefix marks everything this package creates on the docker side
+// (networks, sidecar containers) and the in-container CA mount path, so a
+// crashed run is easy to spot and sweep up.
+const namePrefix = "sbx-"
+
 // setupEgress applies a Spec's egress policy and returns the extra `docker run`
 // args for the agent container, plus a teardown (nil when nothing to tear down).
 //
@@ -70,10 +78,10 @@ func (c *container) setupEgress(ctx context.Context, spec Spec) (netArgs []strin
 }
 
 func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, func(), error) {
-	// unique per pair -- the workdir is a fresh pats-work-* temp dir.
+	// unique per run -- the caller gives each run a fresh workdir.
 	id := filepath.Base(spec.Workdir)
-	net := "pats-egr-" + id
-	proxy := "pats-proxy-" + id
+	net := namePrefix + "egr-" + id
+	proxy := namePrefix + "proxy-" + id
 	img, _ := ProxyImage(spec.Egress.Image) // warn (if any) is logged by the pre-pull pass
 
 	// internal network: no gateway, so the agent has no direct route out.
@@ -115,7 +123,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	var agentTLSArgs []string
 	if spec.Egress.Mode == "mitm-proxy" && len(spec.Egress.DenyURLs)+len(spec.Egress.AllowURLs) > 0 {
 		var err error
-		if caDir, err = MkTemp("pats-mitm-ca-"); err != nil {
+		if caDir, err = MkTemp(namePrefix + "mitm-ca-"); err != nil {
 			teardown()
 			return nil, nil, fmt.Errorf("egress: mitm ca dir: %w", err)
 		}
@@ -169,7 +177,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 const caBundlePath = "/etc/ssl/certs/ca-certificates.crt"
 
 // agentBundlePath is where the merged trust bundle is mounted in the agent.
-const agentBundlePath = "/pats-ca/bundle.pem"
+const agentBundlePath = "/sbx-ca/bundle.pem"
 
 // setupMitm generates the per-run CA into caDir, merges it with the agent
 // image's trust bundle, and returns the agent-side docker args (mounts + env)
@@ -208,7 +216,7 @@ func (c *container) setupMitm(ctx context.Context, spec Spec, caDir string, penv
 	)
 	agentArgs = []string{
 		"-v", bundlePath + ":" + agentBundlePath + ":ro",
-		"-v", certPath + ":/pats-ca/ca.pem:ro",
+		"-v", certPath + ":/sbx-ca/ca.pem:ro",
 		// openssl consumers (curl, git) read SSL_CERT_FILE; python requests
 		// bundles certifi so it needs its own var; node's var is additive so
 		// the run CA alone suffices there. tools honouring none of these fail
@@ -217,7 +225,7 @@ func (c *container) setupMitm(ctx context.Context, spec Spec, caDir string, penv
 		"-e", "CURL_CA_BUNDLE=" + agentBundlePath,
 		"-e", "GIT_SSL_CAINFO=" + agentBundlePath,
 		"-e", "REQUESTS_CA_BUNDLE=" + agentBundlePath,
-		"-e", "NODE_EXTRA_CA_CERTS=/pats-ca/ca.pem",
+		"-e", "NODE_EXTRA_CA_CERTS=/sbx-ca/ca.pem",
 	}
 	return agentArgs, proxyEnv, nil
 }

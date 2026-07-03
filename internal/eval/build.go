@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/lczyk/pats/internal/config"
-	"github.com/lczyk/pats/internal/sandbox"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // buildImages resolves the `build:` sandboxes used by the run's pairs: each is

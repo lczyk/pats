@@ -17,7 +17,7 @@ import (
 	"github.com/lczyk/assert/require"
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
-	"github.com/lczyk/pats/internal/sandbox"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 func dockerOrSkip(t *testing.T) {

@@ -20,7 +20,7 @@ func genCA() (certPEM, keyPEM []byte, err error) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
-		Subject:               pkix.Name{CommonName: "pats egress mitm CA"},
+		Subject:               pkix.Name{CommonName: "sandbox egress mitm CA"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,

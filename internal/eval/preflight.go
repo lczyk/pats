@@ -11,7 +11,7 @@ import (
 
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
-	"github.com/lczyk/pats/internal/sandbox"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // preflightPrompt is a throwaway task that only succeeds if the harness can

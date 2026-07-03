@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"crypto/ecdsa"
@@ -20,7 +20,7 @@ import (
 )
 
 func TestPermitsURL(t *testing.T) {
-	r := rule{denyURLs: parseURLRules([]string{
+	r := Rule{DenyURLs: ParseURLRules([]string{
 		"github.com/*/chisel-releases*",
 		"raw.githubusercontent.com/canonical/chisel-releases*",
 	})}
@@ -51,9 +51,9 @@ func TestPermitsURL(t *testing.T) {
 }
 
 func TestPermitsURLAllowRules(t *testing.T) {
-	r := rule{
-		denyURLs:  parseURLRules([]string{"docs.example.com/internal*"}),
-		allowURLs: parseURLRules([]string{"docs.example.com/public*", "docs.example.com/api*"}),
+	r := Rule{
+		DenyURLs:  ParseURLRules([]string{"docs.example.com/internal*"}),
+		AllowURLs: ParseURLRules([]string{"docs.example.com/public*", "docs.example.com/api*"}),
 	}
 
 	cases := []struct {
@@ -80,7 +80,7 @@ func TestPermitsURLAllowRules(t *testing.T) {
 
 func TestParseURLRulesRejectsWildcardHost(t *testing.T) {
 	// belt-and-braces vs hand-set env: wildcard/empty host parts are dropped.
-	if got := parseURLRules([]string{"*/chisel*", "/x", "*.github.com/x"}); len(got) != 0 {
+	if got := ParseURLRules([]string{"*/chisel*", "/x", "*.github.com/x"}); len(got) != 0 {
 		t.Fatalf("want all rejected, got %d rules", len(got))
 	}
 }
@@ -126,7 +126,7 @@ func TestNewSignerInlinePEM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := newSigner(string(certPEM), string(keyPEM))
+	s, err := NewSigner(string(certPEM), string(keyPEM))
 	if err != nil {
 		t.Fatalf("inline pem: %v", err)
 	}
@@ -142,17 +142,17 @@ func TestMitmE2E(t *testing.T) {
 	defer upstream.Close()
 
 	certPath, keyPath, pool := testCA(t, t.TempDir())
-	s, err := newSigner(certPath, keyPath)
+	s, err := NewSigner(certPath, keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := rule{
-		allow:    []string{"127.0.0.1"},
-		denyURLs: parseURLRules([]string{"127.0.0.1/secret*"}),
+	r := Rule{
+		Allow:    []string{"127.0.0.1"},
+		DenyURLs: ParseURLRules([]string{"127.0.0.1/secret*"}),
 	}
 
 	// the proxy's upstream transport trusts the test server's self-signed cert.
-	proxy := httptest.NewServer(handler(r, s, upstream.Client().Transport))
+	proxy := httptest.NewServer(Handler(r, s, upstream.Client().Transport))
 	defer proxy.Close()
 	proxyURL, _ := url.Parse(proxy.URL)
 
@@ -192,9 +192,9 @@ func TestMitmE2E(t *testing.T) {
 // FuzzPermitsURL: hostPath comes straight from the client's request path, so
 // it's attacker-controlled. just wants no panic across rule shapes.
 func FuzzPermitsURL(f *testing.F) {
-	r := rule{
-		denyURLs:  parseURLRules([]string{"github.com/*/chisel-releases*"}),
-		allowURLs: parseURLRules([]string{"docs.example.com/public*"}),
+	r := Rule{
+		DenyURLs:  ParseURLRules([]string{"github.com/*/chisel-releases*"}),
+		AllowURLs: ParseURLRules([]string{"docs.example.com/public*"}),
 	}
 	seeds := []string{
 		"github.com/canonical/chisel-releases/tree/main",
@@ -211,7 +211,7 @@ func FuzzPermitsURL(f *testing.F) {
 	})
 }
 
-// FuzzParseURLRules: rule patterns come from pats.yaml, but keep this cheap
+// FuzzParseURLRules: Rule patterns come from pats.yaml, but keep this cheap
 // too since a hand-set env var can also feed it.
 func FuzzParseURLRules(f *testing.F) {
 	seeds := []string{
@@ -224,6 +224,6 @@ func FuzzParseURLRules(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, pat string) {
-		parseURLRules([]string{pat})
+		ParseURLRules([]string{pat})
 	})
 }
