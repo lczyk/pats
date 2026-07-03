@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -297,4 +298,16 @@ func TestScorerExecFile(t *testing.T) {
 	assert.Equal(t, Scorer{ID: "x", Score: "custom.py"}.ExecFile(), "custom.py")
 	// no score -> empty.
 	assert.Equal(t, Scorer{ID: "x"}.ExecFile(), "")
+}
+
+// FuzzParse just wants parse() to never panic on arbitrary yaml.
+func FuzzParse(f *testing.F) {
+	seed, err := os.ReadFile("../../pats.example.yaml")
+	if err == nil {
+		f.Add(seed)
+	}
+	f.Add([]byte("agents: [foo\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = parse(data)
+	})
 }

@@ -217,3 +217,14 @@ func TestScoreAllRuns(t *testing.T) {
 		require.NoError(t, err)
 	}
 }
+
+// FuzzParseScore: scorer stdout isn't trusted input (arbitrary user script),
+// just wants no panic.
+func FuzzParseScore(f *testing.F) {
+	for _, s := range []string{"0.5\n", "na\n", "", "\n\n1\n", "inf", "1e400", "-0"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		parseScore(s)
+	})
+}

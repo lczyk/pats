@@ -188,3 +188,42 @@ func TestMitmE2E(t *testing.T) {
 		t.Fatal("expected host-gate refusal for unlisted host")
 	}
 }
+
+// FuzzPermitsURL: hostPath comes straight from the client's request path, so
+// it's attacker-controlled. just wants no panic across rule shapes.
+func FuzzPermitsURL(f *testing.F) {
+	r := rule{
+		denyURLs:  parseURLRules([]string{"github.com/*/chisel-releases*"}),
+		allowURLs: parseURLRules([]string{"docs.example.com/public*"}),
+	}
+	seeds := []string{
+		"github.com/canonical/chisel-releases/tree/main",
+		"docs.example.com/public/guide",
+		"",
+		"*/*",
+		"github.com/../../etc/passwd",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, hostPath string) {
+		r.permitsURL(hostPath)
+	})
+}
+
+// FuzzParseURLRules: rule patterns come from pats.yaml, but keep this cheap
+// too since a hand-set env var can also feed it.
+func FuzzParseURLRules(f *testing.F) {
+	seeds := []string{
+		"github.com/*/chisel-releases*",
+		"*/x",
+		"",
+		"a/b/c*d*e",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, pat string) {
+		parseURLRules([]string{pat})
+	})
+}
