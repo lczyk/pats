@@ -34,8 +34,9 @@ sandboxes:
     #   # inverse: a host with allow-urls only passes matching urls (deny wins)
     #   # allow-urls:
     #   #   - "github.com/some-org/*"
-  # bwrap (linux-only, no image) is planned but not implemented yet -- a bwrap
-  # sandbox is rejected at validation.
+  # bwrap (linux-only) runs the command directly on the host under bubblewrap:
+  # no image -- the host fs is the rootfs (read-only, /home masked). egress
+  # modes all work; proxy modes run the filter in-process (no sidecar image).
   # - id: bwrap
   #   kind: bwrap
 
