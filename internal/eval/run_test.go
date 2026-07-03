@@ -2,6 +2,9 @@ package eval
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +17,7 @@ import (
 	"github.com/lczyk/assert/require"
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/sandbox"
 )
 
 func dockerOrSkip(t *testing.T) {
@@ -172,4 +176,75 @@ func TestStderrTail(t *testing.T) {
 	if !strings.HasPrefix(got, "\nstderr: ... ") || !strings.HasSuffix(got, "14") {
 		t.Errorf("long buffer not truncated to last 10 lines: got %q", got)
 	}
+}
+
+// fakeSandbox lets Run's orchestration execute without docker: it records the
+// spec and plays back a canned exit code / output per agent id.
+type fakeSandbox struct {
+	code   int
+	stdout string
+	err    error
+	calls  int
+}
+
+func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
+	// first call per agent is the credential preflight -- always passes so the
+	// canned outcome lands on the real pair run.
+	if f.calls++; f.calls == 1 {
+		return 0, nil
+	}
+	if f.err != nil {
+		return -1, f.err
+	}
+	io.WriteString(stdout, f.stdout)
+	return f.code, nil
+}
+
+// COVER: Run's orchestration -- run-dir layout, per-pair metadata, status
+// classification (ok vs nonzero vs error), failing pair not aborting siblings
+// -- exercised against a fake sandbox, no docker needed.
+func TestRunOrchestrationFakeSandbox(t *testing.T) {
+	fakes := map[string]*fakeSandbox{
+		"ok":   {code: 0, stdout: "fine\n"},
+		"bad":  {code: 3},
+		"boom": {err: errors.New("launch failed")},
+	}
+	old := newSandbox
+	// the image name doubles as the fake selector: each agent gets its own
+	// sandbox with image = fake key.
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fakes[image], nil }
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+
+	var sbs []config.Sandbox
+	var agents []config.Agent
+	var ids config.StrList
+	for id := range fakes {
+		sbs = append(sbs, config.Sandbox{ID: id, Kind: "container", Driver: "docker", Image: id})
+		agents = append(agents, config.Agent{ID: id, Kind: "opencode-openrouter", Model: "m", Sandbox: id})
+		ids = append(ids, id)
+	}
+	cfg := &config.Config{
+		Sandboxes: sbs,
+		Agents:    agents,
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
+		Suites:    []config.Suite{{ID: "su", Agents: ids, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err) // a failing pair is logged, not fatal
+
+	wantStatus := map[string]string{"ok": "ok", "bad": "nonzero", "boom": "error"}
+	for id, want := range wantStatus {
+		meta, err := os.ReadFile(filepath.Join(runDir, id, "t", "metadata.json"))
+		require.NoError(t, err)
+		assert.ContainsString(t, string(meta), `"status": "`+want+`"`)
+	}
+	stdout, err := os.ReadFile(filepath.Join(runDir, "ok", "t", "stdout.log"))
+	require.NoError(t, err)
+	assert.Equal(t, string(stdout), "fine\n")
 }
