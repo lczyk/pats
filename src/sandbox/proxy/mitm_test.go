@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -226,4 +227,24 @@ func FuzzParseURLRules(f *testing.F) {
 	f.Fuzz(func(t *testing.T, pat string) {
 		ParseURLRules([]string{pat})
 	})
+}
+
+// BenchmarkPermitsURL pins the per-request filtering overhead at a
+// deliberately heavy rule count (50 rules; real configs have a handful).
+func BenchmarkPermitsURL(b *testing.B) {
+	var deny, allow []string
+	for i := range 25 {
+		deny = append(deny, fmt.Sprintf("host%d.example.com/*/secrets*", i))
+		allow = append(allow, fmt.Sprintf("docs%d.example.com/public*", i))
+	}
+	r := Rule{DenyURLs: ParseURLRules(deny), AllowURLs: ParseURLRules(allow)}
+	paths := []string{
+		"host24.example.com/x/secrets/key.pem", // deny hit, last rule
+		"docs24.example.com/public/guide",      // allow hit, last rule
+		"other.example.com/anything",           // no rules for host
+	}
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		r.permitsURL(paths[i%len(paths)])
+	}
 }
