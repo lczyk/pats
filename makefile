@@ -36,6 +36,20 @@ lint:  ## go vet + gofmt check (no writes)
 format:  ## gofmt the tree in place
 	gofmt -s -w ./cmd ./internal
 
+.PHONY: cover
+cover:  ## Show test coverage per function in the CLI
+	go test -coverprofile=/tmp/pats-cover.out ./...
+	go tool cover -func=/tmp/pats-cover.out
+
+FUZZTIME ?= 10s
+
+.PHONY: fuzz
+fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
+	go test ./internal/config -run - -fuzz FuzzParse -fuzztime $(FUZZTIME)
+	go test ./internal/eval -run - -fuzz FuzzParseScore -fuzztime $(FUZZTIME)
+	go test ./cmd/egress-proxy -run - -fuzz FuzzPermitsURL -fuzztime $(FUZZTIME)
+	go test ./cmd/egress-proxy -run - -fuzz FuzzParseURLRules -fuzztime $(FUZZTIME)
+
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test
 
