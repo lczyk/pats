@@ -132,9 +132,9 @@ scorers:
 			want: "agent kind not implemented",
 		},
 		{
-			// both real kinds take an effort flag now (claude --effort, opencode
-			// --variant), so only an unknown kind can trip this today; the check
-			// stays for future effort-less kinds.
+			// every real kind takes an effort flag now (claude --effort, codex
+			// model_reasoning_effort, opencode --variant), so only an unknown kind
+			// can trip this today; the check stays for future effort-less kinds.
 			name: "effort on a kind without it",
 			src: `
 sandboxes: [{id: s, kind: container, image: img}]
@@ -282,6 +282,16 @@ suites:
 	require.NoError(t, err)
 	// 2 agents x t1 + 2 agents x t2 = 4.
 	assert.Len(t, pairs, 4)
+}
+
+func TestCodexAgentWithEffortValid(t *testing.T) {
+	c := parseT(t, `
+sandboxes: [{id: s, kind: container, image: img}]
+agents: [{id: codex, kind: codex-cli-keyless, model: gpt-test, effort: high, sandbox: s}]
+tasks: [{id: t, prompt: p.txt}]
+suites: [{id: su, agents: codex, tasks: t}]
+`)
+	require.NoError(t, c.Validate())
 }
 
 func TestAgentResolvedModel(t *testing.T) {

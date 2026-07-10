@@ -312,7 +312,7 @@ func runPair(
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 
 	// every agent is a harness: give it a writable HOME + wire creds.
-	hs, herr := harnessHome(opts, p, env, hasToken)
+	hs, herr := harnessHome(opts, p, a.Kind, env, hasToken)
 	if herr != nil {
 		return herr
 	}
@@ -408,7 +408,14 @@ func runPair(
 	}
 	stats := stat.cols(statScanner(a.Kind) != nil)
 	if s := meta.Summary; s != nil {
-		stats += fmt.Sprintf("  %s tok  $%.2f  %d turns", humanK(s.OutputTokens), s.CostUSD, s.NumTurns)
+		// cost + turns are omitted for harnesses whose stream doesn't report them.
+		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))
+		if s.HasCost {
+			stats += fmt.Sprintf("  $%.2f", s.CostUSD)
+		}
+		if s.NumTurns > 0 {
+			stats += fmt.Sprintf("  %d turns", s.NumTurns)
+		}
 	}
 	lg.info("[%s x %s] %s", p.Agent, p.Task, stats)
 	return nil
@@ -423,32 +430,33 @@ type harnessSetup struct {
 	cleanup func()
 }
 
-// harnessHome gives a harness a writable HOME (the --user uid owns nothing) and
-// wires claude's oauth creds mason-style: mount ~/.claude/.credentials.json (rw,
-// claude rotates it) into the home if present. token/key env is forwarded by the
-// caller. warns when no creds are available at all, since the cli then fails auth.
-func harnessHome(opts Options, p config.TestPair, env map[string]string, hasToken bool) (harnessSetup, error) {
+// harnessHome gives a harness a writable HOME (the --user uid owns nothing),
+// copies its file-based credentials when present, and warns when no supported
+// credential source is available. copies are writable for token refreshes but
+// discarded after the invocation; pats never modifies the host credential file.
+func harnessHome(opts Options, p config.TestPair, kind string, env map[string]string, hasToken bool) (harnessSetup, error) {
 	homeDir, err := sandbox.MkTemp("pats-home-")
 	if err != nil {
 		return harnessSetup{}, err
 	}
 	env["HOME"] = homeMount
+	maps.Copy(env, agent.HomeEnv(kind, homeMount))
 
 	hasCreds := hasToken
-	if cf := agent.HostCredsFile(); cf != "" {
-		dst := filepath.Join(homeDir, ".claude")
-		if err := os.MkdirAll(dst, 0o700); err != nil {
+	if cf, rel := agent.HostCredsFile(kind); cf != "" {
+		dst := filepath.Join(homeDir, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 			os.RemoveAll(homeDir)
 			return harnessSetup{}, err
 		}
-		if err := copyFile(cf, filepath.Join(dst, ".credentials.json")); err != nil {
+		if err := copyFile(cf, dst); err != nil {
 			os.RemoveAll(homeDir)
 			return harnessSetup{}, err
 		}
 		hasCreds = true
 	}
 	if !hasCreds {
-		logw{opts.Out, opts.Color}.warn("[%s x %s] no creds forwarded (no token env, no ~/.claude/.credentials.json); the harness may fail on auth", p.Agent, p.Task)
+		logw{opts.Out, opts.Color}.warn("[%s x %s] no creds forwarded (expected %s); the harness may fail on auth", p.Agent, p.Task, agent.CredentialHint(kind))
 	}
 	return harnessSetup{
 		mounts:  []sandbox.Mount{{Host: homeDir, Container: homeMount}},

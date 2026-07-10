@@ -315,6 +315,8 @@ func statScanner(kind string) func([]byte, *pairStat) {
 	switch kind {
 	case "claude-cli-keyless":
 		return scanClaude
+	case "codex-cli-keyless":
+		return scanCodex
 	case "opencode-openrouter":
 		return scanOpencode
 	}
@@ -396,16 +398,69 @@ func scanOpencode(line []byte, s *pairStat) {
 	}
 }
 
+// codexEvent is one line of `codex exec --json`. tool-like work is emitted as
+// completed items; final token totals arrive on turn.completed. a chatgpt-account
+// run does not expose a per-run dollar cost.
+//
+// the usage counters nest: cached_input_tokens is a slice of input_tokens, and
+// reasoning_output_tokens a slice of output_tokens (claude's usage nests the
+// same way for reasoning, but keeps its cache reads out of input_tokens).
+type codexEvent struct {
+	Type string `json:"type"`
+	Item struct {
+		Type   string `json:"type"`
+		Server string `json:"server"`
+		Tool   string `json:"tool"`
+	} `json:"item"`
+	Usage struct {
+		Input     int `json:"input_tokens"`
+		Cached    int `json:"cached_input_tokens"`
+		Output    int `json:"output_tokens"`
+		Reasoning int `json:"reasoning_output_tokens"`
+	} `json:"usage"`
+}
+
+func codexToolName(ev codexEvent) string {
+	if ev.Type != "item.completed" {
+		return ""
+	}
+	switch ev.Item.Type {
+	case "command_execution", "file_change", "web_search":
+		return ev.Item.Type
+	case "mcp_tool_call":
+		if ev.Item.Server != "" && ev.Item.Tool != "" {
+			return "mcp:" + ev.Item.Server + "/" + ev.Item.Tool
+		}
+		return ev.Item.Type
+	default:
+		return ""
+	}
+}
+
+// scanCodex counts completed tool-like items, avoiding double-counting their
+// matching item.started events.
+func scanCodex(line []byte, s *pairStat) {
+	var ev codexEvent
+	if json.Unmarshal(line, &ev) == nil && codexToolName(ev) != "" {
+		atomic.AddInt64(&s.tools, 1)
+	}
+}
+
 // runSummary is the post-run digest extracted from a harness's log, stored in
-// metadata.json. fields are per-kind best-effort -- zero/empty when absent.
+// metadata.json. fields are per-kind best-effort -- zero/empty when absent, so
+// they carry the same meaning whichever harness produced them: InputTokens
+// never includes the cache-read half, NumTurns counts model round-trips (0 when
+// the stream doesn't say), and HasCost tells the caller a zero CostUSD is a
+// real zero rather than an unreported one.
 type runSummary struct {
 	NumTurns            int            `json:"num_turns,omitempty"`
 	CostUSD             float64        `json:"cost_usd,omitempty"`
+	HasCost             bool           `json:"-"` // false when the harness reports no dollar cost at all
 	InputTokens         int            `json:"input_tokens,omitempty"`
 	OutputTokens        int            `json:"output_tokens,omitempty"`
 	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int            `json:"cache_creation_tokens,omitempty"`
-	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // opencode splits these out; claude folds them into output
+	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // opencode splits these out; claude + codex fold them into output
 	TTFTms              int            `json:"ttft_ms,omitempty"`
 	APIDurationMs       int            `json:"api_duration_ms,omitempty"`
 	IsError             bool           `json:"is_error,omitempty"`
@@ -420,10 +475,61 @@ func summarize(kind, stdoutPath string) *runSummary {
 	switch kind {
 	case "claude-cli-keyless":
 		return claudeSummary(stdoutPath)
+	case "codex-cli-keyless":
+		return codexSummary(stdoutPath)
 	case "opencode-openrouter":
 		return opencodeSummary(stdoutPath)
 	}
 	return nil
+}
+
+// codexSummary parses codex's json event stream (see codexEvent): tool names
+// from completed items, tokens from turn.completed. turn.failed and error both
+// mark the summary as failed even when the process itself exited cleanly.
+//
+// NumTurns stays 0: `codex exec` is a single turn by construction, so counting
+// turn.completed events would print a constant 1 next to claude's and opencode's
+// real round-trip counts. the stream carries no round-trip marker to use instead.
+// CostUSD stays 0 for the same honesty -- a keyless (chatgpt-account) run is
+// billed against the subscription, never priced per run.
+func codexSummary(path string) *runSummary {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	sum := &runSummary{Tools: map[string]int{}}
+	hasEvent := false
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		var ev codexEvent
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "item.completed":
+			if name := codexToolName(ev); name != "" {
+				sum.Tools[name]++
+				hasEvent = true
+			}
+		case "turn.completed":
+			// cached is a slice of input, so subtract to match the other kinds.
+			sum.InputTokens += ev.Usage.Input - ev.Usage.Cached
+			sum.CacheReadTokens += ev.Usage.Cached
+			sum.OutputTokens += ev.Usage.Output
+			sum.ReasoningTokens += ev.Usage.Reasoning
+			hasEvent = true
+		case "turn.failed", "error":
+			sum.IsError = true
+			hasEvent = true
+		}
+	}
+	if !hasEvent {
+		return nil
+	}
+	return sum
 }
 
 // opencodeSummary parses opencode's json event stream (see opencodeEvent):
@@ -450,6 +556,7 @@ func opencodeSummary(path string) *runSummary {
 			sum.Tools[ev.Part.Tool]++
 		case "step_finish":
 			steps++
+			sum.HasCost = true
 			sum.CostUSD += ev.Part.Cost
 			sum.InputTokens += ev.Part.Tokens.Input
 			sum.OutputTokens += ev.Part.Tokens.Output
@@ -496,6 +603,7 @@ func claudeSummary(path string) *runSummary {
 		case "result":
 			hasResult = true
 			sum.NumTurns = ev.NumTurns
+			sum.HasCost = true
 			sum.CostUSD = ev.CostUSD
 			sum.TTFTms = ev.TTFTms
 			sum.APIDurationMs = ev.APIms

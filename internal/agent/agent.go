@@ -31,6 +31,12 @@ const (
 	// includes the reasoning events. effort maps to --variant (provider-specific
 	// reasoning effort, e.g. high|max|minimal), same ${PATS_EFFORT:+...} trick.
 	opencodeOpenrouterCmd = `opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions --format json --thinking ${PATS_EFFORT:+--variant "$PATS_EFFORT"} "$(cat "$PATS_PROMPT_FILE")"`
+	// codex-cli, keyless: auth comes only from CODEX_HOME/auth.json, copied into
+	// the harness home by the run phase. pats is the outer sandbox, so codex's
+	// own approvals + sandbox are bypassed. --ignore-user-config keeps personal
+	// config out of an eval while retaining auth; --ephemeral avoids transcripts.
+	// the prompt is read from stdin so shell quoting never changes its contents.
+	codexKeylessCmd = `codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model "$PATS_MODEL" ${PATS_EFFORT:+-c model_reasoning_effort="$PATS_EFFORT"} - < "$PATS_PROMPT_FILE"`
 )
 
 // HarnessCmds maps an agent kind to its one-shot shell command -- the registry
@@ -38,6 +44,7 @@ const (
 // no-cred stand-in through the sandbox.)
 var HarnessCmds = map[string]string{
 	"claude-cli-keyless":  claudeKeylessCmd,
+	"codex-cli-keyless":   codexKeylessCmd,
 	"opencode-openrouter": opencodeOpenrouterCmd,
 }
 
@@ -49,6 +56,14 @@ var RequiredHosts = map[string][]string{
 	"claude-cli-keyless": {
 		".anthropic.com", // inference api
 		".claude.com",    // oauth token refresh (missing it -> 401 mid-run)
+	},
+	// codex also probes api.github.com for a newer release and fetches an
+	// announcement banner from raw.githubusercontent.com. both are left out: the
+	// run works without them, and a self-update inside an eval is the last thing
+	// we want. they show up as denied entries in the egress audit -- expected.
+	"codex-cli-keyless": {
+		".openai.com",  // oauth token refresh + api endpoints
+		".chatgpt.com", // chatgpt-account inference (incl. telemetry to ab.chatgpt.com)
 	},
 	"opencode-openrouter": {
 		"openrouter.ai",      // inference
@@ -78,6 +93,16 @@ func Env(a config.Agent, promptFile, outputDir string) map[string]string {
 	}
 }
 
+// HomeEnv is the kind-specific env derived from the in-sandbox HOME, or nil.
+// codex resolves its state dir from CODEX_HOME rather than trusting $HOME, so
+// it's pinned to the same .codex the run phase copies auth.json into.
+func HomeEnv(kind, home string) map[string]string {
+	if kind == "codex-cli-keyless" {
+		return map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}
+	}
+	return nil
+}
+
 // credKeys are forwarded from the host env into a harness sandbox so the cli
 // can authenticate. the agent runs as an arbitrary uid with no keychain access,
 // so a token/key in the env is one way in (e.g. `claude setup-token` ->
@@ -94,6 +119,10 @@ var credKeys = map[string][]string{
 		"CLAUDE_CODE_OAUTH_TOKEN",
 		"ANTHROPIC_BASE_URL",
 	},
+	// deliberately empty, not missing: codex reads CODEX_API_KEY/OPENAI_API_KEY
+	// when either is set, so withholding them is what keeps this kind keyless.
+	// auth comes from the copied auth.json alone (see HostCredsFile).
+	"codex-cli-keyless":   {},
 	"opencode-openrouter": {"OPENROUTER_API_KEY"},
 }
 
@@ -112,17 +141,38 @@ func CredEnv(kind string) (env map[string]string, hasToken bool) {
 	return env, hasToken
 }
 
-// HostCredsFile returns the path to ~/.claude/.credentials.json if it exists,
-// else "". this is claude's oauth creds (the "keyless" path); on linux it's a
-// file, on macos it lives in the keychain so this returns "".
-func HostCredsFile() string {
+// HostCredsFile returns a harness credential file and its HOME-relative
+// destination. keyring-backed logins have no file and return empty strings.
+func HostCredsFile(kind string) (host, relative string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	p := filepath.Join(home, ".claude", ".credentials.json")
+	switch kind {
+	case "claude-cli-keyless":
+		relative = filepath.Join(".claude", ".credentials.json")
+	case "codex-cli-keyless":
+		relative = filepath.Join(".codex", "auth.json")
+	default:
+		return "", ""
+	}
+	p := filepath.Join(home, relative)
 	if _, err := os.Stat(p); err == nil {
-		return p
+		return p, relative
 	}
-	return ""
+	return "", ""
+}
+
+// CredentialHint describes the host credential source used in auth warnings.
+func CredentialHint(kind string) string {
+	switch kind {
+	case "claude-cli-keyless":
+		return "a claude token env or ~/.claude/.credentials.json"
+	case "codex-cli-keyless":
+		return "~/.codex/auth.json (file-based codex login)"
+	case "opencode-openrouter":
+		return "OPENROUTER_API_KEY"
+	default:
+		return "harness credentials"
+	}
 }

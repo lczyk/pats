@@ -7,7 +7,7 @@
 # clis installed globally (npm -g -> /usr/*) so they're on PATH for ANY uid --
 # pats runs the container with `--user <host uid>`, which has no home of its
 # own, so a per-user install (~/.local) would be invisible/unwritable.
-# pin CLAUDE_CLI_VERSION before publishing; floating `latest` for now.
+# pin cli versions before publishing; floating `latest` for now.
 FROM docker.io/library/ubuntu:26.04
 
 RUN apt-get update && \
@@ -22,12 +22,12 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ARG CLAUDE_CLI_VERSION=latest
+ARG CODEX_CLI_VERSION=latest
 ARG OPENCODE_VERSION=latest
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
+        "@openai/codex@${CODEX_CLI_VERSION}" \
         "opencode-ai@${OPENCODE_VERSION}" && \
     npm cache clean --force
-
-# TODO(lczyk): codex-cli.
 
 CMD ["/bin/bash"]

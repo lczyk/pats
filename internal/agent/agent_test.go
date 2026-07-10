@@ -70,11 +70,25 @@ func TestSpecClaudeCli(t *testing.T) {
 	assert.ContainsString(t, spec.Argv[len(spec.Argv)-1], "claude --print")
 }
 
+func TestSpecCodexCliKeyless(t *testing.T) {
+	spec, err := Spec(config.Agent{ID: "c", Kind: "codex-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
+	require.NoError(t, err)
+	cmd := spec.Argv[len(spec.Argv)-1]
+	assert.ContainsString(t, cmd, "codex exec --json --ephemeral")
+	assert.ContainsString(t, cmd, "--ignore-user-config")
+	assert.ContainsString(t, cmd, "--dangerously-bypass-approvals-and-sandbox")
+	assert.ContainsString(t, cmd, `model_reasoning_effort="$PATS_EFFORT"`)
+	assert.ContainsString(t, cmd, `< "$PATS_PROMPT_FILE"`)
+}
+
 // a harness inherits only its own provider's env: an OPENROUTER_API_KEY on the
-// host must not reach claude, nor an ANTHROPIC_API_KEY reach opencode.
+// host must not reach claude, nor an ANTHROPIC_API_KEY reach opencode. codex is
+// keyless with no env path at all, so an OPENAI_API_KEY must not reach it either
+// -- that's what stops it quietly authenticating as an api-key account.
 func TestCredEnvIsKindSpecific(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-secret")
 	t.Setenv("OPENROUTER_API_KEY", "openrouter-secret")
+	t.Setenv("OPENAI_API_KEY", "openai-secret")
 
 	claude, hasToken := CredEnv("claude-cli-keyless")
 	assert.Equal(t, claude["ANTHROPIC_API_KEY"], "anthropic-secret")
@@ -90,10 +104,27 @@ func TestCredEnvIsKindSpecific(t *testing.T) {
 		t.Error("opencode inherited an unrelated anthropic credential")
 	}
 
+	codex, hasToken := CredEnv("codex-cli-keyless")
+	assert.Equal(t, len(codex), 0)
+	assert.Equal(t, hasToken, false)
+
 	// an unknown kind inherits nothing rather than everything.
 	unknown, hasToken := CredEnv("no-such-kind")
 	assert.Equal(t, len(unknown), 0)
 	assert.Equal(t, hasToken, false)
+}
+
+func TestHostCredsFileCodex(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".codex")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	want := filepath.Join(dir, "auth.json")
+	require.NoError(t, os.WriteFile(want, []byte("{}"), 0o600))
+
+	host, rel := HostCredsFile("codex-cli-keyless")
+	assert.Equal(t, host, want)
+	assert.Equal(t, rel, filepath.Join(".codex", "auth.json"))
 }
 
 func TestSpecUnsupportedKind(t *testing.T) {
