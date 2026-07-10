@@ -42,7 +42,10 @@ func statsReport(w io.Writer, runDir string) {
 				nTools += n
 			}
 			turns, in, out = fmt.Sprint(s.NumTurns), fmt.Sprint(s.InputTokens), fmt.Sprint(s.OutputTokens)
-			cost, tools = fmt.Sprintf("$%.3f", s.CostUSD), fmt.Sprint(nTools)
+			if s.HasCost {
+				cost = fmt.Sprintf("$%.3f", s.CostUSD)
+			}
+			tools = fmt.Sprint(nTools)
 			totTurns += s.NumTurns
 			totIn += s.InputTokens
 			totOut += s.OutputTokens

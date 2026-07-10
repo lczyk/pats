@@ -39,13 +39,18 @@ sandboxes:
   # - id: bwrap
   #   kind: bwrap
 
-# agents -- the harnesses (agent clis) under test, run in a sandbox. two kinds:
+# agents -- the harnesses (agent clis) under test, run in a sandbox. three kinds:
 #   opencode-openrouter -- the opencode cli, models served via openrouter.
 #                          reads OPENROUTER_API_KEY from the env. the model is
 #                          written without the openrouter/ prefix (added for you).
 #   claude-cli-keyless  -- the claude cli, keyless: oauth creds
-#                          (~/.claude/.credentials.json) are mounted into the
+#                          (~/.claude/.credentials.json) are copied into the
 #                          sandbox. the model is a raw anthropic id.
+#   codex-cli-keyless   -- the codex cli, keyless: chatgpt login creds
+#                          (~/.codex/auth.json) are copied into an isolated
+#                          CODEX_HOME. the model is a raw openai id. a login
+#                          held in the os keyring has no file to copy -- switch
+#                          codex to file credential storage first.
 # an agent not named in any suite is never run as a task -- it can still
 # act as a `kind: agent` scorer (see `judge` below).
 agents:
@@ -61,6 +66,15 @@ agents:
     kind: opencode-openrouter
     sandbox: docker
     model: anthropic/claude-haiku-4.5
+
+  # a codex agent slots into a suite the same way. commented out here because
+  # it isn't the same underlying model as the haiku pair above, so it would
+  # measure model effect rather than harness effect.
+  # - id: codex
+  #   kind: codex-cli-keyless
+  #   sandbox: docker
+  #   model: <codex-model-id>
+  #   effort: high
 
   # the scorer agent: a stronger model (sonnet) to judge the weaker one (haiku).
   # not in any suite -> only ever runs as a `kind: agent` scorer. commented out

@@ -76,6 +76,7 @@ func TestClaudeSummary(t *testing.T) {
 	assert.Equal(t, s.OutputTokens, 9213)
 	assert.Equal(t, s.CacheReadTokens, 2743475)
 	assert.Equal(t, s.CostUSD, 0.42)
+	assert.Equal(t, s.HasCost, true)
 	assert.Equal(t, s.Tools["Bash"], 2) // per-tool-name counts
 	assert.Equal(t, s.Tools["Read"], 1)
 
@@ -101,6 +102,7 @@ func TestOpencodeSummary(t *testing.T) {
 	require.NotNil(t, s)
 	assert.Equal(t, s.NumTurns, 2) // one per step_finish
 	assert.NearlyEqual(t, s.CostUSD, 0.03, 1e-9)
+	assert.Equal(t, s.HasCost, true)
 	assert.Equal(t, s.InputTokens, 300)
 	assert.Equal(t, s.OutputTokens, 200)
 	assert.Equal(t, s.ReasoningTokens, 25)
@@ -130,6 +132,52 @@ func TestScanOpencode(t *testing.T) {
 	tap.Write([]byte(`{"type":"text","part":{"type":"text","text":"hi"}}` + "\n"))
 	tap.Write([]byte(`{"type":"tool_use","part":{"type":"tool","tool":"read"}}` + "\n"))
 	assert.Equal(t, atomic.LoadInt64(&s.out), int64(3))
+	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
+}
+
+func TestCodexSummary(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "stdout.log")
+	log := `{"type":"thread.started","thread_id":"t"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"type":"command_execution"}}
+{"type":"item.completed","item":{"type":"command_execution"}}
+{"type":"item.completed","item":{"type":"file_change"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","server":"github","tool":"get_issue"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":75,"output_tokens":20,"reasoning_output_tokens":5}}
+`
+	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
+
+	s := codexSummary(p)
+	require.NotNil(t, s)
+	assert.Equal(t, s.NumTurns, 0)     // `codex exec` is one turn; not a round-trip count
+	assert.Equal(t, s.InputTokens, 25) // 100 total - 75 cached, matching the other kinds
+	assert.Equal(t, s.CacheReadTokens, 75)
+	assert.Equal(t, s.OutputTokens, 20)
+	assert.Equal(t, s.ReasoningTokens, 5)
+	assert.Equal(t, s.CostUSD, 0.0)
+	assert.Equal(t, s.HasCost, false) // keyless: billed to the subscription, never priced
+	assert.Equal(t, s.Tools["command_execution"], 1)
+	assert.Equal(t, s.Tools["file_change"], 1)
+	assert.Equal(t, s.Tools["mcp:github/get_issue"], 1)
+
+	failed := filepath.Join(dir, "failed.log")
+	require.NoError(t, os.WriteFile(failed, []byte(`{"type":"turn.failed"}`+"\n"), 0o644))
+	assert.Equal(t, codexSummary(failed).IsError, true)
+
+	garbage := filepath.Join(dir, "garbage.log")
+	require.NoError(t, os.WriteFile(garbage, []byte("not json\n"), 0o644))
+	assert.Nil(t, codexSummary(garbage))
+}
+
+func TestScanCodex(t *testing.T) {
+	var s pairStat
+	tap := &statTap{stat: &s, scan: scanCodex}
+	tap.Write([]byte(`{"type":"item.started","item":{"type":"command_execution"}}` + "\n"))
+	tap.Write([]byte(`{"type":"item.completed","item":{"type":"command_execution"}}` + "\n"))
+	tap.Write([]byte(`{"type":"item.completed","item":{"type":"agent_message"}}` + "\n"))
+	tap.Write([]byte(`{"type":"item.completed","item":{"type":"web_search"}}` + "\n"))
 	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
 }
 

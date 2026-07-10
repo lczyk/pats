@@ -268,3 +268,47 @@ not json
 		assert.Equal(t, got[i], want[i])
 	}
 }
+
+func TestHarnessHomeCodexCredentials(t *testing.T) {
+	hostHome := t.TempDir()
+	t.Setenv("HOME", hostHome)
+	authDir := filepath.Join(hostHome, ".codex")
+	require.NoError(t, os.MkdirAll(authDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(authDir, "auth.json"), []byte(`{"tokens":"secret"}`), 0o600))
+
+	var out bytes.Buffer
+	env := map[string]string{}
+	hs, err := harnessHome(Options{Out: &out}, config.TestPair{Agent: "codex", Task: "t"}, "codex-cli-keyless", env, false)
+	require.NoError(t, err)
+	defer hs.cleanup()
+	require.Equal(t, len(hs.mounts), 1)
+	assert.Equal(t, env["HOME"], homeMount)
+	assert.Equal(t, env["CODEX_HOME"], filepath.Join(homeMount, ".codex"))
+	assert.Equal(t, out.String(), "")
+
+	copied, err := os.ReadFile(filepath.Join(hs.mounts[0].Host, ".codex", "auth.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(copied), `{"tokens":"secret"}`)
+	info, err := os.Stat(filepath.Join(hs.mounts[0].Host, ".codex", "auth.json"))
+	require.NoError(t, err)
+	assert.Equal(t, info.Mode().Perm(), os.FileMode(0o600))
+}
+
+func TestEgressForIncludesCodexHosts(t *testing.T) {
+	sb := config.Sandbox{Egress: config.Egress{
+		Mode:    "proxy",
+		Default: "deny",
+		Allow:   []string{"task.example.com"},
+	}}
+	eg := egressFor(sb, "codex-cli-keyless", "/tmp/audit")
+	assert.Equal(t, eg.AuditPath, "/tmp/audit")
+	want := map[string]bool{
+		"task.example.com": true,
+		".openai.com":      true,
+		".chatgpt.com":     true,
+	}
+	for _, host := range eg.Allow {
+		delete(want, host)
+	}
+	assert.Equal(t, len(want), 0)
+}

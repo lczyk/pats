@@ -77,16 +77,17 @@ func (s Sandbox) ResolvedDriver() string {
 	return ""
 }
 
-// Agent is a harness (an agent cli) under test, run in a sandbox. two kinds:
+// Agent is a harness (an agent cli) under test, run in a sandbox. three kinds:
 //
 //	opencode-openrouter -- opencode cli, models via openrouter (OPENROUTER_API_KEY)
 //	claude-cli-keyless  -- claude cli, keyless oauth creds (~/.claude/.credentials.json)
+//	codex-cli-keyless   -- codex cli, keyless chatgpt creds (~/.codex/auth.json)
 type Agent struct {
 	ID      string `yaml:"id"`
 	Kind    string `yaml:"kind"`
 	Model   string `yaml:"model"` // ${id} -> agent id
 	Sandbox string `yaml:"sandbox"`
-	Effort  string `yaml:"effort"` // optional reasoning effort (claude --effort: low|medium|high; opencode --variant: provider-specific, e.g. high|max|minimal)
+	Effort  string `yaml:"effort"` // optional reasoning effort (claude --effort; codex model_reasoning_effort; opencode --variant)
 }
 
 // ResolvedModel is the agent's model with ${id} replaced by the agent id --

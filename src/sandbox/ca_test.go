@@ -5,29 +5,22 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"testing"
+
+	"github.com/lczyk/assert"
+	"github.com/lczyk/assert/require"
 )
 
 func TestGenCA(t *testing.T) {
 	certPEM, keyPEM, err := genCA()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		t.Fatal("cert pem malformed")
-	}
+	require.NotNil(t, block)
+	assert.Equal(t, block.Type, "CERTIFICATE")
 	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cert.IsCA {
-		t.Error("not a CA cert")
-	}
-	if cert.KeyUsage&x509.KeyUsageCertSign == 0 {
-		t.Error("missing cert-sign key usage")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, cert.IsCA, true)
+	assert.Equal(t, cert.KeyUsage&x509.KeyUsageCertSign != 0, true)
 	// key matches cert (this is what the proxy's tls.LoadX509KeyPair needs)
-	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
-		t.Errorf("cert/key pair mismatch: %v", err)
-	}
+	_, err = tls.X509KeyPair(certPEM, keyPEM)
+	assert.NoError(t, err)
 }
