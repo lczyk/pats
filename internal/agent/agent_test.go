@@ -147,3 +147,24 @@ func TestKindRegistriesMatch(t *testing.T) {
 		}
 	}
 }
+
+// every per-kind registry must make an explicit choice for every kind. a
+// missing credKeys entry reads the same as "inherits nothing" (and for a
+// keyless kind that emptiness is load-bearing); a missing RequiredHosts entry
+// passes in egress allow mode and then fails every deny-default proxy run with
+// an opaque auth error; a fallback CredentialHint makes the no-creds warning
+// useless. adding a kind means deciding all three, so this test fails until
+// each map has the new key.
+func TestKindRegistriesComplete(t *testing.T) {
+	for k := range HarnessCmds {
+		if hosts, ok := RequiredHosts[k]; !ok || len(hosts) == 0 {
+			t.Errorf("kind %q has no RequiredHosts entry", k)
+		}
+		if _, ok := credKeys[k]; !ok {
+			t.Errorf("kind %q has no credKeys entry (empty is fine, absent is not)", k)
+		}
+		if CredentialHint(k) == CredentialHint("no-such-kind") {
+			t.Errorf("kind %q falls through to the default CredentialHint", k)
+		}
+	}
+}

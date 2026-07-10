@@ -284,6 +284,14 @@ suites:
 	assert.Len(t, pairs, 4)
 }
 
+// effortKinds is a subset view over AgentKinds; pin it so a typo'd or removed
+// kind can't linger there.
+func TestEffortKindsAreAgentKinds(t *testing.T) {
+	for k := range effortKinds {
+		assert.That(t, AgentKinds[k], "effortKinds entry %q is not an agent kind", k)
+	}
+}
+
 func TestCodexAgentWithEffortValid(t *testing.T) {
 	c := parseT(t, `
 sandboxes: [{id: s, kind: container, image: img}]
