@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"github.com/lczyk/assert"
+	"github.com/lczyk/assert/require"
 )
 
 func TestPermits(t *testing.T) {
@@ -28,9 +31,7 @@ func TestPermits(t *testing.T) {
 		{allow, "raw.githubusercontent.com", false}, // suffix deny
 	}
 	for _, c := range cases {
-		if got := c.r.permits(c.host); got != c.want {
-			t.Errorf("permits(%q) = %v, want %v", c.host, got, c.want)
-		}
+		assert.Equal(t, c.r.permits(c.host), c.want)
 	}
 }
 
@@ -53,30 +54,25 @@ func TestHandleHTTP(t *testing.T) {
 
 	resp, err := client.Get(upstream.URL + "/ok")
 	if err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || string(body) != "plain:/ok" {
-		t.Fatalf("allowed: got %d %q", resp.StatusCode, body)
-	}
+	assert.Equal(t, resp.StatusCode, 200)
+	assert.Equal(t, string(body), "plain:/ok")
 
 	resp, err = client.Get(upstream.URL + "/secret/x")
 	if err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("denied url: got %d, want 403", resp.StatusCode)
-	}
+	assert.Equal(t, resp.StatusCode, http.StatusForbidden)
 
 	// unlisted host dies at the host gate.
 	resp, err = client.Get("http://203.0.113.1/x")
 	if err != nil {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("denied host: got %d, want 403", resp.StatusCode)
-	}
+	assert.Equal(t, resp.StatusCode, http.StatusForbidden)
 }
