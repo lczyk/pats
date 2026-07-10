@@ -455,7 +455,7 @@ func scanCodex(line []byte, s *pairStat) {
 type runSummary struct {
 	NumTurns            int            `json:"num_turns,omitempty"`
 	CostUSD             float64        `json:"cost_usd,omitempty"`
-	HasCost             bool           `json:"-"` // false when the harness reports no dollar cost at all
+	HasCost             bool           `json:"has_cost"` // false when the harness reports no dollar cost at all
 	InputTokens         int            `json:"input_tokens,omitempty"`
 	OutputTokens        int            `json:"output_tokens,omitempty"`
 	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
