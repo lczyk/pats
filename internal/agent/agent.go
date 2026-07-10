@@ -83,19 +83,25 @@ func Env(a config.Agent, promptFile, outputDir string) map[string]string {
 // so a token/key in the env is one way in (e.g. `claude setup-token` ->
 // CLAUDE_CODE_OAUTH_TOKEN, or ANTHROPIC_API_KEY). the other is the creds file
 // (see HostCredsFile), mounted mason-style.
-var credKeys = []string{
-	"ANTHROPIC_API_KEY",
-	"ANTHROPIC_AUTH_TOKEN",
-	"CLAUDE_CODE_OAUTH_TOKEN",
-	"ANTHROPIC_BASE_URL",
-	"OPENROUTER_API_KEY",
+//
+// the list is per-kind: forwarding every key to every harness lets an unrelated
+// credential sitting in the host env change a harness's auth mode behind your
+// back, which for a keyless kind means it silently stops being keyless.
+var credKeys = map[string][]string{
+	"claude-cli-keyless": {
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
+	},
+	"opencode-openrouter": {"OPENROUTER_API_KEY"},
 }
 
-// CredEnv returns the cred-related env vars present on the host, and whether
-// any actual key/token (not just a base-url) was found.
-func CredEnv() (env map[string]string, hasToken bool) {
+// CredEnv returns the cred-related env vars the given kind may inherit from the
+// host, and whether any actual key/token (not just a base-url) was found.
+func CredEnv(kind string) (env map[string]string, hasToken bool) {
 	env = map[string]string{}
-	for _, k := range credKeys {
+	for _, k := range credKeys[kind] {
 		if v, ok := os.LookupEnv(k); ok && v != "" {
 			env[k] = v
 			if k != "ANTHROPIC_BASE_URL" {

@@ -64,7 +64,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	}
 
 	env := agent.Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount)
-	cenv, hasToken := agent.CredEnv()
+	cenv, hasToken := agent.CredEnv(a.Kind)
 	maps.Copy(env, cenv)
 
 	hs, err := harnessHome(opts, config.TestPair{Agent: a.ID, Task: "preflight"}, env, hasToken)

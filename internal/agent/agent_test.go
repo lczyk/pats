@@ -70,6 +70,32 @@ func TestSpecClaudeCli(t *testing.T) {
 	assert.ContainsString(t, spec.Argv[len(spec.Argv)-1], "claude --print")
 }
 
+// a harness inherits only its own provider's env: an OPENROUTER_API_KEY on the
+// host must not reach claude, nor an ANTHROPIC_API_KEY reach opencode.
+func TestCredEnvIsKindSpecific(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+	t.Setenv("OPENROUTER_API_KEY", "openrouter-secret")
+
+	claude, hasToken := CredEnv("claude-cli-keyless")
+	assert.Equal(t, claude["ANTHROPIC_API_KEY"], "anthropic-secret")
+	assert.Equal(t, hasToken, true)
+	if _, ok := claude["OPENROUTER_API_KEY"]; ok {
+		t.Error("claude inherited an unrelated openrouter credential")
+	}
+
+	openrouter, hasToken := CredEnv("opencode-openrouter")
+	assert.Equal(t, openrouter["OPENROUTER_API_KEY"], "openrouter-secret")
+	assert.Equal(t, hasToken, true)
+	if _, ok := openrouter["ANTHROPIC_API_KEY"]; ok {
+		t.Error("opencode inherited an unrelated anthropic credential")
+	}
+
+	// an unknown kind inherits nothing rather than everything.
+	unknown, hasToken := CredEnv("no-such-kind")
+	assert.Equal(t, len(unknown), 0)
+	assert.Equal(t, hasToken, false)
+}
+
 func TestSpecUnsupportedKind(t *testing.T) {
 	_, err := Spec(config.Agent{ID: "h", Kind: "codex-cli", Sandbox: "s"}, "/tmp", nil)
 	assert.Error(t, err, "unsupported kind")
