@@ -39,7 +39,7 @@ sandboxes:
   # - id: bwrap
   #   kind: bwrap
 
-# agents -- the harnesses (agent clis) under test, run in a sandbox. three kinds:
+# agents -- the harnesses (agent clis) under test, run in a sandbox. four kinds:
 #   opencode-openrouter -- the opencode cli, models served via openrouter.
 #                          reads OPENROUTER_API_KEY from the env. the model is
 #                          written without the openrouter/ prefix (added for you).
@@ -51,6 +51,11 @@ sandboxes:
 #                          CODEX_HOME. the model is a raw openai id. a login
 #                          held in the os keyring has no file to copy -- switch
 #                          codex to file credential storage first.
+#   copilot-cli-keyless -- the copilot cli, keyless: a github token read from
+#                          COPILOT_GITHUB_TOKEN in the env (mint one with
+#                          `security find-generic-password -s copilot-cli -w`
+#                          on macos, or `gh auth token`). the model is a
+#                          copilot model id (e.g. claude-sonnet-4.5, gpt-5).
 # an agent not named in any suite is never run as a task -- it can still
 # act as a `kind: agent` scorer (see `judge` below).
 agents:
@@ -74,6 +79,13 @@ agents:
   #   kind: codex-cli-keyless
   #   sandbox: docker
   #   model: <codex-model-id>
+  #   effort: high
+
+  # a copilot agent, same caveat as the codex one above.
+  # - id: copilot
+  #   kind: copilot-cli-keyless
+  #   sandbox: docker
+  #   model: <copilot-model-id>
   #   effort: high
 
   # the scorer agent: a stronger model (sonnet) to judge the weaker one (haiku).
