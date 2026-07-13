@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,11 +12,13 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -187,6 +190,127 @@ func TestMitmE2E(t *testing.T) {
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("expected host-gate refusal for unlisted host")
+	}
+}
+
+// rtFunc adapts a func to http.RoundTripper.
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// the mitm'd client connection is http/1.1 (no h2 in NextProtos), but the
+// proxy's upstream leg may negotiate http/2 -- the response can't be written
+// verbatim: the status line would read "HTTP/2.0 200 OK", and an unknown
+// length (ContentLength -1) makes Write add Transfer-Encoding: chunked while
+// a stale upstream Content-Length header line survives alongside (double
+// framing). lenient parsers (curl, node, go) shrug both off; strict ones
+// (rust hyper -- e.g. github copilot's auth stack) kill the request. this
+// test reads the raw wire bytes, which the lenient go client would hide.
+func TestMitmH2ResponseRewrite(t *testing.T) {
+	certPath, keyPath, pool := testCA(t, t.TempDir())
+	s, err := NewSigner(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Rule{
+		Allow:    []string{"mitm.test"},
+		DenyURLs: ParseURLRules([]string{"mitm.test/secret*"}), // forces mitm for the host
+	}
+	// the pathological upstream shape: h2 proto, unknown length, and a stale
+	// Content-Length header left in the map.
+	h2upstream := rtFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200, Proto: "HTTP/2.0", ProtoMajor: 2, ProtoMinor: 0,
+			Header:        http.Header{"Content-Length": {"2"}},
+			Body:          io.NopCloser(strings.NewReader("hi")),
+			ContentLength: -1,
+		}, nil
+	})
+	proxy := httptest.NewServer(Handler(r, s, h2upstream))
+	defer proxy.Close()
+
+	conn, err := net.Dial("tcp", proxy.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "CONNECT mitm.test:443 HTTP/1.1\r\nHost: mitm.test:443\r\n\r\n")
+	br := bufio.NewReader(conn)
+	if line, err := br.ReadString('\n'); err != nil || !strings.Contains(line, "200") {
+		t.Fatalf("CONNECT: %q, %v", line, err)
+	}
+	for { // drain the CONNECT response headers
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+
+	tconn := tls.Client(conn, &tls.Config{RootCAs: pool, ServerName: "mitm.test"})
+	if err := tconn.Handshake(); err != nil {
+		t.Fatalf("tls: %v", err)
+	}
+	fmt.Fprintf(tconn, "GET /ok HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+
+	tbr := bufio.NewReader(tconn)
+	status, err := tbr.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(status, "HTTP/1.1 200") {
+		t.Fatalf("status line %q, want HTTP/1.1 200", strings.TrimSpace(status))
+	}
+	hasCL, hasTE := false, false
+	for {
+		line, err := tbr.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" {
+			break
+		}
+		l := strings.ToLower(line)
+		hasCL = hasCL || strings.HasPrefix(l, "content-length:")
+		hasTE = hasTE || strings.HasPrefix(l, "transfer-encoding:")
+	}
+	if hasCL && hasTE {
+		t.Fatal("both Content-Length and Transfer-Encoding on the wire (double framing)")
+	}
+	if !hasCL && !hasTE {
+		t.Fatal("no framing header on the wire")
+	}
+	// body survives the rewrite: chunked-decode if needed.
+	var body []byte
+	if hasTE {
+		for {
+			sizeLine, err := tbr.ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			var n int
+			if _, err := fmt.Sscanf(strings.TrimSpace(sizeLine), "%x", &n); err != nil {
+				t.Fatalf("chunk size %q: %v", strings.TrimSpace(sizeLine), err)
+			}
+			if n == 0 {
+				break
+			}
+			chunk := make([]byte, n+2) // + trailing CRLF
+			if _, err := io.ReadFull(tbr, chunk); err != nil {
+				t.Fatal(err)
+			}
+			body = append(body, chunk[:n]...)
+		}
+	} else {
+		body = make([]byte, 2)
+		if _, err := io.ReadFull(tbr, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(body) != "hi" {
+		t.Fatalf("body %q, want %q", body, "hi")
 	}
 }
 
