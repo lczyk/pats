@@ -181,6 +181,61 @@ func TestScanCodex(t *testing.T) {
 	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
 }
 
+// fixture lines are trimmed copies of a real `copilot -p --output-format json`
+// stream (extra event fields dropped, ids shortened).
+func TestCopilotSummary(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "stdout.log")
+	log := `{"type":"session.mcp_servers_loaded","data":{"servers":[]},"ephemeral":true}
+{"type":"user.message","data":{"content":"do the thing"}}
+{"type":"assistant.turn_start","data":{"turnId":"0"}}
+{"type":"assistant.tool_call_delta","data":{"toolCallId":"t1","toolName":"bash","inputDelta":"{"},"ephemeral":true}
+{"type":"assistant.message","data":{"messageId":"m1","content":"","toolRequests":[{"toolCallId":"t1","name":"bash"}],"turnId":"0","outputTokens":74}}
+{"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"bash","turnId":"0"}}
+{"type":"tool.execution_complete","data":{"toolCallId":"t1","success":true}}
+{"type":"assistant.turn_end","data":{"turnId":"0"}}
+{"type":"assistant.turn_start","data":{"turnId":"1"}}
+{"type":"tool.execution_start","data":{"toolCallId":"t2","toolName":"write","turnId":"1"}}
+{"type":"tool.execution_complete","data":{"toolCallId":"t2","success":true}}
+{"type":"assistant.message","data":{"messageId":"m2","content":"done","toolRequests":[],"turnId":"1","outputTokens":3}}
+{"type":"assistant.turn_end","data":{"turnId":"1"}}
+{"type":"result","sessionId":"s1","exitCode":0,"usage":{"premiumRequests":1,"totalApiDurationMs":3484,"sessionDurationMs":6273}}
+`
+	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
+
+	s := copilotSummary(p)
+	require.NotNil(t, s)
+	assert.Equal(t, s.NumTurns, 2) // turn_end events are real round-trips
+	assert.Equal(t, s.OutputTokens, 77)
+	assert.Equal(t, s.InputTokens, 0) // the stream reports no input/cache counts
+	assert.Equal(t, s.CostUSD, 0.0)
+	assert.Equal(t, s.HasCost, false) // billed in premium requests, never dollars
+	assert.Equal(t, s.PremiumRequests, 1)
+	assert.Equal(t, s.APIDurationMs, 3484)
+	assert.Equal(t, s.IsError, false)
+	assert.Equal(t, s.Tools["bash"], 1)
+	assert.Equal(t, s.Tools["write"], 1)
+
+	failed := filepath.Join(dir, "failed.log")
+	require.NoError(t, os.WriteFile(failed, []byte(`{"type":"result","exitCode":1,"usage":{"premiumRequests":1}}`+"\n"), 0o644))
+	assert.Equal(t, copilotSummary(failed).IsError, true)
+
+	garbage := filepath.Join(dir, "garbage.log")
+	require.NoError(t, os.WriteFile(garbage, []byte("not json\n"), 0o644))
+	assert.Nil(t, copilotSummary(garbage))
+}
+
+func TestScanCopilot(t *testing.T) {
+	var s pairStat
+	tap := &statTap{stat: &s, scan: scanCopilot}
+	tap.Write([]byte(`{"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"bash"}}` + "\n"))
+	tap.Write([]byte(`{"type":"tool.execution_complete","data":{"toolCallId":"t1","success":true}}` + "\n"))
+	tap.Write([]byte(`{"type":"assistant.message","data":{"content":"done","outputTokens":3}}` + "\n"))
+	tap.Write([]byte(`{"type":"tool.execution_start","data":{"toolCallId":"t2","toolName":"write"}}` + "\n"))
+	assert.Equal(t, atomic.LoadInt64(&s.out), int64(4))
+	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
+}
+
 func TestIsProgressTTY(t *testing.T) {
 	assert.Equal(t, isProgressTTY(&bytes.Buffer{}), false) // a buffer is never a tty
 }

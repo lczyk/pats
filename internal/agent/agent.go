@@ -37,6 +37,16 @@ const (
 	// config out of an eval while retaining auth; --ephemeral avoids transcripts.
 	// the prompt is read from stdin so shell quoting never changes its contents.
 	codexKeylessCmd = `codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model "$PATS_MODEL" ${PATS_EFFORT:+-c model_reasoning_effort="$PATS_EFFORT"} - < "$PATS_PROMPT_FILE"`
+	// copilot-cli, keyless: auth is a github token in COPILOT_GITHUB_TOKEN (see
+	// credKeys) -- copilot has no api-key inference mode, so every path is
+	// subscription-billed. --allow-all bypasses tool/path/url confirmation (pats
+	// is the outer sandbox); --output-format json is the live ndjson stream;
+	// --no-auto-update stops a self-update inside the eval; --no-remote-export
+	// keeps sessions off github web/mobile; --disable-builtin-mcps drops the
+	// github mcp server, which would otherwise hand the task github api access
+	// through the forwarded token. personal config never reaches the run: the
+	// sandbox HOME is fresh and ~/.copilot is never copied in.
+	copilotKeylessCmd = `copilot -p "$(cat "$PATS_PROMPT_FILE")" --allow-all --output-format json --no-auto-update --no-remote-export --disable-builtin-mcps --model "$PATS_MODEL" ${PATS_EFFORT:+--effort "$PATS_EFFORT"}`
 )
 
 // HarnessCmds maps an agent kind to its one-shot shell command -- the registry
@@ -45,6 +55,7 @@ const (
 var HarnessCmds = map[string]string{
 	"claude-cli-keyless":  claudeKeylessCmd,
 	"codex-cli-keyless":   codexKeylessCmd,
+	"copilot-cli-keyless": copilotKeylessCmd,
 	"opencode-openrouter": opencodeOpenrouterCmd,
 }
 
@@ -64,6 +75,13 @@ var RequiredHosts = map[string][]string{
 	"codex-cli-keyless": {
 		".openai.com",  // oauth token refresh + api endpoints
 		".chatgpt.com", // chatgpt-account inference (incl. telemetry to ab.chatgpt.com)
+	},
+	// announcement/banner fetches from .githubusercontent.com are left out,
+	// codex-style: the run works without them and they'd show up as expected
+	// denials in the egress audit.
+	"copilot-cli-keyless": {
+		".github.com",        // auth + copilot token exchange
+		".githubcopilot.com", // inference (api./api.business./api.enterprise. by plan)
 	},
 	"opencode-openrouter": {
 		"openrouter.ai",      // inference
@@ -122,7 +140,15 @@ var credKeys = map[string][]string{
 	// deliberately empty, not missing: codex reads CODEX_API_KEY/OPENAI_API_KEY
 	// when either is set, so withholding them is what keeps this kind keyless.
 	// auth comes from the copied auth.json alone (see HostCredsFile).
-	"codex-cli-keyless":   {},
+	"codex-cli-keyless": {},
+	// only the copilot-specific var: GH_TOKEN/GITHUB_TOKEN are ambient in many
+	// envs for unrelated tooling and usually lack the copilot-requests
+	// permission, so forwarding them would swap the harness's identity behind
+	// your back. no creds file either -- the default login lives in the os
+	// keychain, and the plaintext fallback hides inside ~/.copilot/config.json
+	// under an undocumented field (the file exists tokenless for keychain
+	// logins, so copying it would fake a credential).
+	"copilot-cli-keyless": {"COPILOT_GITHUB_TOKEN"},
 	"opencode-openrouter": {"OPENROUTER_API_KEY"},
 }
 
@@ -170,6 +196,8 @@ func CredentialHint(kind string) string {
 		return "a claude token env or ~/.claude/.credentials.json"
 	case "codex-cli-keyless":
 		return "~/.codex/auth.json (file-based codex login)"
+	case "copilot-cli-keyless":
+		return `COPILOT_GITHUB_TOKEN (macos: security find-generic-password -s copilot-cli -w; or gh auth token)`
 	case "opencode-openrouter":
 		return "OPENROUTER_API_KEY"
 	default:

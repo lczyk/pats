@@ -81,14 +81,30 @@ func TestSpecCodexCliKeyless(t *testing.T) {
 	assert.ContainsString(t, cmd, `< "$PATS_PROMPT_FILE"`)
 }
 
+func TestSpecCopilotCliKeyless(t *testing.T) {
+	spec, err := Spec(config.Agent{ID: "p", Kind: "copilot-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
+	require.NoError(t, err)
+	cmd := spec.Argv[len(spec.Argv)-1]
+	assert.ContainsString(t, cmd, "copilot -p")
+	assert.ContainsString(t, cmd, "--allow-all")
+	assert.ContainsString(t, cmd, "--output-format json")
+	assert.ContainsString(t, cmd, "--no-auto-update")
+	assert.ContainsString(t, cmd, "--disable-builtin-mcps")
+	assert.ContainsString(t, cmd, `--effort "$PATS_EFFORT"`)
+}
+
 // a harness inherits only its own provider's env: an OPENROUTER_API_KEY on the
 // host must not reach claude, nor an ANTHROPIC_API_KEY reach opencode. codex is
 // keyless with no env path at all, so an OPENAI_API_KEY must not reach it either
-// -- that's what stops it quietly authenticating as an api-key account.
+// -- that's what stops it quietly authenticating as an api-key account. copilot
+// takes only its own COPILOT_GITHUB_TOKEN: an ambient GITHUB_TOKEN (ci, other
+// tooling) must not swap the harness's identity behind your back.
 func TestCredEnvIsKindSpecific(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-secret")
 	t.Setenv("OPENROUTER_API_KEY", "openrouter-secret")
 	t.Setenv("OPENAI_API_KEY", "openai-secret")
+	t.Setenv("COPILOT_GITHUB_TOKEN", "copilot-secret")
+	t.Setenv("GITHUB_TOKEN", "github-ambient")
 
 	claude, hasToken := CredEnv("claude-cli-keyless")
 	assert.Equal(t, claude["ANTHROPIC_API_KEY"], "anthropic-secret")
@@ -107,6 +123,11 @@ func TestCredEnvIsKindSpecific(t *testing.T) {
 	codex, hasToken := CredEnv("codex-cli-keyless")
 	assert.Equal(t, len(codex), 0)
 	assert.Equal(t, hasToken, false)
+
+	copilot, hasToken := CredEnv("copilot-cli-keyless")
+	assert.Equal(t, copilot["COPILOT_GITHUB_TOKEN"], "copilot-secret")
+	assert.Equal(t, hasToken, true)
+	assert.Equal(t, len(copilot), 1) // GITHUB_TOKEN stays behind
 
 	// an unknown kind inherits nothing rather than everything.
 	unknown, hasToken := CredEnv("no-such-kind")

@@ -169,7 +169,7 @@ func (c *Config) validateAgents(add func(string, ...any), sandboxes map[string]S
 
 		switch {
 		case a.Kind == "":
-			add("agent %q: missing kind (opencode-openrouter|claude-cli-keyless|codex-cli-keyless)", a.ID)
+			add("agent %q: missing kind (opencode-openrouter|claude-cli-keyless|codex-cli-keyless|copilot-cli-keyless)", a.ID)
 		case !AgentKinds[a.Kind]:
 			add("agent %q: unknown kind %q", a.ID, a.Kind)
 		}
@@ -191,13 +191,16 @@ var AgentKinds = map[string]bool{
 	"opencode-openrouter": true,
 	"claude-cli-keyless":  true,
 	"codex-cli-keyless":   true,
+	"copilot-cli-keyless": true,
 }
 
 // effortKinds is the set of agent kinds whose cli takes a reasoning-effort
-// flag (claude: --effort; codex: model_reasoning_effort; opencode: --variant).
+// flag (claude: --effort; codex: model_reasoning_effort; copilot: --effort;
+// opencode: --variant).
 var effortKinds = map[string]bool{
 	"claude-cli-keyless":  true,
 	"codex-cli-keyless":   true,
+	"copilot-cli-keyless": true,
 	"opencode-openrouter": true,
 }
 
