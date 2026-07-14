@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/lczyk/assert"
+	"github.com/lczyk/assert/require"
 )
 
 // fakeDocker records every cli invocation and returns canned results, so the
@@ -42,16 +44,15 @@ func (f *fakeDocker) call(sub string) []string {
 
 func TestSetupEgressModes(t *testing.T) {
 	c := &container{bin: "docker", image: "img"}
-	if args, td, err := c.setupEgress(context.Background(), Spec{}); err != nil || args != nil || td != nil {
-		t.Fatalf("open: got %v %p %v", args, td, err)
-	}
-	args, _, err := c.setupEgress(context.Background(), Spec{Egress: Egress{Mode: "none"}})
-	if err != nil || !slices.Equal(args, []string{"--network", "none"}) {
-		t.Fatalf("none: got %v %v", args, err)
-	}
-	if _, _, err := c.setupEgress(context.Background(), Spec{Egress: Egress{Mode: "wat"}}); err == nil {
-		t.Fatal("unknown mode: want error")
-	}
+	args, td, err := c.setupEgress(context.Background(), Spec{})
+	require.NoError(t, err)
+	assert.Nil(t, args)
+	assert.Nil(t, td)
+	args, _, err = c.setupEgress(context.Background(), Spec{Egress: Egress{Mode: "none"}})
+	require.NoError(t, err)
+	assert.EqualArrays(t, args, []string{"--network", "none"})
+	_, _, err = c.setupEgress(context.Background(), Spec{Egress: Egress{Mode: "wat"}})
+	assert.Error(t, err, assert.AnyError)
 }
 
 func TestStartEgressProxy(t *testing.T) {
@@ -66,9 +67,7 @@ func TestStartEgressProxy(t *testing.T) {
 		},
 	}
 	netArgs, teardown, err := c.startEgressProxy(context.Background(), spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// agent joins the internal net and gets proxy env, upper+lowercase.
 	joined := strings.Join(netArgs, " ")
@@ -77,15 +76,11 @@ func TestStartEgressProxy(t *testing.T) {
 		"HTTP_PROXY=http://sbx-proxy-pats-work-x:8080",
 		"https_proxy=http://sbx-proxy-pats-work-x:8080",
 	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("netArgs missing %q in %q", want, joined)
-		}
+		assert.ContainsString(t, joined, want)
 	}
 
 	// internal network (no gateway) + proxy run with the policy env.
-	if fd.call("network create --internal sbx-egr-pats-work-x") == nil {
-		t.Error("no internal network create")
-	}
+	assert.NotNil(t, fd.call("network create --internal sbx-egr-pats-work-x"))
 	run := strings.Join(fd.call("run -d"), " ")
 	for _, want := range []string{
 		"PROXY_DEFAULT=deny", // empty default resolves to deny
@@ -93,18 +88,13 @@ func TestStartEgressProxy(t *testing.T) {
 		"PROXY_DENY=evil.example.com",
 		"--network sbx-egr-pats-work-x",
 	} {
-		if !strings.Contains(run, want) {
-			t.Errorf("proxy run missing %q in %q", want, run)
-		}
+		assert.ContainsString(t, run, want)
 	}
-	if fd.call("network connect bridge") == nil {
-		t.Error("proxy not connected to bridge")
-	}
+	assert.NotNil(t, fd.call("network connect bridge"))
 
 	teardown()
-	if fd.call("rm -f sbx-proxy-pats-work-x") == nil || fd.call("network rm sbx-egr-pats-work-x") == nil {
-		t.Error("teardown did not remove proxy + network")
-	}
+	assert.NotNil(t, fd.call("rm -f sbx-proxy-pats-work-x"))
+	assert.NotNil(t, fd.call("network rm sbx-egr-pats-work-x"))
 }
 
 // COVER: the mitm security invariants -- CA key reaches the proxy over env
@@ -121,9 +111,7 @@ func TestStartEgressProxyMitm(t *testing.T) {
 		},
 	}
 	netArgs, teardown, err := c.startEgressProxy(context.Background(), spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer teardown()
 
 	run := strings.Join(fd.call("run -d"), " ")
@@ -132,21 +120,15 @@ func TestStartEgressProxyMitm(t *testing.T) {
 		"PROXY_CA_CERT=-----BEGIN",
 		"PROXY_CA_KEY=-----BEGIN",
 	} {
-		if !strings.Contains(run, want) {
-			t.Errorf("mitm proxy run missing %q", want)
-		}
+		assert.ContainsString(t, run, want)
 	}
 
 	// agent side: bundle + cert mounts and the tls env vars, no key anywhere.
 	joined := strings.Join(netArgs, " ")
 	for _, want := range []string{agentBundlePath + ":ro", "/sbx-ca/ca.pem:ro", "SSL_CERT_FILE=", "NODE_EXTRA_CA_CERTS="} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("agent args missing %q in %q", want, joined)
-		}
+		assert.ContainsString(t, joined, want)
 	}
-	if strings.Contains(joined, "PRIVATE KEY") {
-		t.Error("CA key leaked into agent args")
-	}
+	assert.Equal(t, strings.Contains(joined, "PRIVATE KEY"), false)
 
 	// the CA dir on disk holds cert + merged bundle only -- never the key.
 	var bundlePath string
@@ -155,25 +137,17 @@ func TestStartEgressProxyMitm(t *testing.T) {
 			bundlePath = strings.TrimSuffix(a, ":"+agentBundlePath+":ro")
 		}
 	}
-	if bundlePath == "" {
-		t.Fatal("no bundle mount found")
-	}
+	require.NotEqual(t, bundlePath, "")
 	caDir := filepath.Dir(bundlePath)
 	ents, err := os.ReadDir(caDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, e := range ents {
 		b, _ := os.ReadFile(filepath.Join(caDir, e.Name()))
-		if strings.Contains(string(b), "PRIVATE KEY") {
-			t.Errorf("CA key on disk in %s", e.Name())
-		}
+		assert.Equal(t, strings.Contains(string(b), "PRIVATE KEY"), false)
 	}
 	// merged bundle keeps the image's system roots (tunneled hosts need them).
 	b, _ := os.ReadFile(bundlePath)
-	if !strings.Contains(string(b), "systemroots") {
-		t.Error("bundle lost the image system roots")
-	}
+	assert.ContainsString(t, string(b), "systemroots")
 }
 
 func TestStartEgressProxyFailureTearsDown(t *testing.T) {
@@ -181,9 +155,7 @@ func TestStartEgressProxyFailureTearsDown(t *testing.T) {
 	c := &container{bin: "docker", image: "img", exec: fd.exec, execOut: fd.execOut}
 	spec := Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-f"), Egress: Egress{Mode: "proxy"}}
 	if _, _, err := c.startEgressProxy(context.Background(), spec); err == nil {
-		t.Fatal("want error from failed proxy start")
+		assert.Error(t, err, assert.AnyError)
 	}
-	if fd.call("network rm sbx-egr-pats-work-f") == nil {
-		t.Error("failure path did not remove the network")
-	}
+	assert.NotNil(t, fd.call("network rm sbx-egr-pats-work-f"))
 }
