@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -231,9 +232,16 @@ func (c *container) setupMitm(ctx context.Context, spec Spec, caDir string, penv
 }
 
 // dockerOut runs docker with stdout captured alone (no stderr mixed in) -- for
-// reading file content out of an image.
+// reading file content out of an image. on failure the daemon's message lands
+// on ExitError.Stderr (Output captures it there), so surface it -- else a
+// failed `docker run` collapses to a bare "exit status 125".
 func dockerOut(ctx context.Context, bin string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, bin, args...).Output()
+	out, err := exec.CommandContext(ctx, bin, args...).Output()
+	var e *exec.ExitError
+	if errors.As(err, &e) && len(e.Stderr) > 0 {
+		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(e.Stderr)))
+	}
+	return out, err
 }
 
 func docker(ctx context.Context, bin string, args ...string) (string, error) {
