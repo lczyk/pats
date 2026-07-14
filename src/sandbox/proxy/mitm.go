@@ -215,6 +215,25 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 				Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
 			return
 		}
+		// the upstream leg may be http/2, but the client side of this conn is
+		// http/1.1 (see NextProtos above), so the response can't be written
+		// verbatim: Write puts resp.Proto in the status line ("HTTP/2.0 200 OK"
+		// on an http/1.1 stream), and when resp.ContentLength is -1 it adds
+		// Transfer-Encoding: chunked while a stale upstream Content-Length
+		// header line survives alongside -- double framing. lenient parsers
+		// (curl, node) shrug both off; strict ones (rust hyper, e.g. github
+		// copilot's auth stack) kill the request. renumber and let Write
+		// re-derive the framing from resp.ContentLength alone.
+		resp.Proto, resp.ProtoMajor, resp.ProtoMinor = "HTTP/1.1", 1, 1
+		resp.Header.Del("Content-Length")
+		resp.Header.Del("Transfer-Encoding")
+		if resp.ContentLength < 0 {
+			// unknown length must be chunked explicitly: Write would fall back
+			// to close-delimiting, which stalls a keep-alive client forever.
+			resp.TransferEncoding = []string{"chunked"}
+		} else {
+			resp.TransferEncoding = nil
+		}
 		err = resp.Write(tconn)
 		resp.Body.Close()
 		if err != nil || resp.Close || inner.Close {

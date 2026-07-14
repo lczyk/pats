@@ -302,6 +302,16 @@ suites: [{id: su, agents: codex, tasks: t}]
 	require.NoError(t, c.Validate())
 }
 
+func TestCopilotAgentWithEffortValid(t *testing.T) {
+	c := parseT(t, `
+sandboxes: [{id: s, kind: container, image: img}]
+agents: [{id: copilot, kind: copilot-cli-keyless, model: gpt-test, effort: high, sandbox: s}]
+tasks: [{id: t, prompt: p.txt}]
+suites: [{id: su, agents: copilot, tasks: t}]
+`)
+	require.NoError(t, c.Validate())
+}
+
 func TestAgentResolvedModel(t *testing.T) {
 	// ${id} in the model is replaced by the agent id.
 	assert.Equal(t, Agent{ID: "gpt-5-mini", Model: "openai/${id}"}.ResolvedModel(), "openai/gpt-5-mini")

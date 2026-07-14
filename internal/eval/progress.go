@@ -317,6 +317,8 @@ func statScanner(kind string) func([]byte, *pairStat) {
 		return scanClaude
 	case "codex-cli-keyless":
 		return scanCodex
+	case "copilot-cli-keyless":
+		return scanCopilot
 	case "opencode-openrouter":
 		return scanOpencode
 	}
@@ -446,6 +448,37 @@ func scanCodex(line []byte, s *pairStat) {
 	}
 }
 
+// copilotEvent is one line of `copilot -p --output-format json` -- the single
+// place that format is spelled out; scanCopilot (live counters) and
+// copilotSummary (post-run digest) both decode into it. tool calls appear as
+// tool.execution_start (the only tool event carrying the name; the matching
+// tool.execution_complete doesn't). assistant.turn_end marks a model
+// round-trip, assistant.message carries per-message outputTokens (the stream
+// reports no input or cache counts), and the final "result" event carries the
+// exit code plus session usage. streaming/delta noise is ephemeral and decodes
+// to types we ignore.
+type copilotEvent struct {
+	Type string `json:"type"`
+	Data struct {
+		ToolName     string `json:"toolName"`
+		OutputTokens int    `json:"outputTokens"`
+	} `json:"data"`
+	ExitCode *int `json:"exitCode"` // "result" only; pointer so 0 counts as reported
+	Usage    struct {
+		PremiumRequests    int `json:"premiumRequests"`
+		TotalAPIDurationMs int `json:"totalApiDurationMs"`
+	} `json:"usage"`
+}
+
+// scanCopilot counts tool executions in copilot's json event stream (see
+// copilotEvent).
+func scanCopilot(line []byte, s *pairStat) {
+	var ev copilotEvent
+	if json.Unmarshal(line, &ev) == nil && ev.Type == "tool.execution_start" {
+		atomic.AddInt64(&s.tools, 1)
+	}
+}
+
 // runSummary is the post-run digest extracted from a harness's log, stored in
 // metadata.json. fields are per-kind best-effort -- zero/empty when absent, so
 // they carry the same meaning whichever harness produced them: InputTokens
@@ -461,6 +494,7 @@ type runSummary struct {
 	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int            `json:"cache_creation_tokens,omitempty"`
 	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // opencode splits these out; claude + codex fold them into output
+	PremiumRequests     int            `json:"premium_requests,omitempty"` // copilot's billing unit -- its cost analog
 	TTFTms              int            `json:"ttft_ms,omitempty"`
 	APIDurationMs       int            `json:"api_duration_ms,omitempty"`
 	IsError             bool           `json:"is_error,omitempty"`
@@ -477,6 +511,8 @@ func summarize(kind, stdoutPath string) *runSummary {
 		return claudeSummary(stdoutPath)
 	case "codex-cli-keyless":
 		return codexSummary(stdoutPath)
+	case "copilot-cli-keyless":
+		return copilotSummary(stdoutPath)
 	case "opencode-openrouter":
 		return opencodeSummary(stdoutPath)
 	}
@@ -528,6 +564,52 @@ func codexSummary(path string) *runSummary {
 	}
 	if !hasEvent {
 		return nil
+	}
+	return sum
+}
+
+// copilotSummary parses copilot's json event stream (see copilotEvent): tool
+// names from tool.execution_start, turns counted as assistant.turn_end events
+// (real model round-trips), output tokens summed over assistant.message.
+// input/cache token counts stay 0 -- the stream doesn't report them. CostUSD
+// stays 0 like codex's (a copilot run is billed in premium requests against
+// the subscription, recorded in PremiumRequests instead); IsError comes from
+// the final result event's exit code.
+func copilotSummary(path string) *runSummary {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	sum := &runSummary{Tools: map[string]int{}}
+	hasEvent := false
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		var ev copilotEvent
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "tool.execution_start":
+			sum.Tools[ev.Data.ToolName]++
+			hasEvent = true
+		case "assistant.turn_end":
+			sum.NumTurns++
+			hasEvent = true
+		case "assistant.message":
+			sum.OutputTokens += ev.Data.OutputTokens
+			hasEvent = true
+		case "result":
+			sum.PremiumRequests = ev.Usage.PremiumRequests
+			sum.APIDurationMs = ev.Usage.TotalAPIDurationMs
+			sum.IsError = ev.ExitCode != nil && *ev.ExitCode != 0
+			hasEvent = true
+		}
+	}
+	if !hasEvent {
+		return nil // empty/garbage log -> nothing worth storing
 	}
 	return sum
 }
