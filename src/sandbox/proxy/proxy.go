@@ -94,23 +94,38 @@ func handleConnect(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, 
 	}
 	audit(host, port, true)
 
+	// dial before hijacking: a failed dial must still surface as a proper 502
+	// via the ResponseWriter, which is unusable once hijacked.
 	remote, err := net.DialTimeout("tcp", req.Host, 30*time.Second)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		remote.Close()
 		return
 	}
-	client, _, err := hj.Hijack()
+	client, crw, err := hj.Hijack()
 	if err != nil {
 		remote.Close()
 		return
 	}
-	go pipe(remote, client)
+	// the 200 must go straight to the wire: net/http's normal WriteHeader path
+	// flushes a full response (Date, Transfer-Encoding: chunked, ...) once
+	// anything is written after hijack, and RFC 9110 9.3.6 forbids framing
+	// headers on a 2xx CONNECT response -- strict parsers (rust hyper) reject
+	// the tunnel over it.
+	if _, err := client.Write([]byte("HTTP/1.1 200 OK\r\n\r\n")); err != nil {
+		client.Close()
+		remote.Close()
+		return
+	}
+	// crw.Reader may already hold bytes the client pipelined behind the
+	// CONNECT request (e.g. a TLS ClientHello sent without waiting for the
+	// 200) -- read through it, or those bytes are silently dropped and the
+	// tunnel stalls.
+	go pipe(remote, bufConn{Conn: client, r: crw.Reader})
 	go pipe(client, remote)
 }
 
@@ -126,14 +141,17 @@ func handleHTTP(w http.ResponseWriter, req *http.Request, r Rule) {
 		return
 	}
 	// plain http shows the path w/out mitm -- url rules apply directly, and the
-	// audit gets the full url for free.
-	hostPath := host + req.URL.Path
-	if !r.permitsURL(hostPath) {
-		auditURL(host, port, hostPath, false)
+	// audit gets the full url (query included) for free.
+	fullURL := host + req.URL.Path
+	if req.URL.RawQuery != "" {
+		fullURL += "?" + req.URL.RawQuery
+	}
+	if !r.permitsURL(host, req.URL.Path, req.URL.RawQuery) {
+		auditURL(host, port, fullURL, false)
 		http.Error(w, "egress denied", http.StatusForbidden)
 		return
 	}
-	auditURL(host, port, hostPath, true)
+	auditURL(host, port, fullURL, true)
 
 	req.RequestURI = ""
 	resp, err := http.DefaultTransport.RoundTrip(req)
@@ -163,3 +181,13 @@ func pipe(dst, src net.Conn) {
 	defer src.Close()
 	io.Copy(dst, src)
 }
+
+// bufConn reads through the bufio.Reader hijack handed back (it may already
+// hold bytes the client pipelined behind the CONNECT/mitm'd request) and
+// writes to the conn.
+type bufConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (c bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }

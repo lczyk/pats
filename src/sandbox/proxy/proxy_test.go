@@ -1,10 +1,14 @@
 package proxy
 
 import (
+	"bufio"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -75,4 +79,100 @@ func TestHandleHTTP(t *testing.T) {
 	}
 	resp.Body.Close()
 	assert.Equal(t, resp.StatusCode, http.StatusForbidden)
+}
+
+// newEchoListener starts a raw tcp listener that echoes back whatever it
+// reads -- something the blind CONNECT tunnel can dial straight through to
+// without needing a full http server on the far end.
+func newEchoListener(t *testing.T) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				io.Copy(c, c)
+			}(c)
+		}
+	}()
+	return ln
+}
+
+// COVER: RFC 9110 9.3.6 forbids Transfer-Encoding/Content-Length on a 2xx
+// response to CONNECT -- net/http's normal WriteHeader path flushes both once
+// hijacked, so the status line must be written straight to the raw conn.
+func TestHandleConnectNoFramingHeaders(t *testing.T) {
+	ln := newEchoListener(t)
+	defer ln.Close()
+	echoAddr := ln.Addr().String()
+	echoHost, _, _ := net.SplitHostPort(echoAddr)
+
+	r := Rule{Allow: []string{echoHost}}
+	proxy := httptest.NewServer(Handler(r, nil, nil))
+	defer proxy.Close()
+
+	conn, err := net.Dial("tcp", proxy.Listener.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", echoAddr, echoAddr)
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(status), "HTTP/1.1 200 OK")
+
+	var headers []string
+	for {
+		line, err := br.ReadString('\n')
+		require.NoError(t, err)
+		if line == "\r\n" {
+			break
+		}
+		headers = append(headers, strings.ToLower(line))
+	}
+	for _, h := range headers {
+		if strings.HasPrefix(h, "content-length:") || strings.HasPrefix(h, "transfer-encoding:") {
+			t.Fatalf("CONNECT 200 carries a framing header: %q", h)
+		}
+	}
+}
+
+// COVER: a client may pipeline bytes right behind the CONNECT request line
+// (e.g. a TLS ClientHello) without waiting for the 200 -- those bytes land in
+// Hijack's bufio.Reader and must not be dropped, or the tunnel stalls.
+func TestHandleConnectPipelinedBytes(t *testing.T) {
+	ln := newEchoListener(t)
+	defer ln.Close()
+	echoAddr := ln.Addr().String()
+	echoHost, _, _ := net.SplitHostPort(echoAddr)
+
+	r := Rule{Allow: []string{echoHost}}
+	proxy := httptest.NewServer(Handler(r, nil, nil))
+	defer proxy.Close()
+
+	conn, err := net.Dial("tcp", proxy.Listener.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// single write: request line, headers, and payload all at once, so the
+	// payload is sitting in the server's read buffer before hijack ever runs.
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\nping", echoAddr, echoAddr)
+
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(status), "HTTP/1.1 200 OK")
+	blank, err := br.ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, blank, "\r\n")
+
+	got := make([]byte, 4)
+	_, err = io.ReadFull(br, got)
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "ping")
 }

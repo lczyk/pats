@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,7 +23,10 @@ import (
 
 // URLRule is one host-anchored url pattern, e.g. "github.com/*/chisel-releases*".
 // the host part (up to the first /) is a literal hostname; the rest is a glob
-// where * matches any characters, / included.
+// where * matches any characters, / included. matching runs against host+path,
+// host+path+"?"+query when there is one, and both again with the path
+// canonicalised via path.Clean -- so a pattern can filter on the query string,
+// and "a/../b" can't dodge a rule anchored on "b".
 type URLRule struct {
 	host string
 	re   *regexp.Regexp // matches host+path, e.g. "github.com/canonical/chisel-releases/x"
@@ -69,26 +73,59 @@ func (r Rule) mitmHost(host string) bool {
 	return false
 }
 
-// permitsURL checks host+path (no scheme) against the url rules: a deny match
-// always loses; then, if the host has allow-url rules, only matching urls pass.
-// hosts with no url rules are unaffected.
-func (r Rule) permitsURL(hostPath string) bool {
-	hostPath = strings.ToLower(hostPath)
-	for _, u := range r.DenyURLs {
-		if u.re.MatchString(hostPath) {
-			return false
+// matchCandidates builds the strings a url rule may match a request against:
+// host+path (kept so rules written against the bare path still match), the
+// same with "?"+query appended when the query is non-empty, and both again
+// with the path run through path.Clean when that differs from the original --
+// so "host/a/../b" can't dodge a rule anchored on "host/b". an empty path is
+// excluded from that last step: path.Clean("") returns ".", which differs
+// from "" and would otherwise add a bogus host+"." candidate for every
+// request with no path at all.
+func matchCandidates(host, urlPath, rawQuery string) []string {
+	host = strings.ToLower(host)
+	urlPath = strings.ToLower(urlPath)
+	rawQuery = strings.ToLower(rawQuery)
+
+	bare := host + urlPath
+	cands := []string{bare}
+	if rawQuery != "" {
+		cands = append(cands, bare+"?"+rawQuery)
+	}
+	if cleaned := path.Clean(urlPath); cleaned != urlPath && cleaned != "." {
+		cbare := host + cleaned
+		cands = append(cands, cbare)
+		if rawQuery != "" {
+			cands = append(cands, cbare+"?"+rawQuery)
 		}
 	}
-	host, _, _ := strings.Cut(hostPath, "/")
+	return cands
+}
+
+// permitsURL checks a request's host+path+query (no scheme) against the url
+// rules: a deny match on any candidate form -- see matchCandidates -- always
+// loses; then, if the host has allow-url rules, only a request matching one
+// passes. hosts with no url rules are unaffected.
+func (r Rule) permitsURL(host, urlPath, rawQuery string) bool {
+	cands := matchCandidates(host, urlPath, rawQuery)
+	for _, u := range r.DenyURLs {
+		for _, c := range cands {
+			if u.re.MatchString(c) {
+				return false
+			}
+		}
+	}
+	host = strings.ToLower(host)
 	restricted, matched := false, false
 	for _, u := range r.AllowURLs {
 		if u.host != host {
 			continue
 		}
 		restricted = true
-		if u.re.MatchString(hostPath) {
-			matched = true
-			break
+		for _, c := range cands {
+			if u.re.MatchString(c) {
+				matched = true
+				break
+			}
 		}
 	}
 	return !restricted || matched
@@ -169,14 +206,21 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 		http.Error(w, "cannot hijack", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	raw, _, err := hj.Hijack()
+	raw, rrw, err := hj.Hijack()
 	if err != nil {
 		return
 	}
 	defer raw.Close()
+	// the 200 must go straight to the wire, not through WriteHeader -- see the
+	// matching comment in handleConnect (proxy.go).
+	if _, err := raw.Write([]byte("HTTP/1.1 200 OK\r\n\r\n")); err != nil {
+		return
+	}
 
-	tconn := tls.Server(raw, &tls.Config{
+	// rrw.Reader may already hold bytes the client pipelined behind the
+	// CONNECT (e.g. the TLS ClientHello) -- read through it, or the handshake
+	// below stalls waiting for bytes that already arrived.
+	tconn := tls.Server(bufConn{Conn: raw, r: rrw.Reader}, &tls.Config{
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if chi.ServerName != "" {
 				return s.leaf(chi.ServerName)
@@ -196,15 +240,18 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 		if err != nil {
 			return
 		}
-		hostPath := host + inner.URL.Path
-		if !r.permitsURL(hostPath) {
-			auditURL(host, port, hostPath, false)
+		fullURL := host + inner.URL.Path
+		if inner.URL.RawQuery != "" {
+			fullURL += "?" + inner.URL.RawQuery
+		}
+		if !r.permitsURL(host, inner.URL.Path, inner.URL.RawQuery) {
+			auditURL(host, port, fullURL, false)
 			resp := &http.Response{StatusCode: http.StatusForbidden, ProtoMajor: 1, ProtoMinor: 1,
 				Body: http.NoBody, Header: http.Header{}, Close: true}
 			resp.Write(tconn)
 			return
 		}
-		auditURL(host, port, hostPath, true)
+		auditURL(host, port, fullURL, true)
 
 		inner.URL.Scheme = "https"
 		inner.URL.Host = req.Host
