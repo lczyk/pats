@@ -3,7 +3,26 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/lczyk/assert"
 )
+
+func TestWantsVersion(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--version"}, true},
+		{[]string{"-v"}, true},
+		{[]string{"score", "-r", "-v"}, false}, // only the first arg counts
+		{[]string{"run"}, false},
+		{[]string{}, false},
+	}
+	for _, tc := range cases {
+		got := wantsVersion(tc.args)
+		assert.Equal(t, got, tc.want, tc.args)
+	}
+}
 
 func TestColorize(t *testing.T) {
 	in := "Usage:\n  pats [OPTIONS] COMMAND\n\nAvailable commands:\n  run    run the test-matrix\n\n[run command options]\n      -c, --config= path to pats.yaml\n"

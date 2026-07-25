@@ -163,13 +163,19 @@ func load(path string) (*config.Config, error) {
 // opts is package-level so command Execute methods can read the global flags.
 var opts Options
 
+// wantsVersion reports whether args (os.Args[1:]) ask for the version.
+// only the first argument counts -- otherwise "pats score -r -v" would print
+// the version instead of reporting a bad value for -r, and any future
+// subcommand flag spelled -v would be swallowed too.
+func wantsVersion(args []string) bool {
+	return len(args) > 0 && (args[0] == "--version" || args[0] == "-v")
+}
+
 func main() {
 	// handle --version before parsing -- go-flags would otherwise demand a command.
-	for _, arg := range os.Args[1:] {
-		if arg == "--version" || arg == "-v" {
-			fmt.Println(version.Info)
-			os.Exit(0)
-		}
+	if wantsVersion(os.Args[1:]) {
+		fmt.Println(version.Info)
+		os.Exit(0)
 	}
 
 	// PrintErrors stripped so we can colourise the help text ourselves.
