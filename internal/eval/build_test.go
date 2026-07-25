@@ -26,11 +26,6 @@ func TestIgnoresPats(t *testing.T) {
 }
 
 func TestUsesContext(t *testing.T) {
-	mk := func(body string) string {
-		p := filepath.Join(t.TempDir(), "Dockerfile")
-		require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
-		return p
-	}
 	for body, want := range map[string]bool{
 		"FROM scratch\nCOPY x /x\n":                         true,
 		"FROM scratch\n  add x /x\n":                        true, // indented + lowercase
@@ -38,10 +33,20 @@ func TestUsesContext(t *testing.T) {
 		"FROM ubuntu\nRUN apt-get update\n":                 false,
 		"# COPY mentioned in a comment only\nFROM ubuntu\n": false,
 	} {
-		assert.Equal(t, usesContext(mk(body)), want, "dockerfile: %q", body)
+		assert.Equal(t, usesContext([]byte(body), nil), want, "dockerfile: %q", body)
 	}
-	// unreadable dockerfile -> assume it uses the context (fail-safe).
-	assert.Equal(t, usesContext(filepath.Join(t.TempDir(), "nope")), true)
+	// unreadable dockerfile (caller's read failed) -> assume it uses the
+	// context (fail-safe) -- the fail-safe now lives in usesContext itself, not
+	// in a read it performs, since the caller reads the dockerfile once and
+	// shares the result.
+	assert.Equal(t, usesContext(nil, os.ErrNotExist), true)
+}
+
+// readDockerfile mimics what buildImages does: read the dockerfile once and
+// hand the result (data, err) to the functions that used to each read it
+// themselves.
+func readDockerfile(dockerfile string) ([]byte, error) {
+	return os.ReadFile(dockerfile)
 }
 
 func TestCheckPatsIgnored(t *testing.T) {
@@ -55,21 +60,25 @@ func TestCheckPatsIgnored(t *testing.T) {
 		}
 		return dir
 	}
+	check := func(ctxDir, dockerfile string) error {
+		data, err := readDockerfile(dockerfile)
+		return checkPatsIgnored(ctxDir, dockerfile, data, err)
+	}
 
 	// no .pats in the context -> fine regardless of ignores.
-	assert.NoError(t, checkPatsIgnored(t.TempDir(), "Dockerfile"))
+	assert.NoError(t, check(t.TempDir(), "Dockerfile"))
 
 	// .pats present, dockerfile COPYs, no ignore file -> refused.
 	dir := mk(t, map[string]string{"Dockerfile": copies})
-	assert.Error(t, checkPatsIgnored(dir, filepath.Join(dir, "Dockerfile")), ".dockerignore")
+	assert.Error(t, check(dir, filepath.Join(dir, "Dockerfile")), ".dockerignore")
 
 	// .pats present but the dockerfile never reads the context -> fine.
 	dir = mk(t, map[string]string{"Dockerfile": "FROM ubuntu\nRUN true\n"})
-	assert.NoError(t, checkPatsIgnored(dir, filepath.Join(dir, "Dockerfile")))
+	assert.NoError(t, check(dir, filepath.Join(dir, "Dockerfile")))
 
 	// .dockerignore excluding .pats -> fine.
 	dir = mk(t, map[string]string{"Dockerfile": copies, ".dockerignore": "foo\n.pats/\n"})
-	assert.NoError(t, checkPatsIgnored(dir, filepath.Join(dir, "Dockerfile")))
+	assert.NoError(t, check(dir, filepath.Join(dir, "Dockerfile")))
 
 	// COVER: buildkit precedence -- a per-dockerfile ignore fully replaces
 	// .dockerignore, so .pats must be excluded there, not in .dockerignore.
@@ -78,7 +87,7 @@ func TestCheckPatsIgnored(t *testing.T) {
 		".dockerignore":           ".pats/\n",
 		"Dockerfile.dockerignore": "*.log\n",
 	})
-	assert.Error(t, checkPatsIgnored(dir, filepath.Join(dir, "Dockerfile")), "Dockerfile.dockerignore")
+	assert.Error(t, check(dir, filepath.Join(dir, "Dockerfile")), "Dockerfile.dockerignore")
 }
 
 func TestResolveBuildSpec(t *testing.T) {
@@ -134,18 +143,23 @@ func TestBuildContextHash(t *testing.T) {
 		return dir
 	}
 	copies := "FROM scratch\nCOPY x /x\n"
+	hashOf := func(dir string) (string, error) {
+		dockerfile := filepath.Join(dir, "Dockerfile")
+		data, err := readDockerfile(dockerfile)
+		return buildContextHash(dir, dockerfile, data, err)
+	}
 
 	// deterministic across calls.
 	dir := mk(t, map[string]string{"Dockerfile": copies, "x": "1"})
-	h1, err := buildContextHash(dir, filepath.Join(dir, "Dockerfile"))
+	h1, err := hashOf(dir)
 	require.NoError(t, err)
-	h2, err := buildContextHash(dir, filepath.Join(dir, "Dockerfile"))
+	h2, err := hashOf(dir)
 	require.NoError(t, err)
 	assert.Equal(t, h1, h2)
 
 	// a content edit changes the hash.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "x"), []byte("2"), 0o644))
-	h3, err := buildContextHash(dir, filepath.Join(dir, "Dockerfile"))
+	h3, err := hashOf(dir)
 	require.NoError(t, err)
 	assert.That(t, h1 != h3, "content edit did not change the hash")
 
@@ -156,20 +170,20 @@ func TestBuildContextHash(t *testing.T) {
 		"x":              "1",
 		".pats/runs/log": "a",
 	})
-	h1, err = buildContextHash(dir, filepath.Join(dir, "Dockerfile"))
+	h1, err = hashOf(dir)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".pats", "runs", "log"), []byte("bbbb"), 0o644))
-	h2, err = buildContextHash(dir, filepath.Join(dir, "Dockerfile"))
+	h2, err = hashOf(dir)
 	require.NoError(t, err)
 	assert.Equal(t, h1, h2)
 
 	// a context-less dockerfile hashes the dockerfile alone -- context churn
 	// (even unignored) can't invalidate it.
 	dir = mk(t, map[string]string{"Dockerfile": "FROM ubuntu\nRUN true\n", "x": "1"})
-	h1, err = buildContextHash(dir, filepath.Join(dir, "Dockerfile"))
+	h1, err = hashOf(dir)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "x"), []byte("2"), 0o644))
-	h2, err = buildContextHash(dir, filepath.Join(dir, "Dockerfile"))
+	h2, err = hashOf(dir)
 	require.NoError(t, err)
 	assert.Equal(t, h1, h2)
 }
@@ -185,7 +199,9 @@ func TestBuildImage(t *testing.T) {
 
 	ctxDir, df, err := resolveBuildSpec(dir, ".")
 	require.NoError(t, err)
-	hash, err := buildContextHash(ctxDir, df)
+	dfData, dfErr := readDockerfile(df)
+	require.NoError(t, dfErr)
+	hash, err := buildContextHash(ctxDir, df, dfData, dfErr)
 	require.NoError(t, err)
 
 	// nothing labelled with this hash yet.
@@ -201,7 +217,9 @@ func TestBuildImage(t *testing.T) {
 
 	// an edit changes the hash -> lookup misses.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("changed\n"), 0o644))
-	hash2, err := buildContextHash(ctxDir, df)
+	dfData2, dfErr2 := readDockerfile(df)
+	require.NoError(t, dfErr2)
+	hash2, err := buildContextHash(ctxDir, df, dfData2, dfErr2)
 	require.NoError(t, err)
 	assert.That(t, hash != hash2, "edit did not change the hash")
 	assert.Equal(t, cachedImageID(context.Background(), "docker", hash2), "")

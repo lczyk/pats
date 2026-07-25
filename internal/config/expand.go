@@ -23,10 +23,6 @@ func (c *Config) SelectSuites(only []string) ([]Suite, error) {
 	if len(only) == 0 {
 		return c.Suites, nil
 	}
-	byID := map[string]Suite{}
-	for _, s := range c.Suites {
-		byID[s.ID] = s
-	}
 	var errs errList
 	want := set(only)
 	var out []Suite

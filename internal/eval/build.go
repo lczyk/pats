@@ -18,6 +18,22 @@ import (
 	"github.com/lczyk/pats/src/sandbox"
 )
 
+// usedSandboxes resolves each pair's agent to its sandbox id and returns the
+// set actually needed by this run -- shared by buildImages and
+// pullEgressImages so both skip sandboxes no pair references. an agent whose
+// sandbox fails to resolve is silently skipped here; ResolveSandbox's error
+// surfaces later, in runPair, where it can be attributed to that pair.
+func usedSandboxes(cfg *config.Config, pairs []config.TestPair) map[string]bool {
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
+	used := map[string]bool{}
+	for _, p := range pairs {
+		if id, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil {
+			used[id] = true
+		}
+	}
+	return used
+}
+
 // buildImages resolves the `build:` sandboxes used by the run's pairs: each
 // context is hashed first and an image built from identical inputs is reused
 // outright (see buildContextHash); otherwise it's built via its driver
@@ -26,13 +42,7 @@ import (
 // an image. the id also lands in each pair's metadata.json, recording exactly
 // what ran.
 func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
-	used := map[string]bool{}
-	for _, p := range pairs {
-		if id, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil {
-			used[id] = true
-		}
-	}
+	used := usedSandboxes(cfg, pairs)
 	lg := logw{opts.Out, opts.Color}
 	for i, sb := range cfg.Sandboxes {
 		if !used[sb.ID] || sb.Build == "" {
@@ -43,13 +53,17 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		if err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
-		if err := checkPatsIgnored(ctxDir, dockerfile); err != nil {
+		// read once, shared by checkPatsIgnored (via usesContext) and
+		// buildContextHash below -- otherwise each reads (part of) the
+		// dockerfile independently, up to three reads per build.
+		dfData, dfErr := os.ReadFile(dockerfile)
+		if err := checkPatsIgnored(ctxDir, dockerfile, dfData, dfErr); err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
 		// the dry cache check: hash the build inputs and look for an image
 		// already labelled with that hash -- a hit skips `docker build`
 		// entirely instead of rebuilding and hoping the layer cache holds.
-		hash, err := buildContextHash(ctxDir, dockerfile)
+		hash, err := buildContextHash(ctxDir, dockerfile, dfData, dfErr)
 		if err != nil {
 			hash = "" // fs hiccup -> just build; the build will surface the real error
 		}
@@ -75,13 +89,7 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 // run with no output. only images absent locally are pulled: a present one is
 // left alone (no registry round-trip every run).
 func pullEgressImages(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
-	used := map[string]bool{}
-	for _, p := range pairs {
-		if id, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil {
-			used[id] = true
-		}
-	}
+	used := usedSandboxes(cfg, pairs)
 	lg := logw{opts.Out, opts.Color}
 	seen := map[string]bool{}
 	for _, sb := range cfg.Sandboxes {
@@ -186,13 +194,16 @@ func cachedImageID(ctx context.Context, driver, hash string) string {
 // the dockerignore matcher is approximate (see matchIgnore); it errs toward
 // hashing too much, which at worst degrades to today's behaviour: an
 // unnecessary `docker build` that the layer cache absorbs.
-func buildContextHash(ctxDir, dockerfile string) (string, error) {
-	h := sha256.New()
-	df, err := os.ReadFile(dockerfile)
-	if err != nil {
-		return "", err
+//
+// dfData/dfErr are the dockerfile's contents, already read by the caller (see
+// buildImages) -- shared with checkPatsIgnored/usesContext so the dockerfile
+// isn't read more than once per build.
+func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error) (string, error) {
+	if dfErr != nil {
+		return "", dfErr
 	}
-	h.Write(df)
+	h := sha256.New()
+	h.Write(dfData)
 
 	var patterns []ignorePattern
 	if data, err := os.ReadFile(effectiveIgnoreFile(ctxDir, dockerfile)); err == nil {
@@ -200,7 +211,7 @@ func buildContextHash(ctxDir, dockerfile string) (string, error) {
 		patterns = parseIgnore(string(data))
 	}
 
-	if usesContext(dockerfile) {
+	if usesContext(dfData, dfErr) {
 		if err := hashContextDir(h, ctxDir, patterns); err != nil {
 			return "", err
 		}
@@ -363,11 +374,14 @@ func segmentsMatch(pat, segs []string) bool {
 // (a COPY/ADD not sourced --from another stage) -- a context-less build has
 // nothing to leak. pats deliberately does not write or patch ignore files in
 // the user's tree -- the fix is one versioned line in their repo.
-func checkPatsIgnored(ctxDir, dockerfile string) error {
+//
+// dfData/dfErr are the dockerfile's contents, already read by the caller (see
+// buildImages) -- forwarded to usesContext so the dockerfile isn't read again.
+func checkPatsIgnored(ctxDir, dockerfile string, dfData []byte, dfErr error) error {
 	if _, err := os.Stat(filepath.Join(ctxDir, ".pats")); err != nil {
 		return nil // no .pats in the context -- nothing to leak
 	}
-	if !usesContext(dockerfile) {
+	if !usesContext(dfData, dfErr) {
 		return nil
 	}
 	ignore := effectiveIgnoreFile(ctxDir, dockerfile)
@@ -378,12 +392,14 @@ func checkPatsIgnored(ctxDir, dockerfile string) error {
 }
 
 // usesContext reports whether a dockerfile reads its build context: any
-// COPY/ADD instruction not sourced from another stage (--from=). the scan is
-// line-based and errs on the safe side -- an unreadable dockerfile, or one
-// with e.g. a heredoc body whose lines look like instructions, counts as
-// using the context (worst case the .pats guard fires unnecessarily).
-func usesContext(dockerfile string) bool {
-	data, err := os.ReadFile(dockerfile)
+// COPY/ADD instruction not sourced from another stage (--from=). data/err are
+// the dockerfile's contents as already read by the caller (buildImages reads
+// it once and shares the result across checkPatsIgnored, buildContextHash,
+// and this function). the scan is line-based and errs on the safe side -- a
+// read error (err != nil), or a dockerfile with e.g. a heredoc body whose
+// lines look like instructions, counts as using the context (worst case the
+// .pats guard fires unnecessarily).
+func usesContext(data []byte, err error) bool {
 	if err != nil {
 		return true
 	}
