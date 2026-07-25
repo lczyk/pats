@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -132,6 +133,22 @@ scorers:
 			want: "agent kind not implemented",
 		},
 		{
+			name: "file scorer with agent-id",
+			src: `
+scorers:
+  - {id: sc, score: sc.py, agent-id: ghost}
+`,
+			want: "agent-id is an agent-scorer field",
+		},
+		{
+			name: "file scorer with prompt",
+			src: `
+scorers:
+  - {id: sc, score: sc.py, prompt: p.txt}
+`,
+			want: "prompt is an agent-scorer field",
+		},
+		{
 			// every real kind takes an effort flag now (claude --effort, codex
 			// model_reasoning_effort, opencode --variant), so only an unknown kind
 			// can trip this today; the check stays for future effort-less kinds.
@@ -177,6 +194,34 @@ sandboxes: [{id: s, kind: container, image: img, egress: {mode: mitm-proxy, deny
 sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, allow-urls: ["github.com/x*"]}}]
 `,
 			want: "allow-urls needs egress mode mitm-proxy",
+		},
+		{
+			name: "egress allow list without proxy or mitm-proxy mode",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: open, allow: ["good.com"]}}]
+`,
+			want: "allow/deny needs egress mode proxy or mitm-proxy",
+		},
+		{
+			name: "egress deny list without proxy or mitm-proxy mode",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: none, deny: ["evil.com"]}}]
+`,
+			want: "allow/deny needs egress mode proxy or mitm-proxy",
+		},
+		{
+			name: "egress allow list under default: allow (a denylist)",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, default: allow, allow: ["good.com"]}}]
+`,
+			want: "allow is ignored under default: allow",
+		},
+		{
+			name: "egress deny list under default: deny (an allowlist)",
+			src: `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, deny: ["evil.com"]}}]
+`,
+			want: "deny is ignored under default: deny",
 		},
 		{
 			name: "duplicate id within a suite axis",
@@ -310,6 +355,54 @@ tasks: [{id: t, prompt: p.txt}]
 suites: [{id: su, agents: copilot, tasks: t}]
 `)
 	require.NoError(t, c.Validate())
+}
+
+// nearby accepted case for the "egress allow/deny needs proxy" and "deny
+// ignored under default: deny" rejections above: an allowlist used correctly
+// (default: deny, only allow set) trips neither new check.
+func TestEgressProxyAllowlistValid(t *testing.T) {
+	c := parseT(t, `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, default: deny, allow: ["good.com"]}}]
+`)
+	require.NoError(t, c.Validate())
+}
+
+// nearby accepted case for the "allow ignored under default: allow"
+// rejection above: a denylist used correctly (default: allow, only deny set).
+func TestEgressProxyDenylistValid(t *testing.T) {
+	c := parseT(t, `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, default: allow, deny: ["evil.com"]}}]
+`)
+	require.NoError(t, c.Validate())
+}
+
+// nearby accepted case for the "file scorer with agent-id/prompt"
+// rejections above: a plain file scorer setting neither field.
+func TestFileScorerWithoutAgentFieldsValid(t *testing.T) {
+	c := parseT(t, `
+scorers:
+  - {id: sc, score: sc.py}
+`)
+	require.NoError(t, c.Validate())
+}
+
+// COVER: validateEgress used to build the url-rule field/pattern pairs from a
+// map, so a run with both deny-urls and allow-urls invalid joined its errors
+// in random order. pin deny-urls before allow-urls across repeated parses.
+func TestEgressURLRuleErrorOrderStable(t *testing.T) {
+	src := `
+sandboxes: [{id: s, kind: container, image: img, egress: {mode: proxy, deny-urls: ["a"], allow-urls: ["b"]}}]
+`
+	for range 20 {
+		c := parseT(t, src)
+		err := c.Validate()
+		require.Error(t, err, assert.AnyError)
+		msg := err.Error()
+		denyIdx := strings.Index(msg, "deny-urls needs")
+		allowIdx := strings.Index(msg, "allow-urls needs")
+		assert.That(t, denyIdx >= 0 && allowIdx >= 0 && denyIdx < allowIdx,
+			"expected deny-urls error before allow-urls, got: %s", msg)
+	}
 }
 
 func TestAgentResolvedModel(t *testing.T) {

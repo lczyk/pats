@@ -139,17 +139,50 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 	default:
 		add("sandbox %q: unknown egress default %q (deny|allow)", s.ID, s.Egress.Default)
 	}
-	urlRules := map[string][]string{"deny-urls": s.Egress.DenyURLs, "allow-urls": s.Egress.AllowURLs}
-	for field, pats := range urlRules {
-		if len(pats) > 0 && s.Egress.Mode != "mitm-proxy" {
-			add("sandbox %q: %s needs egress mode mitm-proxy (got %q)", s.ID, field, s.Egress.Mode)
+
+	// plain allow/deny host lists only do anything once traffic is actually
+	// filtered -- open/none/unset pass everything through regardless, so a
+	// list here would silently never be consulted.
+	switch s.Egress.Mode {
+	case "", "open", "none":
+		if len(s.Egress.Allow) > 0 || len(s.Egress.Deny) > 0 {
+			add("sandbox %q: allow/deny needs egress mode proxy or mitm-proxy (got %q)", s.ID, s.Egress.Mode)
 		}
-		for _, p := range pats {
+	}
+
+	// default picks which of allow/deny is live (deny -> allowlist, only
+	// Allow consulted; allow -> denylist, only Deny consulted); a non-empty
+	// entry on the other side would never be looked at.
+	switch s.Egress.Default {
+	case "allow":
+		if len(s.Egress.Allow) > 0 {
+			add("sandbox %q: allow is ignored under default: allow (a denylist) -- move these entries to deny, or set default: deny", s.ID)
+		}
+	case "", "deny":
+		if len(s.Egress.Deny) > 0 {
+			add("sandbox %q: deny is ignored under default: deny (an allowlist) -- move these entries to allow, or set default: allow", s.ID)
+		}
+	}
+
+	// slice, not a map, so a joined error is deterministic (deny-urls before
+	// allow-urls) rather than depending on go's random map iteration order.
+	urlRules := []struct {
+		field string
+		pats  []string
+	}{
+		{"deny-urls", s.Egress.DenyURLs},
+		{"allow-urls", s.Egress.AllowURLs},
+	}
+	for _, r := range urlRules {
+		if len(r.pats) > 0 && s.Egress.Mode != "mitm-proxy" {
+			add("sandbox %q: %s needs egress mode mitm-proxy (got %q)", s.ID, r.field, s.Egress.Mode)
+		}
+		for _, p := range r.pats {
 			host, _, _ := strings.Cut(p, "/")
 			// the host part picks which hosts get mitm'd -- a wildcard would
 			// mitm everything (incl. the inference api), so it must be literal.
 			if host == "" || strings.Contains(host, "*") {
-				add("sandbox %q: %s pattern %q must start with a literal hostname", s.ID, field, p)
+				add("sandbox %q: %s pattern %q must start with a literal hostname", s.ID, r.field, p)
 			}
 		}
 	}
@@ -256,6 +289,12 @@ func (c *Config) validateScorers(add func(string, ...any), agents map[string]Age
 		case "":
 			if s.Score == "" {
 				add("scorer %q: needs a score script", s.ID)
+			}
+			if s.AgentID != "" {
+				add("scorer %q: agent-id is an agent-scorer field -- remove it, or set kind: agent", s.ID)
+			}
+			if s.Prompt != "" {
+				add("scorer %q: prompt is an agent-scorer field -- remove it, or set kind: agent", s.ID)
 			}
 		case "agent":
 			add("scorer %q: agent kind not implemented yet", s.ID)
