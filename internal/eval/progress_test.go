@@ -49,6 +49,23 @@ func TestStatTap(t *testing.T) {
 	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
 }
 
+// COVER: a harness emitting a huge newline-less blob must not grow statTap's
+// buffer without bound; the eventual newline still counts as one "out" line.
+// fails against the old unbounded statTap.Write.
+func TestStatTapCapsUnboundedLine(t *testing.T) {
+	var s pairStat
+	tap := &statTap{stat: &s, scan: scanClaude}
+
+	big := bytes.Repeat([]byte("x"), statTapMaxBuf+1000) // over the cap, no newline yet
+	tap.Write(big)
+	assert.That(t, len(tap.buf) <= statTapMaxBuf, "buf must stay capped, got %d bytes", len(tap.buf))
+	assert.Equal(t, atomic.LoadInt64(&s.out), int64(0)) // no newline yet -> not counted
+
+	tap.Write([]byte("\n"))
+	assert.Equal(t, atomic.LoadInt64(&s.out), int64(1)) // newline arrives -> counted once
+	assert.Equal(t, len(tap.buf), 0)
+}
+
 func TestCountLines(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "egress.log")

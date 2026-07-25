@@ -281,9 +281,23 @@ func useColor(w io.Writer) bool {
 	return isProgressTTY(w) && os.Getenv("NO_COLOR") == ""
 }
 
+// statTapMaxBuf caps how many bytes of an unterminated line statTap will
+// retain: a harness that emits one huge newline-less blob (or just corrupt
+// output) must not grow buf without bound. match the 8 MiB ceiling the
+// post-run summary scanners already allow a single line (claude's
+// stream-json lines carry base64 signatures) rather than invent a smaller
+// cap that could clip a legitimate one. past the cap, extra bytes are
+// dropped -- the retained (truncated) line then fails its per-kind json
+// scan and is silently skipped (same as any other malformed line), but the
+// eventual newline still counts as one "out" line, so the running total
+// stays accurate even though the tool/kind breakdown for that one line is lost.
+const statTapMaxBuf = 8 * 1024 * 1024
+
 // statTap taps a pair's stdout: it splits the stream into lines (buffering across
 // writes), counts each as an "out" line, and runs the per-kind scanner on it. it
-// does not disturb the stdout.log written alongside via a MultiWriter.
+// does not disturb the stdout.log written alongside via a MultiWriter. buf is
+// capped at statTapMaxBuf -- bytes past the cap are dropped, though the eventual
+// newline still counts as one out line.
 type statTap struct {
 	stat *pairStat
 	scan func([]byte, *pairStat) // per-kind line parser; nil -> count lines only
@@ -291,19 +305,28 @@ type statTap struct {
 }
 
 func (t *statTap) Write(b []byte) (int, error) {
-	t.buf = append(t.buf, b...)
-	for {
-		i := bytes.IndexByte(t.buf, '\n')
+	n := len(b)
+	for len(b) > 0 {
+		i := bytes.IndexByte(b, '\n')
+		end := len(b)
+		if i >= 0 {
+			end = i
+		}
+		if room := statTapMaxBuf - len(t.buf); room > 0 {
+			take := min(end, room)
+			t.buf = append(t.buf, b[:take]...)
+		}
 		if i < 0 {
-			break
+			break // still mid-line -- wait for more writes
 		}
 		atomic.AddInt64(&t.stat.out, 1)
 		if t.scan != nil {
-			t.scan(t.buf[:i], t.stat)
+			t.scan(t.buf, t.stat)
 		}
-		t.buf = t.buf[i+1:]
+		t.buf = t.buf[:0]
+		b = b[i+1:]
 	}
-	return len(b), nil
+	return n, nil
 }
 
 // statScanner returns the per-kind stdout line parser, or nil for kinds whose

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -103,12 +104,31 @@ func TestNextRunDirCountsAcrossDates(t *testing.T) {
 }
 
 func TestResolveJobs(t *testing.T) {
-	assert.Equal(t, resolveJobs(4), 4) // explicit count passes through
-	assert.Equal(t, resolveJobs(1), 1) // serial
-	assert.Equal(t, resolveJobs(0), 1) // zero-value -> serial
-	// auto (<0): docker cpu or host-cpu fallback, clamped to [1,8].
-	got := resolveJobs(-1)
-	assert.That(t, got >= 1 && got <= 8, "auto jobs in [1,8], got", got)
+	panicN := func() int { panic("autoN must not be called when j >= 0") }
+	assert.Equal(t, resolveJobs(4, panicN), 4) // explicit count passes through, autoN untouched
+	assert.Equal(t, resolveJobs(1, panicN), 1) // serial
+	assert.Equal(t, resolveJobs(0, panicN), 1) // zero-value -> serial, autoN untouched
+
+	// auto (<0): autoN() clamped to [1,8].
+	cases := map[string]struct {
+		autoN int
+		want  int
+	}{
+		"mid-range passes through": {autoN: 4, want: 4},
+		"clamped to the ceiling":   {autoN: 20, want: 8},
+		"floor of one":             {autoN: 1, want: 1},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, resolveJobs(-1, func() int { return c.autoN }), c.want)
+		})
+	}
+
+	// autoN reporting < 1 (e.g. docker unreachable) falls back to runtime.NumCPU.
+	for _, n := range []int{0, -3} {
+		got := resolveJobs(-1, func() int { return n })
+		assert.That(t, got >= 1 && got <= 8, "fallback jobs in [1,8], got", got)
+	}
 }
 
 func TestResolvePrompt(t *testing.T) {
@@ -161,6 +181,24 @@ func TestMergeHosts(t *testing.T) {
 	}
 }
 
+// COVER: mergeHosts must not append into the caller's slice -- that slice is
+// cfg.Sandboxes[i].Egress.Allow, shared by every concurrent pair, so an
+// in-place append would let one pair's harness hosts land in another's
+// allowlist. spare capacity is what makes append reuse the backing array, so
+// the test has to create some: a plain literal (cap == len, which is also what
+// yaml decoding produces) always reallocates and would pass either way.
+func TestMergeHostsDoesNotAliasCaller(t *testing.T) {
+	shared := make([]string, 1, 4)
+	shared[0] = "base.example.com"
+
+	first := mergeHosts(shared, []string{"a.example.com"})
+	second := mergeHosts(shared, []string{"b.example.com"})
+
+	assert.Equal(t, first[1], "a.example.com") // clobbered by the second call pre-fix
+	assert.Equal(t, second[1], "b.example.com")
+	assert.Equal(t, len(shared), 1) // and the caller's own view is untouched
+}
+
 func TestStderrTail(t *testing.T) {
 	if got := stderrTail(bytes.NewBufferString("  \n ")); got != "" {
 		t.Errorf("empty buffer: got %q, want \"\"", got)
@@ -185,6 +223,10 @@ type fakeSandbox struct {
 	stdout string
 	err    error
 	calls  int
+	// blockUntilDone waits for the run's ctx to be cancelled (the task's
+	// timeout firing) before returning code/err -- simulates a task that's
+	// still running when the deadline hits, real docker's SIGTERM-then-exit.
+	blockUntilDone bool
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -192,6 +234,9 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr
 	// canned outcome lands on the real pair run.
 	if f.calls++; f.calls == 1 {
 		return 0, nil
+	}
+	if f.blockUntilDone {
+		<-ctx.Done()
 	}
 	if f.err != nil {
 		return -1, f.err
@@ -247,6 +292,134 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	stdout, err := os.ReadFile(filepath.Join(runDir, "ok", "t", "stdout.log"))
 	require.NoError(t, err)
 	assert.Equal(t, string(stdout), "fine\n")
+}
+
+// COVER: a deadline whose sandbox reports a plain non-zero exit with no
+// error -- exactly what sandbox.container.Run does today, since it maps any
+// *exec.ExitError (including the 143 from a SIGTERM'd container) to
+// (code, nil). runErr alone can't distinguish that from an agent that just
+// failed; the status has to come from rctx.Err() instead. fails against the
+// old runPair, which only classified a pair as "timeout" when runErr != nil.
+func TestRunPairTimeoutStatus(t *testing.T) {
+	fake := &fakeSandbox{blockUntilDone: true, code: 143} // SIGTERM exit, no error -- the coin-flip case
+	old := newSandbox
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms"}},
+		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+
+	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(meta), `"status": "timeout"`)
+	assert.ContainsString(t, string(meta), `"error": "timed out after`)
+}
+
+// COVER: collect must run on a timed-out pair too -- the agent DID run and
+// left files behind, unlike a launch failure. uses a genuine runErr (not the
+// nil-error SIGTERM case above, which the old code already classified as
+// "timeout" by coincidence) so this actually exercises the
+// runErr == nil || timedOut collect condition, and fails against the old
+// runErr == nil gate.
+func TestRunPairCollectsOnTimeout(t *testing.T) {
+	fake := &fakeSandbox{blockUntilDone: true, err: errors.New("some docker hiccup")}
+	old := newSandbox
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
+		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n"), 0o755))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms", Collect: "collect.sh"}},
+		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+
+	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(meta), `"status": "timeout"`)
+
+	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+	assert.NoError(t, err) // collect ran despite runErr != nil, because the pair timed out
+}
+
+// COVER: the other half of the collect gate -- sandbox setup (egress in
+// particular) runs under the same deadline as the agent, so a setup failure can
+// arrive with rctx already expired. that's a launch failure with an empty
+// workdir, not a timed-out agent: the status must name the real cause and
+// collect must not run. fails against a timedOut check that looks only at
+// rctx.Err().
+func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
+	fake := &fakeSandbox{
+		blockUntilDone: true,
+		err:            fmt.Errorf("%w: egress: create network: boom", sandbox.ErrLaunch),
+	}
+	old := newSandbox
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
+		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n"), 0o755))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms", Collect: "collect.sh"}},
+		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+
+	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(meta), `"status": "error"`)
+	assert.ContainsString(t, string(meta), "create network") // the real cause, not "timed out after"
+
+	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+	assert.That(t, os.IsNotExist(err), "collect must not run when the sandbox never launched")
+}
+
+// COVER: a vectors-only config (no suites) is deliberately allowed by Validate
+// -- see its "nothing to orphan-check against" early return -- so it expands to
+// zero pairs. Run must say that, not fall through to FilterPairs and blame an
+// --agent/--task filter the user never passed.
+func TestZeroPairsRunErrors(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "ubuntu:26.04"}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.Error(t, err, assert.AnyError)
+	assert.ContainsString(t, err.Error(), "no (agent, task) pairs to run")
 }
 
 func TestDeniedEgress(t *testing.T) {

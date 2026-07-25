@@ -53,6 +53,87 @@ func TestScoreExec(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// scorers get PATS_AGENT_KIND alongside PATS_MODEL (README documents both).
+func TestScorerEnvIncludesAgentKind(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "check-kind.sh"),
+		[]byte("#!/bin/sh\n[ \"$PATS_AGENT_KIND\" = \"opencode-openrouter\" ] && echo 1.0 || echo 0.0\n"), 0o755))
+
+	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
+	od := filepath.Join(run, "a", "t")
+	require.NoError(t, os.MkdirAll(od, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
+		Scorers:   []config.Scorer{{ID: "check-kind", Score: "check-kind.sh"}},
+		Suites: []config.Suite{{
+			ID: "su", Agents: config.StrList{"a"},
+			Tasks: config.StrList{"t"}, Scorers: config.StrList{"check-kind"},
+		}},
+	}
+
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
+	require.NoError(t, err)
+	assert.Equal(t, rep.PerPair["a/t"], 1.0)
+}
+
+// COVER: -j-1 during scoring must not shell out to `docker info` -- the score
+// phase never runs a container. fails against the old resolveJobs, which
+// hard-wired dockerNCPU for every caller.
+func TestScoreAutoJobsSkipsDocker(t *testing.T) {
+	probed := false
+	old := dockerNCPU
+	dockerNCPU = func() int { probed = true; return 4 }
+	defer func() { dockerNCPU = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))
+
+	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
+	od := filepath.Join(run, "a", "t")
+	require.NoError(t, os.MkdirAll(od, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
+		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}},
+		Suites: []config.Suite{{
+			ID: "su", Agents: config.StrList{"a"},
+			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one"},
+		}},
+	}
+
+	var out bytes.Buffer
+	_, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Jobs: -1, Out: &out})
+	require.NoError(t, err)
+	assert.That(t, !probed, "score must not probe docker for its auto job count")
+}
+
+// a stray directory under .pats/runs (not <nnn>-<yyyymmdd>-<adj>-<noun>) must
+// not be treated as a run: not picked as "latest", not listed by `pats list runs`.
+func TestSortedRunNamesSkipsStrayDirs(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, runsSubdir)
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "001-20260701-fluffy-bunny"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "stray"), 0o755)) // e.g. leftover from an interrupted run
+
+	got, err := latestRunDir(base)
+	require.NoError(t, err)
+	assert.Equal(t, got, filepath.Join(base, "001-20260701-fluffy-bunny"))
+
+	var out bytes.Buffer
+	require.NoError(t, ListRuns(dir, &out))
+	s := out.String()
+	assert.ContainsString(t, s, "001-20260701-fluffy-bunny")
+	assert.That(t, !strings.Contains(s, "stray"), "stray dir not listed", s)
+}
+
 // per-pair score is the plain mean over the scorers run on that pair.
 func TestScoreMultipleScorers(t *testing.T) {
 	dir := t.TempDir()

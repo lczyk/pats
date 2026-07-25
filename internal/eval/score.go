@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,9 +84,9 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		return nil, err
 	}
 	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.ID })
-	agentModel := map[string]string{}
+	agents := map[string]agentInfo{}
 	for _, a := range cfg.Agents {
-		agentModel[a.ID] = a.ResolvedModel()
+		agents[a.ID] = agentInfo{model: a.ResolvedModel(), kind: a.Kind}
 	}
 	// task -> scorers to run on it.
 	byTask := map[string][]config.ScorePair{}
@@ -114,7 +115,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}
 	}
 
-	njobs := resolveJobs(opts.Jobs)
+	njobs := resolveJobs(opts.Jobs, runtime.NumCPU)
 	var bar *progress
 	if isProgressTTY(opts.Out) {
 		labelW := 0
@@ -153,7 +154,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 				bar.start(label, &pairStat{}, "", false)
 			}
 
-			score, serr := runScorer(po, j.sc, j.outDir, j.agent, j.task, agentModel[j.agent])
+			score, serr := runScorer(po, j.sc, j.outDir, j.agent, j.task, agents[j.agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
 				jlg.info("[%s x %s] %s = n/a", j.agent, j.task, j.sc.ID)
@@ -214,10 +215,18 @@ func Report(configDir, runArg string, out io.Writer) error {
 // doesn't apply to this cell. dropped from aggregation, not logged as an error.
 var errScorerNA = errors.New("scorer reported n/a")
 
+// agentInfo carries the per-agent fields a scorer's env needs, keyed by agent
+// id in Score's agents map -- one small struct beats a second parallel map
+// alongside runScorer's already-long argument list.
+type agentInfo struct {
+	model string
+	kind  string
+}
+
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
 // file scorers exec directly on the host (trusted user scripts); the shebang
 // picks the interpreter. agent scorers pending.
-func runScorer(opts ScoreOptions, sc config.Scorer, outDir, agent, task, model string) (float64, error) {
+func runScorer(opts ScoreOptions, sc config.Scorer, outDir, agent, task string, info agentInfo) (float64, error) {
 	switch sc.Kind {
 	case "":
 		cmd, err := commandFor(opts.ConfigDir, sc.ExecFile(), map[string]string{
@@ -225,7 +234,8 @@ func runScorer(opts ScoreOptions, sc config.Scorer, outDir, agent, task, model s
 			"PATS_AGENT_ID":   agent,
 			"PATS_TASK_ID":    task,
 			"PATS_SCORER_ID":  sc.ID,
-			"PATS_MODEL":      model,
+			"PATS_MODEL":      info.model,
+			"PATS_AGENT_KIND": info.kind,
 		})
 		if err != nil {
 			return 0, err
@@ -606,7 +616,10 @@ func latestRunDir(base string) (string, error) {
 }
 
 // sortedRunNames lists the run dirs under base, sorted by (date, numeric
-// suffix) so 20260621-10 beats 20260621-2.
+// suffix) so 20260621-10 beats 20260621-2. entries that don't parse as a
+// <nnn>-<yyyymmdd>-<adj>-<noun> run name (a stray directory, say) are skipped
+// -- otherwise one could sort as date "" / number 0 and get picked as
+// "latest", or show up in `pats list runs`.
 func sortedRunNames(base string) ([]string, error) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
@@ -614,9 +627,13 @@ func sortedRunNames(base string) ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
+		if !e.IsDir() {
+			continue
 		}
+		if _, _, ok := splitRunName(e.Name()); !ok {
+			continue
+		}
+		names = append(names, e.Name())
 	}
 	sort.Slice(names, func(i, j int) bool {
 		di, ni, _ := splitRunName(names[i])

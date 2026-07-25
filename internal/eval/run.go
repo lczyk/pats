@@ -66,6 +66,12 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// a vectors-only config (no suites) is valid to hold but runs nothing --
+	// say that, rather than letting FilterPairs blame an agent/task filter the
+	// user never passed.
+	if len(pairs) == 0 {
+		return "", fmt.Errorf("no (agent, task) pairs to run: the selected suites expand to none (a config with no `suites:` runs nothing)")
+	}
 	if pairs, err = config.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
 		return "", err
 	}
@@ -102,7 +108,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	}
 	lg.info("run dir: %s", relToCwd(runDir))
 
-	jobs := resolveJobs(opts.Jobs)
+	jobs := resolveJobs(opts.Jobs, dockerNCPU)
 
 	// on a tty, draw a sticky progress region (total bar + a live line per
 	// in-flight pair); otherwise (pipe/ci/tee) print plain per-pair lines.
@@ -173,22 +179,24 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	return runDir, nil
 }
 
-// resolveJobs maps the Jobs option to a concrete worker count.
+// resolveJobs maps a Jobs option to a concrete worker count.
 //
 //	>0  -> that many
 //	0   -> 1 (serial; the zero-value default)
-//	<0  -> auto: docker's own cpu count (vm-accurate on macos), falling back to
-//	       host cpus, clamped to [1,8]. pairs are network-bound (model
-//	       round-trips), so cpu is a rough proxy, not a real limit -- the clamp
-//	       stops a big box from hammering the daemon + tripping rate-limits.
-func resolveJobs(j int) int {
+//	<0  -> auto: autoN() (vm-accurate docker cpu count on macos for the run
+//	       phase; host cpus for the score phase, which never touches docker),
+//	       falling back to host cpus when autoN() reports < 1, clamped to
+//	       [1,8]. pairs/cells are network-bound (model round-trips), so cpu is
+//	       a rough proxy, not a real limit -- the clamp stops a big box from
+//	       hammering the daemon + tripping rate-limits.
+func resolveJobs(j int, autoN func() int) int {
 	if j > 0 {
 		return j
 	}
 	if j == 0 {
 		return 1
 	}
-	n := dockerNCPU()
+	n := autoN()
 	if n < 1 {
 		n = runtime.NumCPU()
 	}
@@ -196,7 +204,9 @@ func resolveJobs(j int) int {
 }
 
 // dockerNCPU returns the docker daemon's cpu count, or 0 if it can't be read.
-func dockerNCPU() int {
+// a var, like newSandbox, so a test can assert the score phase never reaches
+// for it -- scoring runs no containers.
+var dockerNCPU = func() int {
 	out, err := exec.Command("docker", "info", "--format", "{{.NCPU}}").Output()
 	if err != nil {
 		return 0
@@ -257,6 +267,10 @@ func deniedEgress(auditPath string) []string {
 	return out
 }
 
+// runPair prepares, runs, and collects one (agent, task) pair. stat must be
+// non-nil (every caller passes a fresh &pairStat{}) -- it's dereferenced
+// unconditionally below, both to tap live counters and to record the final
+// net count.
 func runPair(
 	ctx context.Context, cfg *config.Config, opts Options, runDir string, p config.TestPair,
 	a config.Agent, t config.Task, sandboxes map[string]config.Sandbox, stat *pairStat,
@@ -336,13 +350,10 @@ func runPair(
 	}
 	defer stderrF.Close()
 
-	// agent output goes to the log file. when a progress bar is active we also
-	// tap it through statTap for the in-run counters (out lines + per-kind tool
-	// parse) -- the full stdout.log is still written intact.
-	var stdoutW io.Writer = stdoutF
-	if stat != nil {
-		stdoutW = io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Kind)})
-	}
+	// agent output goes to the log file, always also tapped through statTap for
+	// the in-run counters (out lines + per-kind tool parse) -- the full
+	// stdout.log is still written intact. stat is never nil (see doc comment).
+	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Kind)})
 	// bound the agent run with the configured timeout (0 = none) so a stuck pair
 	// gets killed rather than hanging the whole run. ctx cancel tears down the
 	// container (same path as ctrl+C).
@@ -356,9 +367,18 @@ func runPair(
 	code, runErr := box.Run(rctx, spec, stdoutW, stderrF)
 	dur := time.Since(t0).Seconds()
 
+	// decide timeout from rctx.Err(), not runErr: on deadline the sandbox
+	// SIGTERMs the container, which exits non-zero (143) -- sandbox.container.Run
+	// maps any *exec.ExitError to (code, nil), so runErr is nil on a timed-out
+	// pair too. ctrl+C (context.Canceled on the parent ctx) is not a timeout.
+	// the one exception is a launch failure: sandbox setup (egress in
+	// particular) runs under the same deadline, so a slow setup can fail *and*
+	// leave rctx expired -- that's an error with nothing to collect, not a
+	// timed-out agent, and the real cause belongs in the metadata.
+	timedOut := errors.Is(rctx.Err(), context.DeadlineExceeded) && !errors.Is(runErr, sandbox.ErrLaunch)
 	status, errStr := "ok", ""
 	switch {
-	case runErr != nil && errors.Is(rctx.Err(), context.DeadlineExceeded):
+	case timedOut:
 		status, errStr = "timeout", fmt.Sprintf("timed out after %s", t.TimeoutDuration())
 	case runErr != nil:
 		status, errStr = "error", runErr.Error()
@@ -368,8 +388,11 @@ func runPair(
 
 	lg := logw{opts.Out, opts.Color}
 
-	// collect only if the agent ran (a launch failure left nothing to gather).
-	if runErr == nil && t.Collect != "" {
+	// collect when the agent ran and left something to gather: either it
+	// finished (runErr == nil) or it timed out mid-run (timedOut) -- either way
+	// the container produced files. a launch failure (runErr != nil, !timedOut)
+	// left nothing to collect.
+	if (runErr == nil || timedOut) && t.Collect != "" {
 		if err := runHost(opts, expandID(t.Collect, t.ID), hostEnv); err != nil {
 			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
 		}
@@ -497,17 +520,25 @@ func egressFor(sb config.Sandbox, kind, auditPath string) sandbox.Egress {
 
 // mergeHosts appends extras not already in hosts (exact string match; overlap
 // via wildcards is harmless -- the proxy just sees a redundant entry).
+//
+// hosts is copied before appending: the caller passes cfg.Sandboxes[i].Egress.Allow,
+// shared by every concurrent pair. today an in-place append is safe because
+// yaml.v3 decodes sequences with cap == len (verified), so the append below
+// always reallocates -- but nothing enforces that invariant, and a future
+// caller (or yaml.v3 change) could silently start corrupting a sibling pair's
+// egress policy.
 func mergeHosts(hosts, extras []string) []string {
 	seen := map[string]bool{}
 	for _, h := range hosts {
 		seen[h] = true
 	}
+	out := append([]string(nil), hosts...)
 	for _, e := range extras {
 		if !seen[e] {
-			hosts = append(hosts, e)
+			out = append(out, e)
 		}
 	}
-	return hosts
+	return out
 }
 
 // relToCwd renders a path relative to the working dir for display; falls back to
