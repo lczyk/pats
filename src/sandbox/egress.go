@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/lczyk/pats/internal/version"
 )
@@ -98,14 +99,29 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	var auditF *os.File
 	var caDir string
 	teardown := func() {
+		// remove the proxy container first: `docker logs -f` reaches EOF and
+		// the follower exits on its own once the container is gone, instead
+		// of being killed mid-read. killing the follower first (the old
+		// order) could drop an audit line still in flight between the daemon
+		// and the follower -- and denied-host lines are the run's cheat
+		// detector, so losing the tail matters. safe to call even if the
+		// proxy never started (e.g. an early setup failure): the cli errors
+		// on the missing container and we ignore that, same as before.
+		_, _ = c.docker(context.Background(), "rm", "-f", proxy)
+
 		if logsCmd != nil && logsCmd.Process != nil {
-			_ = logsCmd.Process.Kill()
-			_ = logsCmd.Wait()
+			done := make(chan error, 1)
+			go func() { done <- logsCmd.Wait() }()
+			select {
+			case <-done: // saw EOF on its own once the container went away
+			case <-time.After(2 * time.Second):
+				_ = logsCmd.Process.Kill()
+				<-done
+			}
 		}
 		if auditF != nil {
 			_ = auditF.Close()
 		}
-		_, _ = c.docker(context.Background(), "rm", "-f", proxy)
 		_, _ = c.docker(context.Background(), "network", "rm", net)
 		if caDir != "" {
 			_ = os.RemoveAll(caDir)

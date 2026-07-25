@@ -3,6 +3,8 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +59,26 @@ func TestContainerExitCode(t *testing.T) {
 	}, &out, &errb)
 	require.NoError(t, err) // ran fine; non-zero exit is reported via code, not err
 	assert.Equal(t, code, 7)
+}
+
+// COVER: Run's real run path (cmd.Run via exec.CommandContext) isn't
+// fakeable through the container's exec/execOut seams, and reproducing the
+// ctx-cancel race that makes os/exec wrap the *exec.ExitError isn't reliable
+// to trigger from a test. so this exercises asExitError directly: a bare
+// `err.(*exec.ExitError)` type assertion (the pre-fix code) panics on a
+// wrapped ExitError; errors.As must not.
+func TestAsExitErrorUnwrapsWrapped(t *testing.T) {
+	raw := exec.Command("sh", "-c", "exit 3").Run()
+	var rawExit *exec.ExitError
+	require.That(t, errors.As(raw, &rawExit))
+
+	wrapped := fmt.Errorf("wrapped: %w", raw)
+	e, ok := asExitError(wrapped)
+	require.That(t, ok)
+	assert.Equal(t, e.ExitCode(), 3)
+
+	_, ok = asExitError(errors.New("boom"))
+	assert.Equal(t, ok, false)
 }
 
 func TestNewErrors(t *testing.T) {

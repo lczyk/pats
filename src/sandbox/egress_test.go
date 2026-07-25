@@ -3,10 +3,12 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -148,6 +150,53 @@ func TestStartEgressProxyMitm(t *testing.T) {
 	// merged bundle keeps the image's system roots (tunneled hosts need them).
 	b, _ := os.ReadFile(bundlePath)
 	assert.ContainsString(t, string(b), "systemroots")
+}
+
+// COVER: the teardown order fixed in this package -- the proxy container is
+// removed (which makes `docker logs -f` reach EOF) before the follower is
+// waited on/killed. the exec/execOut seams only cover c.docker calls, not the
+// raw `docker logs -f` follower process (started via a plain exec.Command),
+// so this test stands in a fake "docker" binary for it: the follower blocks
+// until a sentinel file appears, and the fake exec drops that sentinel only
+// when it sees the "rm -f <proxy>" call. if teardown ever waited on (or
+// killed) the follower before removing the proxy, the follower would never
+// see the sentinel and would only die via the 2s grace-timeout kill -- which
+// never gets a chance to write the "graceful exit" marker checked below.
+func TestStartEgressProxyRemovesProxyBeforeFollowerTeardown(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "removed")
+	marker := filepath.Join(dir, "graceful-exit")
+	script := filepath.Join(dir, "fake-docker.sh")
+	body := fmt.Sprintf("#!/bin/sh\nwhile [ ! -f %q ]; do sleep 0.02; done\ntouch %q\n", sentinel, marker)
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
+
+	exec_ := func(ctx context.Context, bin string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "rm" {
+			_ = os.WriteFile(sentinel, nil, 0o644)
+		}
+		return "", nil
+	}
+	c := &container{bin: script, image: "img", exec: exec_}
+	spec := Spec{
+		Workdir: filepath.Join(t.TempDir(), "pats-work-order"),
+		Egress: Egress{
+			Mode:      "proxy",
+			AuditPath: filepath.Join(dir, "audit.log"),
+		},
+	}
+	_, teardown, err := c.startEgressProxy(context.Background(), spec)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() { teardown(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("teardown did not return within the grace window")
+	}
+
+	_, statErr := os.Stat(marker)
+	assert.NoError(t, statErr)
 }
 
 func TestStartEgressProxyFailureTearsDown(t *testing.T) {

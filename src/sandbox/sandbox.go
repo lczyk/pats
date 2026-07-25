@@ -72,6 +72,14 @@ type Sandbox interface {
 	Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error)
 }
 
+// ErrLaunch marks a Run error raised before the sandboxed process ever started
+// (workdir/mount resolution, egress setup). callers need the distinction: such
+// a run produced no output at all, whereas a process that started and was then
+// killed -- by the deadline, say -- left files behind worth collecting. setup
+// runs under the caller's context, so "the deadline fired" alone can't tell the
+// two apart.
+var ErrLaunch = errors.New("sandbox never launched")
+
 // New builds a Sandbox for the given driver. container drivers need an image.
 func New(driver, image string) (Sandbox, error) {
 	switch driver {
@@ -117,12 +125,12 @@ func (c *container) dockerOut(ctx context.Context, args ...string) ([]byte, erro
 func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error) {
 	abs, err := filepath.Abs(spec.Workdir)
 	if err != nil {
-		return -1, fmt.Errorf("resolve workdir: %w", err)
+		return -1, fmt.Errorf("%w: resolve workdir: %w", ErrLaunch, err)
 	}
 	// egress policy: none -> no network; proxy -> sidecar on an internal net.
 	netArgs, teardown, err := c.setupEgress(ctx, spec)
 	if err != nil {
-		return -1, err
+		return -1, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
 	if teardown != nil {
 		defer teardown()
@@ -143,7 +151,7 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 	for _, m := range spec.Mounts {
 		mh, err := filepath.Abs(m.Host)
 		if err != nil {
-			return -1, fmt.Errorf("resolve mount %s: %w", m.Host, err)
+			return -1, fmt.Errorf("%w: resolve mount %s: %w", ErrLaunch, m.Host, err)
 		}
 		v := mh + ":" + m.Container
 		if m.ReadOnly {
@@ -166,19 +174,24 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
 
-	switch err := cmd.Run(); {
-	case err == nil:
+	err = cmd.Run()
+	if err == nil {
 		return 0, nil
-	case isExit(err):
-		return err.(*exec.ExitError).ExitCode(), nil // ran; non-zero exit is the agent's
-	default:
-		return -1, fmt.Errorf("%s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", c.bin, err)
 	}
+	if e, ok := asExitError(err); ok {
+		return e.ExitCode(), nil // ran; non-zero exit is the agent's
+	}
+	return -1, fmt.Errorf("%s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", c.bin, err)
 }
 
-func isExit(err error) bool {
+// asExitError extracts a *exec.ExitError from err. cmd.Cancel/WaitDelay above
+// can wrap the exit error inside another error (e.g. on ctx cancel racing the
+// process exit), so this must use errors.As -- a bare `err.(*exec.ExitError)`
+// type assertion panics on exactly that wrapped case.
+func asExitError(err error) (*exec.ExitError, bool) {
 	var e *exec.ExitError
-	return errors.As(err, &e)
+	ok := errors.As(err, &e)
+	return e, ok
 }
 
 // sortedEnv renders the env map as sorted KEY=VALUE entries (stable argv).
