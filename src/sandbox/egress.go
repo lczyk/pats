@@ -25,20 +25,27 @@ const proxyRepo = "ghcr.io/lczyk/pats/egress-proxy"
 // the binary, so `latest` could be a mismatched newer proxy. if the version
 // isn't a clean release (dev/dirty/unset -> no image was published for it), fall
 // back to `latest` and return a warning; the caller logs it once.
+//
+// the version arrives in either shape: bare (0.7.1) from the VERSION file
+// fallback, or `v`-prefixed (v0.7.1) when the toolchain stamped a module
+// version into the binary, which it does for every `go install module@version`
+// build. strip the prefix before testing, or release installs -- the ones that
+// most need a matching proxy -- would be the only ones never to pin.
 func ProxyImage(configured string) (image, warn string) {
 	if configured != "" {
 		return configured, ""
 	}
-	v := version.Info.Version
+	v := strings.TrimPrefix(version.Info.Version, "v")
 	if !releaseVersion(v) {
-		return proxyRepo + ":latest", fmt.Sprintf("pats version %q is not a release; using egress-proxy:latest, which may not match this build (set a sandbox proxy-image to pin)", v)
+		return proxyRepo + ":latest", fmt.Sprintf("pats version %q is not a release; using egress-proxy:latest, which may not match this build (set a sandbox proxy-image to pin)", version.Info.Version)
 	}
 	return proxyRepo + ":v" + v, ""
 }
 
 // releaseVersion reports whether v is a bare X.Y.Z (digits only) -- the shape
 // that has a published `v<version>` image. anything else (empty, a dev/dirty
-// suffix, a pre-release) has none, so we fall back to latest.
+// suffix, a pre-release) has none, so we fall back to latest. callers pass the
+// version with any leading `v` already stripped.
 func releaseVersion(v string) bool {
 	parts := strings.Split(v, ".")
 	if len(parts) != 3 {
