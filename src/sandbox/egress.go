@@ -26,7 +26,7 @@ const proxyRepo = "ghcr.io/lczyk/pats/egress-proxy"
 // isn't a clean release (dev/dirty/unset -> no image was published for it), fall
 // back to `latest` and return a warning; the caller logs it once.
 //
-// the version arrives in either shape: bare (0.7.1) from the VERSION file
+// the version arrives in either shape: bare (0.7.2) from the VERSION file
 // fallback, or `v`-prefixed (v0.7.1) when the toolchain stamped a module
 // version into the binary, which it does for every `go install module@version`
 // build. strip the prefix before testing, or release installs -- the ones that

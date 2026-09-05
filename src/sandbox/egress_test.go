@@ -229,7 +229,7 @@ func TestProxyImagePinsEveryVersionShape(t *testing.T) {
 		warns   bool
 	}{
 		{"module stamp", "v0.7.1", pinned, false},
-		{"version file fallback", "0.7.1", pinned, false},
+		{"version file fallback", "0.7.2", pinned, false},
 		{"dirty", "v0.7.1-dirty", latest, true},
 		{"pre-release", "0.8.0-rc1", latest, true},
 		{"devel", "(devel)", latest, true},
