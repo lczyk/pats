@@ -1,0 +1,84 @@
+package eval
+
+import (
+	"context"
+	"errors"
+	"io"
+	"maps"
+	"time"
+
+	"github.com/lczyk/pats/internal/agent"
+	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/src/sandbox"
+)
+
+// harness is one agent invocation wired into a sandbox: the box, the spec
+// (argv, env, mounts, egress) and the writable HOME its creds were copied
+// into. the HOME lives until cleanup, so a caller can seed it before run and
+// read it back after.
+type harness struct {
+	box     sandbox.Sandbox
+	spec    sandbox.Spec
+	homeDir string // host side of homeMount
+	cleanup func()
+}
+
+// newHarness resolves agent a into sandbox sb. promptFile is the prompt's name
+// inside workDir (the agent reads it at WorkMount/promptFile); auditPath ""
+// turns the egress audit log off; label prefixes the no-creds warning.
+func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, promptFile, auditPath, label string) (*harness, error) {
+	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
+	if err != nil {
+		return nil, err
+	}
+	env := agent.Env(a, sandbox.WorkMount+"/"+promptFile, sandbox.WorkMount)
+	cenv, hasToken := agent.CredEnv(a.Kind)
+	maps.Copy(env, cenv) // forward host creds to any task-running agent
+
+	hs, err := harnessHome(opts, label, a.Kind, env, hasToken)
+	if err != nil {
+		return nil, err
+	}
+	spec, err := agent.Spec(a, workDir, env)
+	if err != nil {
+		hs.cleanup()
+		return nil, err
+	}
+	spec.Mounts = hs.mounts
+	spec.Egress = egressFor(sb, a.Kind, auditPath)
+	return &harness{box: box, spec: spec, homeDir: hs.dir, cleanup: hs.cleanup}, nil
+}
+
+// harnessRun is the outcome of one harness.run.
+type harnessRun struct {
+	code     int
+	err      error // launch / driver failure; nil on a plain non-zero exit
+	timedOut bool
+	dur      float64 // seconds
+}
+
+// run executes the harness, bounded by timeout (0 = none) so a stuck agent
+// gets killed rather than hanging the caller. ctx cancel tears down the
+// container (same path as ctrl+C).
+func (h *harness) run(ctx context.Context, stdout, stderr io.Writer, timeout time.Duration) harnessRun {
+	rctx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		rctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	t0 := time.Now()
+	code, err := h.box.Run(rctx, h.spec, stdout, stderr)
+	dur := time.Since(t0).Seconds()
+
+	// decide timeout from rctx.Err(), not err: on deadline the sandbox
+	// SIGTERMs the container, which exits non-zero (143) -- sandbox.container.Run
+	// maps any *exec.ExitError to (code, nil), so err is nil on a timed-out
+	// run too. ctrl+C (context.Canceled on the parent ctx) is not a timeout.
+	// the one exception is a launch failure: sandbox setup (egress in
+	// particular) runs under the same deadline, so a slow setup can fail *and*
+	// leave rctx expired -- that's an error with nothing to collect, not a
+	// timed-out agent, and the real cause belongs in the metadata.
+	timedOut := errors.Is(rctx.Err(), context.DeadlineExceeded) && !errors.Is(err, sandbox.ErrLaunch)
+	return harnessRun{code: code, err: err, timedOut: timedOut, dur: dur}
+}

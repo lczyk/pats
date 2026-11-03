@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -290,10 +289,6 @@ func runPair(
 		return err
 	}
 	sb := sandboxes[sbID]
-	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
-	if err != nil {
-		return err
-	}
 
 	// host-side env for prepare/collect scripts (they run in the project dir
 	// and seed/gather the sandbox via these paths).
@@ -306,18 +301,14 @@ func runPair(
 		"PATS_OUTPUT_DIR": outDir,
 	}
 
-	env := agent.Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount)
-	cenv, hasToken := agent.CredEnv(a.Kind)
-	maps.Copy(env, cenv) // forward host creds to any task-running agent
-
 	// every agent is a harness: give it a writable HOME + wire creds. this
 	// precedes prepare so prepare can seed harness config into it.
-	hs, herr := harnessHome(opts, p, a.Kind, env, hasToken)
-	if herr != nil {
-		return herr
+	h, err := newHarness(opts, a, sb, workDir, "prompt.txt", filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
+	if err != nil {
+		return err
 	}
-	defer hs.cleanup()
-	hostEnv["PATS_AGENT_HOME"] = hs.dir
+	defer h.cleanup()
+	hostEnv["PATS_AGENT_HOME"] = h.homeDir
 
 	if t.Prepare != "" {
 		if err := runHost(opts, expandID(t.Prepare, t.ID), hostEnv); err != nil {
@@ -334,13 +325,6 @@ func runPair(
 		return err
 	}
 
-	spec, err := agent.Spec(a, workDir, env)
-	if err != nil {
-		return err
-	}
-	spec.Mounts = hs.mounts
-	spec.Egress = egressFor(sb, a.Kind, filepath.Join(outDir, "egress.log"))
-
 	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
 	if err != nil {
 		return err
@@ -356,45 +340,24 @@ func runPair(
 	// the in-run counters (out lines + per-kind tool parse) -- the full
 	// stdout.log is still written intact. stat is never nil (see doc comment).
 	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Kind)})
-	// bound the agent run with the configured timeout (0 = none) so a stuck pair
-	// gets killed rather than hanging the whole run. ctx cancel tears down the
-	// container (same path as ctrl+C).
-	rctx := ctx
-	if to := t.TimeoutDuration(); to > 0 {
-		var cancel context.CancelFunc
-		rctx, cancel = context.WithTimeout(ctx, to)
-		defer cancel()
-	}
-	t0 := time.Now()
-	code, runErr := box.Run(rctx, spec, stdoutW, stderrF)
-	dur := time.Since(t0).Seconds()
-
-	// decide timeout from rctx.Err(), not runErr: on deadline the sandbox
-	// SIGTERMs the container, which exits non-zero (143) -- sandbox.container.Run
-	// maps any *exec.ExitError to (code, nil), so runErr is nil on a timed-out
-	// pair too. ctrl+C (context.Canceled on the parent ctx) is not a timeout.
-	// the one exception is a launch failure: sandbox setup (egress in
-	// particular) runs under the same deadline, so a slow setup can fail *and*
-	// leave rctx expired -- that's an error with nothing to collect, not a
-	// timed-out agent, and the real cause belongs in the metadata.
-	timedOut := errors.Is(rctx.Err(), context.DeadlineExceeded) && !errors.Is(runErr, sandbox.ErrLaunch)
+	r := h.run(ctx, stdoutW, stderrF, t.TimeoutDuration())
 	status, errStr := "ok", ""
 	switch {
-	case timedOut:
+	case r.timedOut:
 		status, errStr = "timeout", fmt.Sprintf("timed out after %s", t.TimeoutDuration())
-	case runErr != nil:
-		status, errStr = "error", runErr.Error()
-	case code != 0:
+	case r.err != nil:
+		status, errStr = "error", r.err.Error()
+	case r.code != 0:
 		status = "nonzero"
 	}
 
 	lg := logw{opts.Out, opts.Color}
 
 	// collect when the agent ran and left something to gather: either it
-	// finished (runErr == nil) or it timed out mid-run (timedOut) -- either way
-	// the container produced files. a launch failure (runErr != nil, !timedOut)
+	// finished (r.err == nil) or it timed out mid-run -- either way the
+	// container produced files. a launch failure (r.err != nil, !timedOut)
 	// left nothing to collect.
-	if (runErr == nil || timedOut) && t.Collect != "" {
+	if (r.err == nil || r.timedOut) && t.Collect != "" {
 		if err := runHost(opts, expandID(t.Collect, t.ID), hostEnv); err != nil {
 			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
 		}
@@ -408,7 +371,7 @@ func runPair(
 	meta := pairMeta{
 		Agent: p.Agent, Task: p.Task,
 		Sandbox: sbID, Image: sb.Image,
-		ExitCode: code, DurationS: round2(dur), Status: status, Error: errStr,
+		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
 		PatsVersion: version.Info.Version, DeniedEgress: denied,
 		Summary: summarize(a.Kind, filepath.Join(outDir, "stdout.log")),
 	}
@@ -422,7 +385,7 @@ func runPair(
 		atomic.StoreInt32(&stat.netSeen, 1)
 	}
 	// line 1: the verdict (level by status). line 2: the stats, indented under it.
-	statusLine := fmt.Sprintf("[%s x %s] %s (exit %d, %.1fs)", p.Agent, p.Task, status, code, dur)
+	statusLine := fmt.Sprintf("[%s x %s] %s (exit %d, %.1fs)", p.Agent, p.Task, status, r.code, r.dur)
 	switch status {
 	case "ok":
 		lg.info("%s", statusLine)
@@ -460,7 +423,8 @@ type harnessSetup struct {
 // copies its file-based credentials when present, and warns when no supported
 // credential source is available. copies are writable for token refreshes but
 // discarded after the invocation; pats never modifies the host credential file.
-func harnessHome(opts Options, p config.TestPair, kind string, env map[string]string, hasToken bool) (harnessSetup, error) {
+// label ("agent x task") prefixes the warning.
+func harnessHome(opts Options, label, kind string, env map[string]string, hasToken bool) (harnessSetup, error) {
 	homeDir, err := sandbox.MkTemp("pats-home-")
 	if err != nil {
 		return harnessSetup{}, err
@@ -482,7 +446,7 @@ func harnessHome(opts Options, p config.TestPair, kind string, env map[string]st
 		hasCreds = true
 	}
 	if !hasCreds {
-		logw{opts.Out, opts.Color}.warn("[%s x %s] no creds forwarded (expected %s); the harness may fail on auth", p.Agent, p.Task, agent.CredentialHint(kind))
+		logw{opts.Out, opts.Color}.warn("[%s] no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(kind))
 	}
 	return harnessSetup{
 		dir:     homeDir,

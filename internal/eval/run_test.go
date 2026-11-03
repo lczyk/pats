@@ -536,7 +536,7 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 
 	var out bytes.Buffer
 	env := map[string]string{}
-	hs, err := harnessHome(Options{Out: &out}, config.TestPair{Agent: "codex", Task: "t"}, "codex-cli-keyless", env, false)
+	hs, err := harnessHome(Options{Out: &out}, "codex x t", "codex-cli-keyless", env, false)
 	require.NoError(t, err)
 	defer hs.cleanup()
 	require.Equal(t, len(hs.mounts), 1)

@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
@@ -49,10 +47,6 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	sb := sandboxes[sbID]
-	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
-	if err != nil {
-		return err
-	}
 
 	workDir, err := sandbox.MkTemp("pats-preflight-")
 	if err != nil {
@@ -63,33 +57,20 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 
-	env := agent.Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount)
-	cenv, hasToken := agent.CredEnv(a.Kind)
-	maps.Copy(env, cenv)
-
-	hs, err := harnessHome(opts, config.TestPair{Agent: a.ID, Task: "preflight"}, a.Kind, env, hasToken)
+	// same egress policy as real runs (no audit).
+	h, err := newHarness(opts, a, sb, workDir, "prompt.txt", "", a.ID+" x preflight")
 	if err != nil {
 		return err
 	}
-	defer hs.cleanup()
-
-	spec, err := agent.Spec(a, workDir, env)
-	if err != nil {
-		return err
-	}
-	spec.Mounts = hs.mounts
-	spec.Egress = egressFor(sb, a.Kind, "") // same egress policy as real runs (no audit)
-
-	cctx, cancel := context.WithTimeout(ctx, preflightTimeout)
-	defer cancel()
+	defer h.cleanup()
 
 	var buf bytes.Buffer
-	code, runErr := box.Run(cctx, spec, &buf, &buf)
-	if runErr != nil {
-		return fmt.Errorf("%w\n%s", runErr, tail(buf.String(), 600))
+	r := h.run(ctx, &buf, &buf, preflightTimeout)
+	if r.err != nil {
+		return fmt.Errorf("%w\n%s", r.err, tail(buf.String(), 600))
 	}
-	if code != 0 {
-		return fmt.Errorf("harness exited %d (likely bad/expired creds)\n%s", code, tail(buf.String(), 600))
+	if r.code != 0 {
+		return fmt.Errorf("harness exited %d (likely bad/expired creds)\n%s", r.code, tail(buf.String(), 600))
 	}
 	return nil
 }
