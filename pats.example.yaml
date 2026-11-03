@@ -100,11 +100,14 @@ agents:
 # tasks -- a scenario handed to a harness agent. these test readme-authorship.
 # prepare/collect/prompt run a file directly (no shell): the value is tokenised
 # (posix quoting, no $-expansion or globbing) and argv[0] is exec'd with the rest
-# as args. they get PATS_*_ID + PATS_WORKDIR/OUTPUT_DIR in env, and ${id} -> the
-# task id.
+# as args. they get PATS_*_ID + PATS_WORKDIR/AGENT_HOME/OUTPUT_DIR in env, and
+# ${id} -> the task id. those are host paths. in the sandbox the workdir is
+# /workspace (the agent's cwd) and the agent home is /pats-home ($HOME).
 #   prompt  -- the instruction the agent acts on: an executable file (its stdout
 #              is the prompt), a plain file (its contents), or literal text.
 #   prepare -- seed the sandbox before the agent runs (ground truth, fixtures).
+#              PATS_AGENT_HOME is the agent's HOME, creds already in: seed harness
+#              config (settings, hooks, instructions) there.
 #   collect -- gather the outputs to score after the agent finishes.
 #   timeout -- per-pair wall-clock limit (e.g. 15m); default 10m, "0" = never.
 tasks:
