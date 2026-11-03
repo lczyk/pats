@@ -306,6 +306,19 @@ func runPair(
 		"PATS_OUTPUT_DIR": outDir,
 	}
 
+	env := agent.Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount)
+	cenv, hasToken := agent.CredEnv(a.Kind)
+	maps.Copy(env, cenv) // forward host creds to any task-running agent
+
+	// every agent is a harness: give it a writable HOME + wire creds. this
+	// precedes prepare so prepare can seed harness config into it.
+	hs, herr := harnessHome(opts, p, a.Kind, env, hasToken)
+	if herr != nil {
+		return herr
+	}
+	defer hs.cleanup()
+	hostEnv["PATS_AGENT_HOME"] = hs.dir
+
 	if t.Prepare != "" {
 		if err := runHost(opts, expandID(t.Prepare, t.ID), hostEnv); err != nil {
 			return fmt.Errorf("prepare: %w", err)
@@ -320,17 +333,6 @@ func runPair(
 	if err := os.WriteFile(filepath.Join(workDir, "prompt.txt"), promptData, 0o644); err != nil {
 		return err
 	}
-
-	env := agent.Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount)
-	cenv, hasToken := agent.CredEnv(a.Kind)
-	maps.Copy(env, cenv) // forward host creds to any task-running agent
-
-	// every agent is a harness: give it a writable HOME + wire creds.
-	hs, herr := harnessHome(opts, p, a.Kind, env, hasToken)
-	if herr != nil {
-		return herr
-	}
-	defer hs.cleanup()
 
 	spec, err := agent.Spec(a, workDir, env)
 	if err != nil {
@@ -449,6 +451,7 @@ func runPair(
 const homeMount = "/pats-home"
 
 type harnessSetup struct {
+	dir     string // host side of homeMount
 	mounts  []sandbox.Mount
 	cleanup func()
 }
@@ -482,6 +485,7 @@ func harnessHome(opts Options, p config.TestPair, kind string, env map[string]st
 		logw{opts.Out, opts.Color}.warn("[%s x %s] no creds forwarded (expected %s); the harness may fail on auth", p.Agent, p.Task, agent.CredentialHint(kind))
 	}
 	return harnessSetup{
+		dir:     homeDir,
 		mounts:  []sandbox.Mount{{Host: homeDir, Container: homeMount}},
 		cleanup: func() { os.RemoveAll(homeDir) },
 	}, nil

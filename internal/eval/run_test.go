@@ -227,6 +227,8 @@ type fakeSandbox struct {
 	// timeout firing) before returning code/err -- simulates a task that's
 	// still running when the deadline hits, real docker's SIGTERM-then-exit.
 	blockUntilDone bool
+	// onRun, if set, sees the pair run's spec while its mounts still exist.
+	onRun func(spec sandbox.Spec)
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -234,6 +236,9 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr
 	// canned outcome lands on the real pair run.
 	if f.calls++; f.calls == 1 {
 		return 0, nil
+	}
+	if f.onRun != nil {
+		f.onRun(spec)
 	}
 	if f.blockUntilDone {
 		<-ctx.Done()
@@ -403,6 +408,86 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
 	assert.That(t, os.IsNotExist(err), "collect must not run when the sandbox never launched")
+}
+
+func homeMountHost(spec sandbox.Spec) string {
+	for _, m := range spec.Mounts {
+		if m.Container == homeMount {
+			return m.Host
+		}
+	}
+	return ""
+}
+
+// prepare seeds harness config into the sandbox HOME via PATS_AGENT_HOME, the agent
+// sees it, collect can read back what the agent left there, and the HOME is
+// gone once the pair is done.
+func TestRunPairPrepareSeedsHome(t *testing.T) {
+	var home string
+	var seeded []byte
+	fake := &fakeSandbox{onRun: func(spec sandbox.Spec) {
+		home = homeMountHost(spec)
+		seeded, _ = os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+		_ = os.WriteFile(filepath.Join(home, "agent-wrote"), []byte("x"), 0o644)
+	}}
+	old := newSandbox
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prepare.sh"),
+		[]byte("#!/bin/sh\nmkdir -p \"$PATS_AGENT_HOME/.claude\" && echo seeded > \"$PATS_AGENT_HOME/.claude/settings.json\"\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
+		[]byte("#!/bin/sh\ncp \"$PATS_AGENT_HOME/agent-wrote\" \"$PATS_OUTPUT_DIR/\"\n"), 0o755))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Prepare: "prepare.sh", Collect: "collect.sh"}},
+		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+
+	require.That(t, home != "", "pair run has no HOME mount")
+	assert.Equal(t, string(seeded), "seeded\n")
+	_, err = os.Stat(filepath.Join(runDir, "a", "t", "agent-wrote"))
+	assert.NoError(t, err)
+	_, err = os.Stat(home)
+	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after the pair")
+}
+
+// a failing prepare still tears down the HOME it was handed.
+func TestRunPairPrepareFailureCleansHome(t *testing.T) {
+	old := newSandbox
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return &fakeSandbox{}, nil }
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prepare.sh"),
+		[]byte("#!/bin/sh\nprintf %s \"$PATS_AGENT_HOME\" > \"$PATS_OUTPUT_DIR/home-path\"\nexit 1\n"), 0o755))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Prepare: "prepare.sh"}},
+		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	runDir, _ := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+
+	home, err := os.ReadFile(filepath.Join(runDir, "a", "t", "home-path"))
+	require.NoError(t, err)
+	require.That(t, len(home) > 0, "prepare saw an empty PATS_AGENT_HOME")
+	_, err = os.Stat(string(home))
+	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after a failed prepare")
 }
 
 // COVER: a vectors-only config (no suites) is deliberately allowed by Validate
