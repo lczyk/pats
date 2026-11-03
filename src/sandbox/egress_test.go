@@ -219,7 +219,8 @@ func TestProxyImagePinsEveryVersionShape(t *testing.T) {
 	saved := version.Info
 	t.Cleanup(func() { version.Info = saved })
 
-	const pinned = proxyRepo + ":v0.7.1"
+	// a made-up version, so a release bump of the real one never rewrites it.
+	const pinned = proxyRepo + ":v1.2.3"
 	const latest = proxyRepo + ":latest"
 
 	for _, tc := range []struct {
@@ -228,9 +229,9 @@ func TestProxyImagePinsEveryVersionShape(t *testing.T) {
 		image   string
 		warns   bool
 	}{
-		{"module stamp", "v0.7.1", pinned, false},
-		{"version file fallback", "0.7.2", pinned, false},
-		{"dirty", "v0.7.1-dirty", latest, true},
+		{"module stamp", "v1.2.3", pinned, false},
+		{"version file fallback", "1.2.3", pinned, false},
+		{"dirty", "v1.2.3-dirty", latest, true},
 		{"pre-release", "0.8.0-rc1", latest, true},
 		{"devel", "(devel)", latest, true},
 		{"unset", "", latest, true},
