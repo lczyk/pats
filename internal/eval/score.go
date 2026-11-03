@@ -2,6 +2,7 @@ package eval
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,11 +133,20 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 
 	// same bounded-worker-pool pattern as Run: buffered per-job output emitted
 	// atomically on completion so concurrent progress/log writes don't interleave.
+	ctx := context.Background()
 	sem := make(chan struct{}, njobs)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var cells []ScoreCell
 	for _, j := range jobs {
+		if ctx.Err() != nil {
+			if bar != nil {
+				bar.log(lg.line(lvWarn, "interrupted -- stopping"))
+			} else {
+				lg.warn("interrupted -- stopping")
+			}
+			break
+		}
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(j scoreJob) {
@@ -154,7 +164,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 				bar.start(label, &pairStat{}, "", false)
 			}
 
-			score, serr := runScorer(po, j.sc, j.outDir, j.agent, j.task, agents[j.agent])
+			score, serr := runScorer(ctx, po, j.sc, j.outDir, j.agent, j.task, agents[j.agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
 				jlg.info("[%s x %s] %s = n/a", j.agent, j.task, j.sc.ID)
@@ -225,8 +235,8 @@ type agentInfo struct {
 
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
 // file scorers exec directly on the host (trusted user scripts); the shebang
-// picks the interpreter. agent scorers pending.
-func runScorer(opts ScoreOptions, sc config.Scorer, outDir, agent, task string, info agentInfo) (float64, error) {
+// picks the interpreter. agent scorers pending (they will run under ctx).
+func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, outDir, agent, task string, info agentInfo) (float64, error) {
 	switch sc.Kind {
 	case "":
 		cmd, err := commandFor(opts.ConfigDir, sc.ExecFile(), map[string]string{
