@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/lczyk/pats/internal/config"
@@ -53,16 +52,16 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	defer os.RemoveAll(workDir)
-	if err := os.WriteFile(filepath.Join(workDir, "prompt.txt"), []byte(preflightPrompt), 0o644); err != nil {
-		return err
-	}
 
 	// same egress policy as real runs (no audit).
-	h, err := newHarness(opts, a, sb, workDir, "prompt.txt", "", a.ID+" x preflight")
+	h, err := newHarness(opts, a, sb, workDir, "", a.ID+" x preflight")
 	if err != nil {
 		return err
 	}
 	defer h.cleanup()
+	if err := os.WriteFile(h.promptPath(), []byte(preflightPrompt), 0o644); err != nil {
+		return err
+	}
 
 	var buf bytes.Buffer
 	r := h.run(ctx, &buf, &buf, preflightTimeout)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"path/filepath"
 	"time"
 
 	"github.com/lczyk/pats/internal/agent"
@@ -23,15 +24,20 @@ type harness struct {
 	cleanup func()
 }
 
-// newHarness resolves agent a into sandbox sb. promptFile is the prompt's name
-// inside workDir (the agent reads it at WorkMount/promptFile); auditPath ""
-// turns the egress audit log off; label prefixes the no-creds warning.
-func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, promptFile, auditPath, label string) (*harness, error) {
+// promptName is the prompt file's name inside the harness HOME. it lives there,
+// not in the workdir, so the agent's cwd holds only what prepare put in it: a
+// stray prompt.txt next to the fixture gets noticed and commented on.
+const promptName = "prompt.txt"
+
+// newHarness resolves agent a into sandbox sb. the caller writes the prompt to
+// promptPath() before run; auditPath "" turns the egress audit log off; label
+// prefixes the no-creds warning.
+func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, auditPath, label string) (*harness, error) {
 	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
 	if err != nil {
 		return nil, err
 	}
-	env := agent.Env(a, sandbox.WorkMount+"/"+promptFile, sandbox.WorkMount)
+	env := agent.Env(a, homeMount+"/"+promptName, sandbox.WorkMount)
 	cenv, hasToken := agent.CredEnv(a.Kind)
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 
@@ -48,6 +54,9 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, prompt
 	spec.Egress = egressFor(sb, a.Kind, auditPath)
 	return &harness{box: box, spec: spec, homeDir: hs.dir, cleanup: hs.cleanup}, nil
 }
+
+// promptPath is the host path the prompt must be written to before run.
+func (h *harness) promptPath() string { return filepath.Join(h.homeDir, promptName) }
 
 // harnessRun is the outcome of one harness.run.
 type harnessRun struct {

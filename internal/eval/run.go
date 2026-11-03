@@ -303,7 +303,7 @@ func runPair(
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
 	// precedes prepare so prepare can seed harness config into it.
-	h, err := newHarness(opts, a, sb, workDir, "prompt.txt", filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
+	h, err := newHarness(opts, a, sb, workDir, filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
 	if err != nil {
 		return err
 	}
@@ -316,12 +316,11 @@ func runPair(
 		}
 	}
 
-	// stage the prompt into the workdir so the agent sees it at a stable path.
 	promptData, err := resolvePrompt(opts.ConfigDir, t.ResolvedPrompt(), hostEnv)
 	if err != nil {
 		return fmt.Errorf("resolve prompt: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "prompt.txt"), promptData, 0o644); err != nil {
+	if err := os.WriteFile(h.promptPath(), promptData, 0o644); err != nil {
 		return err
 	}
 

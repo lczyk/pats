@@ -461,6 +461,41 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after the pair")
 }
 
+// the prompt is staged in the harness HOME, never in the workdir the agent
+// sees as its cwd.
+func TestRunPairPromptOutsideWorkdir(t *testing.T) {
+	var promptFile, staged string
+	var inWorkdir bool
+	fake := &fakeSandbox{onRun: func(spec sandbox.Spec) {
+		promptFile = spec.Env["PATS_PROMPT_FILE"]
+		data, _ := os.ReadFile(filepath.Join(homeMountHost(spec), promptName))
+		staged = string(data)
+		_, err := os.Stat(filepath.Join(spec.Workdir, promptName))
+		inWorkdir = err == nil
+	}}
+	old := newSandbox
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("do the thing"), 0o644))
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
+		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+
+	assert.Equal(t, promptFile, homeMount+"/"+promptName)
+	assert.Equal(t, staged, "do the thing")
+	assert.That(t, !inWorkdir, "prompt staged in the workdir")
+}
+
 // a failing prepare still tears down the HOME it was handed.
 func TestRunPairPrepareFailureCleansHome(t *testing.T) {
 	old := newSandbox
