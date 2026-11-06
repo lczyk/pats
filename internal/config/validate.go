@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -231,36 +233,55 @@ func (c *Config) ResolveSandbox(a Agent) (string, error) {
 
 func (c *Config) validateTasks(add func(string, ...any)) {
 	for _, t := range c.Tasks {
-		if t.Prompt == "" {
-			add("task %q: prompt is required", t.ID)
+		if t.Prompt == "" && t.PromptFile == "" && t.PromptCmd == "" {
+			add("task %q: needs one of prompt, prompt-file or prompt-cmd", t.ID)
 		}
 		if t.Timeout != "" {
 			if _, err := time.ParseDuration(t.Timeout); err != nil {
 				add("task %q: bad timeout %q (use e.g. 10m, 300s)", t.ID, t.Timeout)
 			}
 		}
+		names := make([]string, 0, len(t.Env))
+		for k := range t.Env {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, k := range names {
+			switch {
+			case !envName.MatchString(k):
+				add("task %q: env %q is not a valid variable name", t.ID, k)
+			case strings.HasPrefix(k, "PATS_"):
+				add("task %q: env %q: PATS_* is reserved for pats", t.ID, k)
+			case k == "PATH":
+				add("task %q: env PATH is set by pats (bin/ is prepended to it)", t.ID)
+			}
+		}
 	}
 }
 
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func (c *Config) validateScorers(add func(string, ...any)) {
 	for _, s := range c.Scorers {
+		script := s.Score != "" || s.ScoreCmd != ""
+		prompt := s.Prompt != "" || s.PromptFile != "" || s.PromptCmd != ""
 		switch {
-		case s.Score != "" && s.AgentID != "":
-			add("scorer %q: score and agent-id are mutually exclusive (a file scorer or an agent scorer, not both)", s.ID)
-		case s.Score != "":
-			if s.Prompt != "" {
-				add("scorer %q: prompt is an agent-scorer field -- remove it, or replace score with agent-id", s.ID)
+		case script && s.IsAgent():
+			add("scorer %q: score / score-cmd and agent are mutually exclusive (a script scorer or an agent scorer, not both)", s.ID)
+		case script:
+			if prompt {
+				add("scorer %q: a prompt is an agent-scorer field -- remove it, or replace the score with agent", s.ID)
 			}
-		case s.AgentID != "":
+		case s.IsAgent():
 			add("scorer %q: agent scorers are not implemented yet", s.ID)
-			if _, err := c.One("agent", s.AgentID); err != nil {
-				add("scorer %q: agent-id: %v", s.ID, err)
+			if _, err := c.One("agent", s.Agent); err != nil {
+				add("scorer %q: agent: %v", s.ID, err)
 			}
-			if s.Prompt == "" {
-				add("scorer %q: an agent scorer needs a prompt", s.ID)
+			if !prompt {
+				add("scorer %q: an agent scorer needs one of prompt, prompt-file or prompt-cmd", s.ID)
 			}
 		default:
-			add("scorer %q: needs a score script or an agent-id", s.ID)
+			add("scorer %q: needs score, score-cmd or agent", s.ID)
 		}
 	}
 }
@@ -268,7 +289,7 @@ func (c *Config) validateScorers(add func(string, ...any)) {
 // validateSuites checks suite well-formedness (required axes) and that no
 // item is orphaned -- a task/scorer/agent in no suite would silently never
 // run, which is exactly the forgetting the explicit lists invite. exemption:
-// an agent referenced by a scorer's agent-id legitimately lives outside every
+// an agent referenced by a scorer's agent legitimately lives outside every
 // suite (it judges, it isn't judged).
 func (c *Config) validateSuites(add func(string, ...any)) {
 	agentSets, taskSets, scorerSets := c.sets("agent"), c.sets("task"), c.sets("scorer")
@@ -291,13 +312,13 @@ func (c *Config) validateSuites(add func(string, ...any)) {
 
 	judges := map[string]bool{}
 	for _, sc := range c.Scorers {
-		for _, id := range agentSets[sc.AgentID] {
+		for _, id := range agentSets[sc.Agent] {
 			judges[id] = true
 		}
 	}
 	for _, a := range c.Agents {
 		if !inAgents[a.ID] && !judges[a.ID] {
-			add("agent %q is in no suite -- it would never run (add it to a suite, or reference it from a scorer's agent-id)", a.ID)
+			add("agent %q is in no suite -- it would never run (add it to a suite, or reference it from a scorer's agent)", a.ID)
 		}
 	}
 	for _, t := range c.Tasks {

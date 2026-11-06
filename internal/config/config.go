@@ -3,12 +3,14 @@
 // the file is a mapping of vectors. the key is the vector's id; a vector has a
 // `kind` (sandbox | agent | task | scorer | suite), optional `defaults` and
 // non-empty `items` keyed by id. an item inherits every default it does not
-// set; an explicit null unsets a field. see load.go for the merge and
+// set; an explicit null unsets a field. a task vector may instead name a `dir`
+// whose task.yaml files are its items. see load.go for the merge and
 // pats.example.yaml for the shape.
 package config
 
 import (
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -80,14 +82,24 @@ type Agent struct {
 	Effort  string `yaml:"effort"`  // optional reasoning effort (claude/copilot --effort; codex model_reasoning_effort; opencode --variant)
 }
 
-// Task is one scenario handed to a task-running agent.
+// Task is one scenario handed to a task-running agent. each run slot has an
+// inline form (content) and a -cmd form (a command line); the prompt also has
+// a -file form. Dir is where the task was defined, relative to the pats root:
+// "" for pats.yaml, the task's directory for a task.yaml. its paths resolve
+// and its scripts run there.
 type Task struct {
-	ID      string `yaml:"-"`
-	Vector  string `yaml:"-"`
-	Prompt  string `yaml:"prompt"`  // the instruction: exec a file, read a file, or the literal text (see resolvePrompt)
-	Prepare string `yaml:"prepare"` // seed the sandbox (optional)
-	Collect string `yaml:"collect"` // gather outputs (optional)
-	Timeout string `yaml:"timeout"` // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
+	ID         string            `yaml:"-"`
+	Vector     string            `yaml:"-"`
+	Dir        string            `yaml:"-"`
+	Prompt     string            `yaml:"prompt" tmpl:"-"`  // the instruction, literal
+	PromptFile string            `yaml:"prompt-file"`      // a file holding the instruction
+	PromptCmd  string            `yaml:"prompt-cmd"`       // a command printing the instruction; runs after prepare
+	Prepare    string            `yaml:"prepare" tmpl:"-"` // inline script seeding the sandbox
+	PrepareCmd string            `yaml:"prepare-cmd"`      // command seeding the sandbox
+	Collect    string            `yaml:"collect" tmpl:"-"` // inline script gathering outputs
+	CollectCmd string            `yaml:"collect-cmd"`      // command gathering outputs
+	Timeout    string            `yaml:"timeout"`          // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
+	Env        map[string]string `yaml:"env" tmpl:"-"`     // exported to the task's host scripts
 }
 
 // DefaultTimeout bounds an agent run when a task sets no timeout.
@@ -104,21 +116,24 @@ func (t Task) TimeoutDuration() time.Duration {
 	return d
 }
 
-// Scorer scores one aspect of a task's collected output, 0.0 - 1.0. a file
-// scorer sets `score`: pats execs it directly, its shebang picks the
-// interpreter + deps, exit 0 + first stdout line = float [0,1] or "na" (skip),
-// exit != 0 = failure. an agent scorer sets `agent-id` + `prompt` instead:
-// an agent judges the output.
+// Scorer scores one aspect of a task's collected output, 0.0 - 1.0. a script
+// scorer sets `score` (inline) or `score-cmd`: exit 0 + first stdout line =
+// float [0,1] or "na" (skip), exit != 0 = failure. an agent scorer sets
+// `agent` plus one of the prompt keys instead: an agent judges the output.
 type Scorer struct {
-	ID      string `yaml:"-"`
-	Vector  string `yaml:"-"`
-	Score   string `yaml:"score"`    // file scorer: the script to exec
-	AgentID string `yaml:"agent-id"` // agent scorer: the judging agent
-	Prompt  string `yaml:"prompt"`   // agent scorer: the judging instruction (see resolvePrompt)
+	ID         string `yaml:"-"`
+	Vector     string `yaml:"-"`
+	Dir        string `yaml:"-"`
+	Score      string `yaml:"score" tmpl:"-"` // inline scoring script
+	ScoreCmd   string `yaml:"score-cmd"`      // scoring command
+	Agent      string `yaml:"agent"`          // agent scorer: the judging agent
+	Prompt     string `yaml:"prompt" tmpl:"-"`
+	PromptFile string `yaml:"prompt-file"`
+	PromptCmd  string `yaml:"prompt-cmd"`
 }
 
 // IsAgent reports whether the scorer judges via an agent rather than a script.
-func (s Scorer) IsAgent() bool { return s.AgentID != "" }
+func (s Scorer) IsAgent() bool { return s.Agent != "" }
 
 // Suite is a named (agents, tasks, scorers) selection. both cross-products are
 // implied within it: run = agents x tasks, score = tasks x scorers. each axis
@@ -135,13 +150,14 @@ type Suite struct {
 // StrList accepts a yaml scalar or sequence and stores it as []string.
 type StrList []string
 
-// Load reads + parses a pats.yaml. it does not Validate.
+// Load reads + parses a pats.yaml; `dir` vectors resolve against its
+// directory. it does not Validate.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(data)
+	return ParseIn(filepath.Dir(path), data)
 }
 
 // Kinds lists the vector kinds, in the order the resolved config holds them.

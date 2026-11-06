@@ -49,7 +49,7 @@ func TestRunE2E(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt, collect: collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, collect-cmd: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -128,31 +128,31 @@ func TestResolveJobs(t *testing.T) {
 	}
 }
 
-func TestResolvePrompt(t *testing.T) {
-	dir := t.TempDir()
-	// plain file -> contents.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.txt"), []byte("from file\n"), 0o644))
-	got, err := resolvePrompt(dir, "p.txt", nil)
+func TestTaskPrompt(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "cases", "a")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.md"), []byte("from file\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gen.sh"),
+		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_ID $1 $(basename \"$PWD\")\"\n"), 0o755))
+
+	// literal text, verbatim -- quotes, apostrophes and ${...} included.
+	got, err := taskPrompt(root, dir, config.Task{Prompt: "it's ${not} a template"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "it's ${not} a template")
+
+	// prompt-file resolves against the task's dir.
+	got, err = taskPrompt(root, dir, config.Task{PromptFile: "p.md"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, string(got), "from file\n")
 
-	// executable file -> its stdout, with env + args passed through.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "gen.sh"),
-		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_ID $1 $PATS_ROOT\"\n"), 0o755))
-	got, err = resolvePrompt(dir, "gen.sh --flavour spicy", map[string]string{"PATS_TASK_ID": "t1"})
+	// prompt-cmd: stdout, run in the task's dir with env + args passed through.
+	got, err = taskPrompt(root, dir, config.Task{PromptCmd: "./gen.sh --flavour"}, map[string]string{"PATS_TASK_ID": "t1"})
 	require.NoError(t, err)
-	assert.Equal(t, string(got), "gen t1 --flavour "+dir+"\n")
+	assert.Equal(t, string(got), "gen t1 --flavour a\n")
 
-	// not a file -> the spec is the literal prompt (even with quotes/apostrophes).
-	got, err = resolvePrompt(dir, "just write a readme", nil)
-	require.NoError(t, err)
-	assert.Equal(t, string(got), "just write a readme")
-	got, err = resolvePrompt(dir, "it's a literal prompt", nil) // bad quoting -> literal
-	require.NoError(t, err)
-	assert.Equal(t, string(got), "it's a literal prompt")
-
-	// non-executable file named WITH args -> error, not a silent arg-drop.
-	_, err = resolvePrompt(dir, "p.txt --flag", nil)
+	// a missing prompt-file is an error, never a literal fallback.
+	_, err = taskPrompt(root, dir, config.Task{PromptFile: "nope.md"}, nil)
 	assert.Error(t, err, assert.AnyError)
 }
 
@@ -273,7 +273,7 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	for id := range fakes {
 		src += id + ": {sandbox: " + id + "}, "
 	}
-	src += "}}\nt: {kind: task, items: {t: {prompt: prompt.txt}}}\n"
+	src += "}}\nt: {kind: task, items: {t: {prompt-file: prompt.txt}}}\n"
 	src += "su: {kind: suite, items: {su: {agents: agents, tasks: t}}}\n"
 	cfg := parseCfg(t, src)
 
@@ -310,7 +310,7 @@ func TestRunPairTimeoutStatus(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt, timeout: 30ms}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -346,7 +346,7 @@ func TestRunPairCollectsOnTimeout(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt, timeout: 30ms, collect: collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect-cmd: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -392,7 +392,7 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt, timeout: 30ms, collect: collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect-cmd: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -443,7 +443,7 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt, prepare: prepare.sh, collect: collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, prepare-cmd: ./prepare.sh, collect-cmd: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -475,7 +475,7 @@ func TestRunDefaultSandboxImage(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -507,7 +507,7 @@ func TestRunPairPromptOutsideWorkdir(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -534,7 +534,7 @@ func TestRunPairPrepareFailureCleansHome(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: prompt.txt, prepare: prepare.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, prepare-cmd: ./prepare.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 

@@ -31,7 +31,7 @@ func TestScoreExec(t *testing.T) {
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1: ~, t2: ~}}
-scorers: {kind: scorer, items: {has-good: {score: has-good.sh}}}
+scorers: {kind: scorer, items: {has-good: {score-cmd: ./has-good.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: [t1, t2], scorers: [has-good]}}}
 `)
 
@@ -62,7 +62,7 @@ func TestScoreExecRunEnv(t *testing.T) {
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1: ~}}
-scorers: {kind: scorer, items: {run-env: {score: run-env.sh}}}
+scorers: {kind: scorer, items: {run-env: {score-cmd: ./run-env.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: [t1], scorers: [run-env]}}}
 `)
 	var out bytes.Buffer
@@ -86,7 +86,7 @@ func TestScorerEnvIncludesAgentKind(t *testing.T) {
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
-scorers: {kind: scorer, items: {check-harness: {score: check-harness.sh}}}
+scorers: {kind: scorer, items: {check-harness: {score-cmd: ./check-harness.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [check-harness]}}}
 `)
 
@@ -117,7 +117,7 @@ func TestScoreAutoJobsSkipsDocker(t *testing.T) {
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
-scorers: {kind: scorer, items: {one: {score: one.sh}}}
+scorers: {kind: scorer, items: {one: {score-cmd: ./one.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one]}}}
 `)
 
@@ -161,7 +161,7 @@ func TestScoreMultipleScorers(t *testing.T) {
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
-scorers: {kind: scorer, items: {one: {score: one.sh}, zero: {score: zero.sh}}}
+scorers: {kind: scorer, items: {one: {score-cmd: ./one.sh}, zero: {score-cmd: ./zero.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one, zero]}}}
 `)
 
@@ -287,7 +287,7 @@ func TestScoreAllRuns(t *testing.T) {
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
-scorers: {kind: scorer, items: {one: {score: one.sh}}}
+scorers: {kind: scorer, items: {one: {score-cmd: ./one.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one]}}}
 `)
 

@@ -85,6 +85,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		return nil, err
 	}
 	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.ID })
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
 	agents := map[string]agentInfo{}
 	for _, a := range cfg.Agents {
 		agents[a.ID] = agentInfo{model: a.Model, harness: a.Harness}
@@ -99,6 +100,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	type scoreJob struct {
 		agent, task string
 		outDir      string
+		taskDir     string
 		sc          config.Scorer
 	}
 	var jobs []scoreJob
@@ -112,7 +114,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			if sc.IsAgent() && !opts.Agentic {
 				continue // agentic scorers gated behind --agentic
 			}
-			jobs = append(jobs, scoreJob{tp.Agent, tp.Task, outDir, sc})
+			jobs = append(jobs, scoreJob{tp.Agent, tp.Task, outDir, filepath.Join(opts.ConfigDir, tasks[tp.Task].Dir), sc})
 		}
 	}
 
@@ -164,7 +166,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 				bar.start(label, &pairStat{}, "", false)
 			}
 
-			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.agent, j.task, agents[j.agent])
+			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.taskDir, j.agent, j.task, agents[j.agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
 				jlg.info("[%s x %s] %s = n/a", j.agent, j.task, j.sc.ID)
@@ -234,32 +236,27 @@ type agentInfo struct {
 }
 
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
-// file scorers exec directly on the host (trusted user scripts); the shebang
-// picks the interpreter. agent scorers pending (they will run under ctx).
-func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir, outDir, agent, task string, info agentInfo) (float64, error) {
+// script scorers run on the host (trusted user scripts) in the dir they were
+// defined in. agent scorers pending (they will run under ctx).
+func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir, outDir, taskDir, agent, task string, info agentInfo) (float64, error) {
 	if sc.IsAgent() {
 		return 0, fmt.Errorf("agent scorer not implemented yet")
 	}
-	cmd, err := commandFor(opts.ConfigDir, sc.Score, map[string]string{
+	out, err := step{sc.Score, sc.ScoreCmd, filepath.Join(opts.ConfigDir, sc.Dir)}.output(opts.ConfigDir, map[string]string{
 		"PATS_RUN_ID":        filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
 		"PATS_OUTPUT_DIR":    outDir,
+		"PATS_TASK_DIR":      taskDir,
 		"PATS_AGENT_ID":      agent,
 		"PATS_TASK_ID":       task,
 		"PATS_SCORER_ID":     sc.ID,
 		"PATS_MODEL":         info.model,
 		"PATS_AGENT_HARNESS": info.harness,
 	})
-	if err != nil {
-		return 0, err
+	if err != nil { // non-zero exit = failure
+		return 0, fmt.Errorf("run: %w", err)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil { // non-zero exit = failure
-		return 0, fmt.Errorf("run: %w%s", err, stderrTail(&stderr))
-	}
-	return parseScore(stdout.String())
+	return parseScore(string(out))
 }
 
 // parseScore reads a scorer's verdict from the first non-empty stdout line: a

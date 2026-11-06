@@ -1,180 +1,77 @@
-# pats.yaml is a mapping of vectors. the key is the vector's id; a vector has
-# a `kind` (sandbox | agent | task | scorer | suite), optional `defaults` and
-# non-empty `items` keyed by id. an item inherits every default it doesn't set
-# and overrides whole fields; an explicit null (`collect: ~`) unsets one. an
-# empty item (`curl:`, or `curl: ~` inside a flow mapping) inherits
-# everything. share defaults between vectors with a yaml anchor
-# (`defaults: &x {...}` / `defaults: {<<: *x, timeout: 5m}`).
-#
-# ids: one namespace per kind, holding that kind's vectors and items. an id
-# names a set of items -- a vector its items, an item itself -- and must name
-# exactly one set, so a vector may share its id with its sole item but not
-# with an unrelated item. a task and a scorer may share an id. no `/`, `$` or
-# whitespace in ids. a reference (a suite axis, `sandbox:`, `agent-id:`,
-# `-a` / `-t` / `-s`) takes a vector or item id of the right kind.
-#
-# templates: `${task}` / `${agent}` / `${scorer}` / `${sandbox}` expand to the
-# item's id in that kind's fields, `${vector}` to its vector's id, so a default
-# is a per-item template. any other `${x}` is a load error. inside a flow
-# mapping `{...}` quote a template -- `"scorers/${scorer}.sh"` -- else the `}`
-# closes the mapping.
+# pats.yaml is a mapping of vectors. the key is the vector's id. a vector has a `kind` (sandbox | agent | task | scorer | suite),
+# optional `defaults`, and `items` keyed by id. an item inherits every default it doesn't set, and `field: ~` unsets one.
+# ids are unique per kind. a reference (a suite axis, `sandbox:`, `-a` / `-t` / `-s`) takes a vector id or an item id.
+# in defaults and items, `${task}` / `${agent}` / `${scorer}` / `${sandbox}` expand to the item's id and `${vector}` to its vector's,
+# except inside inline content (a prompt, a script body, env). the readme has the full rules.
 
-# a sandbox names its image one of two ways (at most one):
-#   image: <ref>   -- use an existing image as-is
-#   build: <path>  -- a docker build context pats builds at run start: a dir
-#                     (with a Dockerfile) or a Dockerfile path, relative to
-#                     this file. the layer cache makes no-change rebuilds
-#                     cheap. if the context contains .pats/ (run artifacts)
-#                     and the dockerfile COPYs/ADDs from the context, the
-#                     effective .dockerignore must exclude it (a literal
-#                     `.pats/` line) or the run refuses to start. the build
-#                     gets PATS_SANDBOX=<the default image below> as a build
-#                     arg, for a dockerfile that derives from it.
-# neither -- the published pats sandbox (ubuntu + every harness cli), pinned
-# to this pats version: ghcr.io/lczyk/pats/sandbox:v<version>. name it under
-# image: to run another tag (:latest follows the newest stable release).
-# driver: docker (default) | podman | bwrap. bwrap (linux-only, no image) is
-# planned but not implemented yet -- it is rejected at validation.
 sandbox:
   kind: sandbox
   items:
     docker:
-      # egress -- outbound network policy (omit for open network). modes:
-      #   open       -- unrestricted (the default)
-      #   none       -- no network at all (--network none)
-      #   proxy      -- filtering sidecar: allow/deny by host + a per-pair audit
-      #                 log. the hosts the harness itself needs (inference api,
-      #                 token refresh) are merged into the allowlist for you.
-      #   mitm-proxy -- proxy, plus url-level rules: hosts named in deny-urls get
-      #                 their tls terminated with a per-run CA (the sandbox is
-      #                 given the CA to trust) so requests are filtered by full
-      #                 url; other hosts stay undecrypted tunnels. patterns are
-      #                 host-anchored, `*` matches anything (`/` included).
+      # with neither `image:` nor `build:`, the published pats sandbox pinned to this pats version (ghcr.io/lczyk/pats/sandbox:v<version>).
+      # `build: <dir or Dockerfile>` builds a context at run start, with that image passed in as the PATS_SANDBOX build arg.
+      # egress is the outbound network policy: open (default) | none | proxy (filter by host) | mitm-proxy (also by url).
       # egress:
       #   mode: mitm-proxy
       #   default: deny
       #   allow:
-      #     - .ubuntu.com   # apt mirrors
+      #     - .ubuntu.com
       #     - github.com
       #   deny-urls:
       #     - "github.com/*/some-answer-repo*"
-      #   # inverse: a host with allow-urls only passes matching urls (deny wins)
-      #   # allow-urls:
-      #   #   - "github.com/some-org/*"
 
-# agents -- the harnesses (agent clis) under test, run in a sandbox. an agent
-# names its sandbox with `sandbox:`; with exactly one sandbox defined it's the
-# default. four harnesses:
-#   opencode-openrouter -- the opencode cli, models served via openrouter.
-#                          reads OPENROUTER_API_KEY from the env. the model is
-#                          written without the openrouter/ prefix (added for you).
-#   claude-cli-keyless  -- the claude cli, keyless: oauth creds
-#                          (~/.claude/.credentials.json) are copied into the
-#                          sandbox. the model is a raw anthropic id.
-#   codex-cli-keyless   -- the codex cli, keyless: chatgpt login creds
-#                          (~/.codex/auth.json) are copied into an isolated
-#                          CODEX_HOME. the model is a raw openai id. a login
-#                          held in the os keyring has no file to copy -- switch
-#                          codex to file credential storage first.
-#   copilot-cli-keyless -- the copilot cli, keyless: a github token read from
-#                          COPILOT_GITHUB_TOKEN in the env (mint one with
-#                          `security find-generic-password -s copilot-cli -w`
-#                          on macos, or `gh auth token`). the model is a
-#                          copilot model id (e.g. claude-sonnet-4.5, gpt-5).
-# `effort:` is optional reasoning effort (claude/copilot --effort, codex
-# model_reasoning_effort, opencode --variant). an agent not named in any suite
-# is never run as a task -- it can still judge as a scorer's `agent-id` (see
-# `judge` below).
+# harness: claude-cli-keyless | codex-cli-keyless | copilot-cli-keyless | opencode-openrouter (creds and model ids per harness: see the readme).
+# with one sandbox defined every agent uses it, otherwise set `sandbox:`. `effort:` is optional reasoning effort.
 haiku:
   kind: agent
   items:
-    # the model under test: claude-haiku, run through the claude cli.
+    # the same model under two harnesses isolates the harness's effect from the model's.
     haiku-claude-cli:
       harness: claude-cli-keyless
       model: claude-haiku-4-5-20251001
-    # the same model under a different harness -- isolates harness effect from
-    # model effect (the comparison BYOH unlocks).
     haiku-opencode:
       harness: opencode-openrouter
       model: anthropic/claude-haiku-4.5
 
-# a codex or copilot agent slots into a suite the same way. commented out here
-# because neither is the same underlying model as the haiku pair above, so it
-# would measure model effect rather than harness effect.
-# others:
-#   kind: agent
-#   defaults: {effort: high}
-#   items:
-#     codex: {harness: codex-cli-keyless, model: <codex-model-id>}
-#     copilot: {harness: copilot-cli-keyless, model: <copilot-model-id>}
-
-# the scorer agent: a stronger model (sonnet) to judge the weaker one (haiku).
-# not in any suite -> only ever runs as a scorer's agent-id. commented out with
-# its scorer (`no-colloquialisms` below) until agent scorers are implemented --
-# an agent in no suite and no scorer is an orphan error.
+# a judge for agent scorers (not implemented yet): an agent in no suite, named by a scorer's `agent`.
 # judge:
 #   kind: agent
 #   items:
-#     judge: {harness: claude-cli-keyless, model: claude-sonnet-4-6}
+#     judge:
+#       harness: claude-cli-keyless
+#       model: claude-sonnet-4-6
 
-# tasks -- a scenario handed to a harness agent. these test readme-authorship.
-# prompt/prepare/collect run a file directly (no shell): the value is tokenised
-# (posix quoting, no $-expansion or globbing) and argv[0] is exec'd with the
-# rest as args. they get PATS_ROOT + PATS_*_ID + PATS_WORKDIR/AGENT_HOME/
-# OUTPUT_DIR/RUN_DIR in env. those are host paths. in the sandbox the workdir
-# is /workspace (the agent's cwd) and the agent home is /pats-home ($HOME).
-#   prompt  -- the instruction the agent acts on: an executable file (its stdout
-#              is the prompt), a plain file (its contents), or literal text.
-#   prepare -- seed the sandbox before the agent runs (ground truth, fixtures).
-#              PATS_AGENT_HOME is the agent's HOME, creds already in: seed harness
-#              config (settings, hooks, instructions) there.
-#   collect -- gather the outputs to score after the agent finishes.
-#   timeout -- per-pair wall-clock limit (e.g. 15m); default 10m, "0" = never.
+# the prompt is `prompt` (literal text), `prompt-file` or `prompt-cmd` (its stdout). prepare and collect are an inline script
+# (`prepare`, `collect`) or a command line (`prepare-cmd`, `collect-cmd`), run on the host with PATS_* env set and this dir's
+# bin/ on PATH. `env:` adds variables for the task's scripts. timeout is per pair, 10m by default.
+# a task vector can instead take `dir: <path>`: every directory under it holding a task.yaml is one task, configured by that
+# file alone, with its scripts run and its paths resolved in its own directory.
 write-readme:
   kind: task
   defaults:
-    prompt: prompts/${vector}-${task}.txt
-    prepare: scripts/prepare.sh --${task}
-    collect: scripts/collect.sh --${task}
+    prompt-file: prompts/${vector}-${task}.txt
+    prepare-cmd: scripts/prepare.sh --${task}
+    collect-cmd: scripts/collect.sh --${task}
   items:
     simple:
     hard:
     monorepo:
 
-# scorers -- score one aspect of a task's collected output, 0.0 - 1.0.
-# pats stays dumb here: it hands the collected files to the scorer; the user
-# writes the scorer. two flavours, told apart by their fields:
-#   score: <file>   -- exec a file directly. the shebang picks the interpreter
-#                      + deps (e.g. `#!/usr/bin/env -S uv run --script` with
-#                      inline deps). exit 0 + first stdout line = float [0,1]
-#                      or `na` (skip); a non-zero exit = failure. the file must
-#                      be executable (chmod +x).
-#   agent-id: <id>  -- ask that agent to score, with `prompt:` as the judging
-#                      instruction (nondeterministic). NOT IMPLEMENTED YET.
+# a scorer (`score` inline, or `score-cmd`) reads a pair's collected output and prints a float in [0,1], or `na`, on its first stdout line.
 style:
   kind: scorer
-  defaults: {score: "scorers/${scorer}.sh"}
+  defaults:
+    score-cmd: scorers/${scorer}.sh
   items:
-    # imperative: deduct 0.1 per excessive-whitespace occurrence.
     only-ascii:
-    # imperative + close to binary: 1.0 if the title is right, else 0.0.
     title-correct:
-    # fuzzy: a script that trampolines to python + spacy (NLP) via its shebang.
     no-finite-verbs:
-    # fuzzy + agentic: ask the judge agent to score. nondeterministic; only
-    # runs under `pats score --agentic`. NOTE: agent scorers aren't implemented
-    # yet -- configuring one is rejected at validation, hence commented out.
-    # no-colloquialisms: {agent-id: judge, prompt: prompts/no-colloquialisms.txt}
+    # an agent scorer (not implemented yet):
+    # no-colloquialisms:
+    #   agent: judge
+    #   prompt-file: prompts/no-colloquialisms.txt
 
-# suites -- named (agents, tasks, scorers) selections. both cross-products are
-# implied within a suite: run = agents x tasks, score = tasks x scorers. each
-# axis takes a vector or item id, scalar or list; a vector id expands to its
-# items. scorers may be empty (a run-only suite). every agent/task/scorer must
-# land in at least one suite (agents referenced by a scorer's agent-id are
-# exempt) -- an orphaned item is a validation error, so forgetting to wire a
-# new task or scorer in fails at load instead of silently never running.
-# a task's score is the mean over the scorers run on it. narrow a run or score
-# to one suite with `-s <id>`.
+# a suite runs its agents x tasks and scores its tasks x scorers. every item must be in at least one suite.
 suites:
   kind: suite
   items:

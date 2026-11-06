@@ -30,12 +30,24 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 	return w.Flush()
 }
 
-// ListTasks prints vector, id and prompt per task.
+// ListTasks prints vector, id, the directory it was defined in, and where its
+// prompt comes from, per task.
 func ListTasks(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "VECTOR\tTASK\tPROMPT")
+	fmt.Fprintln(w, "VECTOR\tTASK\tDIR\tPROMPT")
 	for _, t := range cfg.Tasks {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", t.Vector, t.ID, t.Prompt)
+		dir := t.Dir
+		if dir == "" {
+			dir = "."
+		}
+		prompt := "inline"
+		switch {
+		case t.PromptFile != "":
+			prompt = "file: " + t.PromptFile
+		case t.PromptCmd != "":
+			prompt = "cmd: " + t.PromptCmd
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Vector, t.ID, dir, prompt)
 	}
 	return w.Flush()
 }
@@ -61,15 +73,18 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	return w.Flush()
 }
 
-// ListScorers prints vector, id, and the source: the exec file, or the
+// ListScorers prints vector, id, and the source: inline, the command, or the
 // judging agent.
 func ListScorers(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "VECTOR\tSCORER\tSOURCE")
 	for _, s := range cfg.Scorers {
-		src := s.Score
-		if s.IsAgent() {
-			src = "agent: " + s.AgentID
+		src := "inline"
+		switch {
+		case s.IsAgent():
+			src = "agent: " + s.Agent
+		case s.ScoreCmd != "":
+			src = "cmd: " + s.ScoreCmd
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", s.Vector, s.ID, src)
 	}

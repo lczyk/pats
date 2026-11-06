@@ -30,12 +30,12 @@ agents:
 tasks:
   kind: task
   items:
-    refactor: {prompt: refactor.txt}
+    refactor: {prompt-file: refactor.txt}
 scorers:
   kind: scorer
   items:
-    exact: {score: exact.sh}
-    judge: {agent-id: claude, prompt: judge.txt}
+    exact: {score-cmd: exact.sh}
+    judge: {agent: claude, prompt: judge.txt}
 `))
 	require.NoError(t, err)
 	return cfg

@@ -292,9 +292,12 @@ func runPair(
 	}
 	sb := sandboxes[sbID]
 
-	// host-side env for prepare/collect scripts (they run in the project dir
-	// and seed/gather the sandbox via these paths).
+	// host-side env for the task's scripts (prepare, prompt-cmd, collect). they
+	// run in the task's directory and seed/gather the sandbox via these paths;
+	// the task's own env goes on top (Validate keeps it off PATS_*).
+	taskDir := filepath.Join(opts.ConfigDir, t.Dir)
 	hostEnv := map[string]string{
+		"PATS_TASK_DIR":      taskDir,
 		"PATS_RUN_ID":        filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
 		"PATS_AGENT_ID":      p.Agent,
@@ -313,16 +316,19 @@ func runPair(
 	}
 	defer h.cleanup()
 	hostEnv["PATS_AGENT_HOME"] = h.homeDir
+	for k, v := range t.Env {
+		hostEnv[k] = v
+	}
 
-	if t.Prepare != "" {
-		if err := runHost(opts, t.Prepare, hostEnv); err != nil {
+	if prepare := (step{t.Prepare, t.PrepareCmd, taskDir}); prepare.set() {
+		if err := prepare.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
 			return fmt.Errorf("prepare: %w", err)
 		}
 	}
 
-	promptData, err := resolvePrompt(opts.ConfigDir, t.Prompt, hostEnv)
+	promptData, err := taskPrompt(opts.ConfigDir, taskDir, t, hostEnv)
 	if err != nil {
-		return fmt.Errorf("resolve prompt: %w", err)
+		return fmt.Errorf("prompt: %w", err)
 	}
 	if err := os.WriteFile(h.promptPath(), promptData, 0o644); err != nil {
 		return err
@@ -360,8 +366,8 @@ func runPair(
 	// finished (r.err == nil) or it timed out mid-run -- either way the
 	// container produced files. a launch failure (r.err != nil, !timedOut)
 	// left nothing to collect.
-	if (r.err == nil || r.timedOut) && t.Collect != "" {
-		if err := runHost(opts, t.Collect, hostEnv); err != nil {
+	if collect := (step{t.Collect, t.CollectCmd, taskDir}); (r.err == nil || r.timedOut) && collect.set() {
+		if err := collect.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
 			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
 		}
 	}
@@ -520,84 +526,21 @@ func relToCwd(p string) string {
 	return p
 }
 
-// commandFor tokenizes a run-field value (POSIX-sh quoting, no shell/expansion)
-// and returns an *exec.Cmd that runs argv[0] -- a +x regular file resolved
-// against configDir -- with the remaining tokens as literal args, in configDir,
-// with os env + PATS_ROOT (configDir) + the given PATS_* env. errors on bad
-// quoting, an empty command, or argv[0] not being an executable file.
-func commandFor(configDir, spec string, env map[string]string) (*exec.Cmd, error) {
-	argv, err := splitArgs(spec)
-	if err != nil {
-		return nil, err
-	}
-	if len(argv) == 0 {
-		return nil, fmt.Errorf("empty command")
-	}
-	path := argv[0]
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(configDir, path)
-	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	if fi.Mode()&0o111 == 0 {
-		return nil, fmt.Errorf("%s is not executable (chmod +x)", path)
-	}
-	cmd := exec.Command(path, argv[1:]...)
-	cmd.Dir = configDir
-	cmd.Env = append(os.Environ(), "PATS_ROOT="+configDir)
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	return cmd, nil
-}
-
-// resolvePrompt turns a task/scorer prompt spec into the actual prompt bytes.
-// it tokenises the spec (POSIX-sh quoting) and inspects argv[0]:
-//
-//	a +x regular file        -> exec argv (a generator), its stdout is the prompt
-//	a non-executable file     -> the file's contents (no args allowed)
-//	anything else / bad quote -> the whole spec, verbatim, is the literal prompt
-//
-// the last rule is what lets a free-text prompt ("write a readme", or one with
-// an apostrophe) pass through untouched. env (PATS_*) is passed to a generator.
-func resolvePrompt(configDir, spec string, env map[string]string) ([]byte, error) {
-	argv, err := splitArgs(spec)
-	if err != nil || len(argv) == 0 {
-		return []byte(spec), nil // unparseable quoting -> literal
-	}
-	path := argv[0]
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(configDir, path)
-	}
-	fi, serr := os.Stat(path)
-	if serr != nil || !fi.Mode().IsRegular() {
-		return []byte(spec), nil // not a file -> literal prompt
-	}
-	if fi.Mode()&0o111 == 0 {
-		// a plain file's contents are the prompt; trailing args are meaningless
-		// here -- erroring beats silently dropping them (and a literal prompt
-		// whose first word collides with a file would otherwise vanish).
-		if len(argv) > 1 {
-			return nil, fmt.Errorf("prompt %q is not executable but has args (chmod +x to run it, or drop the args)", argv[0])
+// taskPrompt is the prompt handed to the agent: the literal prompt, the
+// contents of prompt-file (resolved against the task's dir), or the stdout of
+// prompt-cmd, run after prepare with the task's env.
+func taskPrompt(root, dir string, t config.Task, env map[string]string) ([]byte, error) {
+	switch {
+	case t.PromptFile != "":
+		p := t.PromptFile
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
 		}
-		return os.ReadFile(path) // plain file -> contents
+		return os.ReadFile(p)
+	case t.PromptCmd != "":
+		return step{cmd: t.PromptCmd, dir: dir}.output(root, env)
 	}
-	cmd, err := commandFor(configDir, spec, env) // executable -> stdout
-	if err != nil {
-		return nil, err
-	}
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("exec prompt %s: %w%s", argv[0], err, stderrTail(&errb))
-	}
-	return out.Bytes(), nil
+	return []byte(t.Prompt), nil
 }
 
 // stderrTail renders a failed script's captured stderr for embedding in the
@@ -612,19 +555,6 @@ func stderrTail(b *bytes.Buffer) string {
 		s = "... " + strings.Join(lines[len(lines)-keep:], "\n")
 	}
 	return "\nstderr: " + s
-}
-
-// runHost runs a prepare/collect field on the host: it execs the field's file
-// (with args) in the project dir, PATS_* env appended, no shell. output streams
-// to opts.Out.
-func runHost(opts Options, command string, env map[string]string) error {
-	cmd, err := commandFor(opts.ConfigDir, command, env)
-	if err != nil {
-		return err
-	}
-	cmd.Stdout = opts.Out
-	cmd.Stderr = opts.Out
-	return cmd.Run()
 }
 
 // nextRunDir creates and returns base/<nnn>-<yyyymmdd>-<adj>-<noun>: a

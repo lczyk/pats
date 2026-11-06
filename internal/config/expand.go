@@ -55,7 +55,7 @@ func (c *Config) sets(kind string) map[string][]string {
 }
 
 // One resolves an id that must name exactly one item of the kind (an agent's
-// sandbox, a scorer's agent-id): the item id, or an error naming the problem.
+// sandbox, a scorer's agent): the item id, or an error naming the problem.
 func (c *Config) One(kind, id string) (string, error) {
 	ids, ok := c.sets(kind)[id]
 	switch {
