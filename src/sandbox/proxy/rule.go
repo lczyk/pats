@@ -253,9 +253,9 @@ type Rule struct {
 	// prefix admits it. a posture makes every allowed host but the exempt ones
 	// inspected, since a tunnel cannot show a method.
 	Methods map[string]bool
-	// Exempt are hosts the posture never inspects: the harness's own (its
-	// inference api, token refresh). an explicit url entry on one still
-	// mitm's it.
+	// Exempt are hosts the posture does not make inspected: the harness's own
+	// (its inference api, token refresh). a request seen on one anyway (an
+	// explicit url entry, plain http) is held to the posture.
 	Exempt []Entry
 }
 
@@ -348,22 +348,22 @@ func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string)
 		}
 	}
 	if matched != nil {
-		return r.posture(host, port, method, Verdict{Allowed: true, Rule: matched.Raw})
+		return r.posture(method, Verdict{Allowed: true, Rule: matched.Raw})
 	}
 	if restricted != nil {
 		return Verdict{Rule: restricted.Raw, Reason: "url-not-allowed"}
 	}
 	v := r.defaultVerdict()
 	if v.Allowed {
-		return r.posture(host, port, method, v)
+		return r.posture(method, v)
 	}
 	return v
 }
 
 // posture applies the methods posture to an allow verdict: a method it does
 // not list is refused, on any host it inspects.
-func (r Rule) posture(host string, port uint16, method string, v Verdict) Verdict {
-	if r.Methods == nil || r.Methods[method] || r.exempt(host, port) {
+func (r Rule) posture(method string, v Verdict) Verdict {
+	if r.Methods == nil || r.Methods[method] {
 		return v
 	}
 	return Verdict{Rule: "methods", Reason: "method"}

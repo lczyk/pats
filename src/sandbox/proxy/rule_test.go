@@ -357,7 +357,8 @@ func BenchmarkDecide(b *testing.B) {
 
 // the methods posture: unlisted methods are refused on every inspected host;
 // an allow entry's own method prefix overrides it; a deny entry's method
-// prefix scopes the deny; harness hosts are never inspected for it.
+// prefix scopes the deny; harness hosts are not inspected for it, but a request
+// seen on one anyway is held to it.
 func TestMethodsPosture(t *testing.T) {
 	p := Policy{
 		Methods: []string{"GET", "HEAD"},
@@ -377,8 +378,8 @@ func TestMethodsPosture(t *testing.T) {
 		{"a.test", "POST", "/x", false, "method"},
 		{"a.test", "POST", "/graphql", true, ""}, // the entry's own prefix wins
 		{"a.test", "DELETE", "/graphql", false, "method"},
-		{"api.anthropic.com", "POST", "/v1/messages", true, ""}, // exempt
-		{"c.test", "GET", "/", false, ""},                       // default deny still applies
+		{"api.anthropic.com", "GET", "/v1/models", true, ""},
+		{"c.test", "GET", "/", false, ""}, // default deny still applies
 	}
 	for _, c := range cases {
 		v := r.Decide(c.host, 443, c.method, c.path, "")
@@ -399,9 +400,13 @@ func TestMethodsPosture(t *testing.T) {
 	assert.Equal(t, r.Decide("b.test", 443, "PUT", "/x", "").Allowed, false)
 	assert.Equal(t, r.Decide("b.test", 443, "GET", "/x", "").Allowed, true)
 
-	// an explicit url entry on an exempt host still mitm's it.
+	// an explicit url entry on an exempt host still mitm's it, and the
+	// posture applies to what that shows, as it does to plain http there.
 	p.Deny = append(p.Deny, "api.anthropic.com/v1/files*")
 	r, err = p.Rule()
 	require.NoError(t, err)
 	assert.That(t, r.MitmHost("api.anthropic.com", 443))
+	assert.Equal(t, r.Decide("api.anthropic.com", 443, "POST", "/v1/messages", "").Reason, "method")
+	assert.Equal(t, r.Decide("api.anthropic.com", 80, "POST", "/v1/messages", "").Reason, "method")
+	assert.Equal(t, r.Decide("api.anthropic.com", 443, "GET", "/v1/models", "").Allowed, true)
 }

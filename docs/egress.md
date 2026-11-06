@@ -55,9 +55,10 @@ sandbox:
 - **methods** `methods: [GET, HEAD]` refuses every other method, with `rule: methods` and `reason: method` in the
   audit. a tunnel cannot show a method, so the posture makes the proxy inspect every allowed host -- under
   `default: allow`, every host reached -- except the harness's own (its inference api is never decrypted for it; an
-  explicit url entry on such a host still mitm's it). an entry can carry a method prefix, which needs a url part:
-  `POST api.github.com/graphql` in `allow` admits that method there whatever the posture, `PUT,PATCH github.com/*` in
-  `deny` refuses only those methods. absent, every method passes and nothing extra is inspected.
+  explicit url entry on such a host still mitm's it, and the posture applies to what it shows). an entry can carry a
+  method prefix, which needs a url part: `POST api.github.com/graphql` in `allow` admits that method there whatever
+  the posture, `PUT,PATCH github.com/*` in `deny` refuses only those methods. absent, every method passes and nothing
+  extra is inspected.
 
 ## topology
 
