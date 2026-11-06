@@ -57,6 +57,16 @@ bench:  ## Run all benchmarks
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test
 
+# docs/spec/publish.fizz checks each design in turn: snapshot and selfres fail R2 (the race the
+# aliases job exists for), converge -- the workflow as written -- passes.
+.PHONY: spec
+spec:  ## Model-check the image publish pipeline with fizzbee (docs/spec/publish.fizz)
+	@if ! command -v fizz >/dev/null 2>&1; then echo "fizz not found, skipping (https://github.com/fizzbee-io/fizzbee)"; exit 0; fi; \
+	cd docs/spec && for d in snapshot selfres converge; do \
+		printf '%-9s ' "$$d"; \
+		timeout -k 10 300 fizz --preinit-hook "DESIGN = \"$$d\"" publish.fizz 2>&1 | grep -E '^(PASSED|FAILED)' || echo "no result"; \
+	done
+
 .PHONY: clean
 clean:  ## Remove build artifacts
 	rm -f ./bin/pats
