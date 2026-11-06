@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,5 +38,23 @@ func TestColorize(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("colorize output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// a flag wins over its env: an overridden env value is not even parsed, so a
+// bad one cannot stop a run whose flag is fine.
+func TestEgressRunFlagShadowsBadEnv(t *testing.T) {
+	t.Setenv("PATS_EGRESS_POLICY", "default: [broken")
+	t.Setenv("PATS_EGRESS_REFUSE", "not-a-cidr")
+	dir := t.TempDir()
+	pol := filepath.Join(dir, "p.yaml")
+	if err := os.WriteFile(pol, []byte("allow: [a.test]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &EgressRunCommand{Policy: pol, Refuse: []string{"10.0.0.0/8"}, Listen: "bad address"}
+	err := c.Execute(nil)
+	// it gets past both env values and fails only at the (deliberately bad) listen.
+	if err == nil || !strings.Contains(err.Error(), "bad address") {
+		t.Fatalf("want a listen error, got %v", err)
 	}
 }

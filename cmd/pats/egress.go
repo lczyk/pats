@@ -128,7 +128,22 @@ type EgressRunCommand struct {
 }
 
 func (c *EgressRunCommand) Execute(args []string) error {
-	o, err := sandbox.ProxyEnvOptions(os.Getenv)
+	// a flag wins over its env, so an overridden env value is never read --
+	// a bad one must not stop a run whose flag is fine.
+	overridden := map[string]bool{
+		"PATS_EGRESS_POLICY":  c.Policy != "" || c.Sandbox != "",
+		"PATS_EGRESS_LISTEN":  c.Listen != "",
+		"PATS_EGRESS_CA_CERT": c.CACert != "",
+		"PATS_EGRESS_CA_KEY":  c.CAKey != "",
+		"PATS_EGRESS_ROOTS":   c.Roots != "",
+		"PATS_EGRESS_REFUSE":  len(c.Refuse) > 0,
+	}
+	o, err := sandbox.ProxyEnvOptions(func(k string) string {
+		if overridden[k] {
+			return ""
+		}
+		return os.Getenv(k)
+	})
 	if err != nil {
 		return err
 	}

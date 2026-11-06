@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -43,6 +44,7 @@ func Clean(ctx context.Context, o CleanOptions) error {
 			}
 		}
 	}
+	var errs []error
 	act := "removed"
 	if o.DryRun {
 		act = "would remove"
@@ -58,12 +60,16 @@ func Clean(ctx context.Context, o CleanOptions) error {
 				continue
 			}
 			if !o.DryRun {
-				_ = exec.CommandContext(ctx, d, "rm", "-f", name).Run()
+				if out, err := exec.CommandContext(ctx, d, "rm", "-f", name).CombinedOutput(); err != nil {
+					errs = append(errs, fmt.Errorf("%s rm %s: %w (%s)", d, name, err, strings.TrimSpace(string(out))))
+					continue
+				}
 			}
 			fmt.Fprintf(o.Out, "%s %s container %s\n", act, d, name)
 		}
 		out, err = exec.CommandContext(ctx, d, "network", "ls", "--filter", "name=^sbx-egr-", "--format", "{{.Name}}").Output()
 		if err != nil {
+			errs = append(errs, fmt.Errorf("%s network ls: %w", d, err))
 			continue
 		}
 		for _, name := range strings.Fields(string(out)) {
@@ -71,7 +77,10 @@ func Clean(ctx context.Context, o CleanOptions) error {
 				continue
 			}
 			if !o.DryRun {
-				_ = exec.CommandContext(ctx, d, "network", "rm", name).Run()
+				if out, err := exec.CommandContext(ctx, d, "network", "rm", name).CombinedOutput(); err != nil {
+					errs = append(errs, fmt.Errorf("%s network rm %s: %w (%s)", d, name, err, strings.TrimSpace(string(out))))
+					continue
+				}
 			}
 			fmt.Fprintf(o.Out, "%s %s network %s\n", act, d, name)
 		}
@@ -80,9 +89,9 @@ func Clean(ctx context.Context, o CleanOptions) error {
 	ents, err := os.ReadDir(tmp)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return errors.Join(errs...)
 		}
-		return err
+		return errors.Join(append(errs, err)...)
 	}
 	for _, e := range ents {
 		p := filepath.Join(tmp, e.Name())
@@ -99,12 +108,12 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		}
 		if !o.DryRun {
 			if err := os.RemoveAll(p); err != nil {
-				fmt.Fprintf(o.Out, "could not remove %s: %v\n", p, err)
+				errs = append(errs, err)
 				continue
 			}
 			_ = os.Remove(p + ".owner")
 		}
 		fmt.Fprintf(o.Out, "%s %s\n", act, p)
 	}
-	return nil
+	return errors.Join(errs...)
 }
