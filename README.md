@@ -29,23 +29,25 @@ a sandbox can also declare an `egress` policy: `mode: open` (the default -- unre
 
 pats is a single go binary. you need go 1.26+ to build it, and docker to run the sandboxes.
 
+this is the 1.x line, released as `1.0.0-beta.N` pre-releases from the `1.x` branch until 1.0. `main` carries 0.x, and `@latest` resolves to it until 1.0 ships, so name the beta explicitly. 1.x reads a different `pats.yaml` shape from 0.x (see [`pats.example.yaml`](./pats.example.yaml)).
+
 put it on your PATH with `go install`:
 
 ```sh
-go install github.com/lczyk/pats/cmd/pats@latest    # installs into $(go env GOBIN)
+go install github.com/lczyk/pats/cmd/pats@v1.0.0-beta.1    # installs into $(go env GOBIN)
 ```
 
 or run it without installing at all:
 
 ```sh
-go run github.com/lczyk/pats/cmd/pats@latest run
-go run github.com/lczyk/pats/cmd/pats@latest score
+go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.1 run
+go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.1 score
 ```
 
 from a clone, `make install` builds the binary (upx-compressed if `upx` is on PATH) and symlinks it into `~/.local/bin`:
 
 ```sh
-git clone https://github.com/lczyk/pats && cd pats
+git clone -b 1.x https://github.com/lczyk/pats && cd pats
 make install
 ```
 
