@@ -24,17 +24,16 @@ type CleanOptions struct {
 
 // Clean removes what crashed runs left behind. every sidecar and network pats
 // makes is named after its pair's workdir (sbx-proxy-<dir>, sbx-egr-<dir>),
-// and a live pair's workdir exists, so one whose workdir is gone is a
-// leftover. a temp dir is kept while the process that made it runs (its
-// .owner file), and otherwise goes once older than OlderThan.
+// and that workdir's owner file names the pats process running the pair, so
+// one whose process is gone (or whose workdir is) is a leftover. a temp dir
+// is kept while its owner runs, and otherwise goes once older than OlderThan.
 func Clean(ctx context.Context, o CleanOptions) error {
 	tmp, err := sandbox.TempRoot()
 	if err != nil {
 		return err
 	}
 	live := func(name, prefix string) bool {
-		_, err := os.Stat(filepath.Join(tmp, strings.TrimPrefix(name, prefix)))
-		return err == nil
+		return sandbox.TempOwnerAlive(filepath.Join(tmp, strings.TrimPrefix(name, prefix)))
 	}
 	drivers := o.Drivers
 	if drivers == nil {
