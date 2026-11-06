@@ -9,10 +9,10 @@ import (
 	"github.com/lczyk/pats/internal/version"
 )
 
-// TestImagePinsEveryVersionShape covers the shapes the toolchain stamps into a
-// binary. a module install sets debug.BuildInfo's Main.Version to the module
-// semver, always v-prefixed, which overrides the bare VERSION-file fallback; a
-// pre-release tag keeps its suffix; a branch install gets a pseudo-version.
+// TestImagePinsEveryVersionShape covers every version string Image may be
+// handed: the bare semver version.Read produces (a tag, with any pre-release
+// suffix), plus the raw toolchain shapes (v-prefixed, dirty, pseudo-version,
+// devel) in case a caller sets the version by hand.
 func TestImagePinsEveryVersionShape(t *testing.T) {
 	saved := version.Info
 	t.Cleanup(func() { version.Info = saved })

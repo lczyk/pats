@@ -36,11 +36,10 @@ func ProxyImage(configured string) (image, warn string) {
 // dirty, unset -> no image was published for it), fall back to :latest and
 // return a warning naming the hint; the caller logs it once.
 //
-// the version arrives in either shape: bare from the VERSION file fallback,
-// or v-prefixed when the toolchain stamped a module version into the binary,
-// which it does for every `go install module@version` build. strip the prefix
-// before testing, or release installs -- the ones that most need a matching
-// image -- would be the only ones never to pin.
+// version.Read hands over a bare semver (the module tag, else the VERSION
+// file), but a leading v is stripped anyway so a caller setting the version
+// by hand can't make release installs -- the ones that most need a matching
+// image -- the only builds that never pin.
 func Image(repo, configured, hint string) (image, warn string) {
 	if configured != "" {
 		return configured, ""
