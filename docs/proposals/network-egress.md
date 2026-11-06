@@ -101,20 +101,20 @@ the dependency in-tree. pats would publish `ghcr.io/lczyk/pats/egress-proxy`.
 ## config schema
 
 ```yaml
-sandboxes:
-  - id: docker
-    kind: container
-    driver: docker
-    image: mason-test/sandbox:26.04
-    egress:
-      mode: proxy          # open (today) | none (--network none) | proxy
-      default: deny        # proxy mode: deny (allowlist) | allow (denylist)
-      allow:               # reachable hosts when default: deny
-        - api.anthropic.com
-        - archive.ubuntu.com
-        - ports.ubuntu.com
-        - security.ubuntu.com
-      # deny: [github.com, ...]   # blocked hosts when default: allow
+sandbox:
+  kind: sandbox
+  items:
+    docker:
+      image: mason-test/sandbox:26.04
+      egress:
+        mode: proxy          # open (today) | none (--network none) | proxy
+        default: deny        # proxy mode: deny (allowlist) | allow (denylist)
+        allow:               # reachable hosts when default: deny
+          - api.anthropic.com
+          - archive.ubuntu.com
+          - ports.ubuntu.com
+          - security.ubuntu.com
+        # deny: [github.com, ...]   # blocked hosts when default: allow
 ```
 
 - `mode: open` -- current behaviour (open network). the default.
