@@ -29,10 +29,11 @@ stamp=".stamp/$name"
 new=$(hack/hash_inputs.sh "$name")
 cur=$(cat "$stamp" 2>/dev/null || true)
 
-if [ "$new" = "$cur" ]; then
+# a stamp only counts while its image is still around: a pruned image rebuilds.
+if [ "$new" = "$cur" ] && "$DOCKER" image inspect "$image" >/dev/null 2>&1; then
     echo "==> ${flavour}:${ver}-${arch} up-to-date (stamp matches)"
 else
-    echo "==> building ${flavour}:${ver}-${arch} (inputs changed)"
+    echo "==> building ${flavour}:${ver}-${arch} (inputs changed or image missing)"
     "$DOCKER" build \
         --tag "$image" \
         --file "images/Dockerfile.sandbox-$ver" \
