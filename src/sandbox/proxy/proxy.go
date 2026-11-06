@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -36,15 +37,35 @@ type Proxy struct {
 	mu   sync.Mutex
 }
 
-// Event is one audit line.
+// Event is one audit line. Ev says which of three:
+//
+//	open  -- a CONNECT: kind tunnel (tls) or raw, the verdict, the address
+//	         dialled. a refused CONNECT is an open with allowed false.
+//	close -- a tunnel ended: bytes each way and its duration. never a
+//	         refusal (allowed is always true).
+//	req   -- a request the proxy saw in clear: kind mitm or http, method,
+//	         url, user agent, upstream status, body bytes each way.
+//
+// Rule is the entry that decided, or "default". Reason says why a refusal or
+// failure happened.
 type Event struct {
-	TS      string `json:"ts"`
-	Host    string `json:"host"`
-	Port    string `json:"port,omitempty"`
-	Allowed bool   `json:"allowed"`
-	URL     string `json:"url,omitempty"`
-	Rule    string `json:"rule,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	TS         string `json:"ts"`
+	Ev         string `json:"ev"`
+	Host       string `json:"host"`
+	Port       string `json:"port,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Allowed    bool   `json:"allowed"`
+	Rule       string `json:"rule,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	IP         string `json:"ip,omitempty"`
+	Method     string `json:"method,omitempty"`
+	URL        string `json:"url,omitempty"`
+	UA         string `json:"ua,omitempty"`
+	Status     int    `json:"status,omitempty"`
+	In         int64  `json:"in,omitempty"`  // bytes received from upstream
+	Out        int64  `json:"out,omitempty"` // bytes sent upstream
+	MS         int64  `json:"ms,omitempty"`
+	Revocation string `json:"revocation,omitempty"` // mitm: good | unchecked
 }
 
 func (p *Proxy) init() {
@@ -83,18 +104,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // only bound on it.
 const denyHold = 60 * time.Second
 
-// refuse answers a refused request per DenyResponse. after it the connection
-// is unusable by design.
-func (p *Proxy) refuse(w http.ResponseWriter) {
+// refuse answers a refused request per DenyResponse and returns the status it
+// sent (0 when the connection was reset). after it the connection is
+// unusable by design.
+func (p *Proxy) refuse(w http.ResponseWriter) int {
 	switch p.DenyResponse {
 	case "404":
 		http.Error(w, "not found", http.StatusNotFound)
+		return http.StatusNotFound
 	case "reset":
 		resetConn(w, 0)
+		return 0
 	case "timeout":
 		resetConn(w, denyHold)
+		return 0
 	default:
 		http.Error(w, "egress denied", http.StatusForbidden)
+		return http.StatusForbidden
 	}
 }
 
@@ -125,8 +151,9 @@ func resetConn(w http.ResponseWriter, d time.Duration) {
 func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	host, port := splitHostPort(req.Host, 443)
 	v := p.Rule.DecideHost(host, port)
+	open := Event{Ev: "open", Host: host, Port: portStr(port), Kind: "tunnel", Rule: v.Rule, Reason: v.Reason}
 	if !v.Allowed {
-		p.audit(Event{Host: host, Port: portStr(port), Rule: v.Rule, Reason: v.Reason})
+		p.audit(open)
 		p.refuse(w)
 		return
 	}
@@ -159,27 +186,48 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	cconn := bufConn{Conn: client, r: crw.Reader}
 
 	hello, reason := p.peekHello(cconn, host, port)
+	if hello == nil && reason == "" {
+		open.Kind = "raw"
+	}
 	if reason != "" {
-		p.audit(Event{Host: host, Port: portStr(port), Rule: v.Rule, Reason: reason})
+		open.Reason = reason
+		p.audit(open)
 		client.Close()
 		return
 	}
+	start := time.Now()
 	remote, err := p.Dial(req.Context(), "tcp", net.JoinHostPort(host, portStr(port)))
 	if err != nil {
-		p.audit(Event{Host: host, Port: portStr(port), Rule: v.Rule, Reason: dialReason(err)})
+		open.Reason = dialReason(err)
+		p.audit(open)
 		client.Close()
 		return
 	}
-	p.audit(Event{Host: host, Port: portStr(port), Allowed: true, Rule: v.Rule})
+	open.Allowed = true
+	if ra, ok := remote.RemoteAddr().(*net.TCPAddr); ok {
+		open.IP = ra.IP.String()
+	}
+	p.audit(open)
+	var out int64
 	if len(hello) > 0 {
-		if _, err := remote.Write(hello); err != nil {
+		n, err := remote.Write(hello)
+		out += int64(n)
+		if err != nil {
 			client.Close()
 			remote.Close()
 			return
 		}
 	}
-	go pipe(remote, cconn)
-	go pipe(client, remote)
+	go func() {
+		var wg sync.WaitGroup
+		var in int64
+		wg.Add(2)
+		go func() { defer wg.Done(); out += pipe(remote, cconn) }()
+		go func() { defer wg.Done(); in = pipe(client, remote) }()
+		wg.Wait()
+		p.audit(Event{Ev: "close", Host: host, Port: portStr(port), Kind: open.Kind, Allowed: true,
+			In: in, Out: out, MS: time.Since(start).Milliseconds()})
+	}()
 }
 
 // handleHTTP forwards plain http (absolute-URI proxy requests, e.g. apt). the
@@ -191,16 +239,22 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 		fullURL += "?" + req.URL.RawQuery
 	}
 	v := p.Rule.Decide(host, port, req.Method, req.URL.Path, req.URL.RawQuery)
+	ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "http", Rule: v.Rule, Reason: v.Reason,
+		Method: req.Method, URL: fullURL, UA: req.UserAgent()}
 	if !v.Allowed {
-		p.audit(Event{Host: host, Port: portStr(port), URL: fullURL, Rule: v.Rule, Reason: v.Reason})
-		p.refuse(w)
+		ev.Status = p.refuse(w)
+		p.audit(ev)
 		return
 	}
-	p.audit(Event{Host: host, Port: portStr(port), Allowed: true, URL: fullURL, Rule: v.Rule})
 
+	start := time.Now()
+	body := countBody(req)
 	req.RequestURI = ""
 	resp, err := p.Upstream.RoundTrip(req)
 	if err != nil {
+		ev.Reason, ev.Status = upstreamReason(err), http.StatusBadGateway
+		ev.Out, ev.MS = body.n, time.Since(start).Milliseconds()
+		p.audit(ev)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -211,7 +265,43 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	n, _ := io.Copy(w, resp.Body)
+	ev.Allowed, ev.Status, ev.In, ev.Out, ev.MS = true, resp.StatusCode, n, body.n, time.Since(start).Milliseconds()
+	p.audit(ev)
+}
+
+// countBody wraps req's body to count it. a request without one keeps its nil
+// or NoBody: a non-empty Body of unknown length would turn a plain GET into a
+// chunked upload on the way out.
+func countBody(req *http.Request) *countReader {
+	c := &countReader{r: req.Body}
+	if req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0 {
+		req.Body = c
+	}
+	return c
+}
+
+// countReader counts the bytes read through it.
+type countReader struct {
+	r io.ReadCloser
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (c *countReader) Close() error { return c.r.Close() }
+
+// upstreamReason names a failed upstream round trip for the audit: a revoked
+// certificate, a dial the guard refused, or any other failure to reach it.
+func upstreamReason(err error) string {
+	if errors.Is(err, ErrRevoked) {
+		return "revoked"
+	}
+	return dialReason(err)
 }
 
 // splitHostPort splits "host[:port]", defaulting the port.
@@ -229,10 +319,13 @@ func splitHostPort(hp string, def uint16) (string, uint16) {
 
 func portStr(p uint16) string { return strconv.Itoa(int(p)) }
 
-func pipe(dst, src net.Conn) {
+// pipe copies src to dst until either side ends, then closes both, and
+// returns the bytes copied.
+func pipe(dst, src net.Conn) int64 {
 	defer dst.Close()
 	defer src.Close()
-	io.Copy(dst, src)
+	n, _ := io.Copy(dst, src)
+	return n
 }
 
 // bufConn reads through the bufio.Reader hijack handed back (it may already

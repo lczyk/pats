@@ -172,8 +172,8 @@ func (p *progress) refreshNet() {
 	}
 	p.mu.Unlock()
 	for _, it := range items {
-		if n, err := countLines(it.path); err == nil {
-			atomic.StoreInt64(&it.st.net, int64(n))
+		if _, err := os.Stat(it.path); err == nil {
+			atomic.StoreInt64(&it.st.net, int64(readEgressAudit(it.path).Requests))
 			atomic.StoreInt32(&it.st.netSeen, 1)
 		}
 	}

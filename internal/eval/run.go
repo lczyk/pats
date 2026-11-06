@@ -26,6 +26,7 @@ import (
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 const runsSubdir = ".pats/runs"
@@ -216,6 +217,16 @@ var dockerNCPU = func() int {
 	return n
 }
 
+// egressRecord is what a pair ran under and what crossed the proxy, so a run
+// is reproducible from its own output.
+type egressRecord struct {
+	Policy   proxy.Policy `json:"policy"`
+	Image    string       `json:"image,omitempty"` // the sidecar image id (docker / podman)
+	Requests int          `json:"requests"`
+	BytesIn  int64        `json:"bytes_in"`
+	BytesOut int64        `json:"bytes_out"`
+}
+
 type pairMeta struct {
 	Agent       string  `json:"agent"`
 	Task        string  `json:"task"`
@@ -226,46 +237,85 @@ type pairMeta struct {
 	Status      string  `json:"status"` // ok | nonzero | error
 	Error       string  `json:"error,omitempty"`
 	PatsVersion string  `json:"pats_version"`
-	// hosts the agent tried to reach but egress denied (proxy mode). a non-empty
-	// list flags attempted cheating / unexpected fetches.
-	DeniedEgress []string `json:"denied_egress,omitempty"`
+	// egress the proxy refused, by kind: denied is what no rule anticipated
+	// (the cheat signal), blocked is what the policy names, failed is upstream
+	// trouble. see readEgressAudit.
+	DeniedEgress  []string      `json:"denied_egress,omitempty"`
+	BlockedEgress []string      `json:"blocked_egress,omitempty"`
+	FailedEgress  []string      `json:"failed_egress,omitempty"`
+	Egress        *egressRecord `json:"egress,omitempty"`
 	// per-harness digest parsed from the log: cost, tokens, turns, tools.
 	Summary *runSummary `json:"summary,omitempty"`
 }
 
-// deniedEgress reads the proxy audit log (one json line per request) and
-// returns the unique denied targets -- the full url for mitm'd requests, the
-// host otherwise. missing file -> nil (not proxy mode).
-func deniedEgress(auditPath string) []string {
+// egressAudit is a pair's egress.log folded into what the run reports: the
+// three refusal lists, each a unique target (the url when the proxy saw one,
+// else the host), and the traffic totals.
+type egressAudit struct {
+	Denied   []string // rule: default -- nobody anticipated it; the cheat signal
+	Blocked  []string // a policy refusal the agent triggered
+	Failed   []string // upstream trouble: revoked certificate, dial failure
+	Requests int      // open and req lines
+	In, Out  int64    // bytes from and to upstream
+}
+
+// failedReasons are refusals the agent did not cause.
+var failedReasons = map[string]bool{"revoked": true, "dial": true}
+
+// readEgressAudit folds an audit log; a missing file is the zero value (no
+// proxy ran). lines that are not json (there should be none) are skipped.
+func readEgressAudit(auditPath string) egressAudit {
+	var a egressAudit
 	data, err := os.ReadFile(auditPath)
 	if err != nil {
-		return nil
+		return a
 	}
 	seen := map[string]bool{}
-	var out []string
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		var e struct {
-			Host    string `json:"host"`
-			URL     string `json:"url"`
-			Allowed bool   `json:"allowed"`
+		var e proxy.Event
+		if json.Unmarshal([]byte(line), &e) != nil {
+			continue
 		}
-		if json.Unmarshal([]byte(line), &e) != nil || e.Allowed {
+		switch e.Ev {
+		case "open", "req":
+			a.Requests++
+		case "close":
+			a.In += e.In
+			a.Out += e.Out
+			continue
+		default:
+			continue
+		}
+		if e.Ev == "req" {
+			a.In += e.In
+			a.Out += e.Out
+		}
+		if e.Allowed {
 			continue
 		}
 		target := e.Host
 		if e.URL != "" {
 			target = e.URL
 		}
-		if seen[target] {
-			continue
+		var list *[]string
+		switch {
+		case failedReasons[e.Reason]:
+			list = &a.Failed
+		case e.Rule == "default" && e.Reason == "":
+			list = &a.Denied
+		default:
+			list = &a.Blocked
 		}
-		seen[target] = true
-		out = append(out, target)
+		key := fmt.Sprintf("%p\x00%s", list, target)
+		if !seen[key] {
+			seen[key] = true
+			*list = append(*list, target)
+		}
 	}
-	return out
+	return a
 }
 
 // runPair prepares, runs, and collects one (agent, task) pair. stat must be
@@ -372,25 +422,36 @@ func runPair(
 		}
 	}
 
-	denied := deniedEgress(filepath.Join(outDir, "egress.log"))
-	if len(denied) > 0 {
-		lg.warn("[%s x %s] egress denied: %s", p.Agent, p.Task, strings.Join(denied, ", "))
+	ea := readEgressAudit(filepath.Join(outDir, "egress.log"))
+	if len(ea.Denied) > 0 {
+		lg.warn("[%s x %s] egress denied (no rule): %s", p.Agent, p.Task, strings.Join(ea.Denied, ", "))
+	}
+	if len(ea.Blocked) > 0 {
+		lg.warn("[%s x %s] egress blocked (by policy): %s", p.Agent, p.Task, strings.Join(ea.Blocked, ", "))
 	}
 
 	meta := pairMeta{
 		Agent: p.Agent, Task: p.Task,
 		Sandbox: sbID, Image: sb.Image,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
-		PatsVersion: version.Info.Version, DeniedEgress: denied,
+		PatsVersion:  version.Info.Version,
+		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
 		Summary: summarize(a.Harness, filepath.Join(outDir, "stdout.log")),
+	}
+	if h.spec.Egress.Set {
+		meta.Egress = &egressRecord{
+			Policy:   h.spec.Egress.Policy,
+			Image:    proxyImageID(ctx, sb),
+			Requests: ea.Requests, BytesIn: ea.In, BytesOut: ea.Out,
+		}
 	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err
 	}
 
 	// final net count straight from the audit log (the bar's poll may lag).
-	if n, err := countLines(filepath.Join(outDir, "egress.log")); err == nil {
-		atomic.StoreInt64(&stat.net, int64(n))
+	if h.spec.Egress.Set {
+		atomic.StoreInt64(&stat.net, int64(ea.Requests))
 		atomic.StoreInt32(&stat.netSeen, 1)
 	}
 	// line 1: the verdict (level by status). line 2: the stats, indented under it.

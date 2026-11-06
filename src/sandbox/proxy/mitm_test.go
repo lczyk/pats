@@ -105,7 +105,11 @@ func TestMitmE2E(t *testing.T) {
 	assert.Equal(t, string(body), "hello:/ok")
 	// the audit sees the full url, query included.
 	ev := audit.last(t)
+	assert.Equal(t, ev.Ev, "req")
+	assert.Equal(t, ev.Kind, "mitm")
 	assert.Equal(t, ev.Allowed, true)
+	assert.Equal(t, ev.Status, 200)
+	assert.Equal(t, ev.Revocation, "unchecked") // the test server staples nothing
 	assert.That(t, strings.HasSuffix(ev.URL, "/ok?token=abc"), "audit url %q", ev.URL)
 
 	resp, err = client.Get(upstream.URL + "/secret/answer.yaml")

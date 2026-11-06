@@ -22,10 +22,11 @@ func statsReport(w io.Writer, runDir string) {
 
 	fmt.Fprintln(w, "\nrun stats:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  PAIR\tSTATUS\tTIME\tTURNS\tIN\tOUT\tCOST\tLINES\tTOOLS\tNET\tDENIED")
+	fmt.Fprintln(tw, "  PAIR\tSTATUS\tTIME\tTURNS\tIN\tOUT\tCOST\tLINES\tTOOLS\tNET\tBYTES\tDENIED\tBLOCKED")
 
 	var totTime, totCost float64
-	var totTurns, totIn, totOut, totLines, totTools, totNet, totDenied int
+	var totTurns, totIn, totOut, totLines, totTools, totNet, totDenied, totBlocked int
+	var totBytes int64
 	for _, m := range metas {
 		var pm pairMeta
 		if b, err := os.ReadFile(m); err != nil || json.Unmarshal(b, &pm) != nil {
@@ -33,7 +34,8 @@ func statsReport(w io.Writer, runDir string) {
 		}
 		dir := filepath.Dir(m)
 		lines, _ := countLines(filepath.Join(dir, "stdout.log"))
-		net, _ := countLines(filepath.Join(dir, "egress.log"))
+		ea := readEgressAudit(filepath.Join(dir, "egress.log"))
+		net, nbytes := ea.Requests, ea.In+ea.Out
 
 		turns, in, out, cost, tools := "-", "-", "-", "-", "-"
 		if s := pm.Summary; s != nil {
@@ -55,12 +57,28 @@ func statsReport(w io.Writer, runDir string) {
 		totTime += pm.DurationS
 		totLines += lines
 		totNet += net
+		totBytes += nbytes
 		totDenied += len(pm.DeniedEgress)
+		totBlocked += len(pm.BlockedEgress)
 
-		fmt.Fprintf(tw, "  %s/%s\t%s\t%.1fs\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%d\n",
-			pm.Agent, pm.Task, pm.Status, pm.DurationS, turns, in, out, cost, lines, tools, net, len(pm.DeniedEgress))
+		fmt.Fprintf(tw, "  %s/%s\t%s\t%.1fs\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%d\t%d\n",
+			pm.Agent, pm.Task, pm.Status, pm.DurationS, turns, in, out, cost, lines, tools, net, humanBytes(nbytes),
+			len(pm.DeniedEgress), len(pm.BlockedEgress))
 	}
-	fmt.Fprintf(tw, "  total\t\t%.1fs\t%d\t%d\t%d\t$%.3f\t%d\t%d\t%d\t%d\n",
-		totTime, totTurns, totIn, totOut, totCost, totLines, totTools, totNet, totDenied)
+	fmt.Fprintf(tw, "  total\t\t%.1fs\t%d\t%d\t%d\t$%.3f\t%d\t%d\t%d\t%s\t%d\t%d\n",
+		totTime, totTurns, totIn, totOut, totCost, totLines, totTools, totNet, humanBytes(totBytes), totDenied, totBlocked)
 	tw.Flush()
+}
+
+// humanBytes renders a byte count with a binary suffix: 512, 1.5k, 3.2M.
+func humanBytes(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprint(n)
+	case n < 1<<20:
+		return fmt.Sprintf("%.1fk", float64(n)/1024)
+	case n < 1<<30:
+		return fmt.Sprintf("%.1fM", float64(n)/(1<<20))
+	}
+	return fmt.Sprintf("%.1fG", float64(n)/(1<<30))
 }

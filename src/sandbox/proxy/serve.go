@@ -103,7 +103,7 @@ func New(o Options) (*Proxy, error) {
 	}
 	guard := &Guard{AllowPrivate: o.Policy.AllowPrivate, Refuse: o.Refuse}
 	p.Dial = Dialer(guard).DialContext
-	tlsConf := &tls.Config{}
+	tlsConf := &tls.Config{VerifyConnection: checkStaple}
 	if o.Roots != nil {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(o.Roots) {

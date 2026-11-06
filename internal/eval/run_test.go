@@ -565,24 +565,31 @@ s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
 	assert.ContainsString(t, err.Error(), "no (agent, task) pairs to run")
 }
 
-func TestDeniedEgress(t *testing.T) {
-	assert.That(t, deniedEgress(filepath.Join(t.TempDir(), "nope")) == nil, "missing file -> nil")
+func TestReadEgressAudit(t *testing.T) {
+	assert.Equal(t, readEgressAudit(filepath.Join(t.TempDir(), "nope")).Requests, 0)
 
 	p := filepath.Join(t.TempDir(), "egress.log")
 	require.NoError(t, os.WriteFile(p, []byte(`
-{"host":"ok.example.com","allowed":true}
-{"host":"evil.example.com","allowed":false}
-{"host":"evil.example.com","allowed":false}
-{"host":"gh.com","url":"gh.com/x/secrets","allowed":false}
+{"ev":"open","host":"ok.example.com","kind":"tunnel","allowed":true,"rule":"ok.example.com"}
+{"ev":"close","host":"ok.example.com","allowed":true,"in":1000,"out":24}
+{"ev":"open","host":"evil.example.com","allowed":false,"rule":"default"}
+{"ev":"open","host":"evil.example.com","allowed":false,"rule":"default"}
+{"ev":"req","host":"gh.com","url":"gh.com/x/secrets","allowed":false,"rule":"gh.com/x/*"}
+{"ev":"req","host":"docs.test","url":"docs.test/private","allowed":false,"rule":"docs.test/public*","reason":"url-not-allowed"}
+{"ev":"open","host":"lan.test","allowed":false,"rule":"lan.test","reason":"private"}
+{"ev":"open","host":"front.test","allowed":false,"rule":"front.test","reason":"sni-mismatch"}
+{"ev":"req","host":"bad.test","url":"bad.test/","allowed":false,"rule":"bad.test","reason":"revoked","status":502}
+{"ev":"open","host":"down.test","allowed":false,"rule":"down.test","reason":"dial"}
+{"ev":"req","host":"apt.test","url":"apt.test/x.deb","allowed":true,"rule":"apt.test","in":500,"out":10}
 not json
 `), 0o644))
-	got := deniedEgress(p)
-	// unique targets, url preferred over host, allowed + malformed skipped.
-	want := []string{"evil.example.com", "gh.com/x/secrets"}
-	require.Equal(t, len(got), len(want))
-	for i := range want {
-		assert.Equal(t, got[i], want[i])
-	}
+	a := readEgressAudit(p)
+	assert.EqualArrays(t, a.Denied, []string{"evil.example.com"})
+	assert.EqualArrays(t, a.Blocked, []string{"gh.com/x/secrets", "docs.test/private", "lan.test", "front.test"})
+	assert.EqualArrays(t, a.Failed, []string{"bad.test/", "down.test"})
+	assert.Equal(t, a.Requests, 10) // open + req, close lines excluded
+	assert.Equal(t, a.In, int64(1500))
+	assert.Equal(t, a.Out, int64(34))
 }
 
 func TestHarnessHomeCodexCredentials(t *testing.T) {

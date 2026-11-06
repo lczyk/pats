@@ -114,7 +114,7 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if chi.ServerName != "" {
 				if got, err := NormalizeHost(chi.ServerName); err != nil || got != want {
-					p.audit(Event{Host: host, Port: portStr(port), Rule: "mitm", Reason: "sni-mismatch"})
+					p.audit(Event{Ev: "open", Host: host, Port: portStr(port), Kind: "mitm", Rule: "mitm", Reason: "sni-mismatch"})
 					return nil, errSNIMismatch
 				}
 			}
@@ -141,27 +141,39 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 		if inner.URL.RawQuery != "" {
 			fullURL += "?" + inner.URL.RawQuery
 		}
+		ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "mitm",
+			Method: inner.Method, URL: fullURL, UA: inner.UserAgent()}
 		if innerHost, _ := splitHostPort(inner.Host, port); !sameHost(innerHost, want) {
-			p.audit(Event{Host: host, Port: portStr(port), URL: fullURL, Rule: "mitm", Reason: "host-mismatch"})
-			p.refuseTLS(tconn)
+			ev.Rule, ev.Reason = "mitm", "host-mismatch"
+			ev.Status = p.refuseTLS(tconn)
+			p.audit(ev)
 			return
 		}
 		v := p.Rule.Decide(host, port, inner.Method, inner.URL.Path, inner.URL.RawQuery)
+		ev.Rule, ev.Reason = v.Rule, v.Reason
 		if !v.Allowed {
-			p.audit(Event{Host: host, Port: portStr(port), URL: fullURL, Rule: v.Rule, Reason: v.Reason})
-			p.refuseTLS(tconn)
+			ev.Status = p.refuseTLS(tconn)
+			p.audit(ev)
 			return
 		}
-		p.audit(Event{Host: host, Port: portStr(port), Allowed: true, URL: fullURL, Rule: v.Rule})
 
+		start := time.Now()
+		body := countBody(inner)
 		inner.URL.Scheme = "https"
 		inner.URL.Host = net.JoinHostPort(host, portStr(port))
 		inner.RequestURI = ""
 		resp, err := p.Upstream.RoundTrip(inner)
 		if err != nil {
+			ev.Reason, ev.Status = upstreamReason(err), http.StatusBadGateway
+			ev.Out, ev.MS = body.n, time.Since(start).Milliseconds()
+			p.audit(ev)
 			(&http.Response{StatusCode: http.StatusBadGateway, ProtoMajor: 1, ProtoMinor: 1,
 				Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
 			return
+		}
+		ev.Revocation = "unchecked"
+		if resp.TLS != nil && len(resp.TLS.OCSPResponse) > 0 {
+			ev.Revocation = "good" // a revoked staple fails the round trip above
 		}
 		// the upstream leg may be http/2, but the client side of this conn is
 		// http/1.1 (see NextProtos above), so the response can't be written
@@ -182,8 +194,12 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 		} else {
 			resp.TransferEncoding = nil
 		}
+		in := &countReader{r: resp.Body}
+		resp.Body = in
 		err = resp.Write(tconn)
 		resp.Body.Close()
+		ev.Allowed, ev.Status, ev.In, ev.Out, ev.MS = true, resp.StatusCode, in.n, body.n, time.Since(start).Milliseconds()
+		p.audit(ev)
 		if err != nil || resp.Close || inner.Close {
 			return
 		}
@@ -197,8 +213,9 @@ func sameHost(got, want string) bool {
 }
 
 // refuseTLS is refuse for a request inside a mitm'd connection: the same
-// DenyResponse shapes, written through the tls conn.
-func (p *Proxy) refuseTLS(tconn *tls.Conn) {
+// DenyResponse shapes, written through the tls conn. it returns the status
+// sent, 0 for a reset.
+func (p *Proxy) refuseTLS(tconn *tls.Conn) int {
 	status := http.StatusForbidden
 	switch p.DenyResponse {
 	case "404":
@@ -211,8 +228,9 @@ func (p *Proxy) refuseTLS(tconn *tls.Conn) {
 			_ = tc.SetLinger(0)
 		}
 		tconn.NetConn().Close()
-		return
+		return 0
 	}
 	(&http.Response{StatusCode: status, ProtoMajor: 1, ProtoMinor: 1,
 		Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
+	return status
 }

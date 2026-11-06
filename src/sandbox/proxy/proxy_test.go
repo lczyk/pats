@@ -52,17 +52,41 @@ func (a *auditBuf) events(t *testing.T) []Event {
 	return out
 }
 
-// last waits briefly for a new line: the proxy may audit a refusal after the
-// client has already seen the connection drop.
+// last waits briefly for a new open or req line (close lines land whenever a
+// tunnel ends, so they are left to closes): the proxy may audit a refusal
+// after the client has already seen the connection drop.
 func (a *auditBuf) last(t *testing.T) Event {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		evs := a.events(t)
+		var evs []Event
+		for _, ev := range a.events(t) {
+			if ev.Ev != "close" {
+				evs = append(evs, ev)
+			}
+		}
 		if n := len(evs); n > a.seen || time.Now().After(deadline) {
 			require.That(t, n > 0, "no audit lines")
 			a.seen = n
 			return evs[n-1]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// closes waits briefly for n close lines and returns them.
+func (a *auditBuf) closes(t *testing.T, n int) []Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var out []Event
+		for _, ev := range a.events(t) {
+			if ev.Ev == "close" {
+				out = append(out, ev)
+			}
+		}
+		if len(out) >= n || time.Now().After(deadline) {
+			return out
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -91,7 +115,13 @@ func TestHandleHTTP(t *testing.T) {
 	assert.Equal(t, resp.StatusCode, 200)
 	assert.Equal(t, string(body), "plain:/ok")
 	ev := audit.last(t)
+	assert.Equal(t, ev.Ev, "req")
+	assert.Equal(t, ev.Kind, "http")
 	assert.Equal(t, ev.Allowed, true)
+	assert.Equal(t, ev.Method, "GET")
+	assert.Equal(t, ev.Status, 200)
+	assert.Equal(t, ev.In, int64(len("plain:/ok")))
+	assert.That(t, strings.HasPrefix(ev.UA, "Go-http-client"), "ua %q", ev.UA)
 	assert.That(t, strings.HasSuffix(ev.URL, "/ok?x=1"), "audit url %q", ev.URL)
 	assert.Equal(t, ev.Rule, uhost)
 
@@ -234,7 +264,19 @@ func TestHandleConnectPipelinedBytes(t *testing.T) {
 	_, err = io.ReadFull(br, got)
 	require.NoError(t, err)
 	assert.Equal(t, string(got), "ping")
-	assert.Equal(t, audit.last(t).Allowed, true)
+	open := audit.last(t)
+	assert.Equal(t, open.Ev, "open")
+	assert.Equal(t, open.Kind, "raw") // not tls, not on 443
+	assert.Equal(t, open.Allowed, true)
+	assert.Equal(t, open.IP, "127.0.0.1")
+
+	// the tunnel's close line carries the bytes each way.
+	conn.Close()
+	cl := audit.closes(t, 1)
+	require.Equal(t, len(cl), 1)
+	assert.Equal(t, cl[0].Out, int64(4))
+	assert.Equal(t, cl[0].In, int64(4))
+	assert.Equal(t, cl[0].Allowed, true)
 }
 
 // clientHello captures the ClientHello a go tls client sends for serverName.

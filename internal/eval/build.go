@@ -475,3 +475,14 @@ func ignoresPats(body string) bool {
 	}
 	return false
 }
+
+// proxyImageID is the id of the sidecar image a proxy-mode sandbox runs, ""
+// when it cannot be read. pullEgressImages made sure it is local.
+func proxyImageID(ctx context.Context, sb config.Sandbox) string {
+	img, _ := sandbox.ProxyImage(sb.Egress.Image)
+	out, err := exec.CommandContext(ctx, sb.Driver, "image", "inspect", "--format", "{{.Id}}", img).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
