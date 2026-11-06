@@ -20,13 +20,15 @@ env:
 
 jobs:
   # rolling aliases follow the newest stable tag (no pre-release suffix). a
-  # workflow_dispatch run publishes under the branch name and never moves them.
+  # workflow_dispatch run publishes under the branch name, with / mapped to -
+  # (a docker tag can't hold a /), and never moves them.
   tags:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     outputs:
+      ref: ${{ steps.tags.outputs.ref }}
       proxy: ${{ steps.tags.outputs.proxy }}
       sandbox: ${{ steps.tags.outputs.sandbox }}
     steps:
@@ -40,15 +42,19 @@ jobs:
         id: tags
         run: |
           stable=$(git tag --list 'v*' | grep -v -- '-' | sort -V | tail -n 1)
-          echo "stable release: ${stable:-none}; this ref: $GITHUB_REF_NAME"
-          proxy="$REGISTRY/egress-proxy:$GITHUB_REF_NAME"
-          sandbox="$REGISTRY/sandbox:$GITHUB_REF_NAME"
+          ref="${GITHUB_REF_NAME//\//-}"
+          echo "stable release: ${stable:-none}; this ref: $GITHUB_REF_NAME (tag $ref)"
+          proxy="$REGISTRY/egress-proxy:$ref"
+          sandbox="$REGISTRY/sandbox:$ref"
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" = "$stable" ]; then
               proxy="$proxy $REGISTRY/egress-proxy:latest"
               sandbox="$sandbox $REGISTRY/sandbox:latest $REGISTRY/sandbox:26.04"
           fi
-          echo "proxy=$proxy" >> "$GITHUB_OUTPUT"
-          echo "sandbox=$sandbox" >> "$GITHUB_OUTPUT"
+          {
+              echo "ref=$ref"
+              echo "proxy=$proxy"
+              echo "sandbox=$sandbox"
+          } >> "$GITHUB_OUTPUT"
 
   # the proxy protocol is coupled to the pats version, hence the version tag.
   egress-proxy:
@@ -105,10 +111,15 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
               docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # --provenance=false keeps the pushed digest a plain image manifest, so
+      # sandbox-tags joins exactly two platform entries. an attestation
+      # (provenance, sbom) makes it an index of image + attestation, and the
+      # join then carries stray unknown/unknown entries or fails outright.
       - name: Build + push by digest
         run: |
           docker buildx create --use
           docker buildx build --platform "linux/${{ matrix.arch }}" \
+              --provenance=false \
               --file images/Dockerfile.sandbox-26.04 \
               --output "type=image,name=$REGISTRY/sandbox,push-by-digest=true,name-canonical=true,push=true" \
               --metadata-file "$RUNNER_TEMP/meta.json" \
@@ -148,10 +159,12 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         env:
           TAGS: ${{ needs.tags.outputs.sandbox }}
+          REF: ${{ needs.tags.outputs.ref }}
         run: |
           args=()
           for t in $TAGS; do args+=(--tag "$t"); done
           refs=()
           for d in *; do refs+=("$REGISTRY/sandbox@sha256:$d"); done
           docker buildx imagetools create "${args[@]}" "${refs[@]}"
-          docker buildx imagetools inspect "$REGISTRY/sandbox:$GITHUB_REF_NAME"
+          docker buildx imagetools inspect "$REGISTRY/sandbox:$REF" --format '{{json .Manifest}}' |
+              jq -e '[.manifests[].platform.architecture] | sort == ["amd64", "arm64"]'
