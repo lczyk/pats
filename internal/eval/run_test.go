@@ -622,7 +622,7 @@ func TestEgressForIncludesCodexHosts(t *testing.T) {
 		Set:    true,
 		Policy: proxy.Policy{Default: "deny", Allow: []string{"task.example.com"}},
 	}}
-	eg := egressFor(sb, "codex-cli-keyless", "/tmp/audit", true)
+	eg := egressFor(sb, config.TaskEgress{}, "codex-cli-keyless", "/tmp/audit", true)
 	assert.Equal(t, eg.AuditPath, "/tmp/audit")
 	assert.Equal(t, eg.SelfTest, true)
 	want := map[string]bool{
@@ -642,10 +642,32 @@ func TestNewHarnessSandboxEnv(t *testing.T) {
 	sb := config.Sandbox{ID: "s", Driver: "docker", Image: "img", Env: map[string]string{"DENO_CERT": "/sbx-ca/bundle.pem", "PATS_PROMPT_FILE": "mine"}}
 	a := config.Agent{ID: "a", Harness: "opencode-openrouter", Model: "m"}
 	var out bytes.Buffer
-	h, err := newHarness(Options{Out: &out}, a, sb, t.TempDir(), "r", "", "a x t")
+	h, err := newHarness(Options{Out: &out}, a, sb, config.TaskEgress{}, t.TempDir(), "r", "", "a x t")
 	require.NoError(t, err)
 	defer h.cleanup()
 	assert.Equal(t, h.spec.Env["DENO_CERT"], "/sbx-ca/bundle.pem")
 	assert.NotEqual(t, h.spec.Env["PATS_PROMPT_FILE"], "mine")
 	assert.Equal(t, sb.Env["DENO_CERT"], "/sbx-ca/bundle.pem") // the config's map is not written to
+}
+
+// a task's lists union over the sandbox's; the sandbox keeps its scalars, and
+// the config's slices are never written to.
+func TestEgressForTaskUnion(t *testing.T) {
+	sb := config.Sandbox{Egress: config.Egress{
+		Set:    true,
+		Policy: proxy.Policy{Default: "deny", DenyResponse: "404", Allow: []string{"a.test"}, Deny: []string{"a.test/x*"}},
+	}}
+	te := config.TaskEgress{Set: true, Allow: []string{"pypi.org", "a.test"}, Deny: []string{"github.com/*/answer*"}}
+	eg := egressFor(sb, te, "opencode-openrouter", "", false)
+	assert.EqualArrays(t, eg.Policy.Deny, []string{"a.test/x*", "github.com/*/answer*"})
+	assert.Equal(t, eg.Policy.Allow[0], "a.test")
+	assert.Equal(t, eg.Policy.Allow[1], "pypi.org")
+	assert.Equal(t, eg.Policy.DenyResponse, "404")
+	assert.Equal(t, len(sb.Egress.Policy.Allow), 1)
+	assert.Equal(t, len(sb.Egress.Policy.Deny), 1)
+
+	// a sandbox without the proxy ignores task lists (validation refuses the pairing).
+	open := egressFor(config.Sandbox{}, te, "opencode-openrouter", "", false)
+	assert.Equal(t, open.Set, false)
+	assert.Equal(t, len(open.Policy.Allow), 0)
 }

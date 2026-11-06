@@ -148,6 +148,44 @@ type Task struct {
 	CollectCmd string            `yaml:"collect-cmd"`      // command gathering outputs
 	Timeout    string            `yaml:"timeout"`          // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
 	Env        map[string]string `yaml:"env" tmpl:"-"`     // exported to the task's host scripts
+	Egress     TaskEgress        `yaml:"egress"`           // unioned over the sandbox's lists for this task's pairs
+}
+
+// TaskEgress is what a task adds to its sandbox's egress policy: entries for
+// the hosts it needs and the urls that must stay out of reach. posture
+// (none, default, deny-response, ...) is the sandbox's alone, so it has no
+// field here and the unmarshal rejects it.
+type TaskEgress struct {
+	Set   bool     `yaml:"-"`
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
+}
+
+type taskEgressFields TaskEgress
+
+// UnmarshalYAML checks the mapping's keys (the loader's unknown-field check
+// stops at the item) and records that the task set one.
+func (e *TaskEgress) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: egress: a task takes a mapping of allow and deny", node.Line)
+	}
+	known := yamlKeys(reflect.TypeOf(taskEgressFields{}))
+	var errs errList
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if k := node.Content[i].Value; !known[k] {
+			errs.add("line %d: egress: unknown field %q (a task sets only allow and deny; the rest is the sandbox's)", node.Content[i].Line, k)
+		}
+	}
+	if err := errs.err(); err != nil {
+		return err
+	}
+	var f taskEgressFields
+	if err := node.Decode(&f); err != nil {
+		return err
+	}
+	*e = TaskEgress(f)
+	e.Set = true
+	return nil
 }
 
 // DefaultTimeout bounds an agent run when a task sets no timeout.

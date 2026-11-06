@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // Validate checks a parsed config: ids, per-kind fields, cross-references,
@@ -22,6 +24,7 @@ func (c *Config) Validate() error {
 	c.validateTasks(add)
 	c.validateScorers(add)
 	c.validateSuites(add)
+	c.validateTaskEgress(add)
 
 	// suite expansion doubles as referential validation (dangling refs,
 	// duplicate ids after expansion).
@@ -166,6 +169,58 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 	}
 	if s.Egress.Image != "" && s.Driver != "docker" {
 		add("sandbox %q: egress image is docker-only (driver %q runs the proxy in-process)", s.ID, s.Driver)
+	}
+}
+
+// validateTaskEgress checks a task's egress entries, then every pair that
+// runs the task: its rules only exist under a sandbox that runs the proxy,
+// and a bare allow host is dead under a denylisting one.
+func (c *Config) validateTaskEgress(add func(string, ...any)) {
+	tasks := map[string]Task{}
+	for _, t := range c.Tasks {
+		tasks[t.ID] = t
+		if !t.Egress.Set {
+			continue
+		}
+		if _, err := (proxy.Policy{Allow: t.Egress.Allow, Deny: t.Egress.Deny}).Rule(); err != nil {
+			add("task %q: egress: %v", t.ID, err)
+		}
+	}
+	pairs, err := c.ExpandTestPairs()
+	if err != nil {
+		return // reported by Validate
+	}
+	sandboxes := map[string]Sandbox{}
+	for _, s := range c.Sandboxes {
+		sandboxes[s.ID] = s
+	}
+	agents := map[string]Agent{}
+	for _, a := range c.Agents {
+		agents[a.ID] = a
+	}
+	seen := map[[2]string]bool{}
+	for _, p := range pairs {
+		t := tasks[p.Task]
+		if !t.Egress.Set {
+			continue
+		}
+		sbID, err := c.ResolveSandbox(agents[p.Agent])
+		if err != nil || seen[[2]string{p.Task, sbID}] {
+			continue
+		}
+		seen[[2]string{p.Task, sbID}] = true
+		sb := sandboxes[sbID]
+		if !sb.Egress.Set {
+			add("task %q sets egress, but agent %q runs it in sandbox %q, whose egress is %s -- give the sandbox an egress mapping", p.Task, p.Agent, sbID, sb.Egress.Mode())
+			continue
+		}
+		if sb.Egress.Default == "allow" {
+			for _, line := range t.Egress.Allow {
+				if e, err := proxy.ParseEntry(line, false); err == nil && !e.URL() {
+					add("task %q: egress allow %q is dead under sandbox %q's default: allow", p.Task, line, sbID)
+				}
+			}
+		}
 	}
 }
 

@@ -360,7 +360,7 @@ func runPair(
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
 	// precedes prepare so prepare can seed harness config into it.
-	h, err := newHarness(opts, a, sb, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
+	h, err := newHarness(opts, a, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
 	if err != nil {
 		return err
 	}
@@ -533,11 +533,12 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0o600)
 }
 
-// egressFor renders a sandbox's egress policy for one agent run. under an
-// allowlisting proxy the harness's own hosts (inference, token refresh) are
-// merged in, so pats.yaml only lists what the task needs. selfTest asks the
-// driver to prove the sandbox has no route out first (preflight does).
-func egressFor(sb config.Sandbox, harness, auditPath string, selfTest bool) sandbox.Egress {
+// egressFor renders the egress policy one agent run gets: the sandbox's, with
+// the task's lists unioned in (the sandbox keeps every scalar), and under an
+// allowlisting proxy the harness's own hosts (inference, token refresh), so
+// pats.yaml only lists what the task needs. selfTest asks the driver to prove
+// the sandbox has no route out first (preflight does).
+func egressFor(sb config.Sandbox, te config.TaskEgress, harness, auditPath string, selfTest bool) sandbox.Egress {
 	eg := sandbox.Egress{
 		None:      sb.Egress.None,
 		Set:       sb.Egress.Set,
@@ -546,7 +547,12 @@ func egressFor(sb config.Sandbox, harness, auditPath string, selfTest bool) sand
 		AuditPath: auditPath,
 		SelfTest:  selfTest,
 	}
-	if eg.Set && eg.Policy.Default != "allow" {
+	if !eg.Set {
+		return eg
+	}
+	eg.Policy.Allow = mergeHosts(eg.Policy.Allow, te.Allow)
+	eg.Policy.Deny = mergeHosts(eg.Policy.Deny, te.Deny)
+	if eg.Policy.Default != "allow" {
 		eg.Policy.Allow = mergeHosts(eg.Policy.Allow, agent.RequiredHosts[harness])
 	}
 	return eg

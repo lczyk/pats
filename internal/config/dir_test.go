@@ -162,3 +162,15 @@ func TestLoadResolvesDirFromConfigFile(t *testing.T) {
 	require.Len(t, c.Tasks, 1)
 	assert.Equal(t, c.Tasks[0].Dir, filepath.Join("cases", "a"))
 }
+
+// a task directory's task.yaml carries its own egress additions.
+func TestParseDirTaskEgress(t *testing.T) {
+	root := tree(t, map[string]string{
+		"cases/knockout/curl/task.yaml": "prompt: p\negress:\n  deny:\n    - 'github.com/*/chisel-releases*'\n",
+	})
+	c, err := ParseIn(root, []byte("cases:\n  kind: task\n  dir: cases\n"))
+	require.NoError(t, err)
+	require.Equal(t, len(c.Tasks), 1)
+	assert.Equal(t, c.Tasks[0].Egress.Set, true)
+	assert.EqualArrays(t, c.Tasks[0].Egress.Deny, []string{"github.com/*/chisel-releases*"})
+}

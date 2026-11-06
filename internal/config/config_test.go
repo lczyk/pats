@@ -278,6 +278,9 @@ func TestValidateErrors(t *testing.T) {
 		{"sandbox env bad name", "s: {kind: sandbox, items: {s: {image: img, env: {1X: v}}}}\n", "not a valid variable name"},
 		{"sandbox env PATS_", "s: {kind: sandbox, items: {s: {image: img, env: {PATS_X: v}}}}\n", "PATS_* is reserved"},
 		{"sandbox env HOME", "s: {kind: sandbox, items: {s: {image: img, env: {HOME: /x}}}}\n", "env HOME is set by pats"},
+		{"task egress bad entry", "s: {kind: sandbox, items: {s: {image: img, egress: {}}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p, egress: {deny: ['*/x']}}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n", "literal hostname"},
+		{"task egress under an open sandbox", base + "x: {kind: task, items: {x: {prompt: p, egress: {deny: ['a.test/x*']}}}}\nsu2: {kind: suite, items: {su2: {agents: a, tasks: x}}}\n", "whose egress is open"},
+		{"task egress dead under a denylist", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow}}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p, egress: {allow: [pypi.org]}}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n", "is dead under sandbox"},
 		{"egress none under an agent", "s: {kind: sandbox, items: {s: {image: img, egress: none}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n", "needs the network"},
 		{"duplicate id within a suite axis", base + "su2: {kind: suite, items: {su2: {agents: [a, a], tasks: t}}}\n", "duplicate agent \"a\" in agents"},
 		{"duplicate after vector expansion", base + "su2: {kind: suite, items: {su2: {agents: [a, a], tasks: t}}}\n", "duplicate agent"},
@@ -313,6 +316,7 @@ func TestValidateAccepts(t *testing.T) {
 		{"egress denylist", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, deny: [evil.com]}}}}\n"},
 		{"egress url allow under default allow", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, allow: ['a.test/public*']}}}}\n"},
 		{"egress url entries and a regexp", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: ['.githubusercontent.com/canonical/*', 'api.github.com ~^/repos/'], deny: ['github.com/*/x*']}}}}\n"},
+		{"task egress under a proxy sandbox", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: [a.test]}}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p, egress: {allow: [pypi.org], deny: ['github.com/*/answer*']}}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n"},
 		{"sandbox env", "s: {kind: sandbox, items: {s: {image: img, env: {DENO_CERT: /sbx-ca/bundle.pem}}}}\n"},
 		{"egress none with no agents", "s: {kind: sandbox, items: {s: {image: img, egress: none}}}\n"},
 		{"egress empty mapping is a proxy", "s: {kind: sandbox, items: {s: {image: img, egress: {}}}}\n"},
@@ -333,6 +337,11 @@ func TestEgressParseErrors(t *testing.T) {
 	assert.Error(t, err, "egress: unknown field \"mode\"")
 	_, err = Parse([]byte("s: {kind: sandbox, items: {s: {image: img, egress: open}}}\n"))
 	assert.Error(t, err, "want none or a mapping")
+	// a task carries no posture: that is the sandbox's.
+	_, err = Parse([]byte("x: {kind: task, items: {x: {prompt: p, egress: {default: allow}}}}\n"))
+	assert.Error(t, err, "unknown field \"default\"")
+	_, err = Parse([]byte("x: {kind: task, items: {x: {prompt: p, egress: none}}}\n"))
+	assert.Error(t, err, "a task takes a mapping")
 }
 
 // the three shapes of `egress`: absent is open, the scalar none is no
@@ -371,4 +380,25 @@ func FuzzParse(f *testing.F) {
 			_ = c.Validate()
 		}
 	})
+}
+
+// task egress follows the vectors rule: an item's block replaces the
+// defaults' whole, and a null drops it.
+func TestTaskEgressDefaults(t *testing.T) {
+	c := parseT(t, `x:
+  kind: task
+  defaults: {prompt: p, egress: {deny: ['a.test/x*'], allow: [b.test]}}
+  items:
+    inherits: ~
+    replaces: {egress: {allow: [c.test]}}
+    drops: {egress: ~}
+`)
+	got := map[string]TaskEgress{}
+	for _, tk := range c.Tasks {
+		got[tk.ID] = tk.Egress
+	}
+	assert.EqualArrays(t, got["inherits"].Deny, []string{"a.test/x*"})
+	assert.EqualArrays(t, got["replaces"].Allow, []string{"c.test"})
+	assert.Equal(t, len(got["replaces"].Deny), 0)
+	assert.Equal(t, got["drops"].Set, false)
 }
