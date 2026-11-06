@@ -30,14 +30,15 @@ type harness struct {
 const promptName = "prompt.txt"
 
 // newHarness resolves agent a into sandbox sb. the caller writes the prompt to
-// promptPath() before run; auditPath "" turns the egress audit log off; label
-// prefixes the no-creds warning.
-func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, auditPath, label string) (*harness, error) {
+// promptPath() before run; runID "" (preflight) leaves PATS_RUN_ID unset;
+// auditPath "" turns the egress audit log off; label prefixes the no-creds
+// warning.
+func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, runID, auditPath, label string) (*harness, error) {
 	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
 	if err != nil {
 		return nil, err
 	}
-	env := agent.Env(a, homeMount+"/"+promptName, sandbox.WorkMount)
+	env := agent.Env(a, homeMount+"/"+promptName, sandbox.WorkMount, runID)
 	cenv, hasToken := agent.CredEnv(a.Kind)
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 

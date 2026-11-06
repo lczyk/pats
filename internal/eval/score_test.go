@@ -53,6 +53,31 @@ func TestScoreExec(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// scorers get PATS_RUN_ID (the run dir's basename) and PATS_RUN_DIR (the dir
+// holding every pair's output).
+func TestScoreExecRunEnv(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "run-env.sh"),
+		[]byte("#!/bin/sh\n[ \"$PATS_RUN_ID\" = \"$(basename \"$PATS_RUN_DIR\")\" ] && [ -d \"$PATS_RUN_DIR/a/t1\" ] && echo 1.0 || echo 0.0\n"), 0o755))
+	run := filepath.Join(dir, ".pats", "runs", "001-20260621-fluffy-bunny")
+	require.NoError(t, os.MkdirAll(filepath.Join(run, "a", "t1"), 0o755))
+
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t1", Prompt: "p.txt"}},
+		Scorers:   []config.Scorer{{ID: "run-env", Score: "run-env.sh"}},
+		Suites: []config.Suite{{
+			ID: "su", Agents: config.StrList{"a"},
+			Tasks: config.StrList{"t1"}, Scorers: config.StrList{"run-env"},
+		}},
+	}
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
+	require.NoError(t, err)
+	assert.Equal(t, rep.PerPair["a/t1"], 1.0)
+}
+
 // scorers get PATS_AGENT_KIND alongside PATS_MODEL (README documents both).
 func TestScorerEnvIncludesAgentKind(t *testing.T) {
 	dir := t.TempDir()

@@ -36,7 +36,7 @@ func TestHarnessThroughSandbox(t *testing.T) {
 		`echo "model=$PATS_MODEL"; echo "prompt=$PATS_PROMPT_FILE"; echo hello > out.txt`)()
 
 	a := config.Agent{ID: "x", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s"}
-	env := Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount)
+	env := Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount, "")
 	spec, err := Spec(a, dir, env)
 	require.NoError(t, err)
 

@@ -339,7 +339,9 @@ func TestRunPairTimeoutStatus(t *testing.T) {
 // runErr == nil || timedOut collect condition, and fails against the old
 // runErr == nil gate.
 func TestRunPairCollectsOnTimeout(t *testing.T) {
-	fake := &fakeSandbox{blockUntilDone: true, err: errors.New("some docker hiccup")}
+	var sbEnv map[string]string
+	fake := &fakeSandbox{blockUntilDone: true, err: errors.New("some docker hiccup"),
+		onRun: func(spec sandbox.Spec) { sbEnv = spec.Env }}
 	old := newSandbox
 	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
@@ -347,7 +349,7 @@ func TestRunPairCollectsOnTimeout(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
-		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n"), 0o755))
+		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\nprintf '%s\\n%s\\n' \"$PATS_RUN_DIR\" \"$PATS_RUN_ID\" > \"$PATS_OUTPUT_DIR/run-env\"\n"), 0o755))
 
 	cfg := &config.Config{
 		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
@@ -367,6 +369,13 @@ func TestRunPairCollectsOnTimeout(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
 	assert.NoError(t, err) // collect ran despite runErr != nil, because the pair timed out
+
+	// host scripts see the run dir and its basename; the sandbox gets the id only.
+	runEnv, err := os.ReadFile(filepath.Join(runDir, "a", "t", "run-env"))
+	require.NoError(t, err)
+	assert.Equal(t, string(runEnv), runDir+"\n"+filepath.Base(runDir)+"\n")
+	assert.Equal(t, sbEnv["PATS_RUN_ID"], filepath.Base(runDir))
+	assert.Equal(t, sbEnv["PATS_RUN_DIR"], "")
 }
 
 // COVER: the other half of the collect gate -- sandbox setup (egress in

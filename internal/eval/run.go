@@ -293,6 +293,8 @@ func runPair(
 	// host-side env for prepare/collect scripts (they run in the project dir
 	// and seed/gather the sandbox via these paths).
 	hostEnv := map[string]string{
+		"PATS_RUN_ID":     filepath.Base(runDir),
+		"PATS_RUN_DIR":    runDir,
 		"PATS_AGENT_ID":   p.Agent,
 		"PATS_AGENT_KIND": a.Kind,
 		"PATS_TASK_ID":    p.Task,
@@ -303,7 +305,7 @@ func runPair(
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
 	// precedes prepare so prepare can seed harness config into it.
-	h, err := newHarness(opts, a, sb, workDir, filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
+	h, err := newHarness(opts, a, sb, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
 	if err != nil {
 		return err
 	}

@@ -100,15 +100,20 @@ func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, 
 }
 
 // Env assembles the PATS_* environment handed to a task-running agent.
-// promptFile + outputDir are in-sandbox paths (see sandbox.WorkMount).
-func Env(a config.Agent, promptFile, outputDir string) map[string]string {
-	return map[string]string{
+// promptFile + outputDir are in-sandbox paths (see sandbox.WorkMount). runID
+// is the run dir's basename, or "" outside a run (preflight).
+func Env(a config.Agent, promptFile, outputDir, runID string) map[string]string {
+	env := map[string]string{
 		"PATS_MODEL":       a.ResolvedModel(),
 		"PATS_AGENT_KIND":  a.Kind,
 		"PATS_PROMPT_FILE": promptFile,
 		"PATS_OUTPUT_DIR":  outputDir,
 		"PATS_EFFORT":      a.Effort,
 	}
+	if runID != "" {
+		env["PATS_RUN_ID"] = runID
+	}
+	return env
 }
 
 // HomeEnv is the kind-specific env derived from the in-sandbox HOME, or nil.

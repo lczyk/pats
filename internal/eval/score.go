@@ -164,7 +164,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 				bar.start(label, &pairStat{}, "", false)
 			}
 
-			score, serr := runScorer(ctx, po, j.sc, j.outDir, j.agent, j.task, agents[j.agent])
+			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.agent, j.task, agents[j.agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
 				jlg.info("[%s x %s] %s = n/a", j.agent, j.task, j.sc.ID)
@@ -236,10 +236,12 @@ type agentInfo struct {
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
 // file scorers exec directly on the host (trusted user scripts); the shebang
 // picks the interpreter. agent scorers pending (they will run under ctx).
-func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, outDir, agent, task string, info agentInfo) (float64, error) {
+func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir, outDir, agent, task string, info agentInfo) (float64, error) {
 	switch sc.Kind {
 	case "":
 		cmd, err := commandFor(opts.ConfigDir, sc.ExecFile(), map[string]string{
+			"PATS_RUN_ID":     filepath.Base(runDir),
+			"PATS_RUN_DIR":    runDir,
 			"PATS_OUTPUT_DIR": outDir,
 			"PATS_AGENT_ID":   agent,
 			"PATS_TASK_ID":    task,
