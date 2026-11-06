@@ -461,6 +461,34 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after the pair")
 }
 
+// a sandbox naming neither image nor build runs on the published pats
+// sandbox pinned to this version.
+func TestRunDefaultSandboxImage(t *testing.T) {
+	var image string
+	old := newSandbox
+	newSandbox = func(driver, img string) (sandbox.Sandbox, error) {
+		image = img
+		return &fakeSandbox{}, nil
+	}
+	defer func() { newSandbox = old }()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	cfg := &config.Config{
+		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container"}},
+		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
+		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
+		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	want, _ := sandbox.SandboxImage("")
+	assert.Equal(t, image, want)
+}
+
 // the prompt is staged in the harness HOME, never in the workdir the agent
 // sees as its cwd.
 func TestRunPairPromptOutsideWorkdir(t *testing.T) {

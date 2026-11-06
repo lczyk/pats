@@ -12,7 +12,6 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
-	"github.com/lczyk/pats/internal/version"
 )
 
 // fakeDocker records every cli invocation and returns canned results, so the
@@ -208,54 +207,4 @@ func TestStartEgressProxyFailureTearsDown(t *testing.T) {
 		assert.Error(t, err, assert.AnyError)
 	}
 	assert.NotNil(t, fd.call("network rm sbx-egr-pats-work-f"))
-}
-
-// TestProxyImagePinsEveryVersionShape covers the shape the toolchain actually
-// stamps into a released binary. `go install module@version` sets
-// debug.BuildInfo's Main.Version to the module semver, which is always
-// `v`-prefixed, and that overrides the bare VERSION-file fallback -- so a
-// release install used to be the one build that never pinned its proxy.
-func TestProxyImagePinsEveryVersionShape(t *testing.T) {
-	saved := version.Info
-	t.Cleanup(func() { version.Info = saved })
-
-	// a made-up version, so a release bump of the real one never rewrites it.
-	const pinned = proxyRepo + ":v1.2.3"
-	const latest = proxyRepo + ":latest"
-
-	for _, tc := range []struct {
-		name    string
-		version string
-		image   string
-		warns   bool
-	}{
-		{"module stamp", "v1.2.3", pinned, false},
-		{"version file fallback", "1.2.3", pinned, false},
-		{"dirty", "v1.2.3-dirty", latest, true},
-		{"pre-release", "0.8.0-rc1", latest, true},
-		{"devel", "(devel)", latest, true},
-		{"unset", "", latest, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			version.Info.Version = tc.version
-			image, warn := ProxyImage("")
-			assert.Equal(t, image, tc.image)
-			assert.Equal(t, warn != "", tc.warns)
-			if tc.warns {
-				// the warning quotes what the binary reports, not the trimmed form
-				assert.That(t, strings.Contains(warn, fmt.Sprintf("%q", tc.version)))
-			}
-		})
-	}
-}
-
-// TestProxyImageConfiguredWins keeps the override ahead of any version logic.
-func TestProxyImageConfiguredWins(t *testing.T) {
-	saved := version.Info
-	t.Cleanup(func() { version.Info = saved })
-	version.Info.Version = ""
-
-	image, warn := ProxyImage("my/own:build")
-	assert.Equal(t, image, "my/own:build")
-	assert.Equal(t, warn, "")
 }

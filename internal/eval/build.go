@@ -34,6 +34,26 @@ func usedSandboxes(cfg *config.Config, pairs []config.TestPair) map[string]bool 
 	return used
 }
 
+// defaultImages fills in the published pats sandbox, pinned to this build's
+// version, for every used sandbox that names neither image nor build. the
+// version warning (dev build -> :latest) is logged once.
+func defaultImages(cfg *config.Config, opts Options, pairs []config.TestPair) {
+	used := usedSandboxes(cfg, pairs)
+	lg := logw{opts.Out, opts.Color}
+	warned := false
+	for i, sb := range cfg.Sandboxes {
+		if !used[sb.ID] || sb.Image != "" || sb.Build != "" {
+			continue
+		}
+		img, warn := sandbox.SandboxImage("")
+		if warn != "" && !warned {
+			lg.warn("%s", warn)
+			warned = true
+		}
+		cfg.Sandboxes[i].Image = img
+	}
+}
+
 // buildImages resolves the `build:` sandboxes used by the run's pairs: each
 // context is hashed first and an image built from identical inputs is reused
 // outright (see buildContextHash); otherwise it's built via its driver
@@ -63,7 +83,8 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		// the dry cache check: hash the build inputs and look for an image
 		// already labelled with that hash -- a hit skips `docker build`
 		// entirely instead of rebuilding and hoping the layer cache holds.
-		hash, err := buildContextHash(ctxDir, dockerfile, dfData, dfErr)
+		base, _ := sandbox.SandboxImage("") // warn (if any) is logged by defaultImages
+		hash, err := buildContextHash(ctxDir, dockerfile, dfData, dfErr, base)
 		if err != nil {
 			hash = "" // fs hiccup -> just build; the build will surface the real error
 		}
@@ -73,7 +94,7 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 			continue
 		}
 		lg.info("building sandbox %q image (%s)... (first build or context changed)", sb.ID, sb.Build)
-		id, err := buildImage(ctx, driver, ctxDir, dockerfile, hash)
+		id, err := buildImage(ctx, driver, ctxDir, dockerfile, hash, base)
 		if err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
@@ -140,10 +161,16 @@ func resolveBuildSpec(configDir, spec string) (ctxDir, dockerfile string, err er
 // running the build.
 const hashLabel = "pats.context-hash"
 
+// baseArg is the build arg carrying the pats sandbox image pinned to this
+// version, so a context can `ARG PATS_SANDBOX` / `FROM ${PATS_SANDBOX}` and
+// track the pats it runs under.
+const baseArg = "PATS_SANDBOX"
+
 // buildImage builds one resolved context and returns the image id. a non-empty
-// hash is stamped onto the image (see hashLabel) so the next run can find it.
-func buildImage(ctx context.Context, driver, ctxDir, dockerfile, hash string) (string, error) {
-	args := []string{"build", "-q", "-f", dockerfile}
+// hash is stamped onto the image (see hashLabel) so the next run can find it;
+// base is handed to the build as PATS_SANDBOX (see baseArg).
+func buildImage(ctx context.Context, driver, ctxDir, dockerfile, hash, base string) (string, error) {
+	args := []string{"build", "-q", "-f", dockerfile, "--build-arg", baseArg + "=" + base}
 	if hash != "" {
 		args = append(args, "--label", hashLabel+"="+hash)
 	}
@@ -197,13 +224,19 @@ func cachedImageID(ctx context.Context, driver, hash string) string {
 //
 // dfData/dfErr are the dockerfile's contents, already read by the caller (see
 // buildImages) -- shared with checkPatsIgnored/usesContext so the dockerfile
-// isn't read more than once per build.
-func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error) (string, error) {
+// isn't read more than once per build. base is the PATS_SANDBOX build arg;
+// it joins the hash only when the dockerfile mentions it, so a new pats
+// version rebuilds contexts that derive from the pats sandbox and leaves the
+// rest cached.
+func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error, base string) (string, error) {
 	if dfErr != nil {
 		return "", dfErr
 	}
 	h := sha256.New()
 	h.Write(dfData)
+	if bytes.Contains(dfData, []byte(baseArg)) {
+		fmt.Fprintf(h, "%s=%s\n", baseArg, base)
+	}
 
 	var patterns []ignorePattern
 	if data, err := os.ReadFile(effectiveIgnoreFile(ctxDir, dockerfile)); err == nil {

@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 
 DOCKER="${DOCKER:-docker}"
 REGISTRY="${REGISTRY:-ghcr.io/lczyk/pats}"
+VERSION=$(cat VERSION)
 
 name="$1"
 arch="${name##*-}"
@@ -32,10 +33,13 @@ case "$flavour" in
             --file "images/Dockerfile.sandbox-$ver" \
             --platform "linux/$arch" \
             .
-        # also apply the plain (arch-less) tag so a local `pats.yaml` image ref
-        # of `:$ver` resolves offline. multiarch manifests for the plain tag
-        # are assembled separately at publish time.
-        "$DOCKER" tag "$REGISTRY/sandbox:$ver-$arch" "$REGISTRY/sandbox:$ver"
+        # also apply the tags a pats built from this checkout resolves to --
+        # :v<version> (the pinned default) and :latest -- plus the plain
+        # ubuntu tag for a pats.yaml that names it, so each resolves offline.
+        # multiarch manifests are assembled separately at publish time.
+        for tag in "v$VERSION" latest "$ver"; do
+            "$DOCKER" tag "$REGISTRY/sandbox:$ver-$arch" "$REGISTRY/sandbox:$tag"
+        done
         ;;
     *)
         echo "unknown flavour: $flavour" >&2

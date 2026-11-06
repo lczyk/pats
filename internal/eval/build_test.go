@@ -143,11 +143,12 @@ func TestBuildContextHash(t *testing.T) {
 		return dir
 	}
 	copies := "FROM scratch\nCOPY x /x\n"
-	hashOf := func(dir string) (string, error) {
+	hashWith := func(dir, base string) (string, error) {
 		dockerfile := filepath.Join(dir, "Dockerfile")
 		data, err := readDockerfile(dockerfile)
-		return buildContextHash(dir, dockerfile, data, err)
+		return buildContextHash(dir, dockerfile, data, err, base)
 	}
+	hashOf := func(dir string) (string, error) { return hashWith(dir, "pats/sandbox:v0") }
 
 	// deterministic across calls.
 	dir := mk(t, map[string]string{"Dockerfile": copies, "x": "1"})
@@ -186,6 +187,17 @@ func TestBuildContextHash(t *testing.T) {
 	h2, err = hashOf(dir)
 	require.NoError(t, err)
 	assert.Equal(t, h1, h2)
+
+	// the PATS_SANDBOX base joins the hash only for a dockerfile that uses it.
+	h3, err = hashWith(dir, "pats/sandbox:v1")
+	require.NoError(t, err)
+	assert.Equal(t, h1, h3)
+	dir = mk(t, map[string]string{"Dockerfile": "ARG PATS_SANDBOX\nFROM ${PATS_SANDBOX}\nRUN true\n"})
+	h1, err = hashOf(dir)
+	require.NoError(t, err)
+	h3, err = hashWith(dir, "pats/sandbox:v1")
+	require.NoError(t, err)
+	assert.That(t, h1 != h3, "base change did not change the hash of a dockerfile that uses it")
 }
 
 // e2e: a tiny no-network context builds and yields an image id; an unchanged
@@ -201,13 +213,13 @@ func TestBuildImage(t *testing.T) {
 	require.NoError(t, err)
 	dfData, dfErr := readDockerfile(df)
 	require.NoError(t, dfErr)
-	hash, err := buildContextHash(ctxDir, df, dfData, dfErr)
+	hash, err := buildContextHash(ctxDir, df, dfData, dfErr, "scratch")
 	require.NoError(t, err)
 
 	// nothing labelled with this hash yet.
 	assert.Equal(t, cachedImageID(context.Background(), "docker", hash), "")
 
-	id, err := buildImage(context.Background(), "docker", ctxDir, df, hash)
+	id, err := buildImage(context.Background(), "docker", ctxDir, df, hash, "scratch")
 	require.NoError(t, err)
 	assert.ContainsString(t, id, "sha256:")
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", id).Run() })
@@ -219,7 +231,7 @@ func TestBuildImage(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("changed\n"), 0o644))
 	dfData2, dfErr2 := readDockerfile(df)
 	require.NoError(t, dfErr2)
-	hash2, err := buildContextHash(ctxDir, df, dfData2, dfErr2)
+	hash2, err := buildContextHash(ctxDir, df, dfData2, dfErr2, "scratch")
 	require.NoError(t, err)
 	assert.That(t, hash != hash2, "edit did not change the hash")
 	assert.Equal(t, cachedImageID(context.Background(), "docker", hash2), "")

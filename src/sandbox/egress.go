@@ -9,55 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/lczyk/pats/internal/version"
 )
-
-// proxyRepo is the published build of the sibling proxy package
-// (src/sandbox/proxy) -- the two speak the PROXY_* env protocol. override via
-// Egress.Image to run your own build.
-const proxyRepo = "ghcr.io/lczyk/pats/egress-proxy"
-
-// ProxyImage resolves a sandbox's egress proxy image and, when it can't pin to a
-// version, a warning to surface. a configured proxy-image wins. otherwise the
-// default is pinned to this build's pats version (tag `v<version>`, as
-// publish_images.yml tags it) -- the proxy's filtering protocol is coupled to
-// the binary, so `latest` could be a mismatched newer proxy. if the version
-// isn't a clean release (dev/dirty/unset -> no image was published for it), fall
-// back to `latest` and return a warning; the caller logs it once.
-//
-// the version arrives in either shape: bare (0.7.4) from the VERSION file
-// fallback, or `v`-prefixed (v0.7.1) when the toolchain stamped a module
-// version into the binary, which it does for every `go install module@version`
-// build. strip the prefix before testing, or release installs -- the ones that
-// most need a matching proxy -- would be the only ones never to pin.
-func ProxyImage(configured string) (image, warn string) {
-	if configured != "" {
-		return configured, ""
-	}
-	v := strings.TrimPrefix(version.Info.Version, "v")
-	if !releaseVersion(v) {
-		return proxyRepo + ":latest", fmt.Sprintf("pats version %q is not a release; using egress-proxy:latest, which may not match this build (set a sandbox proxy-image to pin)", version.Info.Version)
-	}
-	return proxyRepo + ":v" + v, ""
-}
-
-// releaseVersion reports whether v is a bare X.Y.Z (digits only) -- the shape
-// that has a published `v<version>` image. anything else (empty, a dev/dirty
-// suffix, a pre-release) has none, so we fall back to latest. callers pass the
-// version with any leading `v` already stripped.
-func releaseVersion(v string) bool {
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, p := range parts {
-		if p == "" || strings.IndexFunc(p, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-			return false
-		}
-	}
-	return true
-}
 
 // namePrefix marks everything this package creates on the docker side
 // (networks, sidecar containers) and the in-container CA mount path, so a

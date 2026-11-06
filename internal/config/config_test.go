@@ -87,15 +87,6 @@ agents:
 			want: "no sandbox set",
 		},
 		{
-			name: "container needs image",
-			src: `
-sandboxes: [{id: s, kind: container, driver: docker}]
-agents:
-  - {id: h, kind: claude-cli-keyless, model: m, sandbox: s}
-`,
-			want: "needs an image",
-		},
-		{
 			name: "dangling scorer agent-id",
 			src: `
 scorers:
@@ -109,13 +100,6 @@ scorers:
 sandboxes: [{id: s, kind: container, image: img, build: .}]
 `,
 			want: "mutually exclusive",
-		},
-		{
-			name: "container with neither image nor build",
-			src: `
-sandboxes: [{id: s, kind: container}]
-`,
-			want: "needs an image or a build context",
 		},
 		{
 			name: "bwrap not implemented",
@@ -353,6 +337,15 @@ sandboxes: [{id: s, kind: container, image: img}]
 agents: [{id: copilot, kind: copilot-cli-keyless, model: gpt-test, effort: high, sandbox: s}]
 tasks: [{id: t, prompt: p.txt}]
 suites: [{id: su, agents: copilot, tasks: t}]
+`)
+	require.NoError(t, c.Validate())
+}
+
+// a container sandbox with neither image nor build is the published pats
+// sandbox, resolved at run time.
+func TestSandboxDefaultImageValid(t *testing.T) {
+	c := parseT(t, `
+sandboxes: [{id: s, kind: container}]
 `)
 	require.NoError(t, c.Validate())
 }
