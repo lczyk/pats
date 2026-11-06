@@ -524,8 +524,8 @@ func relToCwd(p string) string {
 // commandFor tokenizes a run-field value (POSIX-sh quoting, no shell/expansion)
 // and returns an *exec.Cmd that runs argv[0] -- a +x regular file resolved
 // against configDir -- with the remaining tokens as literal args, in configDir,
-// with os env + the given PATS_* env. errors on bad quoting, an empty command,
-// or argv[0] not being an executable file.
+// with os env + PATS_ROOT (configDir) + the given PATS_* env. errors on bad
+// quoting, an empty command, or argv[0] not being an executable file.
 func commandFor(configDir, spec string, env map[string]string) (*exec.Cmd, error) {
 	argv, err := splitArgs(spec)
 	if err != nil {
@@ -550,7 +550,7 @@ func commandFor(configDir, spec string, env map[string]string) (*exec.Cmd, error
 	}
 	cmd := exec.Command(path, argv[1:]...)
 	cmd.Dir = configDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), "PATS_ROOT="+configDir)
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

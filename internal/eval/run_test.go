@@ -141,10 +141,10 @@ func TestResolvePrompt(t *testing.T) {
 
 	// executable file -> its stdout, with env + args passed through.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gen.sh"),
-		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_ID $1\"\n"), 0o755))
+		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_ID $1 $PATS_ROOT\"\n"), 0o755))
 	got, err = resolvePrompt(dir, "gen.sh --flavour spicy", map[string]string{"PATS_TASK_ID": "t1"})
 	require.NoError(t, err)
-	assert.Equal(t, string(got), "gen t1 --flavour\n")
+	assert.Equal(t, string(got), "gen t1 --flavour "+dir+"\n")
 
 	// not a file -> the spec is the literal prompt (even with quotes/apostrophes).
 	got, err = resolvePrompt(dir, "just write a readme", nil)
