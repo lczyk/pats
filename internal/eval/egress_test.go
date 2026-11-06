@@ -162,6 +162,7 @@ func TestSuggestEgress(t *testing.T) {
 	out.Reset()
 	require.NoError(t, SuggestEgress(dir, "", &out))
 	assert.ContainsString(t, out.String(), "only GET and HEAD were seen")
+	assert.ContainsString(t, out.String(), "\n  methods: [GET, HEAD]\n")
 
 	_, err := os.Stat(dir)
 	require.NoError(t, err)

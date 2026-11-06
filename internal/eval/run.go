@@ -556,6 +556,9 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, harness, auditPath strin
 	if eg.Policy.Default != "allow" {
 		eg.Policy.Allow = mergeHosts(eg.Policy.Allow, agent.RequiredHosts[harness])
 	}
+	// the harness's hosts are exempt from the methods posture either way: its
+	// inference traffic is not the task's to inspect.
+	eg.Policy.Harness = mergeHosts(nil, agent.RequiredHosts[harness])
 	return eg
 }
 

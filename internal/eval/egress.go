@@ -123,6 +123,13 @@ func CheckURL(pol proxy.Policy, target, method string, merged bool, out io.Write
 	} else {
 		notes = append(notes, "default: deny")
 	}
+	if len(pol.Methods) > 0 {
+		m := "methods " + strings.Join(pol.Methods, ",") + " inspect every allowed host but the harness's"
+		if pol.Default == "allow" {
+			m = "methods " + strings.Join(pol.Methods, ",") + " under default: allow inspect every host reached but the harness's"
+		}
+		notes = append(notes, m)
+	}
 	if !merged {
 		notes = append(notes, "sandbox and task only, harness hosts not merged (pass --agent)")
 	}
@@ -297,7 +304,8 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 	case len(tunnels) > 0:
 		fmt.Fprintln(out, "  # methods: unknown -- tunnels hide them")
 	case len(byUA) > 0 && readsOnly:
-		fmt.Fprintln(out, "  # only GET and HEAD were seen; methods: [GET, HEAD] would refuse writes")
+		fmt.Fprintln(out, "  # only GET and HEAD were seen: refuse writes everywhere (every allowed host gets inspected)")
+		fmt.Fprintln(out, "  methods: [GET, HEAD]")
 	}
 	if len(harnessSeen) > 0 {
 		fmt.Fprintf(out, "  # harness hosts, merged per agent by pats: %s\n", strings.Join(sortedSet(harnessSeen), ", "))

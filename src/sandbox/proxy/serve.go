@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -20,12 +21,15 @@ import (
 // yaml tags are the config's; config.Egress embeds this type so there is one
 // field set.
 type Policy struct {
-	Default      string   `yaml:"default"`       // deny (the default) | allow
-	Methods      []string `yaml:"methods"`       // allowed methods; nil: every method
-	AllowPrivate bool     `yaml:"allow-private"` // let entries name private targets
+	Default      string   `yaml:"default"`           // deny (the default) | allow
+	Methods      []string `yaml:"methods,omitempty"` // the methods posture; nil: every method, nothing extra inspected
+	AllowPrivate bool     `yaml:"allow-private"`     // let entries name private targets
 	Allow        []string `yaml:"allow"`
 	Deny         []string `yaml:"deny"`
 	DenyResponse string   `yaml:"deny-response"` // 403 (the default) | 404 | reset | timeout
+	// Harness lists the hosts pats merged in for the agent's harness. the
+	// methods posture never inspects them. pats sets it; pats.yaml cannot.
+	Harness []string `yaml:"harness,omitempty"`
 }
 
 // ParsePolicy reads a policy from yaml, refusing unknown keys: a typo in a
@@ -52,19 +56,28 @@ func (p Policy) Rule() (Rule, error) {
 	default:
 		return Rule{}, fmt.Errorf("deny-response %q: want 403, 404, reset or timeout", p.DenyResponse)
 	}
-	if len(p.Methods) > 0 {
-		return Rule{}, errors.New("methods is not implemented yet")
-	}
 	r, err := ParseRule(p.Default == "allow", p.Allow, p.Deny)
 	if err != nil {
 		return r, err
 	}
-	// accepting a method prefix the proxy does not enforce would look like
-	// filtering that silently does nothing.
-	for _, e := range append(append([]Entry{}, r.Allow...), r.Deny...) {
-		if e.Methods() != nil {
-			return Rule{}, fmt.Errorf("entry %q: a method prefix is not implemented yet", e.Raw)
+	if p.Methods != nil {
+		if len(p.Methods) == 0 {
+			return Rule{}, errors.New("methods: an empty list would refuse every request -- list the methods to allow")
 		}
+		r.Methods = map[string]bool{}
+		for _, m := range p.Methods {
+			if !methodsRe.MatchString(m) || strings.Contains(m, ",") {
+				return Rule{}, fmt.Errorf("methods: %q is not an upper-case http method", m)
+			}
+			r.Methods[m] = true
+		}
+	}
+	for _, line := range p.Harness {
+		e, err := ParseEntry(line, false)
+		if err != nil {
+			return Rule{}, fmt.Errorf("harness %q: %w", line, err)
+		}
+		r.Exempt = append(r.Exempt, e)
 	}
 	return r, nil
 }
@@ -74,6 +87,9 @@ func (p Policy) NeedsCA() bool {
 	r, err := p.Rule()
 	if err != nil {
 		return false
+	}
+	if r.Methods != nil {
+		return true
 	}
 	for _, list := range [][]Entry{r.Allow, r.Deny} {
 		for _, e := range list {

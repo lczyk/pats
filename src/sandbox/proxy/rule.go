@@ -248,6 +248,15 @@ type Rule struct {
 	DefaultAllow bool
 	Allow        []Entry
 	Deny         []Entry
+	// Methods is the methods posture: nil passes every method, else a request
+	// whose method is not in it is refused unless an allow entry's own method
+	// prefix admits it. a posture makes every allowed host but the exempt ones
+	// inspected, since a tunnel cannot show a method.
+	Methods map[string]bool
+	// Exempt are hosts the posture never inspects: the harness's own (its
+	// inference api, token refresh). an explicit url entry on one still
+	// mitm's it.
+	Exempt []Entry
 }
 
 // ParseRule parses allow and deny lines into a Rule, naming the first bad one.
@@ -315,25 +324,58 @@ func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string)
 			return Verdict{Rule: e.Raw}
 		}
 	}
-	var restricted *Entry
+	// an allow entry that names the request's method overrides the posture,
+	// wherever it sits in the list; any other match is subject to it.
+	var restricted, matched *Entry
 	for i, e := range r.Allow {
 		if !e.matchesHost(host, port) {
 			continue
 		}
-		if !e.URL() {
-			return Verdict{Allowed: true, Rule: e.Raw}
-		}
-		if e.matchesMethod(method) && e.matchesURL(urlPath, rawQuery) {
-			return Verdict{Allowed: true, Rule: e.Raw}
-		}
-		if restricted == nil {
+		switch {
+		case !e.URL():
+			if matched == nil {
+				matched = &r.Allow[i]
+			}
+		case e.matchesMethod(method) && e.matchesURL(urlPath, rawQuery):
+			if e.methods != nil {
+				return Verdict{Allowed: true, Rule: e.Raw}
+			}
+			if matched == nil {
+				matched = &r.Allow[i]
+			}
+		case restricted == nil:
 			restricted = &r.Allow[i]
 		}
+	}
+	if matched != nil {
+		return r.posture(host, port, method, Verdict{Allowed: true, Rule: matched.Raw})
 	}
 	if restricted != nil {
 		return Verdict{Rule: restricted.Raw, Reason: "url-not-allowed"}
 	}
-	return r.defaultVerdict()
+	v := r.defaultVerdict()
+	if v.Allowed {
+		return r.posture(host, port, method, v)
+	}
+	return v
+}
+
+// posture applies the methods posture to an allow verdict: a method it does
+// not list is refused, on any host it inspects.
+func (r Rule) posture(host string, port uint16, method string, v Verdict) Verdict {
+	if r.Methods == nil || r.Methods[method] || r.exempt(host, port) {
+		return v
+	}
+	return Verdict{Rule: "methods", Reason: "method"}
+}
+
+func (r Rule) exempt(host string, port uint16) bool {
+	for _, e := range r.Exempt {
+		if e.matchesHost(host, port) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r Rule) defaultVerdict() Verdict {
@@ -341,7 +383,7 @@ func (r Rule) defaultVerdict() Verdict {
 }
 
 // MitmHost reports whether the host's tls must be terminated: some url entry
-// names it.
+// names it, or a methods posture is set and the host is not exempt.
 func (r Rule) MitmHost(host string, port uint16) bool {
 	host, err := NormalizeHost(host)
 	if err != nil {
@@ -354,5 +396,5 @@ func (r Rule) MitmHost(host string, port uint16) bool {
 			}
 		}
 	}
-	return false
+	return r.Methods != nil && !r.exempt(host, port)
 }

@@ -249,10 +249,13 @@ func TestPolicyRule(t *testing.T) {
 	assert.Error(t, err, "deny-response")
 	_, err = Policy{Allow: []string{"*"}}.Rule()
 	assert.Error(t, err, `allow "*"`)
-	_, err = Policy{Methods: []string{"GET"}}.Rule()
-	assert.Error(t, err, "methods is not implemented yet")
-	_, err = Policy{Allow: []string{"GET a.test/*"}}.Rule()
-	assert.Error(t, err, "method prefix is not implemented yet")
+	_, err = Policy{Methods: []string{}}.Rule()
+	assert.Error(t, err, "empty list")
+	_, err = Policy{Methods: []string{"get"}}.Rule()
+	assert.Error(t, err, "upper-case")
+	_, err = Policy{Harness: []string{"*"}}.Rule()
+	assert.Error(t, err, "harness")
+	assert.That(t, Policy{Methods: []string{"GET"}}.NeedsCA()) // a posture inspects
 	assert.That(t, Policy{Deny: []string{"a.test/x*"}}.NeedsCA())
 	assert.That(t, !Policy{Allow: []string{"a.test"}}.NeedsCA())
 }
@@ -350,4 +353,55 @@ func BenchmarkDecide(b *testing.B) {
 		c := cases[i%len(cases)]
 		r.Decide(c.host, 443, "GET", c.path, "")
 	}
+}
+
+// the methods posture: unlisted methods are refused on every inspected host;
+// an allow entry's own method prefix overrides it; a deny entry's method
+// prefix scopes the deny; harness hosts are never inspected for it.
+func TestMethodsPosture(t *testing.T) {
+	p := Policy{
+		Methods: []string{"GET", "HEAD"},
+		Allow:   []string{"a.test", "POST a.test/graphql", ".anthropic.com"},
+		Deny:    []string{"PUT,PATCH b.test/*"},
+		Harness: []string{".anthropic.com"},
+	}
+	r, err := p.Rule()
+	require.NoError(t, err)
+	cases := []struct {
+		host, method, path string
+		want               bool
+		reason             string
+	}{
+		{"a.test", "GET", "/x", true, ""},
+		{"a.test", "HEAD", "/x", true, ""},
+		{"a.test", "POST", "/x", false, "method"},
+		{"a.test", "POST", "/graphql", true, ""}, // the entry's own prefix wins
+		{"a.test", "DELETE", "/graphql", false, "method"},
+		{"api.anthropic.com", "POST", "/v1/messages", true, ""}, // exempt
+		{"c.test", "GET", "/", false, ""},                       // default deny still applies
+	}
+	for _, c := range cases {
+		v := r.Decide(c.host, 443, c.method, c.path, "")
+		assert.Equal(t, v.Allowed, c.want, "%s %s%s", c.method, c.host, c.path)
+		assert.Equal(t, v.Reason, c.reason, "%s %s%s", c.method, c.host, c.path)
+	}
+
+	// every allowed host but the exempt is inspected.
+	assert.That(t, r.MitmHost("a.test", 443))
+	assert.That(t, !r.MitmHost("api.anthropic.com", 443))
+
+	// under default: allow the posture covers every host reached.
+	p.Default = "allow"
+	r, err = p.Rule()
+	require.NoError(t, err)
+	assert.That(t, r.MitmHost("anything.test", 443))
+	assert.Equal(t, r.Decide("anything.test", 443, "POST", "/", "").Reason, "method")
+	assert.Equal(t, r.Decide("b.test", 443, "PUT", "/x", "").Allowed, false)
+	assert.Equal(t, r.Decide("b.test", 443, "GET", "/x", "").Allowed, true)
+
+	// an explicit url entry on an exempt host still mitm's it.
+	p.Deny = append(p.Deny, "api.anthropic.com/v1/files*")
+	r, err = p.Rule()
+	require.NoError(t, err)
+	assert.That(t, r.MitmHost("api.anthropic.com", 443))
 }

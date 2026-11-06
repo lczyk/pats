@@ -625,6 +625,7 @@ func TestEgressForIncludesCodexHosts(t *testing.T) {
 	eg := egressFor(sb, config.TaskEgress{}, "codex-cli-keyless", "/tmp/audit", true)
 	assert.Equal(t, eg.AuditPath, "/tmp/audit")
 	assert.Equal(t, eg.SelfTest, true)
+	assert.EqualArrays(t, eg.Policy.Harness, []string{".openai.com", ".chatgpt.com"})
 	want := map[string]bool{
 		"task.example.com": true,
 		".openai.com":      true,

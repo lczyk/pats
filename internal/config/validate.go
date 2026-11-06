@@ -147,10 +147,13 @@ func sortedKeys(m map[string]string) []string {
 
 // validateEgress checks a sandbox's egress policy so a bad entry fails at
 // load, not mid-run. the entry grammar itself is the proxy's; this adds what
-// the config layer knows: which driver, and what is not implemented yet.
+// the config layer knows: which driver, and which fields pats owns.
 func validateEgress(add func(string, ...any), s Sandbox) {
 	if !s.Egress.Set {
 		return
+	}
+	if len(s.Egress.Harness) > 0 {
+		add("sandbox %q: egress harness is set by pats, per agent", s.ID)
 	}
 	r, err := s.Egress.Policy.Rule()
 	if err != nil {
