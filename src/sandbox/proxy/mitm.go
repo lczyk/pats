@@ -1,6 +1,6 @@
-// mitm: for hosts named by a url rule the proxy terminates tls with a leaf
+// mitm: for hosts named by a url entry the proxy terminates tls with a leaf
 // signed by the per-run CA, filters each request by full url, and re-dials the
-// real host. everything else stays a blind tunnel (see proxy.go).
+// real host. everything else stays a tunnel (see proxy.go).
 package proxy
 
 import (
@@ -11,125 +11,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
-	"path"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
-
-// URLRule is one host-anchored url pattern, e.g. "github.com/*/chisel-releases*".
-// the host part (up to the first /) is a literal hostname; the rest is a glob
-// where * matches any characters, / included. matching runs against host+path,
-// host+path+"?"+query when there is one, and both again with the path
-// canonicalised via path.Clean -- so a pattern can filter on the query string,
-// and "a/../b" can't dodge a rule anchored on "b".
-type URLRule struct {
-	host string
-	re   *regexp.Regexp // matches host+path, e.g. "github.com/canonical/chisel-releases/x"
-}
-
-func ParseURLRules(pats []string) []URLRule {
-	var out []URLRule
-	for _, p := range pats {
-		p = strings.ToLower(strings.TrimSpace(p))
-		if p == "" {
-			continue
-		}
-		host, _, _ := strings.Cut(p, "/")
-		// NOTE: wildcard/empty hosts are rejected at config validation; here we
-		// just skip them so a hand-set env can't mitm the world by accident.
-		if host == "" || strings.Contains(host, "*") {
-			continue
-		}
-		var b strings.Builder
-		b.WriteString("^")
-		for _, part := range strings.Split(p, "*") {
-			b.WriteString(regexp.QuoteMeta(part))
-			b.WriteString(".*")
-		}
-		re := regexp.MustCompile(strings.TrimSuffix(b.String(), ".*") + "$")
-		out = append(out, URLRule{host: host, re: re})
-	}
-	return out
-}
-
-// mitmHost says whether this host's tls must be terminated (it has url rules).
-func (r Rule) mitmHost(host string) bool {
-	host = strings.ToLower(host)
-	for _, u := range r.DenyURLs {
-		if u.host == host {
-			return true
-		}
-	}
-	for _, u := range r.AllowURLs {
-		if u.host == host {
-			return true
-		}
-	}
-	return false
-}
-
-// matchCandidates builds the strings a url rule may match a request against:
-// host+path (kept so rules written against the bare path still match), the
-// same with "?"+query appended when the query is non-empty, and both again
-// with the path run through path.Clean when that differs from the original --
-// so "host/a/../b" can't dodge a rule anchored on "host/b". an empty path is
-// excluded from that last step: path.Clean("") returns ".", which differs
-// from "" and would otherwise add a bogus host+"." candidate for every
-// request with no path at all.
-func matchCandidates(host, urlPath, rawQuery string) []string {
-	host = strings.ToLower(host)
-	urlPath = strings.ToLower(urlPath)
-	rawQuery = strings.ToLower(rawQuery)
-
-	bare := host + urlPath
-	cands := []string{bare}
-	if rawQuery != "" {
-		cands = append(cands, bare+"?"+rawQuery)
-	}
-	if cleaned := path.Clean(urlPath); cleaned != urlPath && cleaned != "." {
-		cbare := host + cleaned
-		cands = append(cands, cbare)
-		if rawQuery != "" {
-			cands = append(cands, cbare+"?"+rawQuery)
-		}
-	}
-	return cands
-}
-
-// permitsURL checks a request's host+path+query (no scheme) against the url
-// rules: a deny match on any candidate form -- see matchCandidates -- always
-// loses; then, if the host has allow-url rules, only a request matching one
-// passes. hosts with no url rules are unaffected.
-func (r Rule) permitsURL(host, urlPath, rawQuery string) bool {
-	cands := matchCandidates(host, urlPath, rawQuery)
-	for _, u := range r.DenyURLs {
-		for _, c := range cands {
-			if u.re.MatchString(c) {
-				return false
-			}
-		}
-	}
-	host = strings.ToLower(host)
-	restricted, matched := false, false
-	for _, u := range r.AllowURLs {
-		if u.host != host {
-			continue
-		}
-		restricted = true
-		for _, c := range cands {
-			if u.re.MatchString(c) {
-				matched = true
-				break
-			}
-		}
-	}
-	return !restricted || matched
-}
 
 // Signer mints per-host leaf certs signed by the run CA, cached.
 type Signer struct {
@@ -193,14 +82,14 @@ func (s *Signer) leaf(host string) (*tls.Certificate, error) {
 	return c, nil
 }
 
-// handleMitm terminates the CONNECT tls with a signed leaf, then serves the
-// decrypted requests, filtering each by url and forwarding the allowed ones to
-// the real host via upstream.
-func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, upstream http.RoundTripper) {
-	host, port := splitHostPort(req.Host)
-	if port == "" {
-		port = "443"
-	}
+var errSNIMismatch = errors.New("sni does not name the CONNECT host")
+
+// handleMitm terminates the CONNECT tls with a leaf for the CONNECT host, then
+// serves the decrypted requests, filtering each by url and forwarding the
+// allowed ones to the real host via Upstream. the leaf is only ever for the
+// CONNECT host and each inner request's Host must name it too: a shared
+// front end must not be reached under a name the policy never saw.
+func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string, port uint16) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "cannot hijack", http.StatusInternalServerError)
@@ -217,15 +106,19 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 		return
 	}
 
+	want, _ := NormalizeHost(host)
 	// rrw.Reader may already hold bytes the client pipelined behind the
 	// CONNECT (e.g. the TLS ClientHello) -- read through it, or the handshake
 	// below stalls waiting for bytes that already arrived.
 	tconn := tls.Server(bufConn{Conn: raw, r: rrw.Reader}, &tls.Config{
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if chi.ServerName != "" {
-				return s.leaf(chi.ServerName)
+				if got, err := NormalizeHost(chi.ServerName); err != nil || got != want {
+					p.audit(Event{Host: host, Port: portStr(port), Rule: "mitm", Reason: "sni-mismatch"})
+					return nil, errSNIMismatch
+				}
 			}
-			return s.leaf(host)
+			return p.Signer.leaf(host)
 		},
 		NextProtos: []string{"http/1.1"}, // NOTE: no h2; clients downgrade fine
 	})
@@ -244,19 +137,23 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 		if inner.URL.RawQuery != "" {
 			fullURL += "?" + inner.URL.RawQuery
 		}
-		if !r.permitsURL(host, inner.URL.Path, inner.URL.RawQuery) {
-			auditURL(host, port, fullURL, false)
-			resp := &http.Response{StatusCode: http.StatusForbidden, ProtoMajor: 1, ProtoMinor: 1,
-				Body: http.NoBody, Header: http.Header{}, Close: true}
-			resp.Write(tconn)
+		if innerHost, _ := splitHostPort(inner.Host, port); !sameHost(innerHost, want) {
+			p.audit(Event{Host: host, Port: portStr(port), URL: fullURL, Rule: "mitm", Reason: "host-mismatch"})
+			p.refuseTLS(tconn)
 			return
 		}
-		auditURL(host, port, fullURL, true)
+		v := p.Rule.Decide(host, port, inner.Method, inner.URL.Path, inner.URL.RawQuery)
+		if !v.Allowed {
+			p.audit(Event{Host: host, Port: portStr(port), URL: fullURL, Rule: v.Rule, Reason: v.Reason})
+			p.refuseTLS(tconn)
+			return
+		}
+		p.audit(Event{Host: host, Port: portStr(port), Allowed: true, URL: fullURL, Rule: v.Rule})
 
 		inner.URL.Scheme = "https"
-		inner.URL.Host = req.Host
+		inner.URL.Host = net.JoinHostPort(host, portStr(port))
 		inner.RequestURI = ""
-		resp, err := upstream.RoundTrip(inner)
+		resp, err := p.Upstream.RoundTrip(inner)
 		if err != nil {
 			(&http.Response{StatusCode: http.StatusBadGateway, ProtoMajor: 1, ProtoMinor: 1,
 				Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
@@ -287,4 +184,31 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 			return
 		}
 	}
+}
+
+// sameHost compares a request host to the normalised CONNECT host.
+func sameHost(got, want string) bool {
+	n, err := NormalizeHost(got)
+	return err == nil && n == want
+}
+
+// refuseTLS is refuse for a request inside a mitm'd connection: the same
+// DenyResponse shapes, written through the tls conn.
+func (p *Proxy) refuseTLS(tconn *tls.Conn) {
+	status := http.StatusForbidden
+	switch p.DenyResponse {
+	case "404":
+		status = http.StatusNotFound
+	case "timeout":
+		time.Sleep(denyHold)
+		fallthrough
+	case "reset":
+		if tc, ok := tconn.NetConn().(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+		tconn.NetConn().Close()
+		return
+	}
+	(&http.Response{StatusCode: status, ProtoMajor: 1, ProtoMinor: 1,
+		Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
 }

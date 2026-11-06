@@ -30,6 +30,7 @@ type Options struct {
 	Score  ScoreCommand  `command:"score" description:"score the most recent run (tasks x scorers)"`
 	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
 	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
+	Egress EgressCommand `command:"egress" description:"the egress proxy: serve it (the sidecar's entrypoint)"`
 }
 
 // RunCommand runs the suites.

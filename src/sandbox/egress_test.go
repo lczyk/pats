@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,20 +14,52 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // fakeDocker records every cli invocation and returns canned results, so the
-// egress setup/teardown plumbing runs without docker.
+// egress setup/teardown plumbing runs without docker. the `docker logs -f`
+// follower is a real process, so bin is a script: it prints the proxy's
+// listening line and then waits for the sentinel the fake exec drops on
+// `rm -f`, the way the real follower sees EOF once the container is gone.
 type fakeDocker struct {
-	calls  [][]string
-	failOn string // substring of the joined args; matching call errors
-	out    []byte // execOut payload (the image trust bundle)
+	t        *testing.T
+	bin      string
+	sentinel string
+	calls    [][]string
+	failOn   string // substring of the joined args; matching call errors
+	failOut  string // what that call prints
+	failN    int    // how many matching calls fail (0: every one)
+	failed   int
+	out      []byte // execOut payload (the image trust bundle)
+	canary   string // what the canary run prints
+}
+
+func newFakeDocker(t *testing.T) *fakeDocker {
+	t.Helper()
+	dir := t.TempDir()
+	fd := &fakeDocker{t: t, sentinel: filepath.Join(dir, "removed"), bin: filepath.Join(dir, "fake-docker.sh")}
+	body := fmt.Sprintf("#!/bin/sh\necho 'listening [::]:8080' >&2\nwhile [ ! -f %q ]; do sleep 0.02; done\n", fd.sentinel)
+	require.NoError(t, os.WriteFile(fd.bin, []byte(body), 0o755))
+	return fd
+}
+
+func (f *fakeDocker) container() *container {
+	return &container{driver: "docker", bin: f.bin, image: "img", exec: f.exec, execOut: f.execOut}
 }
 
 func (f *fakeDocker) exec(ctx context.Context, bin string, args ...string) (string, error) {
 	f.calls = append(f.calls, args)
-	if f.failOn != "" && strings.Contains(strings.Join(args, " "), f.failOn) {
-		return "boom", errors.New("fake docker failure")
+	joined := strings.Join(args, " ")
+	if len(args) > 0 && args[0] == "rm" {
+		_ = os.WriteFile(f.sentinel, nil, 0o644)
+	}
+	if f.failOn != "" && strings.Contains(joined, f.failOn) && (f.failN == 0 || f.failed < f.failN) {
+		f.failed++
+		return f.failOut, errors.New("fake docker failure")
+	}
+	if strings.Contains(joined, "--entrypoint bash") {
+		return f.canary, nil
 	}
 	return "", nil
 }
@@ -50,48 +84,57 @@ func TestSetupEgressModes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, args)
 	assert.Nil(t, td)
-	args, _, err = c.setupEgress(context.Background(), Spec{Egress: Egress{Mode: "none"}})
+	args, _, err = c.setupEgress(context.Background(), Spec{Egress: Egress{None: true}})
 	require.NoError(t, err)
 	assert.EqualArrays(t, args, []string{"--network", "none"})
-	_, _, err = c.setupEgress(context.Background(), Spec{Egress: Egress{Mode: "wat"}})
-	assert.Error(t, err, assert.AnyError)
 }
 
 func TestStartEgressProxy(t *testing.T) {
-	fd := &fakeDocker{}
-	c := &container{bin: "docker", image: "img", exec: fd.exec, execOut: fd.execOut}
+	fd := newFakeDocker(t)
+	c := fd.container()
 	spec := Spec{
 		Workdir: filepath.Join(t.TempDir(), "pats-work-x"),
 		Egress: Egress{
-			Mode:  "proxy",
-			Allow: []string{"api.example.com"},
-			Deny:  []string{"evil.example.com"},
+			Set:    true,
+			Policy: proxy.Policy{Allow: []string{"api.example.com"}, Deny: []string{"evil.example.com"}, DenyResponse: "404"},
 		},
 	}
 	netArgs, teardown, err := c.startEgressProxy(context.Background(), spec)
 	require.NoError(t, err)
 
-	// agent joins the internal net and gets proxy env, upper+lowercase.
+	// the pair's network is a /29 out of the pool and the proxy sits at its
+	// second address; the agent joins it with the proxy url by ip and no
+	// upstream resolver.
+	create := strings.Join(fd.call("network create"), " ")
+	assert.ContainsString(t, create, "--internal --subnet 10.213.")
+	assert.ContainsString(t, create, "/29 sbx-egr-pats-work-x")
+	subnet := netip.MustParsePrefix(fd.call("network create")[4])
+	proxyIP := subnet.Addr().Next().Next().String()
+
 	joined := strings.Join(netArgs, " ")
 	for _, want := range []string{
 		"--network sbx-egr-pats-work-x",
-		"HTTP_PROXY=http://sbx-proxy-pats-work-x:8080",
-		"https_proxy=http://sbx-proxy-pats-work-x:8080",
+		"--dns 0.0.0.0",
+		"HTTP_PROXY=http://" + proxyIP + ":8080",
+		"https_proxy=http://" + proxyIP + ":8080",
 	} {
 		assert.ContainsString(t, joined, want)
 	}
 
-	// internal network (no gateway) + proxy run with the policy env.
-	assert.NotNil(t, fd.call("network create --internal sbx-egr-pats-work-x"))
+	// the proxy runs with the policy as yaml over env, pinned to its ip.
 	run := strings.Join(fd.call("run -d"), " ")
 	for _, want := range []string{
-		"PROXY_DEFAULT=deny", // empty default resolves to deny
-		"PROXY_ALLOW=api.example.com",
-		"PROXY_DENY=evil.example.com",
+		"--ip " + proxyIP,
 		"--network sbx-egr-pats-work-x",
+		"PATS_EGRESS_POLICY=",
+		"allow:\n    - api.example.com",
+		"deny:\n    - evil.example.com",
+		"deny-response: \"404\"",
+		"PATS_EGRESS_REFUSE=10.213.0.0/16",
 	} {
 		assert.ContainsString(t, run, want)
 	}
+	assert.Equal(t, strings.Contains(run, "PATS_EGRESS_CA_KEY"), false) // no url entry: no mitm, no CA
 	assert.NotNil(t, fd.call("network connect bridge"))
 
 	teardown()
@@ -101,15 +144,16 @@ func TestStartEgressProxy(t *testing.T) {
 
 // COVER: the mitm security invariants -- CA key reaches the proxy over env
 // only (never disk), the agent gets cert + merged bundle but not the key, and
-// a mid-setup failure still tears down the network.
+// the proxy verifies upstream against the same bundle.
 func TestStartEgressProxyMitm(t *testing.T) {
-	fd := &fakeDocker{out: []byte("-----BEGIN CERTIFICATE-----\nsystemroots\n-----END CERTIFICATE-----")}
-	c := &container{bin: "docker", image: "img", exec: fd.exec, execOut: fd.execOut}
+	fd := newFakeDocker(t)
+	fd.out = []byte("-----BEGIN CERTIFICATE-----\nsystemroots\n-----END CERTIFICATE-----")
+	c := fd.container()
 	spec := Spec{
 		Workdir: filepath.Join(t.TempDir(), "pats-work-m"),
 		Egress: Egress{
-			Mode:     "mitm-proxy",
-			DenyURLs: []string{"github.com/*/secrets*"},
+			Set:    true,
+			Policy: proxy.Policy{Deny: []string{"github.com/*/secrets*"}},
 		},
 	}
 	netArgs, teardown, err := c.startEgressProxy(context.Background(), spec)
@@ -118,16 +162,18 @@ func TestStartEgressProxyMitm(t *testing.T) {
 
 	run := strings.Join(fd.call("run -d"), " ")
 	for _, want := range []string{
-		"PROXY_DENY_URLS=github.com/*/secrets*",
-		"PROXY_CA_CERT=-----BEGIN",
-		"PROXY_CA_KEY=-----BEGIN",
+		"PATS_EGRESS_POLICY=",
+		"PATS_EGRESS_CA_CERT=-----BEGIN",
+		"PATS_EGRESS_CA_KEY=-----BEGIN",
+		"PATS_EGRESS_ROOTS=" + agentBundlePath,
+		agentBundlePath + ":ro",
 	} {
 		assert.ContainsString(t, run, want)
 	}
 
 	// agent side: bundle + cert mounts and the tls env vars, no key anywhere.
 	joined := strings.Join(netArgs, " ")
-	for _, want := range []string{agentBundlePath + ":ro", "/sbx-ca/ca.pem:ro", "SSL_CERT_FILE=", "NODE_EXTRA_CA_CERTS="} {
+	for _, want := range []string{agentBundlePath + ":ro", agentCertPath + ":ro", "SSL_CERT_FILE=", "CARGO_HTTP_CAINFO=", "NODE_EXTRA_CA_CERTS=" + agentCertPath} {
 		assert.ContainsString(t, joined, want)
 	}
 	assert.Equal(t, strings.Contains(joined, "PRIVATE KEY"), false)
@@ -152,37 +198,21 @@ func TestStartEgressProxyMitm(t *testing.T) {
 	assert.ContainsString(t, string(b), "systemroots")
 }
 
-// COVER: the teardown order fixed in this package -- the proxy container is
-// removed (which makes `docker logs -f` reach EOF) before the follower is
-// waited on/killed. the exec/execOut seams only cover c.docker calls, not the
-// raw `docker logs -f` follower process (started via a plain exec.Command),
-// so this test stands in a fake "docker" binary for it: the follower blocks
-// until a sentinel file appears, and the fake exec drops that sentinel only
-// when it sees the "rm -f <proxy>" call. if teardown ever waited on (or
-// killed) the follower before removing the proxy, the follower would never
-// see the sentinel and would only die via the 2s grace-timeout kill -- which
-// never gets a chance to write the "graceful exit" marker checked below.
+// COVER: the teardown order -- the proxy container is removed (which makes
+// `docker logs -f` reach EOF) before the follower is waited on/killed. the
+// fake bin blocks until the sentinel the fake exec drops on `rm -f`; if
+// teardown ever waited on (or killed) the follower before removing the proxy,
+// the follower would never see the sentinel and would only die via the 2s
+// grace-timeout kill, which never writes the marker checked below.
 func TestStartEgressProxyRemovesProxyBeforeFollowerTeardown(t *testing.T) {
-	dir := t.TempDir()
-	sentinel := filepath.Join(dir, "removed")
-	marker := filepath.Join(dir, "graceful-exit")
-	script := filepath.Join(dir, "fake-docker.sh")
-	body := fmt.Sprintf("#!/bin/sh\nwhile [ ! -f %q ]; do sleep 0.02; done\ntouch %q\n", sentinel, marker)
-	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
-
-	exec_ := func(ctx context.Context, bin string, args ...string) (string, error) {
-		if len(args) > 0 && args[0] == "rm" {
-			_ = os.WriteFile(sentinel, nil, 0o644)
-		}
-		return "", nil
-	}
-	c := &container{bin: script, image: "img", exec: exec_}
+	fd := newFakeDocker(t)
+	marker := filepath.Join(t.TempDir(), "graceful-exit")
+	body := fmt.Sprintf("#!/bin/sh\necho 'listening [::]:8080' >&2\nwhile [ ! -f %q ]; do sleep 0.02; done\ntouch %q\n", fd.sentinel, marker)
+	require.NoError(t, os.WriteFile(fd.bin, []byte(body), 0o755))
+	c := fd.container()
 	spec := Spec{
 		Workdir: filepath.Join(t.TempDir(), "pats-work-order"),
-		Egress: Egress{
-			Mode:      "proxy",
-			AuditPath: filepath.Join(dir, "audit.log"),
-		},
+		Egress:  Egress{Set: true, AuditPath: filepath.Join(t.TempDir(), "audit.log")},
 	}
 	_, teardown, err := c.startEgressProxy(context.Background(), spec)
 	require.NoError(t, err)
@@ -194,17 +224,110 @@ func TestStartEgressProxyRemovesProxyBeforeFollowerTeardown(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("teardown did not return within the grace window")
 	}
-
 	_, statErr := os.Stat(marker)
 	assert.NoError(t, statErr)
 }
 
 func TestStartEgressProxyFailureTearsDown(t *testing.T) {
-	fd := &fakeDocker{failOn: "run -d"}
-	c := &container{bin: "docker", image: "img", exec: fd.exec, execOut: fd.execOut}
-	spec := Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-f"), Egress: Egress{Mode: "proxy"}}
-	if _, _, err := c.startEgressProxy(context.Background(), spec); err == nil {
-		assert.Error(t, err, assert.AnyError)
-	}
+	fd := newFakeDocker(t)
+	fd.failOn = "run -d"
+	c := fd.container()
+	spec := Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-f"), Egress: Egress{Set: true}}
+	_, _, err := c.startEgressProxy(context.Background(), spec)
+	assert.Error(t, err, assert.AnyError)
 	assert.NotNil(t, fd.call("network rm sbx-egr-pats-work-f"))
+}
+
+// a subnet the daemon already has (another pats, a leftover) is skipped for
+// the next one; any other create failure is final.
+func TestCreateNetworkMovesOnWhenTaken(t *testing.T) {
+	fd := newFakeDocker(t)
+	fd.failOn, fd.failOut, fd.failN = "network create", "Error: Pool overlaps with other one on this address space", 2
+	c := fd.container()
+	subnet, err := c.createNetwork(context.Background(), "sbx-egr-t")
+	require.NoError(t, err)
+	creates := 0
+	for _, call := range fd.calls {
+		if call[0] == "network" && call[1] == "create" {
+			creates++
+		}
+	}
+	assert.Equal(t, creates, 3)
+	assert.Equal(t, subnet.Bits(), 29)
+
+	fd = newFakeDocker(t)
+	fd.failOn, fd.failOut = "network create", "Cannot connect to the Docker daemon"
+	_, err = fd.container().createNetwork(context.Background(), "sbx-egr-t")
+	assert.Error(t, err, "create network")
+	assert.Equal(t, len(fd.calls), 1)
+}
+
+func TestNextSubnet(t *testing.T) {
+	a, b := nextSubnet(), nextSubnet()
+	assert.That(t, pool.Contains(a.Addr()) && pool.Contains(b.Addr()))
+	assert.Equal(t, a.Bits(), 29)
+	assert.NotEqual(t, a, b)
+	assert.That(t, !a.Contains(b.Addr()), "consecutive slots overlap: %s %s", a, b)
+}
+
+// podman's default network is `podman`, and its resolver forwards nothing on
+// an internal network, so the agent gets no dns override there.
+func TestPodmanDefaults(t *testing.T) {
+	fd := newFakeDocker(t)
+	c := fd.container()
+	c.driver = "podman"
+	spec := Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-p"), Egress: Egress{Set: true}}
+	netArgs, teardown, err := c.startEgressProxy(context.Background(), spec)
+	require.NoError(t, err)
+	defer teardown()
+	assert.NotNil(t, fd.call("network connect podman"))
+	assert.ContainsString(t, strings.Join(fd.call("network create"), " "), "--disable-dns")
+	assert.Equal(t, strings.Contains(strings.Join(netArgs, " "), "--dns"), false)
+	assert.Equal(t, (&container{driver: "docker"}).defaultNetwork(), "bridge")
+}
+
+func TestEgressCanary(t *testing.T) {
+	fd := newFakeDocker(t)
+	fd.canary = "egress-canary leak=0"
+	require.NoError(t, fd.container().egressCanary(context.Background(), "n"))
+	fd.canary = "egress-canary leak=1"
+	assert.Error(t, fd.container().egressCanary(context.Background(), "n"), "not fail-closed")
+	fd.canary = "bash: not found"
+	assert.Error(t, fd.container().egressCanary(context.Background(), "n"), "no verdict")
+
+	// the self-test runs before the proxy and refuses the run on a leak.
+	fd = newFakeDocker(t)
+	fd.canary = "egress-canary leak=1"
+	spec := Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-c"), Egress: Egress{Set: true, SelfTest: true}}
+	_, _, err := fd.container().startEgressProxy(context.Background(), spec)
+	assert.Error(t, err, "not fail-closed")
+	assert.Nil(t, fd.call("run -d"))
+	assert.NotNil(t, fd.call("network rm"))
+}
+
+func TestWaitReady(t *testing.T) {
+	assert.NoError(t, waitReady(strings.NewReader("warming up\nlistening [::]:8080\nmore\n"), time.Second))
+	assert.Error(t, waitReady(strings.NewReader("Error: No such container\n"), time.Second), "exited before listening")
+	r, w := io.Pipe()
+	defer w.Close()
+	assert.Error(t, waitReady(r, 50*time.Millisecond), "not listening")
+}
+
+func TestProxyEnvOptions(t *testing.T) {
+	env := map[string]string{
+		"PATS_EGRESS_POLICY":  "default: allow\ndeny: [evil.test]\n",
+		"PATS_EGRESS_CA_CERT": "-----BEGIN CERTIFICATE-----",
+		"PATS_EGRESS_REFUSE":  "10.213.0.0/16, 10.0.0.0/8",
+		"PATS_EGRESS_ROOTS":   "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
+	}
+	o, err := ProxyEnvOptions(func(k string) string { return env[k] })
+	require.NoError(t, err)
+	assert.Equal(t, o.Policy.Default, "allow")
+	assert.EqualArrays(t, o.Policy.Deny, []string{"evil.test"})
+	assert.Equal(t, len(o.Refuse), 2)
+	assert.ContainsString(t, string(o.Roots), "BEGIN CERTIFICATE")
+
+	env["PATS_EGRESS_POLICY"] = "default: [x"
+	_, err = ProxyEnvOptions(func(k string) string { return env[k] })
+	assert.Error(t, err, "PATS_EGRESS_POLICY")
 }

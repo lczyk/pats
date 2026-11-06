@@ -30,9 +30,9 @@ type harness struct {
 const promptName = "prompt.txt"
 
 // newHarness resolves agent a into sandbox sb. the caller writes the prompt to
-// promptPath() before run; runID "" (preflight) leaves PATS_RUN_ID unset;
-// auditPath "" turns the egress audit log off; label prefixes the no-creds
-// warning.
+// promptPath() before run; runID "" (preflight) leaves PATS_RUN_ID unset and
+// turns on the egress self-test; auditPath "" turns the egress audit log off;
+// label prefixes the no-creds warning.
 func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, runID, auditPath, label string) (*harness, error) {
 	box, err := newSandbox(sb.Driver, sb.Image)
 	if err != nil {
@@ -52,7 +52,7 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, runID,
 		return nil, err
 	}
 	spec.Mounts = hs.mounts
-	spec.Egress = egressFor(sb, a.Harness, auditPath)
+	spec.Egress = egressFor(sb, a.Harness, auditPath, runID == "")
 	return &harness{box: box, spec: spec, homeDir: hs.dir, cleanup: hs.cleanup}, nil
 }
 

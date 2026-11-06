@@ -9,9 +9,14 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
+	"gopkg.in/yaml.v3"
 )
 
 // Config is a loaded pats.yaml: every item of every vector, merged with its
@@ -35,32 +40,71 @@ type Sandbox struct {
 	Driver string `yaml:"driver"` // docker (default) | podman | bwrap
 	Image  string `yaml:"image"`  // existing image to run; "" with no build -> the published pats sandbox
 	Build  string `yaml:"build"`  // build context -- a dir (with a Dockerfile) or a Dockerfile path, relative to the config dir
-	Egress Egress `yaml:"egress"` // outbound network policy (default: open)
+	Egress Egress `yaml:"egress"` // outbound network policy (absent: open)
 }
 
-// Egress is a sandbox's outbound network policy. see docs/proposals/network-egress.md.
-//
-//	open       -- open network (the default)
-//	none       -- no network (--network none); only for agents needing no egress
-//	proxy      -- filter through a sidecar proxy by host, allow/deny + audit
-//	mitm-proxy -- proxy, plus url-level rules: hosts named in deny-urls or
-//	              allow-urls get their tls terminated with a per-run CA (the
-//	              agent trusts it via a merged bundle) so requests are filtered
-//	              by full url. other hosts stay blind tunnels -- a superset of
-//	              proxy.
+// Egress is a sandbox's outbound network policy. absent, the network is
+// open. the scalar `none` means no network at all. a mapping means the
+// filtering proxy, configured by the embedded proxy.Policy (one field set for
+// config and engine) plus the sidecar image override. see
+// docs/proposals/egress-1x.md.
 type Egress struct {
-	Mode    string   `yaml:"mode"`    // open | none | proxy | mitm-proxy
-	Default string   `yaml:"default"` // proxy: deny (allowlist) | allow (denylist)
-	Allow   []string `yaml:"allow"`   // hosts reachable when default: deny
-	Deny    []string `yaml:"deny"`    // hosts blocked when default: allow
-	// DenyURLs and AllowURLs (mitm-proxy only) are host-anchored url patterns;
-	// `*` matches anything, `/` included. the host part must be a literal
-	// hostname -- it picks which hosts get mitm'd. a deny match always loses
-	// (e.g. "github.com/*/chisel-releases*"); a host with allow rules only
-	// passes matching urls. hosts with no url rules are unaffected.
-	DenyURLs  []string `yaml:"deny-urls"`
-	AllowURLs []string `yaml:"allow-urls"`
-	Image     string   `yaml:"proxy-image"` // override proxy image (default pats/egress-proxy:latest)
+	None         bool `yaml:"-"` // `egress: none`
+	Set          bool `yaml:"-"` // a mapping was given: the proxy runs
+	proxy.Policy `yaml:",inline"`
+	Image        string `yaml:"image"` // sidecar image override, docker only
+}
+
+// Mode names the policy's shape: open | none | proxy.
+func (e Egress) Mode() string {
+	switch {
+	case e.None:
+		return "none"
+	case e.Set:
+		return "proxy"
+	}
+	return "open"
+}
+
+// egressFields is Egress without its UnmarshalYAML, for decoding the mapping.
+type egressFields Egress
+
+// UnmarshalYAML accepts the scalar `none` or a mapping of policy fields. the
+// loader's unknown-field check stops at the item's top level, so the mapping's
+// keys are checked here.
+func (e *Egress) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var s string
+		if err := node.Decode(&s); err != nil {
+			return err
+		}
+		if s != "none" {
+			return fmt.Errorf("line %d: egress: want none or a mapping, got %q", node.Line, s)
+		}
+		*e = Egress{None: true}
+		return nil
+	case yaml.MappingNode:
+		known := yamlKeys(reflect.TypeOf(egressFields{}))
+		var errs errList
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if k := node.Content[i].Value; !known[k] {
+				errs.add("line %d: egress: unknown field %q", node.Content[i].Line, k)
+			}
+		}
+		if err := errs.err(); err != nil {
+			return err
+		}
+		var f egressFields
+		if err := node.Decode(&f); err != nil {
+			return err
+		}
+		*e = Egress(f)
+		e.Set = true
+		return nil
+	default:
+		return fmt.Errorf("line %d: egress: want none or a mapping", node.Line)
+	}
 }
 
 // IsContainer reports whether the sandbox runs under a container driver.

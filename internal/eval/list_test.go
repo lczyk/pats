@@ -20,7 +20,7 @@ func listTestConfig(t *testing.T) *config.Config {
 boxes:
   kind: sandbox
   items:
-    box: {image: ubuntu, egress: {mode: proxy}}
+    box: {image: ubuntu, egress: {allow: [a.test]}}
     bare: {driver: bwrap}
     stock: {}
 agents:

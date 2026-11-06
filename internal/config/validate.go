@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // Validate checks a parsed config: ids, per-kind fields, cross-references,
@@ -123,65 +125,38 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 	}
 }
 
-// validateEgress checks a sandbox's egress policy so a bad mode fails at load,
-// not mid-run.
+// validateEgress checks a sandbox's egress policy so a bad entry fails at
+// load, not mid-run. the entry grammar itself is the proxy's; this adds what
+// the config layer knows: which driver, and what is not implemented yet.
 func validateEgress(add func(string, ...any), s Sandbox) {
-	switch s.Egress.Mode {
-	case "", "open", "none", "proxy", "mitm-proxy":
-	default:
-		add("sandbox %q: unknown egress mode %q (open|none|proxy|mitm-proxy)", s.ID, s.Egress.Mode)
+	if !s.Egress.Set {
+		return
 	}
-	switch s.Egress.Default {
-	case "", "deny", "allow":
-	default:
-		add("sandbox %q: unknown egress default %q (deny|allow)", s.ID, s.Egress.Default)
+	r, err := s.Egress.Policy.Rule()
+	if err != nil {
+		add("sandbox %q: egress: %v", s.ID, err)
+		return
 	}
-
-	// plain allow/deny host lists only do anything once traffic is actually
-	// filtered -- open/none/unset pass everything through regardless, so a
-	// list here would silently never be consulted.
-	switch s.Egress.Mode {
-	case "", "open", "none":
-		if len(s.Egress.Allow) > 0 || len(s.Egress.Deny) > 0 {
-			add("sandbox %q: allow/deny needs egress mode proxy or mitm-proxy (got %q)", s.ID, s.Egress.Mode)
+	if len(s.Egress.Methods) > 0 {
+		add("sandbox %q: egress methods is not implemented yet", s.ID)
+	}
+	for _, e := range append(append([]proxy.Entry{}, r.Allow...), r.Deny...) {
+		if e.Methods() != nil {
+			add("sandbox %q: egress entry %q: a method prefix is not implemented yet", s.ID, e.Raw)
 		}
 	}
-
-	// default picks which of allow/deny is live (deny -> allowlist, only
-	// Allow consulted; allow -> denylist, only Deny consulted); a non-empty
-	// entry on the other side would never be looked at.
-	switch s.Egress.Default {
-	case "allow":
-		if len(s.Egress.Allow) > 0 {
-			add("sandbox %q: allow is ignored under default: allow (a denylist) -- move these entries to deny, or set default: deny", s.ID)
-		}
-	case "", "deny":
-		if len(s.Egress.Deny) > 0 {
-			add("sandbox %q: deny is ignored under default: deny (an allowlist) -- move these entries to allow, or set default: allow", s.ID)
-		}
-	}
-
-	// slice, not a map, so a joined error is deterministic (deny-urls before
-	// allow-urls) rather than depending on go's random map iteration order.
-	urlRules := []struct {
-		field string
-		pats  []string
-	}{
-		{"deny-urls", s.Egress.DenyURLs},
-		{"allow-urls", s.Egress.AllowURLs},
-	}
-	for _, r := range urlRules {
-		if len(r.pats) > 0 && s.Egress.Mode != "mitm-proxy" {
-			add("sandbox %q: %s needs egress mode mitm-proxy (got %q)", s.ID, r.field, s.Egress.Mode)
-		}
-		for _, p := range r.pats {
-			host, _, _ := strings.Cut(p, "/")
-			// the host part picks which hosts get mitm'd -- a wildcard would
-			// mitm everything (incl. the inference api), so it must be literal.
-			if host == "" || strings.Contains(host, "*") {
-				add("sandbox %q: %s pattern %q must start with a literal hostname", s.ID, r.field, p)
+	// under a denylist a bare allow entry can never matter: deny wins, and
+	// everything else passes anyway. a url allow entry does (it restricts
+	// its host to matching paths).
+	if s.Egress.Default == "allow" {
+		for _, e := range r.Allow {
+			if !e.URL() {
+				add("sandbox %q: egress allow %q is dead under default: allow -- a bare host passes anyway", s.ID, e.Raw)
 			}
 		}
+	}
+	if s.Egress.Image != "" && s.Driver != "docker" {
+		add("sandbox %q: egress image is docker-only (driver %q runs the proxy in-process)", s.ID, s.Driver)
 	}
 }
 
@@ -199,8 +174,17 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 		if a.Effort != "" && !effortHarnesses[a.Harness] {
 			add("agent %q: effort is not supported by harness %q", a.ID, a.Harness)
 		}
-		if _, err := c.ResolveSandbox(a); err != nil {
+		sbID, err := c.ResolveSandbox(a)
+		if err != nil {
 			add("%v", err)
+			continue
+		}
+		// every harness reaches an inference api (agent.RequiredHosts), so a
+		// sandbox with no network at all cannot run one.
+		for _, s := range c.Sandboxes {
+			if s.ID == sbID && s.Egress.None {
+				add("agent %q: harness %q needs the network, but sandbox %q has egress: none", a.ID, a.Harness, s.ID)
+			}
 		}
 	}
 }

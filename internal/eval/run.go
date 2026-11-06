@@ -474,20 +474,19 @@ func copyFile(src, dst string) error {
 
 // egressFor renders a sandbox's egress policy for one agent run. under an
 // allowlisting proxy the harness's own hosts (inference, token refresh) are
-// merged in, so pats.yaml only lists what the task needs.
-func egressFor(sb config.Sandbox, harness, auditPath string) sandbox.Egress {
+// merged in, so pats.yaml only lists what the task needs. selfTest asks the
+// driver to prove the sandbox has no route out first (preflight does).
+func egressFor(sb config.Sandbox, harness, auditPath string, selfTest bool) sandbox.Egress {
 	eg := sandbox.Egress{
-		Mode:      sb.Egress.Mode,
-		Default:   sb.Egress.Default,
-		Allow:     sb.Egress.Allow,
-		Deny:      sb.Egress.Deny,
-		DenyURLs:  sb.Egress.DenyURLs,
-		AllowURLs: sb.Egress.AllowURLs,
+		None:      sb.Egress.None,
+		Set:       sb.Egress.Set,
+		Policy:    sb.Egress.Policy,
 		Image:     sb.Egress.Image,
 		AuditPath: auditPath,
+		SelfTest:  selfTest,
 	}
-	if (eg.Mode == "proxy" || eg.Mode == "mitm-proxy") && eg.Default != "allow" {
-		eg.Allow = mergeHosts(eg.Allow, agent.RequiredHosts[harness])
+	if eg.Set && eg.Policy.Default != "allow" {
+		eg.Policy.Allow = mergeHosts(eg.Policy.Allow, agent.RequiredHosts[harness])
 	}
 	return eg
 }

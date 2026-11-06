@@ -442,14 +442,22 @@ func isNull(n *yaml.Node) bool {
 	return n.Kind == yaml.ScalarNode && n.Tag == "!!null"
 }
 
-// yamlKeys collects the yaml field names of a struct type ("-" skipped).
+// yamlKeys collects the yaml field names of a struct type ("-" skipped; an
+// inline struct contributes its own fields).
 func yamlKeys(t reflect.Type) map[string]bool {
 	keys := map[string]bool{}
 	for i := 0; i < t.NumField(); i++ {
-		tag := t.Field(i).Tag.Get("yaml")
-		name, _, _ := strings.Cut(tag, ",")
+		f := t.Field(i)
+		tag := f.Tag.Get("yaml")
+		name, opts, _ := strings.Cut(tag, ",")
+		if opts == "inline" && f.Type.Kind() == reflect.Struct {
+			for k := range yamlKeys(f.Type) {
+				keys[k] = true
+			}
+			continue
+		}
 		if name == "" {
-			name = strings.ToLower(t.Field(i).Name)
+			name = strings.ToLower(f.Name)
 		}
 		if name != "-" {
 			keys[name] = true

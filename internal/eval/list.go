@@ -57,10 +57,7 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "VECTOR\tSANDBOX\tDRIVER\tIMAGE\tEGRESS")
 	for _, s := range cfg.Sandboxes {
-		mode := s.Egress.Mode
-		if mode == "" {
-			mode = "open" // the default: no egress filtering
-		}
+		mode := s.Egress.Mode()
 		image := s.Image
 		switch {
 		case image == "" && s.Build != "":

@@ -47,8 +47,8 @@ FUZZTIME ?= 10s
 fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
 	go test ./internal/config -run - -fuzz FuzzParse -fuzztime $(FUZZTIME)
 	go test ./internal/eval -run - -fuzz FuzzParseScore -fuzztime $(FUZZTIME)
-	go test ./src/sandbox/proxy -run - -fuzz FuzzPermitsURL -fuzztime $(FUZZTIME)
-	go test ./src/sandbox/proxy -run - -fuzz FuzzParseURLRules -fuzztime $(FUZZTIME)
+	go test ./src/sandbox/proxy -run - -fuzz FuzzDecide -fuzztime $(FUZZTIME)
+	go test ./src/sandbox/proxy -run - -fuzz FuzzParseEntry -fuzztime $(FUZZTIME)
 
 .PHONY: bench
 bench:  ## Run all benchmarks

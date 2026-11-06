@@ -19,6 +19,7 @@ import (
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 func dockerOrSkip(t *testing.T) {
@@ -611,18 +612,18 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 
 func TestEgressForIncludesCodexHosts(t *testing.T) {
 	sb := config.Sandbox{Egress: config.Egress{
-		Mode:    "proxy",
-		Default: "deny",
-		Allow:   []string{"task.example.com"},
+		Set:    true,
+		Policy: proxy.Policy{Default: "deny", Allow: []string{"task.example.com"}},
 	}}
-	eg := egressFor(sb, "codex-cli-keyless", "/tmp/audit")
+	eg := egressFor(sb, "codex-cli-keyless", "/tmp/audit", true)
 	assert.Equal(t, eg.AuditPath, "/tmp/audit")
+	assert.Equal(t, eg.SelfTest, true)
 	want := map[string]bool{
 		"task.example.com": true,
 		".openai.com":      true,
 		".chatgpt.com":     true,
 	}
-	for _, host := range eg.Allow {
+	for _, host := range eg.Policy.Allow {
 		delete(want, host)
 	}
 	assert.Equal(t, len(want), 0)

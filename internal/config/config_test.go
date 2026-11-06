@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -268,14 +267,15 @@ func TestValidateErrors(t *testing.T) {
 		{"env in the PATS_ namespace", "x: {kind: task, items: {x: {prompt: p, env: {PATS_TASK_ID: v}}}}\n", "PATS_* is reserved"},
 		{"env PATH", "x: {kind: task, items: {x: {prompt: p, env: {PATH: /x}}}}\n", "PATH is set by pats"},
 		{"bad timeout", "x: {kind: task, items: {x: {prompt: p, timeout: soon}}}\n", "bad timeout"},
-		{"unknown egress mode", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: firewall}}}}\n", "unknown egress mode"},
-		{"deny-urls without mitm-proxy", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy, deny-urls: [\"github.com/x*\"]}}}}\n", "deny-urls needs egress mode mitm-proxy"},
-		{"deny-urls wildcard host", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: mitm-proxy, deny-urls: [\"*/chisel-releases*\"]}}}}\n", "literal hostname"},
-		{"allow-urls without mitm-proxy", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy, allow-urls: [\"github.com/x*\"]}}}}\n", "allow-urls needs egress mode mitm-proxy"},
-		{"egress allow list under open", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: open, allow: [good.com]}}}}\n", "allow/deny needs egress mode proxy or mitm-proxy"},
-		{"egress deny list under none", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: none, deny: [evil.com]}}}}\n", "allow/deny needs egress mode proxy or mitm-proxy"},
-		{"egress allow list under default allow", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy, default: allow, allow: [good.com]}}}}\n", "allow is ignored under default: allow"},
-		{"egress deny list under default deny", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy, deny: [evil.com]}}}}\n", "deny is ignored under default: deny"},
+		{"egress wildcard host", "s: {kind: sandbox, items: {s: {image: img, egress: {deny: [\"*/chisel-releases*\"]}}}}\n", "literal hostname"},
+		{"egress bad default", "s: {kind: sandbox, items: {s: {image: img, egress: {default: maybe}}}}\n", "want deny or allow"},
+		{"egress bad deny-response", "s: {kind: sandbox, items: {s: {image: img, egress: {deny-response: 500}}}}\n", "want 403, 404, reset or timeout"},
+		{"egress bad regexp", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: ['a.test ~(']}}}}\n", "regexp"},
+		{"egress methods not implemented", "s: {kind: sandbox, items: {s: {image: img, egress: {methods: [GET]}}}}\n", "methods is not implemented yet"},
+		{"egress method prefix not implemented", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: ['GET a.test/*']}}}}\n", "method prefix is not implemented yet"},
+		{"egress dead allow under default allow", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, allow: [good.com]}}}}\n", "is dead under default: allow"},
+		{"egress image under podman", "s: {kind: sandbox, items: {s: {driver: podman, image: img, egress: {image: p}}}}\n", "docker-only"},
+		{"egress none under an agent", "s: {kind: sandbox, items: {s: {image: img, egress: none}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n", "needs the network"},
 		{"duplicate id within a suite axis", base + "su2: {kind: suite, items: {su2: {agents: [a, a], tasks: t}}}\n", "duplicate agent \"a\" in agents"},
 		{"duplicate after vector expansion", base + "su2: {kind: suite, items: {su2: {agents: [a, a], tasks: t}}}\n", "duplicate agent"},
 		{"unknown axis ref", base + "su2: {kind: suite, items: {su2: {agents: a, tasks: ghost}}}\n", "unknown task \"ghost\" in tasks"},
@@ -306,8 +306,12 @@ func TestValidateAccepts(t *testing.T) {
 		{"codex with effort", base + "b: {kind: agent, items: {b: {harness: codex-cli-keyless, model: m, effort: high}}}\nsu2: {kind: suite, items: {su2: {agents: b, tasks: t}}}\n"},
 		{"copilot with effort", base + "b: {kind: agent, items: {b: {harness: copilot-cli-keyless, model: m, effort: high}}}\nsu2: {kind: suite, items: {su2: {agents: b, tasks: t}}}\n"},
 		{"sandbox with neither image nor build (the published default)", "s: {kind: sandbox, items: {s: {driver: docker}}}\n"},
-		{"egress proxy allowlist", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy, default: deny, allow: [good.com]}}}}\n"},
-		{"egress proxy denylist", "s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy, default: allow, deny: [evil.com]}}}}\n"},
+		{"egress allowlist", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: [good.com, 'github.com:22', '10.0.0.5:5432']}}}}\n"},
+		{"egress denylist", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, deny: [evil.com]}}}}\n"},
+		{"egress url allow under default allow", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, allow: ['a.test/public*']}}}}\n"},
+		{"egress url entries and a regexp", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: ['.githubusercontent.com/canonical/*', 'api.github.com ~^/repos/'], deny: ['github.com/*/x*']}}}}\n"},
+		{"egress none with no agents", "s: {kind: sandbox, items: {s: {image: img, egress: none}}}\n"},
+		{"egress empty mapping is a proxy", "s: {kind: sandbox, items: {s: {image: img, egress: {}}}}\n"},
 		{"run-only suite", base + "su2: {kind: suite, items: {su2: {agents: a, tasks: t}}}\n"},
 	}
 	for _, tc := range cases {
@@ -318,22 +322,27 @@ func TestValidateAccepts(t *testing.T) {
 	}
 }
 
-// COVER: validateEgress builds the url-rule field/pattern pairs from a slice,
-// not a map, so a run with both deny-urls and allow-urls invalid joins its
-// errors in a fixed order. pin deny-urls before allow-urls across repeated
-// parses.
-func TestEgressURLRuleErrorOrderStable(t *testing.T) {
-	src := "s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy, deny-urls: [a], allow-urls: [b]}}}}\n"
-	for range 20 {
-		c := parseT(t, src)
-		err := c.Validate()
-		require.Error(t, err, assert.AnyError)
-		msg := err.Error()
-		denyIdx := strings.Index(msg, "deny-urls needs")
-		allowIdx := strings.Index(msg, "allow-urls needs")
-		assert.That(t, denyIdx >= 0 && allowIdx >= 0 && denyIdx < allowIdx,
-			"expected deny-urls error before allow-urls, got: %s", msg)
+// an egress mapping's keys are checked by its own unmarshal (the loader's
+// unknown-field check stops at the item), and the only scalar is none.
+func TestEgressParseErrors(t *testing.T) {
+	_, err := Parse([]byte("s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy}}}}\n"))
+	assert.Error(t, err, "egress: unknown field \"mode\"")
+	_, err = Parse([]byte("s: {kind: sandbox, items: {s: {image: img, egress: open}}}\n"))
+	assert.Error(t, err, "want none or a mapping")
+}
+
+// the three shapes of `egress`: absent is open, the scalar none is no
+// network, a mapping (even empty) is the proxy.
+func TestEgressShapes(t *testing.T) {
+	c := parseT(t, "s: {kind: sandbox, items: {open: {image: i}, off: {image: i, egress: none}, p: {image: i, egress: {allow: [a.test]}}, nulled: {image: i, egress: ~}}}\n")
+	modes := map[string]string{}
+	for _, sb := range c.Sandboxes {
+		modes[sb.ID] = sb.Egress.Mode()
 	}
+	assert.Equal(t, modes["open"], "open")
+	assert.Equal(t, modes["off"], "none")
+	assert.Equal(t, modes["p"], "proxy")
+	assert.Equal(t, modes["nulled"], "open")
 }
 
 // effortHarnesses is a subset view over Harnesses; pin it so a typo'd or

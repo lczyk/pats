@@ -123,7 +123,7 @@ func pullEgressImages(ctx context.Context, cfg *config.Config, opts Options, pai
 	lg := logw{opts.Out, opts.Color}
 	seen := map[string]bool{}
 	for _, sb := range cfg.Sandboxes {
-		if !used[sb.ID] || (sb.Egress.Mode != "proxy" && sb.Egress.Mode != "mitm-proxy") {
+		if !used[sb.ID] || !sb.Egress.Set {
 			continue
 		}
 		driver := sb.Driver

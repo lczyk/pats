@@ -8,16 +8,15 @@
 //
 // egress policy (Spec.Egress) controls the sandbox's network:
 //
-//	open/""    -> unrestricted
-//	none       -> no network at all
-//	proxy      -> no direct route out; an internal-only network plus a
-//	              filtering proxy sidecar (see src/sandbox/proxy) that
-//	              allow/denies by host and audits every request as json
-//	mitm-proxy -> proxy, plus: hosts named by url rules get their tls
-//	              terminated with a per-run CA so requests are filtered by
-//	              full url. the CA key reaches the proxy over env only and
-//	              never touches disk; the sandboxed process gets the CA cert
-//	              and a merged trust bundle, never the key.
+//	open  -> unrestricted
+//	none  -> no network at all
+//	proxy -> no direct route out; an internal-only network plus a filtering
+//	         proxy sidecar (see src/sandbox/proxy) that decides by the policy
+//	         and audits every request as json. hosts named by a url entry get
+//	         their tls terminated with a per-run CA so requests are filtered
+//	         by full url. the CA key reaches the proxy over env only and
+//	         never touches disk; the sandboxed process gets the CA cert and a
+//	         merged trust bundle, never the key.
 package sandbox
 
 import (
@@ -31,6 +30,8 @@ import (
 	"sort"
 	"syscall"
 	"time"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // WorkMount is the in-sandbox path the host Workdir is bound to + used as cwd.
@@ -48,14 +49,12 @@ type Spec struct {
 // Egress is the outbound network policy for one run. see the package doc for
 // the mode semantics.
 type Egress struct {
-	Mode      string // "" | open | none | proxy | mitm-proxy
-	Default   string // proxy: deny | allow
-	Allow     []string
-	Deny      []string
-	DenyURLs  []string // mitm-proxy: host-anchored url patterns to block (deny wins)
-	AllowURLs []string // mitm-proxy: a host with allow rules only passes matching urls
-	Image     string   // proxy sidecar image; empty -> the published build of src/sandbox/proxy
-	AuditPath string   // where to write the proxy's json audit log (proxy mode)
+	None      bool         // no network at all
+	Set       bool         // the proxy runs with Policy
+	Policy    proxy.Policy // what the proxy enforces
+	Image     string       // proxy sidecar image; empty -> the published build of src/sandbox/proxy
+	AuditPath string       // where to write the proxy's json audit log; "" discards it
+	SelfTest  bool         // prove the sandbox has no route out before running
 }
 
 // Mount is an extra host path bound into the sandbox.
@@ -87,7 +86,7 @@ func New(driver, image string) (Sandbox, error) {
 		if image == "" {
 			return nil, fmt.Errorf("sandbox driver %q needs an image", driver)
 		}
-		return &container{bin: driver, image: image}, nil
+		return &container{driver: driver, bin: driver, image: image}, nil
 	case "bwrap":
 		return nil, errors.New("sandbox driver bwrap not implemented yet")
 	case "":
@@ -97,10 +96,12 @@ func New(driver, image string) (Sandbox, error) {
 	}
 }
 
-// container drives docker / podman (cli-compatible).
+// container drives docker / podman (cli-compatible). driver is which of the
+// two; bin is the executable, the same name outside tests.
 type container struct {
-	bin   string
-	image string
+	driver string
+	bin    string
+	image  string
 	// exec/execOut run the cli, swappable in tests (nil -> real exec). they
 	// cover the setup/teardown plumbing (egress etc.); the main agent `run`
 	// streams via exec.CommandContext directly and stays e2e-tested.
