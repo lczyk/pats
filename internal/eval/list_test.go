@@ -11,26 +11,37 @@ import (
 	"github.com/lczyk/pats/internal/config"
 )
 
-func listTestConfig() *config.Config {
-	return &config.Config{
-		Sandboxes: []config.Sandbox{
-			{ID: "box", Kind: "container", Image: "ubuntu", Egress: config.Egress{Mode: "proxy"}},
-			{ID: "bare", Kind: "bwrap"}, // egress mode empty -> "open"
-		},
-		Agents: []config.Agent{
-			{ID: "claude", Kind: "claude-cli-keyless", Model: "opus", Sandbox: "box", Effort: "high"},
-		},
-		Tasks: []config.Task{{ID: "refactor", Prompt: "refactor.txt"}},
-		Scorers: []config.Scorer{
-			{ID: "exact", Score: "exact.sh"}, // default kind -> exec
-			{ID: "judge", Kind: "agent", AgentID: "claude"},
-		},
-	}
+// listTestConfig is parsed, not validated: it holds a bwrap sandbox and an
+// agent scorer, both rejected by Validate, so list output covers them.
+func listTestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg, err := config.Parse([]byte(`
+boxes:
+  kind: sandbox
+  items:
+    box: {image: ubuntu, egress: {mode: proxy}}
+    bare: {driver: bwrap}
+agents:
+  kind: agent
+  items:
+    claude: {harness: claude-cli-keyless, model: opus, sandbox: box, effort: high}
+tasks:
+  kind: task
+  items:
+    refactor: {prompt: refactor.txt}
+scorers:
+  kind: scorer
+  items:
+    exact: {score: exact.sh}
+    judge: {agent-id: claude, prompt: judge.txt}
+`))
+	require.NoError(t, err)
+	return cfg
 }
 
 func TestListAgents(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListAgents(listTestConfig(), &out))
+	require.NoError(t, ListAgents(listTestConfig(t), &out))
 	s := out.String()
 	for _, want := range []string{"claude", "opus", "box", "high"} {
 		assert.ContainsString(t, s, want)
@@ -39,14 +50,14 @@ func TestListAgents(t *testing.T) {
 
 func TestListTasks(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListTasks(listTestConfig(), &out))
+	require.NoError(t, ListTasks(listTestConfig(t), &out))
 	assert.ContainsString(t, out.String(), "refactor")
 	assert.ContainsString(t, out.String(), "refactor.txt")
 }
 
 func TestListSandboxes(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListSandboxes(listTestConfig(), &out))
+	require.NoError(t, ListSandboxes(listTestConfig(t), &out))
 	s := out.String()
 	for _, want := range []string{"proxy", "docker", "bare", "open"} { // docker = resolved driver, open = default egress
 		assert.ContainsString(t, s, want)
@@ -55,11 +66,10 @@ func TestListSandboxes(t *testing.T) {
 
 func TestListScorers(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListScorers(listTestConfig(), &out))
+	require.NoError(t, ListScorers(listTestConfig(t), &out))
 	s := out.String()
-	assert.ContainsString(t, s, "exact.sh") // exec -> file
-	assert.ContainsString(t, s, "judge")    // agent scorer id
-	assert.ContainsString(t, s, "agent")    // agent -> agent-id source
+	assert.ContainsString(t, s, "exact.sh")      // file scorer -> its script
+	assert.ContainsString(t, s, "agent: claude") // agent scorer -> its judge
 }
 
 func TestListRuns(t *testing.T) {
@@ -94,6 +104,6 @@ func TestListRunsEmpty(t *testing.T) {
 
 func TestListSuites(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListSuites(listTestConfig(), &out))
+	require.NoError(t, ListSuites(listTestConfig(t), &out))
 	assert.ContainsString(t, out.String(), "SUITE")
 }

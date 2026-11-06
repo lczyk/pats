@@ -26,7 +26,7 @@ func dockerOrSkip(t *testing.T) {
 
 // first sandboxed e2e of the agent layer: a harness runs in docker, sees its
 // PATS_* env, and writes a file into the mounted workdir (visible on host).
-// the kind's command is overridden with a no-cred stand-in so the test needs
+// the harness's command is overridden with a no-cred stand-in so the test needs
 // no real cli/creds.
 func TestHarnessThroughSandbox(t *testing.T) {
 	dockerOrSkip(t)
@@ -35,7 +35,7 @@ func TestHarnessThroughSandbox(t *testing.T) {
 	defer overrideCmd("opencode-openrouter",
 		`echo "model=$PATS_MODEL"; echo "prompt=$PATS_PROMPT_FILE"; echo hello > out.txt`)()
 
-	a := config.Agent{ID: "x", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s"}
+	a := config.Agent{ID: "x", Harness: "opencode-openrouter", Model: "m1", Sandbox: "s"}
 	env := Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount, "")
 	spec, err := Spec(a, dir, env)
 	require.NoError(t, err)
@@ -55,23 +55,23 @@ func TestHarnessThroughSandbox(t *testing.T) {
 	assert.ContainsString(t, string(b), "hello")
 }
 
-// overrideCmd swaps a kind's command for the duration of a test; the returned
-// func restores it.
-func overrideCmd(kind, cmd string) func() {
-	old := HarnessCmds[kind]
-	HarnessCmds[kind] = cmd
-	return func() { HarnessCmds[kind] = old }
+// overrideCmd swaps a harness's command for the duration of a test; the
+// returned func restores it.
+func overrideCmd(harness, cmd string) func() {
+	old := HarnessCmds[harness]
+	HarnessCmds[harness] = cmd
+	return func() { HarnessCmds[harness] = old }
 }
 
 func TestSpecClaudeCli(t *testing.T) {
-	spec, err := Spec(config.Agent{ID: "h", Kind: "claude-cli-keyless", Sandbox: "s"}, "/tmp", nil)
+	spec, err := Spec(config.Agent{ID: "h", Harness: "claude-cli-keyless", Sandbox: "s"}, "/tmp", nil)
 	require.NoError(t, err)
 	assert.Equal(t, spec.Argv[0], "sh")
 	assert.ContainsString(t, spec.Argv[len(spec.Argv)-1], "claude --print")
 }
 
 func TestSpecCodexCliKeyless(t *testing.T) {
-	spec, err := Spec(config.Agent{ID: "c", Kind: "codex-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
+	spec, err := Spec(config.Agent{ID: "c", Harness: "codex-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
 	require.NoError(t, err)
 	cmd := spec.Argv[len(spec.Argv)-1]
 	assert.ContainsString(t, cmd, "codex exec --json --ephemeral")
@@ -82,7 +82,7 @@ func TestSpecCodexCliKeyless(t *testing.T) {
 }
 
 func TestSpecCopilotCliKeyless(t *testing.T) {
-	spec, err := Spec(config.Agent{ID: "p", Kind: "copilot-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
+	spec, err := Spec(config.Agent{ID: "p", Harness: "copilot-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
 	require.NoError(t, err)
 	cmd := spec.Argv[len(spec.Argv)-1]
 	assert.ContainsString(t, cmd, "copilot -p")
@@ -148,23 +148,23 @@ func TestHostCredsFileCodex(t *testing.T) {
 	assert.Equal(t, rel, filepath.Join(".codex", "auth.json"))
 }
 
-func TestSpecUnsupportedKind(t *testing.T) {
-	_, err := Spec(config.Agent{ID: "h", Kind: "codex-cli", Sandbox: "s"}, "/tmp", nil)
-	assert.Error(t, err, "unsupported kind")
+func TestSpecUnsupportedHarness(t *testing.T) {
+	_, err := Spec(config.Agent{ID: "h", Harness: "codex-cli", Sandbox: "s"}, "/tmp", nil)
+	assert.Error(t, err, "unsupported harness")
 }
 
-// the kind registry is spelled out twice (config.AgentKinds for validation,
+// the harness registry is spelled out twice (config.Harnesses for validation,
 // HarnessCmds for execution -- an import cycle keeps them apart); this pins
 // them to the same key set.
-func TestKindRegistriesMatch(t *testing.T) {
+func TestHarnessRegistriesMatch(t *testing.T) {
 	for k := range HarnessCmds {
-		if !config.AgentKinds[k] {
-			t.Errorf("HarnessCmds kind %q missing from config.AgentKinds", k)
+		if !config.Harnesses[k] {
+			t.Errorf("HarnessCmds harness %q missing from config.Harnesses", k)
 		}
 	}
-	for k := range config.AgentKinds {
+	for k := range config.Harnesses {
 		if _, ok := HarnessCmds[k]; !ok {
-			t.Errorf("config.AgentKinds kind %q missing from HarnessCmds", k)
+			t.Errorf("config.Harnesses harness %q missing from HarnessCmds", k)
 		}
 	}
 }

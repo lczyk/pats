@@ -46,12 +46,12 @@ const (
 // ticker's egress-log poll, and all are read by the renderer.
 type pairStat struct {
 	out     int64 // stdout lines (stream-json events)
-	tools   int64 // tool_use events (per-kind parse; 0 for kinds w/o a parser)
+	tools   int64 // tool_use events (per-harness parse; 0 for harnesses w/o a parser)
 	net     int64 // egress requests, from the proxy audit log
 	netSeen int32 // 1 once egress.log was readable (i.e. proxy mode) -> show net
 }
 
-// cols renders the counter columns "out [tool] [net]" -- tool only when the kind
+// cols renders the counter columns "out [tool] [net]" -- tool only when the harness
 // has a parser (showTools), net only once the proxy audit log was seen.
 func (s *pairStat) cols(showTools bool) string {
 	parts := []string{fmt.Sprintf("%5d out", atomic.LoadInt64(&s.out))}
@@ -68,7 +68,7 @@ type inflight struct {
 	label     string
 	stat      *pairStat
 	egress    string  // path to egress.log, polled for the net count ("" -> skip)
-	showTools bool    // the agent kind has a tool parser -> show the tool column
+	showTools bool    // the harness has a tool parser -> show the tool column
 	spin      float64 // spinner accumulator, advanced by spinRate each tick
 	spinRate  float64 // per-pair speed (jittered) so spinners slowly desync
 }
@@ -287,20 +287,20 @@ func useColor(w io.Writer) bool {
 // post-run summary scanners already allow a single line (claude's
 // stream-json lines carry base64 signatures) rather than invent a smaller
 // cap that could clip a legitimate one. past the cap, extra bytes are
-// dropped -- the retained (truncated) line then fails its per-kind json
+// dropped -- the retained (truncated) line then fails its per-harness json
 // scan and is silently skipped (same as any other malformed line), but the
 // eventual newline still counts as one "out" line, so the running total
-// stays accurate even though the tool/kind breakdown for that one line is lost.
+// stays accurate even though the tool/harness breakdown for that one line is lost.
 const statTapMaxBuf = 8 * 1024 * 1024
 
 // statTap taps a pair's stdout: it splits the stream into lines (buffering across
-// writes), counts each as an "out" line, and runs the per-kind scanner on it. it
+// writes), counts each as an "out" line, and runs the per-harness scanner on it. it
 // does not disturb the stdout.log written alongside via a MultiWriter. buf is
 // capped at statTapMaxBuf -- bytes past the cap are dropped, though the eventual
 // newline still counts as one out line.
 type statTap struct {
 	stat *pairStat
-	scan func([]byte, *pairStat) // per-kind line parser; nil -> count lines only
+	scan func([]byte, *pairStat) // per-harness line parser; nil -> count lines only
 	buf  []byte
 }
 
@@ -329,13 +329,13 @@ func (t *statTap) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-// statScanner returns the per-kind stdout line parser, or nil for kinds whose
+// statScanner returns the per-harness stdout line parser, or nil for harnesses whose
 // stream format pats can't read (those get the out count only).
 //
 // NOTE: this is the one harness-coupled spot -- a stream-format change breaks
-// here, not the run. add a case per new kind.
-func statScanner(kind string) func([]byte, *pairStat) {
-	switch kind {
+// here, not the run. add a case per new harness.
+func statScanner(harness string) func([]byte, *pairStat) {
+	switch harness {
 	case "claude-cli-keyless":
 		return scanClaude
 	case "codex-cli-keyless":
@@ -503,7 +503,7 @@ func scanCopilot(line []byte, s *pairStat) {
 }
 
 // runSummary is the post-run digest extracted from a harness's log, stored in
-// metadata.json. fields are per-kind best-effort -- zero/empty when absent, so
+// metadata.json. fields are per-harness best-effort -- zero/empty when absent, so
 // they carry the same meaning whichever harness produced them: InputTokens
 // never includes the cache-read half, NumTurns counts model round-trips (0 when
 // the stream doesn't say), and HasCost tells the caller a zero CostUSD is a
@@ -525,11 +525,11 @@ type runSummary struct {
 }
 
 // summarize extracts a runSummary from a finished pair's stdout log, per agent
-// kind. nil for kinds whose log format pats can't read.
+// harness. nil for harnesses whose log format pats can't read.
 //
 // NOTE: harness-coupled, like statScanner -- a stream-format change breaks here.
-func summarize(kind, stdoutPath string) *runSummary {
-	switch kind {
+func summarize(harness, stdoutPath string) *runSummary {
+	switch harness {
 	case "claude-cli-keyless":
 		return claudeSummary(stdoutPath)
 	case "codex-cli-keyless":
@@ -574,7 +574,7 @@ func codexSummary(path string) *runSummary {
 				hasEvent = true
 			}
 		case "turn.completed":
-			// cached is a slice of input, so subtract to match the other kinds.
+			// cached is a slice of input, so subtract to match the other harnesses.
 			sum.InputTokens += ev.Usage.Input - ev.Usage.Cached
 			sum.CacheReadTokens += ev.Usage.Cached
 			sum.OutputTokens += ev.Usage.Output

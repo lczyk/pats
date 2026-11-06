@@ -48,7 +48,7 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		if !used[sb.ID] || sb.Build == "" {
 			continue
 		}
-		driver := sb.ResolvedDriver()
+		driver := sb.Driver
 		ctxDir, dockerfile, err := resolveBuildSpec(opts.ConfigDir, sb.Build)
 		if err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
@@ -96,7 +96,7 @@ func pullEgressImages(ctx context.Context, cfg *config.Config, opts Options, pai
 		if !used[sb.ID] || (sb.Egress.Mode != "proxy" && sb.Egress.Mode != "mitm-proxy") {
 			continue
 		}
-		driver := sb.ResolvedDriver()
+		driver := sb.Driver
 		img, warn := sandbox.ProxyImage(sb.Egress.Image)
 		key := driver + "\x00" + img
 		if seen[key] {

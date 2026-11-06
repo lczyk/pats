@@ -9,7 +9,6 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
-	"github.com/lczyk/pats/internal/config"
 )
 
 // score phase, no docker: an exec scorer reads each pair's stdout.log and emits
@@ -28,16 +27,13 @@ func TestScoreExec(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte(body), 0o644))
 	}
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t1", Prompt: "p.txt"}, {ID: "t2", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "has-good", Score: "has-good.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t1", "t2"}, Scorers: config.StrList{"has-good"},
-		}},
-	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1: ~, t2: ~}}
+scorers: {kind: scorer, items: {has-good: {score: has-good.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: [t1, t2], scorers: [has-good]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
@@ -62,43 +58,37 @@ func TestScoreExecRunEnv(t *testing.T) {
 	run := filepath.Join(dir, ".pats", "runs", "001-20260621-fluffy-bunny")
 	require.NoError(t, os.MkdirAll(filepath.Join(run, "a", "t1"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t1", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "run-env", Score: "run-env.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t1"}, Scorers: config.StrList{"run-env"},
-		}},
-	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1: ~}}
+scorers: {kind: scorer, items: {run-env: {score: run-env.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: [t1], scorers: [run-env]}}}
+`)
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
 	require.NoError(t, err)
 	assert.Equal(t, rep.PerPair["a/t1"], 1.0)
 }
 
-// scorers get PATS_AGENT_KIND alongside PATS_MODEL (README documents both).
+// scorers get PATS_AGENT_HARNESS alongside PATS_MODEL (README documents both).
 func TestScorerEnvIncludesAgentKind(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "check-kind.sh"),
-		[]byte("#!/bin/sh\n[ \"$PATS_AGENT_KIND\" = \"opencode-openrouter\" ] && echo 1.0 || echo 0.0\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "check-harness.sh"),
+		[]byte("#!/bin/sh\n[ \"$PATS_AGENT_HARNESS\" = \"opencode-openrouter\" ] && echo 1.0 || echo 0.0\n"), 0o755))
 
 	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
 	od := filepath.Join(run, "a", "t")
 	require.NoError(t, os.MkdirAll(od, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "check-kind", Score: "check-kind.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"check-kind"},
-		}},
-	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
+scorers: {kind: scorer, items: {check-harness: {score: check-harness.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [check-harness]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
@@ -123,16 +113,13 @@ func TestScoreAutoJobsSkipsDocker(t *testing.T) {
 	require.NoError(t, os.MkdirAll(od, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one"},
-		}},
-	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
+scorers: {kind: scorer, items: {one: {score: one.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one]}}}
+`)
 
 	var out bytes.Buffer
 	_, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Jobs: -1, Out: &out})
@@ -170,16 +157,13 @@ func TestScoreMultipleScorers(t *testing.T) {
 	require.NoError(t, os.MkdirAll(od, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}, {ID: "zero", Score: "zero.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one", "zero"},
-		}},
-	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
+scorers: {kind: scorer, items: {one: {score: one.sh}, zero: {score: zero.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one, zero]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
@@ -299,16 +283,13 @@ func TestScoreAllRuns(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 	}
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one"},
-		}},
-	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t: ~}}
+scorers: {kind: scorer, items: {one: {score: one.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: "all", Out: &out})

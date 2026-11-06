@@ -1,5 +1,5 @@
 // Package agent turns an agent definition into a sandbox execution. it knows
-// the per-kind argv shape; the sandbox package handles isolation.
+// the per-harness argv shape; the sandbox package handles isolation.
 package agent
 
 import (
@@ -49,8 +49,8 @@ const (
 	copilotKeylessCmd = `copilot -p "$(cat "$PATS_PROMPT_FILE")" --allow-all --output-format json --no-auto-update --no-remote-export --disable-builtin-mcps --model "$PATS_MODEL" ${PATS_EFFORT:+--effort "$PATS_EFFORT"}`
 )
 
-// HarnessCmds maps an agent kind to its one-shot shell command -- the registry
-// of supported kinds. (tests may temporarily override an entry to run a
+// HarnessCmds maps a harness to its one-shot shell command -- the registry
+// of supported harnesses. (tests may temporarily override an entry to run a
 // no-cred stand-in through the sandbox.)
 var HarnessCmds = map[string]string{
 	"claude-cli-keyless":  claudeKeylessCmd,
@@ -92,9 +92,9 @@ var RequiredHosts = map[string][]string{
 
 // Spec builds the sandboxed execution for a task-running agent.
 func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, error) {
-	cmd, ok := HarnessCmds[a.Kind]
+	cmd, ok := HarnessCmds[a.Harness]
 	if !ok {
-		return sandbox.Spec{}, fmt.Errorf("agent %q: unsupported kind %q", a.ID, a.Kind)
+		return sandbox.Spec{}, fmt.Errorf("agent %q: unsupported harness %q", a.ID, a.Harness)
 	}
 	return sandbox.Spec{Argv: []string{"sh", "-c", cmd}, Workdir: workdir, Env: env}, nil
 }
@@ -104,11 +104,11 @@ func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, 
 // is the run dir's basename, or "" outside a run (preflight).
 func Env(a config.Agent, promptFile, outputDir, runID string) map[string]string {
 	env := map[string]string{
-		"PATS_MODEL":       a.ResolvedModel(),
-		"PATS_AGENT_KIND":  a.Kind,
-		"PATS_PROMPT_FILE": promptFile,
-		"PATS_OUTPUT_DIR":  outputDir,
-		"PATS_EFFORT":      a.Effort,
+		"PATS_MODEL":         a.Model,
+		"PATS_AGENT_HARNESS": a.Harness,
+		"PATS_PROMPT_FILE":   promptFile,
+		"PATS_OUTPUT_DIR":    outputDir,
+		"PATS_EFFORT":        a.Effort,
 	}
 	if runID != "" {
 		env["PATS_RUN_ID"] = runID
@@ -116,11 +116,11 @@ func Env(a config.Agent, promptFile, outputDir, runID string) map[string]string 
 	return env
 }
 
-// HomeEnv is the kind-specific env derived from the in-sandbox HOME, or nil.
-// codex resolves its state dir from CODEX_HOME rather than trusting $HOME, so
-// it's pinned to the same .codex the run phase copies auth.json into.
-func HomeEnv(kind, home string) map[string]string {
-	if kind == "codex-cli-keyless" {
+// HomeEnv is the harness-specific env derived from the in-sandbox HOME, or
+// nil. codex resolves its state dir from CODEX_HOME rather than trusting
+// $HOME, so it's pinned to the same .codex the run phase copies auth.json into.
+func HomeEnv(harness, home string) map[string]string {
+	if harness == "codex-cli-keyless" {
 		return map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}
 	}
 	return nil
@@ -132,9 +132,10 @@ func HomeEnv(kind, home string) map[string]string {
 // CLAUDE_CODE_OAUTH_TOKEN, or ANTHROPIC_API_KEY). the other is the creds file
 // (see HostCredsFile), mounted mason-style.
 //
-// the list is per-kind: forwarding every key to every harness lets an unrelated
-// credential sitting in the host env change a harness's auth mode behind your
-// back, which for a keyless kind means it silently stops being keyless.
+// the list is per-harness: forwarding every key to every harness lets an
+// unrelated credential sitting in the host env change a harness's auth mode
+// behind your back, which for a keyless one means it silently stops being
+// keyless.
 var credKeys = map[string][]string{
 	"claude-cli-keyless": {
 		"ANTHROPIC_API_KEY",
@@ -143,7 +144,7 @@ var credKeys = map[string][]string{
 		"ANTHROPIC_BASE_URL",
 	},
 	// deliberately empty, not missing: codex reads CODEX_API_KEY/OPENAI_API_KEY
-	// when either is set, so withholding them is what keeps this kind keyless.
+	// when either is set, so withholding them is what keeps this harness keyless.
 	// auth comes from the copied auth.json alone (see HostCredsFile).
 	"codex-cli-keyless": {},
 	// only the copilot-specific var: GH_TOKEN/GITHUB_TOKEN are ambient in many
@@ -157,11 +158,11 @@ var credKeys = map[string][]string{
 	"opencode-openrouter": {"OPENROUTER_API_KEY"},
 }
 
-// CredEnv returns the cred-related env vars the given kind may inherit from the
-// host, and whether any actual key/token (not just a base-url) was found.
-func CredEnv(kind string) (env map[string]string, hasToken bool) {
+// CredEnv returns the cred-related env vars the given harness may inherit from
+// the host, and whether any actual key/token (not just a base-url) was found.
+func CredEnv(harness string) (env map[string]string, hasToken bool) {
 	env = map[string]string{}
-	for _, k := range credKeys[kind] {
+	for _, k := range credKeys[harness] {
 		if v, ok := os.LookupEnv(k); ok && v != "" {
 			env[k] = v
 			if k != "ANTHROPIC_BASE_URL" {
@@ -174,12 +175,12 @@ func CredEnv(kind string) (env map[string]string, hasToken bool) {
 
 // HostCredsFile returns a harness credential file and its HOME-relative
 // destination. keyring-backed logins have no file and return empty strings.
-func HostCredsFile(kind string) (host, relative string) {
+func HostCredsFile(harness string) (host, relative string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", ""
 	}
-	switch kind {
+	switch harness {
 	case "claude-cli-keyless":
 		relative = filepath.Join(".claude", ".credentials.json")
 	case "codex-cli-keyless":
@@ -195,8 +196,8 @@ func HostCredsFile(kind string) (host, relative string) {
 }
 
 // CredentialHint describes the host credential source used in auth warnings.
-func CredentialHint(kind string) string {
-	switch kind {
+func CredentialHint(harness string) string {
+	switch harness {
 	case "claude-cli-keyless":
 		return "a claude token env or ~/.claude/.credentials.json"
 	case "codex-cli-keyless":

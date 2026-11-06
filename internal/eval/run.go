@@ -65,13 +65,13 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// a vectors-only config (no suites) is valid to hold but runs nothing --
-	// say that, rather than letting FilterPairs blame an agent/task filter the
-	// user never passed.
+	// a config with no suites is valid to hold but runs nothing -- say that,
+	// rather than letting FilterPairs blame an agent/task filter the user
+	// never passed.
 	if len(pairs) == 0 {
-		return "", fmt.Errorf("no (agent, task) pairs to run: the selected suites expand to none (a config with no `suites:` runs nothing)")
+		return "", fmt.Errorf("no (agent, task) pairs to run: the selected suites expand to none (a config with no suite vector runs nothing)")
 	}
-	if pairs, err = config.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
+	if pairs, err = cfg.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
 		return "", err
 	}
 	// first output up front: the slow startup steps (image build, preflight) are
@@ -159,7 +159,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 			stat := &pairStat{}
 			if bar != nil {
 				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
-				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Kind) != nil)
+				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Harness) != nil)
 			}
 			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes, stat); err != nil {
 				logw{po.Out, opts.Color}.error("[%s x %s] %v", p.Agent, p.Task, err)
@@ -227,7 +227,7 @@ type pairMeta struct {
 	// hosts the agent tried to reach but egress denied (proxy mode). a non-empty
 	// list flags attempted cheating / unexpected fetches.
 	DeniedEgress []string `json:"denied_egress,omitempty"`
-	// per-kind digest parsed from the harness log: cost, tokens, turns, tools.
+	// per-harness digest parsed from the log: cost, tokens, turns, tools.
 	Summary *runSummary `json:"summary,omitempty"`
 }
 
@@ -293,14 +293,14 @@ func runPair(
 	// host-side env for prepare/collect scripts (they run in the project dir
 	// and seed/gather the sandbox via these paths).
 	hostEnv := map[string]string{
-		"PATS_RUN_ID":     filepath.Base(runDir),
-		"PATS_RUN_DIR":    runDir,
-		"PATS_AGENT_ID":   p.Agent,
-		"PATS_AGENT_KIND": a.Kind,
-		"PATS_TASK_ID":    p.Task,
-		"PATS_MODEL":      a.ResolvedModel(),
-		"PATS_WORKDIR":    workDir,
-		"PATS_OUTPUT_DIR": outDir,
+		"PATS_RUN_ID":        filepath.Base(runDir),
+		"PATS_RUN_DIR":       runDir,
+		"PATS_AGENT_ID":      p.Agent,
+		"PATS_AGENT_HARNESS": a.Harness,
+		"PATS_TASK_ID":       p.Task,
+		"PATS_MODEL":         a.Model,
+		"PATS_WORKDIR":       workDir,
+		"PATS_OUTPUT_DIR":    outDir,
 	}
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
@@ -313,12 +313,12 @@ func runPair(
 	hostEnv["PATS_AGENT_HOME"] = h.homeDir
 
 	if t.Prepare != "" {
-		if err := runHost(opts, expandID(t.Prepare, t.ID), hostEnv); err != nil {
+		if err := runHost(opts, t.Prepare, hostEnv); err != nil {
 			return fmt.Errorf("prepare: %w", err)
 		}
 	}
 
-	promptData, err := resolvePrompt(opts.ConfigDir, t.ResolvedPrompt(), hostEnv)
+	promptData, err := resolvePrompt(opts.ConfigDir, t.Prompt, hostEnv)
 	if err != nil {
 		return fmt.Errorf("resolve prompt: %w", err)
 	}
@@ -338,9 +338,9 @@ func runPair(
 	defer stderrF.Close()
 
 	// agent output goes to the log file, always also tapped through statTap for
-	// the in-run counters (out lines + per-kind tool parse) -- the full
+	// the in-run counters (out lines + per-harness tool parse) -- the full
 	// stdout.log is still written intact. stat is never nil (see doc comment).
-	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Kind)})
+	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Harness)})
 	r := h.run(ctx, stdoutW, stderrF, t.TimeoutDuration())
 	status, errStr := "ok", ""
 	switch {
@@ -359,7 +359,7 @@ func runPair(
 	// container produced files. a launch failure (r.err != nil, !timedOut)
 	// left nothing to collect.
 	if (r.err == nil || r.timedOut) && t.Collect != "" {
-		if err := runHost(opts, expandID(t.Collect, t.ID), hostEnv); err != nil {
+		if err := runHost(opts, t.Collect, hostEnv); err != nil {
 			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
 		}
 	}
@@ -374,7 +374,7 @@ func runPair(
 		Sandbox: sbID, Image: sb.Image,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
 		PatsVersion: version.Info.Version, DeniedEgress: denied,
-		Summary: summarize(a.Kind, filepath.Join(outDir, "stdout.log")),
+		Summary: summarize(a.Harness, filepath.Join(outDir, "stdout.log")),
 	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err
@@ -395,7 +395,7 @@ func runPair(
 	default:
 		lg.error("%s", statusLine)
 	}
-	stats := stat.cols(statScanner(a.Kind) != nil)
+	stats := stat.cols(statScanner(a.Harness) != nil)
 	if s := meta.Summary; s != nil {
 		// cost + turns are omitted for harnesses whose stream doesn't report them.
 		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))
@@ -425,16 +425,16 @@ type harnessSetup struct {
 // credential source is available. copies are writable for token refreshes but
 // discarded after the invocation; pats never modifies the host credential file.
 // label ("agent x task") prefixes the warning.
-func harnessHome(opts Options, label, kind string, env map[string]string, hasToken bool) (harnessSetup, error) {
+func harnessHome(opts Options, label, harness string, env map[string]string, hasToken bool) (harnessSetup, error) {
 	homeDir, err := sandbox.MkTemp("pats-home-")
 	if err != nil {
 		return harnessSetup{}, err
 	}
 	env["HOME"] = homeMount
-	maps.Copy(env, agent.HomeEnv(kind, homeMount))
+	maps.Copy(env, agent.HomeEnv(harness, homeMount))
 
 	hasCreds := hasToken
-	if cf, rel := agent.HostCredsFile(kind); cf != "" {
+	if cf, rel := agent.HostCredsFile(harness); cf != "" {
 		dst := filepath.Join(homeDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 			os.RemoveAll(homeDir)
@@ -447,7 +447,7 @@ func harnessHome(opts Options, label, kind string, env map[string]string, hasTok
 		hasCreds = true
 	}
 	if !hasCreds {
-		logw{opts.Out, opts.Color}.warn("[%s] no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(kind))
+		logw{opts.Out, opts.Color}.warn("[%s] no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(harness))
 	}
 	return harnessSetup{
 		dir:     homeDir,
@@ -464,13 +464,10 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0o600)
 }
 
-// expandID substitutes ${id} in a run-field value with the owning entity's id.
-func expandID(s, id string) string { return strings.ReplaceAll(s, "${id}", id) }
-
 // egressFor renders a sandbox's egress policy for one agent run. under an
 // allowlisting proxy the harness's own hosts (inference, token refresh) are
 // merged in, so pats.yaml only lists what the task needs.
-func egressFor(sb config.Sandbox, kind, auditPath string) sandbox.Egress {
+func egressFor(sb config.Sandbox, harness, auditPath string) sandbox.Egress {
 	eg := sandbox.Egress{
 		Mode:      sb.Egress.Mode,
 		Default:   sb.Egress.Default,
@@ -482,7 +479,7 @@ func egressFor(sb config.Sandbox, kind, auditPath string) sandbox.Egress {
 		AuditPath: auditPath,
 	}
 	if (eg.Mode == "proxy" || eg.Mode == "mitm-proxy") && eg.Default != "allow" {
-		eg.Allow = mergeHosts(eg.Allow, agent.RequiredHosts[kind])
+		eg.Allow = mergeHosts(eg.Allow, agent.RequiredHosts[harness])
 	}
 	return eg
 }
@@ -617,7 +614,7 @@ func stderrTail(b *bytes.Buffer) string {
 
 // runHost runs a prepare/collect field on the host: it execs the field's file
 // (with args) in the project dir, PATS_* env appended, no shell. output streams
-// to opts.Out. callers expand ${id} first.
+// to opts.Out.
 func runHost(opts Options, command string, env map[string]string) error {
 	cmd, err := commandFor(opts.ConfigDir, command, env)
 	if err != nil {

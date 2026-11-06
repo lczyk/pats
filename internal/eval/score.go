@@ -24,7 +24,7 @@ type ScoreOptions struct {
 	ConfigDir string   // dir holding pats.yaml -- scorer paths resolve against it
 	RunDir    string   // explicit run dir, or "" for the latest under .pats/runs
 	Jobs      int      // max concurrent scorer cells; 0 -> serial (1), negative -> auto (see resolveJobs)
-	Agentic   bool     // also run agent-kind scorers
+	Agentic   bool     // also run agent scorers
 	Suites    []string // only expand these suites (empty -> all)
 	Out       io.Writer
 	Color     bool // colour log tags (set internally from Out's tty-ness)
@@ -87,7 +87,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.ID })
 	agents := map[string]agentInfo{}
 	for _, a := range cfg.Agents {
-		agents[a.ID] = agentInfo{model: a.ResolvedModel(), kind: a.Kind}
+		agents[a.ID] = agentInfo{model: a.Model, harness: a.Harness}
 	}
 	// task -> scorers to run on it.
 	byTask := map[string][]config.ScorePair{}
@@ -109,7 +109,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}
 		for _, sp := range byTask[tp.Task] {
 			sc := scorers[sp.Scorer]
-			if sc.Kind == "agent" && !opts.Agentic {
+			if sc.IsAgent() && !opts.Agentic {
 				continue // agentic scorers gated behind --agentic
 			}
 			jobs = append(jobs, scoreJob{tp.Agent, tp.Task, outDir, sc})
@@ -229,41 +229,37 @@ var errScorerNA = errors.New("scorer reported n/a")
 // id in Score's agents map -- one small struct beats a second parallel map
 // alongside runScorer's already-long argument list.
 type agentInfo struct {
-	model string
-	kind  string
+	model   string
+	harness string
 }
 
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
 // file scorers exec directly on the host (trusted user scripts); the shebang
 // picks the interpreter. agent scorers pending (they will run under ctx).
 func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir, outDir, agent, task string, info agentInfo) (float64, error) {
-	switch sc.Kind {
-	case "":
-		cmd, err := commandFor(opts.ConfigDir, sc.ExecFile(), map[string]string{
-			"PATS_RUN_ID":     filepath.Base(runDir),
-			"PATS_RUN_DIR":    runDir,
-			"PATS_OUTPUT_DIR": outDir,
-			"PATS_AGENT_ID":   agent,
-			"PATS_TASK_ID":    task,
-			"PATS_SCORER_ID":  sc.ID,
-			"PATS_MODEL":      info.model,
-			"PATS_AGENT_KIND": info.kind,
-		})
-		if err != nil {
-			return 0, err
-		}
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil { // non-zero exit = failure
-			return 0, fmt.Errorf("run: %w%s", err, stderrTail(&stderr))
-		}
-		return parseScore(stdout.String())
-	case "agent":
+	if sc.IsAgent() {
 		return 0, fmt.Errorf("agent scorer not implemented yet")
-	default:
-		return 0, fmt.Errorf("unknown scorer kind %q", sc.Kind)
 	}
+	cmd, err := commandFor(opts.ConfigDir, sc.Score, map[string]string{
+		"PATS_RUN_ID":        filepath.Base(runDir),
+		"PATS_RUN_DIR":       runDir,
+		"PATS_OUTPUT_DIR":    outDir,
+		"PATS_AGENT_ID":      agent,
+		"PATS_TASK_ID":       task,
+		"PATS_SCORER_ID":     sc.ID,
+		"PATS_MODEL":         info.model,
+		"PATS_AGENT_HARNESS": info.harness,
+	})
+	if err != nil {
+		return 0, err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil { // non-zero exit = failure
+		return 0, fmt.Errorf("run: %w%s", err, stderrTail(&stderr))
+	}
+	return parseScore(stdout.String())
 }
 
 // parseScore reads a scorer's verdict from the first non-empty stdout line: a

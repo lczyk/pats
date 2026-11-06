@@ -34,7 +34,7 @@ func dockerOrSkip(t *testing.T) {
 // full run-phase e2e: a harness agent runs in a sandbox, reads the staged
 // prompt, writes a result; the collect script copies it to the output dir;
 // metadata records ok. proves prepare/agent/collect + run-dir layout. the
-// kind's command is overridden with a no-cred stand-in.
+// harness's command is overridden with a no-cred stand-in.
 func TestRunE2E(t *testing.T) {
 	dockerOrSkip(t)
 	dir := t.TempDir()
@@ -46,15 +46,12 @@ func TestRunE2E(t *testing.T) {
 	agent.HarnessCmds["opencode-openrouter"] = `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`
 	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "ubuntu:26.04"}},
-		Agents: []config.Agent{{
-			ID: "a", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s",
-		}},
-		Tasks:  []config.Task{{ID: "t", Prompt: "prompt.txt", Collect: "collect.sh"}},
-		Suites: []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: prompt.txt, collect: collect.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
 
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -268,21 +265,17 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 
-	var sbs []config.Sandbox
-	var agents []config.Agent
-	var ids config.StrList
+	src := "boxes: {kind: sandbox, items: {"
 	for id := range fakes {
-		sbs = append(sbs, config.Sandbox{ID: id, Kind: "container", Driver: "docker", Image: id})
-		agents = append(agents, config.Agent{ID: id, Kind: "opencode-openrouter", Model: "m", Sandbox: id})
-		ids = append(ids, id)
+		src += id + ": {image: " + id + "}, "
 	}
-	cfg := &config.Config{
-		Sandboxes: sbs,
-		Agents:    agents,
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
-		Suites:    []config.Suite{{ID: "su", Agents: ids, Tasks: config.StrList{"t"}}},
+	src += "}}\nagents: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {"
+	for id := range fakes {
+		src += id + ": {sandbox: " + id + "}, "
 	}
-	require.NoError(t, cfg.Validate())
+	src += "}}\nt: {kind: task, items: {t: {prompt: prompt.txt}}}\n"
+	src += "su: {kind: suite, items: {su: {agents: agents, tasks: t}}}\n"
+	cfg := parseCfg(t, src)
 
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -314,13 +307,12 @@ func TestRunPairTimeoutStatus(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: prompt.txt, timeout: 30ms}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
 
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -351,13 +343,12 @@ func TestRunPairCollectsOnTimeout(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\nprintf '%s\\n%s\\n' \"$PATS_RUN_DIR\" \"$PATS_RUN_ID\" > \"$PATS_OUTPUT_DIR/run-env\"\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms", Collect: "collect.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: prompt.txt, timeout: 30ms, collect: collect.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
 
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -398,13 +389,12 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms", Collect: "collect.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: prompt.txt, timeout: 30ms, collect: collect.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
 
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -450,13 +440,12 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ncp \"$PATS_AGENT_HOME/agent-wrote\" \"$PATS_OUTPUT_DIR/\"\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Prepare: "prepare.sh", Collect: "collect.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: prompt.txt, prepare: prepare.sh, collect: collect.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
 
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -488,13 +477,12 @@ func TestRunPairPromptOutsideWorkdir(t *testing.T) {
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("do the thing"), 0o644))
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: prompt.txt}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
 
 	var out bytes.Buffer
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -516,13 +504,12 @@ func TestRunPairPrepareFailureCleansHome(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prepare.sh"),
 		[]byte("#!/bin/sh\nprintf %s \"$PATS_AGENT_HOME\" > \"$PATS_OUTPUT_DIR/home-path\"\nexit 1\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Prepare: "prepare.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: prompt.txt, prepare: prepare.sh}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
 
 	var out bytes.Buffer
 	runDir, _ := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -534,16 +521,15 @@ func TestRunPairPrepareFailureCleansHome(t *testing.T) {
 	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after a failed prepare")
 }
 
-// COVER: a vectors-only config (no suites) is deliberately allowed by Validate
-// -- see its "nothing to orphan-check against" early return -- so it expands to
-// zero pairs. Run must say that, not fall through to FilterPairs and blame an
+// COVER: a config with no suites is deliberately allowed by Validate -- see
+// its "nothing to orphan-check against" early return -- so it expands to zero
+// pairs. Run must say that, not fall through to FilterPairs and blame an
 // --agent/--task filter the user never passed.
 func TestZeroPairsRunErrors(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "ubuntu:26.04"}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
+`)
 
 	var out bytes.Buffer
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})

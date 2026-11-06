@@ -12,37 +12,37 @@ import (
 	"github.com/lczyk/pats/internal/config"
 )
 
-// list helpers print one line per configured entity, tab-aligned. read-only:
-// no lock, no disk writes.
+// list helpers print one line per configured item, tab-aligned, with the
+// vector it came from. read-only: no lock, no disk writes.
 
-// ListAgents prints id, kind, model, resolved sandbox, and effort per agent.
+// ListAgents prints vector, id, harness, model, resolved sandbox, and effort per agent.
 func ListAgents(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tKIND\tMODEL\tSANDBOX\tEFFORT")
+	fmt.Fprintln(w, "VECTOR\tAGENT\tHARNESS\tMODEL\tSANDBOX\tEFFORT")
 	for _, a := range cfg.Agents {
 		sb, err := cfg.ResolveSandbox(a)
 		if err != nil {
 			sb = "?" // dangling/ambiguous sandbox ref; validate would have caught it
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", a.ID, a.Kind, a.ResolvedModel(), sb, a.Effort)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Vector, a.ID, a.Harness, a.Model, sb, a.Effort)
 	}
 	return w.Flush()
 }
 
-// ListTasks prints id and prompt per task.
+// ListTasks prints vector, id and prompt per task.
 func ListTasks(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TASK\tPROMPT")
+	fmt.Fprintln(w, "VECTOR\tTASK\tPROMPT")
 	for _, t := range cfg.Tasks {
-		fmt.Fprintf(w, "%s\t%s\n", t.ID, t.ResolvedPrompt())
+		fmt.Fprintf(w, "%s\t%s\t%s\n", t.Vector, t.ID, t.Prompt)
 	}
 	return w.Flush()
 }
 
-// ListSandboxes prints id, kind, resolved driver, image, and egress mode.
+// ListSandboxes prints vector, id, driver, image, and egress mode per sandbox.
 func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SANDBOX\tKIND\tDRIVER\tIMAGE\tEGRESS")
+	fmt.Fprintln(w, "VECTOR\tSANDBOX\tDRIVER\tIMAGE\tEGRESS")
 	for _, s := range cfg.Sandboxes {
 		mode := s.Egress.Mode
 		if mode == "" {
@@ -52,37 +52,43 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 		if image == "" && s.Build != "" {
 			image = "build:" + s.Build
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Kind, s.ResolvedDriver(), image, mode)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Vector, s.ID, s.Driver, image, mode)
 	}
 	return w.Flush()
 }
 
-// ListScorers prints id, kind, and the source (exec file or agent id).
+// ListScorers prints vector, id, and the source: the exec file, or the
+// judging agent.
 func ListScorers(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SCORER\tKIND\tSOURCE")
+	fmt.Fprintln(w, "VECTOR\tSCORER\tSOURCE")
 	for _, s := range cfg.Scorers {
-		kind, src := s.Kind, s.Score
-		switch s.Kind {
-		case "":
-			kind, src = "exec", s.ExecFile()
-		case "agent":
-			src = s.AgentID
+		src := s.Score
+		if s.IsAgent() {
+			src = "agent: " + s.AgentID
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", s.ID, kind, src)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", s.Vector, s.ID, src)
 	}
 	return w.Flush()
 }
 
-// ListSuites prints id and axis sizes per suite, plus the pair counts its
-// cross-products expand to.
+// ListSuites prints vector, id and axis sizes per suite after expansion, plus
+// the pair counts its cross-products expand to.
 func ListSuites(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS")
+	fmt.Fprintln(w, "VECTOR\tSUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS")
 	for _, s := range cfg.Suites {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\n",
-			s.ID, len(s.Agents), len(s.Tasks), len(s.Scorers),
-			len(s.Agents)*len(s.Tasks), len(s.Tasks)*len(s.Scorers))
+		test, _ := cfg.ExpandTestPairs(s.ID)
+		score, _ := cfg.ExpandScorePairs(s.ID)
+		agents, tasks, scorers := map[string]bool{}, map[string]bool{}, map[string]bool{}
+		for _, p := range test {
+			agents[p.Agent], tasks[p.Task] = true, true
+		}
+		for _, p := range score {
+			scorers[p.Scorer] = true
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\n",
+			s.Vector, s.ID, len(agents), len(tasks), len(scorers), len(test), len(score))
 	}
 	return w.Flush()
 }

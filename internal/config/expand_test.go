@@ -9,27 +9,31 @@ import (
 )
 
 func TestTaskTimeout(t *testing.T) {
-	assert.Equal(t, Task{}.TimeoutDuration(), DefaultTimeout)               // unset -> 5m default
+	assert.Equal(t, Task{}.TimeoutDuration(), DefaultTimeout)               // unset -> 10m default
 	assert.Equal(t, Task{Timeout: "10m"}.TimeoutDuration(), 10*time.Minute) // explicit
 	assert.Equal(t, Task{Timeout: "0"}.TimeoutDuration(), time.Duration(0)) // 0 -> never timeout
 }
 
-// two suites sharing an agent list; pairs union + dedupe across suites.
-func suiteFixture() *Config {
-	return &Config{
-		Agents:  []Agent{{ID: "a"}, {ID: "b"}},
-		Tasks:   []Task{{ID: "t1"}, {ID: "t2"}, {ID: "t3"}},
-		Scorers: []Scorer{{ID: "s1"}, {ID: "s2"}, {ID: "s3"}},
-		Suites: []Suite{
-			{ID: "one", Agents: StrList{"a", "b"}, Tasks: StrList{"t1", "t2"}, Scorers: StrList{"s1", "s2"}},
-			{ID: "two", Agents: StrList{"a"}, Tasks: StrList{"t3"}, Scorers: StrList{"s3"}},
-		},
-	}
+// two suites: one picks whole vectors, the other single items. pairs union +
+// dedupe across suites.
+func suiteFixture(t *testing.T) *Config {
+	t.Helper()
+	return parseT(t, `
+agents: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {a: ~, b: ~}}
+tasks: {kind: task, defaults: {prompt: p}, items: {t1: ~, t2: ~}}
+more: {kind: task, defaults: {prompt: p}, items: {t3: ~}}
+scorers: {kind: scorer, defaults: {score: s.py}, items: {s1: ~, s2: ~}}
+extra: {kind: scorer, defaults: {score: s.py}, items: {s3: ~}}
+suites:
+  kind: suite
+  items:
+    one: {agents: agents, tasks: tasks, scorers: scorers}
+    two: {agents: a, tasks: t3, scorers: s3}
+`)
 }
 
 func TestExpandTestPairs(t *testing.T) {
-	c := suiteFixture()
-	pairs, err := c.ExpandTestPairs()
+	pairs, err := suiteFixture(t).ExpandTestPairs()
 	require.NoError(t, err)
 	// suite one: 2x2, suite two: 1x1.
 	assert.Len(t, pairs, 5)
@@ -38,8 +42,7 @@ func TestExpandTestPairs(t *testing.T) {
 }
 
 func TestExpandScorePairs(t *testing.T) {
-	c := suiteFixture()
-	pairs, err := c.ExpandScorePairs()
+	pairs, err := suiteFixture(t).ExpandScorePairs()
 	require.NoError(t, err)
 	// suite one: 2 tasks x 2 scorers, suite two: 1x1.
 	assert.Len(t, pairs, 5)
@@ -47,11 +50,27 @@ func TestExpandScorePairs(t *testing.T) {
 	assert.Equal(t, pairs[4], ScorePair{Task: "t3", Scorer: "s3"})
 }
 
+// an axis mixes vector and item ids; a vector id expands in file order.
+func TestExpandMixedAxis(t *testing.T) {
+	c := parseT(t, `
+agents: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {a: ~}}
+tasks: {kind: task, defaults: {prompt: p}, items: {t1: ~, t2: ~}}
+more: {kind: task, defaults: {prompt: p}, items: {t3: ~, t4: ~}}
+suites: {kind: suite, items: {s: {agents: a, tasks: [t4, tasks]}}}
+`)
+	pairs, err := c.ExpandTestPairs()
+	require.NoError(t, err)
+	assert.Len(t, pairs, 3)
+	assert.Equal(t, pairs[0].Task, "t4")
+	assert.Equal(t, pairs[1].Task, "t1")
+	assert.Equal(t, pairs[2].Task, "t2")
+}
+
 // overlapping suites (smoke within full) dedupe rather than error.
 func TestExpandOverlapDedupes(t *testing.T) {
-	c := suiteFixture()
+	c := suiteFixture(t)
 	c.Suites = append(c.Suites, Suite{
-		ID: "smoke", Agents: StrList{"a"}, Tasks: StrList{"t1"}, Scorers: StrList{"s1"},
+		ID: "smoke", Vector: "suites", Agents: StrList{"a"}, Tasks: StrList{"t1"}, Scorers: StrList{"s1"},
 	})
 	pairs, err := c.ExpandTestPairs()
 	require.NoError(t, err)
@@ -63,7 +82,7 @@ func TestExpandOverlapDedupes(t *testing.T) {
 }
 
 func TestExpandSuiteFilter(t *testing.T) {
-	c := suiteFixture()
+	c := suiteFixture(t)
 	pairs, err := c.ExpandTestPairs("two")
 	require.NoError(t, err)
 	assert.Len(t, pairs, 1)
@@ -73,6 +92,11 @@ func TestExpandSuiteFilter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, score, 1)
 
+	// the suite vector selects every suite in it.
+	pairs, err = c.ExpandTestPairs("suites")
+	require.NoError(t, err)
+	assert.Len(t, pairs, 5)
+
 	// unknown suite id -> error (typo guard).
 	_, err = c.ExpandTestPairs("nope")
 	assert.Error(t, err, "no such suite")
@@ -80,41 +104,61 @@ func TestExpandSuiteFilter(t *testing.T) {
 
 func TestExpandErrors(t *testing.T) {
 	// dangling refs.
-	c := suiteFixture()
+	c := suiteFixture(t)
 	c.Suites[0].Tasks = StrList{"t1", "ghost"}
 	_, err := c.ExpandTestPairs()
 	assert.Error(t, err, "unknown task")
 
-	// duplicate id within one suite's list.
-	c = suiteFixture()
-	c.Suites[0].Agents = StrList{"a", "a"}
+	// an item named twice, once via its vector.
+	c = suiteFixture(t)
+	c.Suites[0].Agents = StrList{"agents", "a"}
 	_, err = c.ExpandTestPairs()
-	assert.Error(t, err, "duplicate agent")
+	assert.Error(t, err, "duplicate agent \"a\"")
+}
+
+func TestOne(t *testing.T) {
+	c := suiteFixture(t)
+	id, err := c.One("task", "t3")
+	require.NoError(t, err)
+	assert.Equal(t, id, "t3")
+	id, err = c.One("task", "more") // vector of one
+	require.NoError(t, err)
+	assert.Equal(t, id, "t3")
+	_, err = c.One("task", "tasks")
+	assert.Error(t, err, "names 2 items")
+	_, err = c.One("task", "ghost")
+	assert.Error(t, err, "unknown task")
 }
 
 func TestFilterPairs(t *testing.T) {
-	pairs := []TestPair{
-		{Agent: "a", Task: "t1"}, {Agent: "a", Task: "t2"},
-		{Agent: "b", Task: "t1"}, {Agent: "b", Task: "t2"},
-	}
-	// no filter -> all.
-	got, err := FilterPairs(pairs, nil, nil)
+	c := suiteFixture(t)
+	pairs, err := c.ExpandTestPairs()
 	require.NoError(t, err)
-	assert.Equal(t, len(got), 4)
+	// a x t1, a x t2, b x t1, b x t2, a x t3.
+
+	// no filter -> all.
+	got, err := c.FilterPairs(pairs, nil, nil)
+	require.NoError(t, err)
+	assert.Len(t, got, 5)
 
 	// agent filter.
-	got, err = FilterPairs(pairs, []string{"a"}, nil)
+	got, err = c.FilterPairs(pairs, []string{"b"}, nil)
 	require.NoError(t, err)
-	assert.Equal(t, len(got), 2)
+	assert.Len(t, got, 2)
 
 	// agent + task -> single pair.
-	got, err = FilterPairs(pairs, []string{"b"}, []string{"t2"})
+	got, err = c.FilterPairs(pairs, []string{"b"}, []string{"t2"})
 	require.NoError(t, err)
-	assert.Equal(t, len(got), 1)
+	assert.Len(t, got, 1)
 	assert.Equal(t, got[0].Agent, "b")
 	assert.Equal(t, got[0].Task, "t2")
 
+	// a vector id filters to its items.
+	got, err = c.FilterPairs(pairs, nil, []string{"tasks"})
+	require.NoError(t, err)
+	assert.Len(t, got, 4)
+
 	// unknown filter value -> error (typo guard).
-	_, err = FilterPairs(pairs, []string{"nope"}, nil)
-	assert.Error(t, err, assert.AnyError)
+	_, err = c.FilterPairs(pairs, []string{"nope"}, nil)
+	assert.Error(t, err, "no such agent/task")
 }

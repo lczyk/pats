@@ -34,15 +34,15 @@ const promptName = "prompt.txt"
 // auditPath "" turns the egress audit log off; label prefixes the no-creds
 // warning.
 func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, runID, auditPath, label string) (*harness, error) {
-	box, err := newSandbox(sb.ResolvedDriver(), sb.Image)
+	box, err := newSandbox(sb.Driver, sb.Image)
 	if err != nil {
 		return nil, err
 	}
 	env := agent.Env(a, homeMount+"/"+promptName, sandbox.WorkMount, runID)
-	cenv, hasToken := agent.CredEnv(a.Kind)
+	cenv, hasToken := agent.CredEnv(a.Harness)
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 
-	hs, err := harnessHome(opts, label, a.Kind, env, hasToken)
+	hs, err := harnessHome(opts, label, a.Harness, env, hasToken)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, runID,
 		return nil, err
 	}
 	spec.Mounts = hs.mounts
-	spec.Egress = egressFor(sb, a.Kind, auditPath)
+	spec.Egress = egressFor(sb, a.Harness, auditPath)
 	return &harness{box: box, spec: spec, homeDir: hs.dir, cleanup: hs.cleanup}, nil
 }
 
