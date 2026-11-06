@@ -51,10 +51,10 @@ make install
 
 ### published images
 
-pats publishes two images per release, both tagged `v<version>` and pinned by the binary of that version: the default sandbox (`ghcr.io/lczyk/pats/sandbox`, used by a sandbox that names no `image` or `build`) and the egress proxy (`ghcr.io/lczyk/pats/egress-proxy`, the sidecar behind `mode: proxy` / `mitm-proxy`). `:latest` on both follows the newest stable release. a released install pulls them from ghcr automatically on first use. a build that isn't a release (a clone, a branch install) can't pin, so it falls back to `:latest` with a warning -- build the images locally first and pats finds its own version instead:
+pats publishes two images per release, both tagged `v<version>` and pinned by the binary of that version: the default sandbox (`ghcr.io/lczyk/pats/sandbox`, used by a sandbox that names no `image` or `build`) and the egress proxy (`ghcr.io/lczyk/pats/egress-proxy`, the sidecar behind `mode: proxy` / `mitm-proxy`). `:latest` on both follows the newest stable release. a released install pulls them from ghcr automatically on first use. a binary pins when its version is a release tag -- a module install, or a clean build of a tagged commit; `pats --version` shows it. a dirty tree or a commit between tags reports a version no image was published for, so it falls back to `:latest` with a warning -- build the images locally first and pats finds its own version instead:
 
 ```sh
-make images          # the sandbox, tagged :v<version>, :latest and :26.04
+make images          # the sandbox, tagged :v<version>, :latest and :26.04 for the host arch
 make egress-image    # the proxy, tagged :latest and :v<version>
 ```
 
