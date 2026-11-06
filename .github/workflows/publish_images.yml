@@ -1,13 +1,14 @@
 # on tag push: build the sandbox + egress-proxy images multiarch (amd64+arm64)
 # and push them to ghcr. nothing runs under emulation: the proxy cross-compiles
 # from the runner's own platform, and the sandbox builds natively on one runner
-# per arch, its two digests joined into one multiarch tag at the end. no
-# signing; see spread-bread's push-ghcr.yaml for that.
+# per arch, its two digests joined into one multiarch tag. no signing; see
+# spread-bread's push-ghcr.yaml for that.
 #
-# every tag publishes <image>:<tag>, which is what a pats binary of that
-# version pins to. the rolling aliases (:latest, and sandbox:26.04) move only
-# when the tag is the newest stable release across the repo, so a patch on an
-# older line or a pre-release never overtakes them.
+# every run publishes <image>:<ref>, which is what a pats binary of that version
+# pins to. a workflow_dispatch run publishes under the branch name, with / mapped
+# to - (a docker tag can't hold a /). the rolling aliases (:latest, and
+# sandbox:26.04) are only ever moved by the aliases job at the end -- see its
+# comment, and docs/spec/publish.fizz for the model behind it.
 name: publish_images
 
 on:
@@ -19,46 +20,8 @@ env:
   REGISTRY: ghcr.io/${{ github.repository_owner }}/pats
 
 jobs:
-  # rolling aliases follow the newest stable tag (no pre-release suffix). a
-  # workflow_dispatch run publishes under the branch name, with / mapped to -
-  # (a docker tag can't hold a /), and never moves them.
-  tags:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      ref: ${{ steps.tags.outputs.ref }}
-      proxy: ${{ steps.tags.outputs.proxy }}
-      sandbox: ${{ steps.tags.outputs.sandbox }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Resolve tags
-        id: tags
-        run: |
-          stable=$(git tag --list 'v*' | grep -v -- '-' | sort -V | tail -n 1)
-          ref="${GITHUB_REF_NAME//\//-}"
-          echo "stable release: ${stable:-none}; this ref: $GITHUB_REF_NAME (tag $ref)"
-          proxy="$REGISTRY/egress-proxy:$ref"
-          sandbox="$REGISTRY/sandbox:$ref"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" = "$stable" ]; then
-              proxy="$proxy $REGISTRY/egress-proxy:latest"
-              sandbox="$sandbox $REGISTRY/sandbox:latest $REGISTRY/sandbox:26.04"
-          fi
-          {
-              echo "ref=$ref"
-              echo "proxy=$proxy"
-              echo "sandbox=$sandbox"
-          } >> "$GITHUB_OUTPUT"
-
   # the proxy protocol is coupled to the pats version, hence the version tag.
   egress-proxy:
-    needs: tags
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -74,22 +37,17 @@ jobs:
               docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build + push
-        env:
-          TAGS: ${{ needs.tags.outputs.proxy }}
         run: |
           docker buildx create --use
-          args=()
-          for t in $TAGS; do args+=(--tag "$t"); done
           docker buildx build --platform linux/amd64,linux/arm64 \
               --file images/Dockerfile.egress-proxy \
-              "${args[@]}" \
+              --tag "$REGISTRY/egress-proxy:${GITHUB_REF_NAME//\//-}" \
               --push .
 
   # the default sandbox a config gets when it names no image. its cli set
   # floats at build time, so the version tag is what pins a run. each arch
   # builds on its own runner and pushes by digest only; sandbox-tags names them.
   sandbox:
-    needs: tags
     strategy:
       matrix:
         include:
@@ -137,7 +95,7 @@ jobs:
           retention-days: 1
 
   sandbox-tags:
-    needs: [tags, sandbox]
+    needs: sandbox
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -157,14 +115,58 @@ jobs:
 
       - name: Tag the multiarch image
         working-directory: ${{ runner.temp }}/digests
-        env:
-          TAGS: ${{ needs.tags.outputs.sandbox }}
-          REF: ${{ needs.tags.outputs.ref }}
         run: |
-          args=()
-          for t in $TAGS; do args+=(--tag "$t"); done
+          tag="$REGISTRY/sandbox:${GITHUB_REF_NAME//\//-}"
           refs=()
           for d in *; do refs+=("$REGISTRY/sandbox@sha256:$d"); done
-          docker buildx imagetools create "${args[@]}" "${refs[@]}"
-          docker buildx imagetools inspect "$REGISTRY/sandbox:$REF" --format '{{json .Manifest}}' |
+          docker buildx imagetools create --tag "$tag" "${refs[@]}"
+          docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' |
               jq -e '[.manifests[].platform.architecture] | sort == ["amd64", "arm64"]'
+
+  # moves the rolling aliases to the newest stable version (no pre-release
+  # suffix) whose proxy and sandbox are both published. runs are serialised by
+  # the concurrency group and each one re-reads git tags and the registry when
+  # it starts, so concurrent releases always end with the aliases on the newest
+  # one, never on whichever run happened to finish last. a waiting job may be
+  # cancelled by a newer one queueing behind it; the newer one does the same
+  # work against fresher state.
+  aliases:
+    if: github.ref_type == 'tag'
+    needs: [egress-proxy, sandbox-tags]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    concurrency:
+      group: publish-aliases
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Point the aliases at the newest published stable version
+        run: |
+          newest=""
+          for t in $(git tag --list 'v*' | grep -v -e '-' | sort -V -r); do
+              if docker buildx imagetools inspect "$REGISTRY/egress-proxy:$t" >/dev/null 2>&1 &&
+                  docker buildx imagetools inspect "$REGISTRY/sandbox:$t" >/dev/null 2>&1; then
+                  newest="$t"
+                  break
+              fi
+          done
+          if [ -z "$newest" ]; then
+              echo "no stable version has both images published yet; aliases unchanged"
+              exit 0
+          fi
+          echo "newest published stable version: $newest (this run: $GITHUB_REF_NAME)"
+          docker buildx imagetools create --tag "$REGISTRY/egress-proxy:latest" "$REGISTRY/egress-proxy:$newest"
+          docker buildx imagetools create --tag "$REGISTRY/sandbox:latest" --tag "$REGISTRY/sandbox:26.04" "$REGISTRY/sandbox:$newest"
