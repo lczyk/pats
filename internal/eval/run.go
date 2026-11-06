@@ -335,7 +335,7 @@ func runPair(
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(workDir) // safe: agent runs as host uid, files are host-owned
+	defer sandbox.RemoveTemp(workDir) // safe: agent runs as host uid, files are host-owned
 
 	sbID, err := cfg.ResolveSandbox(a)
 	if err != nil {
@@ -507,11 +507,11 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 	if cf, rel := agent.HostCredsFile(harness); cf != "" {
 		dst := filepath.Join(homeDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			os.RemoveAll(homeDir)
+			sandbox.RemoveTemp(homeDir)
 			return harnessSetup{}, err
 		}
 		if err := copyFile(cf, dst); err != nil {
-			os.RemoveAll(homeDir)
+			sandbox.RemoveTemp(homeDir)
 			return harnessSetup{}, err
 		}
 		hasCreds = true
@@ -522,7 +522,7 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 	return harnessSetup{
 		dir:     homeDir,
 		mounts:  []sandbox.Mount{{Host: homeDir, Container: homeMount}},
-		cleanup: func() { os.RemoveAll(homeDir) },
+		cleanup: func() { sandbox.RemoveTemp(homeDir) },
 	}, nil
 }
 

@@ -99,7 +99,7 @@ func prepare(eg Egress, readBundle func() ([]byte, error)) (_ *material, err err
 // cleanup removes the CA dir, if any.
 func (m *material) cleanup() {
 	if m != nil && m.caDir != "" {
-		_ = os.RemoveAll(m.caDir)
+		_ = RemoveTemp(m.caDir)
 	}
 }
 

@@ -24,7 +24,8 @@ type CleanOptions struct {
 // Clean removes what crashed runs left behind. every sidecar and network pats
 // makes is named after its pair's workdir (sbx-proxy-<dir>, sbx-egr-<dir>),
 // and a live pair's workdir exists, so one whose workdir is gone is a
-// leftover. temp dirs under the cache have no such owner, so they go by age.
+// leftover. a temp dir is kept while the process that made it runs (its
+// .owner file), and otherwise goes once older than OlderThan.
 func Clean(ctx context.Context, o CleanOptions) error {
 	tmp, err := sandbox.TempRoot()
 	if err != nil {
@@ -84,16 +85,24 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		return err
 	}
 	for _, e := range ents {
-		info, err := e.Info()
-		if err != nil || time.Since(info.ModTime()) < o.OlderThan {
+		p := filepath.Join(tmp, e.Name())
+		if owner, ok := strings.CutSuffix(p, ".owner"); ok {
+			// an owner file outlives its dir when the caller removed the dir.
+			if _, err := os.Stat(owner); os.IsNotExist(err) && !o.DryRun {
+				_ = os.Remove(p)
+			}
 			continue
 		}
-		p := filepath.Join(tmp, e.Name())
+		info, err := e.Info()
+		if err != nil || !e.IsDir() || time.Since(info.ModTime()) < o.OlderThan || sandbox.TempOwnerAlive(p) {
+			continue
+		}
 		if !o.DryRun {
 			if err := os.RemoveAll(p); err != nil {
 				fmt.Fprintf(o.Out, "could not remove %s: %v\n", p, err)
 				continue
 			}
+			_ = os.Remove(p + ".owner")
 		}
 		fmt.Fprintf(o.Out, "%s %s\n", act, p)
 	}

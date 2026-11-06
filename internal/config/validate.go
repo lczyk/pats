@@ -167,8 +167,8 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 			}
 		}
 	}
-	if s.Egress.Image != "" && s.Driver != "docker" {
-		add("sandbox %q: egress image is docker-only (driver %q runs the proxy in-process)", s.ID, s.Driver)
+	if s.Egress.Image != "" && !s.IsContainer() {
+		add("sandbox %q: egress image needs a container driver (driver %q runs the proxy in-process)", s.ID, s.Driver)
 	}
 }
 

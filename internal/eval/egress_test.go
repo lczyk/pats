@@ -63,6 +63,8 @@ func TestCheckURL(t *testing.T) {
 		{"https://github.com/canonical/answer", "deny  rule=default", false}, // github is not allowed at all
 		{"https://api.anthropic.com/v1", "allow rule=.anthropic.com", true},
 		{"https://a.test:8443/", "deny  rule=default", false},
+		{"https://a.test/%73ecret/1", "deny  rule=a.test/secret*", false}, // decoded, as the proxy sees it
+		{"https://a.test", "allow rule=a.test  (mitm;", true},             // empty path is "/"
 	}
 	for _, tc := range cases {
 		var out bytes.Buffer
@@ -147,6 +149,13 @@ func TestSuggestEgress(t *testing.T) {
 	}
 	assert.Equal(t, strings.Contains(s, "github.com/c/answer"), false) // an explicit deny is not suggested
 
+	// tunnels only: methods are unknown, and said to be.
+	dir = writeRun(t, `{"ev":"open","host":"a.test","port":"443","kind":"tunnel","allowed":true,"rule":"default"}
+`)
+	out.Reset()
+	require.NoError(t, SuggestEgress(dir, "", &out))
+	assert.ContainsString(t, out.String(), "methods: unknown")
+
 	// requests only, all reads: methods is proposed.
 	dir = writeRun(t, `{"ev":"req","host":"pypi.org","port":"443","kind":"mitm","allowed":true,"rule":"default","method":"GET","ua":"pip"}
 `)
@@ -180,10 +189,26 @@ func TestCleanTempDirs(t *testing.T) {
 	_, err = os.Stat(old)
 	require.NoError(t, err)
 
+	// an old dir whose maker still runs is kept: a run with no timeout can
+	// own its dirs for days.
+	live, err := sandbox.MkTemp("pats-work-live-")
+	require.NoError(t, err)
+	require.NoError(t, os.Chtimes(live, past, past))
+
 	out.Reset()
 	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{}, OlderThan: 24 * time.Hour, Out: &out}))
 	_, err = os.Stat(old)
 	assert.Error(t, err, assert.AnyError)
 	_, err = os.Stat(young)
 	require.NoError(t, err)
+	_, err = os.Stat(live)
+	require.NoError(t, err)
+
+	// once its maker is gone, the same dir goes, owner file and all.
+	require.NoError(t, os.WriteFile(live+".owner", []byte("999999999"), 0o600))
+	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{}, OlderThan: 24 * time.Hour, Out: &out}))
+	_, err = os.Stat(live)
+	assert.Error(t, err, assert.AnyError)
+	_, err = os.Stat(live + ".owner")
+	assert.Error(t, err, assert.AnyError)
 }

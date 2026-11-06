@@ -51,7 +51,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(workDir)
+	defer sandbox.RemoveTemp(workDir)
 
 	// same egress policy as real runs (no audit).
 	h, err := newHarness(opts, a, sb, config.TaskEgress{}, workDir, "", "", a.ID+" x preflight")

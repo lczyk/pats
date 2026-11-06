@@ -90,18 +90,24 @@ func CheckURL(pol proxy.Policy, target, method string, merged bool, out io.Write
 	if method == "" {
 		method = "GET"
 	}
+	// the proxy matches the decoded path of the request line, which is "/"
+	// for a bare host.
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
 
 	var v proxy.Verdict
 	how := "tunnel"
 	switch {
 	case u.Scheme == "http":
 		how = "plain http"
-		v = r.Decide(u.Hostname(), port, method, u.EscapedPath(), u.RawQuery)
+		v = r.Decide(u.Hostname(), port, method, path, u.RawQuery)
 	default:
 		v = r.DecideHost(u.Hostname(), port)
 		if v.Allowed && r.MitmHost(u.Hostname(), port) {
 			how = "mitm"
-			v = r.Decide(u.Hostname(), port, method, u.EscapedPath(), u.RawQuery)
+			v = r.Decide(u.Hostname(), port, method, path, u.RawQuery)
 		}
 	}
 	verdict := "deny "
@@ -288,11 +294,10 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 		}
 	}
 	switch {
-	case len(byUA) == 0:
-	case readsOnly:
-		fmt.Fprintln(out, "  # only GET and HEAD were seen; methods: [GET, HEAD] would refuse writes")
 	case len(tunnels) > 0:
 		fmt.Fprintln(out, "  # methods: unknown -- tunnels hide them")
+	case len(byUA) > 0 && readsOnly:
+		fmt.Fprintln(out, "  # only GET and HEAD were seen; methods: [GET, HEAD] would refuse writes")
 	}
 	if len(harnessSeen) > 0 {
 		fmt.Fprintf(out, "  # harness hosts, merged per agent by pats: %s\n", strings.Join(sortedSet(harnessSeen), ", "))

@@ -29,7 +29,7 @@ sandbox:
           - 'github.com/*/some-answer-repo*'
         deny-response: 403         # 403 | 404 | reset | timeout
         allow-private: false       # true lets entries name loopback, link-local and rfc1918 targets
-        image: ghcr.io/...         # the sidecar image, docker and podman only
+        image: ghcr.io/...         # the sidecar image (container drivers)
       env:                         # extra environment for the agent, under what pats sets
         DENO_CERT: /sbx-ca/bundle.pem
 ```
