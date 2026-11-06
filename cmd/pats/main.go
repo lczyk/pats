@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -30,7 +31,18 @@ type Options struct {
 	Score  ScoreCommand  `command:"score" description:"score the most recent run (tasks x scorers)"`
 	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
 	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
-	Egress EgressCommand `command:"egress" description:"the egress proxy: serve it (the sidecar's entrypoint)"`
+	Egress EgressCommand `command:"egress" description:"the egress proxy: check a policy, read an audit, serve it"`
+	Clean  CleanCommand  `command:"clean" description:"remove what crashed runs left behind: sidecars, networks, temp dirs"`
+}
+
+// CleanCommand sweeps leftovers of crashed runs.
+type CleanCommand struct {
+	DryRun    bool          `long:"dry-run" short:"n" description:"print what would go, remove nothing"`
+	OlderThan time.Duration `long:"older-than" default:"24h" description:"keep temp dirs younger than this (a live run may own them)"`
+}
+
+func (c *CleanCommand) Execute(args []string) error {
+	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, Out: os.Stdout})
 }
 
 // RunCommand runs the suites.

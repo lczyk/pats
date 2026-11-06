@@ -15,13 +15,21 @@ import (
 // fix then is to unset it. a fully remote daemon (no shared fs at all) can't be
 // helped by any host path; that's out of scope.
 func MkTemp(prefix string) (string, error) {
-	cache, err := os.UserCacheDir()
+	base, err := TempRoot()
 	if err != nil {
 		return "", err
 	}
-	base := filepath.Join(cache, "pats", "tmp")
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}
 	return os.MkdirTemp(base, prefix)
+}
+
+// TempRoot is the directory MkTemp creates its dirs in.
+func TempRoot() (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cache, "pats", "tmp"), nil
 }

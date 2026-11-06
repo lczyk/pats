@@ -71,7 +71,7 @@ func prepare(eg Egress, readBundle func() ([]byte, error)) (_ *material, err err
 	if !eg.Policy.NeedsCA() {
 		return m, nil
 	}
-	certPEM, keyPEM, err := genCA()
+	certPEM, keyPEM, err := GenCA()
 	if err != nil {
 		return nil, fmt.Errorf("egress: gen mitm ca: %w", err)
 	}
@@ -458,9 +458,11 @@ func docker(ctx context.Context, bin string, args ...string) (string, error) {
 func ProxyEnvOptions(getenv func(string) string) (proxy.Options, error) {
 	var o proxy.Options
 	if y := getenv("PATS_EGRESS_POLICY"); y != "" {
-		if err := yaml.Unmarshal([]byte(y), &o.Policy); err != nil {
+		p, err := proxy.ParsePolicy([]byte(y))
+		if err != nil {
 			return o, fmt.Errorf("PATS_EGRESS_POLICY: %w", err)
 		}
+		o.Policy = p
 	}
 	o.CACert, o.CAKey = getenv("PATS_EGRESS_CA_CERT"), getenv("PATS_EGRESS_CA_KEY")
 	if roots := getenv("PATS_EGRESS_ROOTS"); roots != "" {

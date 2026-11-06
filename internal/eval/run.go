@@ -229,6 +229,7 @@ type egressRecord struct {
 
 type pairMeta struct {
 	Agent       string  `json:"agent"`
+	Harness     string  `json:"harness,omitempty"`
 	Task        string  `json:"task"`
 	Sandbox     string  `json:"sandbox"`
 	Image       string  `json:"image"`
@@ -431,7 +432,7 @@ func runPair(
 	}
 
 	meta := pairMeta{
-		Agent: p.Agent, Task: p.Task,
+		Agent: p.Agent, Harness: a.Harness, Task: p.Task,
 		Sandbox: sbID, Image: sb.Image,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
 		PatsVersion:  version.Info.Version,

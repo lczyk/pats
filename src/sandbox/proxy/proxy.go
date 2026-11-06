@@ -153,8 +153,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	v := p.Rule.DecideHost(host, port)
 	open := Event{Ev: "open", Host: host, Port: portStr(port), Kind: "tunnel", Rule: v.Rule, Reason: v.Reason}
 	if !v.Allowed {
+		open.Status = p.refuse(w)
 		p.audit(open)
-		p.refuse(w)
 		return
 	}
 	if p.Signer != nil && p.Rule.MitmHost(host, port) {

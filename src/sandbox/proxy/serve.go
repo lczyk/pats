@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -11,6 +12,8 @@ import (
 	"net/http"
 	"net/netip"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Policy is the `egress:` block of a sandbox as the proxy consumes it. the
@@ -23,6 +26,18 @@ type Policy struct {
 	Allow        []string `yaml:"allow"`
 	Deny         []string `yaml:"deny"`
 	DenyResponse string   `yaml:"deny-response"` // 403 (the default) | 404 | reset | timeout
+}
+
+// ParsePolicy reads a policy from yaml, refusing unknown keys: a typo in a
+// filter's config must not quietly mean "no rule".
+func ParsePolicy(data []byte) (Policy, error) {
+	var p Policy
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil && !errors.Is(err, io.EOF) {
+		return Policy{}, err
+	}
+	return p, nil
 }
 
 // Rule parses the policy's lists.
