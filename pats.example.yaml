@@ -1,5 +1,5 @@
 sandboxes:
-  # a container sandbox names its image one of two ways (exactly one):
+  # a container sandbox names its image one of two ways (at most one):
   #   image: <ref>   -- use an existing image as-is
   #   build: <path>  -- a docker build context pats builds at run start: a dir
   #                     (with a Dockerfile) or a Dockerfile path, relative to
@@ -7,11 +7,15 @@ sandboxes:
   #                     cheap. if the context contains .pats/ (run artifacts)
   #                     and the dockerfile COPYs/ADDs from the context, the
   #                     effective .dockerignore must exclude it (a literal
-  #                     `.pats/` line) or the run refuses to start.
+  #                     `.pats/` line) or the run refuses to start. the build
+  #                     gets PATS_SANDBOX=<the default image below> as a build
+  #                     arg, for a dockerfile that derives from it.
+  # neither -- the published pats sandbox (ubuntu + every harness cli), pinned
+  # to this pats version: ghcr.io/lczyk/pats/sandbox:v<version>. name it under
+  # image: to run another tag (:latest follows the newest stable release).
   - id: docker
     kind: container
     driver: docker
-    image: ghcr.io/lczyk/pats/sandbox:26.04
     # egress -- outbound network policy (omit for open network). modes:
     #   open       -- unrestricted (the default)
     #   none       -- no network at all (--network none)

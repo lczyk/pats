@@ -106,9 +106,8 @@ func (c *Config) validateSandboxes(add func(string, ...any)) map[string]Sandbox 
 		out[s.ID] = s
 		switch s.Kind {
 		case "container":
-			if s.Image == "" && s.Build == "" {
-				add("sandbox %q: container kind needs an image or a build context", s.ID)
-			}
+			// neither image nor build is fine: the run resolves it to the
+			// published sandbox image pinned to this pats version.
 			if s.Image != "" && s.Build != "" {
 				add("sandbox %q: image and build are mutually exclusive", s.ID)
 			}

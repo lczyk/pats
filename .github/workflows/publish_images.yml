@@ -2,6 +2,11 @@
 # qemu+buildx on one runner) and push to ghcr. deliberately simple -- no
 # per-arch native runners, no tarball stitching, no signing; see spread-bread's
 # push-ghcr.yaml for the sophisticated version if this ever needs to grow.
+#
+# every tag publishes <image>:<tag>, which is what a pats binary of that
+# version pins to. the rolling aliases (:latest, and sandbox:26.04) move only
+# when the tag is the newest stable release across the repo, so a patch on an
+# older line or a pre-release never overtakes them.
 name: publish_images
 
 on:
@@ -22,6 +27,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Login to GHCR
         run: |
@@ -33,21 +41,36 @@ jobs:
           docker run --privileged --rm tonistiigi/binfmt --install arm64
           docker buildx create --use
 
-      # tagged :latest (the in-code default) and :<git-tag> (pin-able). the
-      # proxy protocol is coupled to the pats version, hence the version tag.
+      # rolling aliases follow the newest stable tag (no pre-release suffix).
+      # a workflow_dispatch run publishes under the branch name and never
+      # moves them.
+      - name: Resolve tags
+        id: tags
+        run: |
+          stable=$(git tag --list 'v*' | grep -v -- '-' | sort -V | tail -n 1)
+          echo "stable release: ${stable:-none}; this ref: $GITHUB_REF_NAME"
+          proxy="--tag $REGISTRY/egress-proxy:$GITHUB_REF_NAME"
+          sandbox="--tag $REGISTRY/sandbox:$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" = "$stable" ]; then
+              proxy="$proxy --tag $REGISTRY/egress-proxy:latest"
+              sandbox="$sandbox --tag $REGISTRY/sandbox:latest --tag $REGISTRY/sandbox:26.04"
+          fi
+          echo "proxy=$proxy" >> "$GITHUB_OUTPUT"
+          echo "sandbox=$sandbox" >> "$GITHUB_OUTPUT"
+
+      # the proxy protocol is coupled to the pats version, hence the version tag.
       - name: Build + push egress-proxy
         run: |
           docker buildx build --platform linux/amd64,linux/arm64 \
               --file images/Dockerfile.egress-proxy \
-              --tag "$REGISTRY/egress-proxy:latest" \
-              --tag "$REGISTRY/egress-proxy:${GITHUB_REF_NAME}" \
+              ${{ steps.tags.outputs.proxy }} \
               --push .
 
-      # rolling :<ubuntu-ver> tag, as referenced by pats.yaml image: fields.
-      # contents float (cli versions are unpinned), so republishing moves it.
+      # the default sandbox a config gets when it names no image; its cli set
+      # floats at build time, so the version tag is what pins a run.
       - name: Build + push sandbox
         run: |
           docker buildx build --platform linux/amd64,linux/arm64 \
               --file images/Dockerfile.sandbox-26.04 \
-              --tag "$REGISTRY/sandbox:26.04" \
+              ${{ steps.tags.outputs.sandbox }} \
               --push .
