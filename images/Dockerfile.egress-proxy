@@ -9,13 +9,17 @@
 # published to ghcr.io/lczyk/pats/egress-proxy on tag push (publish-images
 # workflow); local build:
 #   docker build -t ghcr.io/lczyk/pats/egress-proxy:latest -f images/Dockerfile.egress-proxy .
-FROM docker.io/library/golang:1.26-alpine AS build
+#
+# the build stage runs on the builder's own platform and cross-compiles for the
+# target, so a multi-arch build never runs go under emulation.
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/egress-proxy ./cmd/egress-proxy
 COPY src/sandbox/proxy ./src/sandbox/proxy
-RUN CGO_ENABLED=0 go build -o /egress-proxy ./cmd/egress-proxy
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /egress-proxy ./cmd/egress-proxy
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /egress-proxy /egress-proxy

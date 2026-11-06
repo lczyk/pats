@@ -1,7 +1,8 @@
-# on tag push: build the sandbox + egress-proxy images multiarch (amd64+arm64,
-# qemu+buildx on one runner) and push to ghcr. deliberately simple -- no
-# per-arch native runners, no tarball stitching, no signing; see spread-bread's
-# push-ghcr.yaml for the sophisticated version if this ever needs to grow.
+# on tag push: build the sandbox + egress-proxy images multiarch (amd64+arm64)
+# and push them to ghcr. nothing runs under emulation: the proxy cross-compiles
+# from the runner's own platform, and the sandbox builds natively on one runner
+# per arch, its two digests joined into one multiarch tag at the end. no
+# signing; see spread-bread's push-ghcr.yaml for that.
 #
 # every tag publishes <image>:<tag>, which is what a pats binary of that
 # version pins to. the rolling aliases (:latest, and sandbox:26.04) move only
@@ -18,12 +19,16 @@ env:
   REGISTRY: ghcr.io/${{ github.repository_owner }}/pats
 
 jobs:
-  publish:
+  # rolling aliases follow the newest stable tag (no pre-release suffix). a
+  # workflow_dispatch run publishes under the branch name and never moves them.
+  tags:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
     permissions:
       contents: read
-      packages: write
+    outputs:
+      proxy: ${{ steps.tags.outputs.proxy }}
+      sandbox: ${{ steps.tags.outputs.sandbox }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -31,46 +36,122 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Login to GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Enable qemu (arm64) + buildx
-        run: |
-          docker run --privileged --rm tonistiigi/binfmt --install arm64
-          docker buildx create --use
-
-      # rolling aliases follow the newest stable tag (no pre-release suffix).
-      # a workflow_dispatch run publishes under the branch name and never
-      # moves them.
       - name: Resolve tags
         id: tags
         run: |
           stable=$(git tag --list 'v*' | grep -v -- '-' | sort -V | tail -n 1)
           echo "stable release: ${stable:-none}; this ref: $GITHUB_REF_NAME"
-          proxy="--tag $REGISTRY/egress-proxy:$GITHUB_REF_NAME"
-          sandbox="--tag $REGISTRY/sandbox:$GITHUB_REF_NAME"
+          proxy="$REGISTRY/egress-proxy:$GITHUB_REF_NAME"
+          sandbox="$REGISTRY/sandbox:$GITHUB_REF_NAME"
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" = "$stable" ]; then
-              proxy="$proxy --tag $REGISTRY/egress-proxy:latest"
-              sandbox="$sandbox --tag $REGISTRY/sandbox:latest --tag $REGISTRY/sandbox:26.04"
+              proxy="$proxy $REGISTRY/egress-proxy:latest"
+              sandbox="$sandbox $REGISTRY/sandbox:latest $REGISTRY/sandbox:26.04"
           fi
           echo "proxy=$proxy" >> "$GITHUB_OUTPUT"
           echo "sandbox=$sandbox" >> "$GITHUB_OUTPUT"
 
-      # the proxy protocol is coupled to the pats version, hence the version tag.
-      - name: Build + push egress-proxy
+  # the proxy protocol is coupled to the pats version, hence the version tag.
+  egress-proxy:
+    needs: tags
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Login to GHCR
         run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build + push
+        env:
+          TAGS: ${{ needs.tags.outputs.proxy }}
+        run: |
+          docker buildx create --use
+          args=()
+          for t in $TAGS; do args+=(--tag "$t"); done
           docker buildx build --platform linux/amd64,linux/arm64 \
               --file images/Dockerfile.egress-proxy \
-              ${{ steps.tags.outputs.proxy }} \
+              "${args[@]}" \
               --push .
 
-      # the default sandbox a config gets when it names no image; its cli set
-      # floats at build time, so the version tag is what pins a run.
-      - name: Build + push sandbox
+  # the default sandbox a config gets when it names no image. its cli set
+  # floats at build time, so the version tag is what pins a run. each arch
+  # builds on its own runner and pushes by digest only; sandbox-tags names them.
+  sandbox:
+    needs: tags
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Login to GHCR
         run: |
-          docker buildx build --platform linux/amd64,linux/arm64 \
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build + push by digest
+        run: |
+          docker buildx create --use
+          docker buildx build --platform "linux/${{ matrix.arch }}" \
               --file images/Dockerfile.sandbox-26.04 \
-              ${{ steps.tags.outputs.sandbox }} \
-              --push .
+              --output "type=image,name=$REGISTRY/sandbox,push-by-digest=true,name-canonical=true,push=true" \
+              --metadata-file "$RUNNER_TEMP/meta.json" \
+              .
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta.json")
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sandbox-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  sandbox-tags:
+    needs: [tags, sandbox]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sandbox-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Tag the multiarch image
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          TAGS: ${{ needs.tags.outputs.sandbox }}
+        run: |
+          args=()
+          for t in $TAGS; do args+=(--tag "$t"); done
+          refs=()
+          for d in *; do refs+=("$REGISTRY/sandbox@sha256:$d"); done
+          docker buildx imagetools create "${args[@]}" "${refs[@]}"
+          docker buildx imagetools inspect "$REGISTRY/sandbox:$GITHUB_REF_NAME"
