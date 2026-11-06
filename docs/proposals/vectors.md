@@ -1,6 +1,7 @@
 # proposal: a pats.yaml of vectors
 
-status: implemented on the 1.x line.
+status: implemented on the 1.x line. run fields (`prompt-file`, `prepare-cmd`, ...), task `dir` vectors and the scorer
+`agent` rename came after it -- see `task-dirs.md`; the examples here use the current keys.
 scope: `pats.yaml` shape (1.x, no backwards compatibility), `internal/config`,
 the `internal/eval` sites that index the config.
 
@@ -46,9 +47,9 @@ all:
 slicer:
   kind: task
   defaults: &slicer-defaults
-    prompt: prompts/${task}.txt
-    prepare: tasks/prepare_${task}.sh
-    collect: tasks/collect.sh
+    prompt-file: prompts/${task}.txt
+    prepare-cmd: tasks/prepare_${task}.sh
+    collect-cmd: tasks/collect.sh
   items:
     base-passwd:
     ca-certificates:
@@ -57,14 +58,14 @@ slicer:
 
 misc:
   kind: task
-  defaults: {<<: *slicer-defaults, timeout: 5m, collect: ~}
+  defaults: {<<: *slicer-defaults, timeout: 5m, collect-cmd: ~}
   items:
     mason-help:
-    frobnicator: {collect: tasks/collect.sh}
+    frobnicator: {collect-cmd: tasks/collect.sh}
 
 sdf:
   kind: scorer
-  defaults: &py-scorer {score: "scorers/scorer_${scorer}.py"}
+  defaults: &py-scorer {score-cmd: "scorers/scorer_${scorer}.py"}
   items:
     target-present:
     yaml-parses:
@@ -116,7 +117,7 @@ never share a word:
   follows: `PATS_AGENT_HARNESS`.
 - sandbox `kind` -> gone. `driver` determines it: `docker` (the default) and
   `podman` are container drivers, `bwrap` is bwrap.
-- scorer `kind` -> gone. `score:` makes a file scorer, `agent-id:` + `prompt:`
+- scorer `kind` -> gone. `score` / `score-cmd` makes a script scorer, `agent:` + a prompt
   an agent scorer, both or neither is an error.
 
 ### names
@@ -149,20 +150,20 @@ is an error (a typo guard, loud over silent).
 
 `-a`, `-t`, `-s` on the cli take the same ids with the same expansion.
 
-references that mean one thing -- agent `sandbox: x`, scorer `agent-id: x` --
+references that mean one thing -- agent `sandbox: x`, scorer `agent: x` --
 must name a set of one (`Config.One`). a vector of two there is an error. the
 single-sandbox default stays "exactly one sandbox item in the file".
 
 ### merge
 
-- field granularity, whole value. an item's `prepare` replaces the default's.
+- field granularity, whole value. an item's `prepare-cmd` replaces the default's.
   a list (`egress.allow`) replaces the default's list, it does not append.
-- absent means inherit. an explicit null (`collect: ~`) means unset, for an
+- absent means inherit. an explicit null (`collect-cmd: ~`) means unset, for an
   item that must not run the vector's collect, or for a `defaults` block that
   drops a field it took from an anchor (`misc` above).
 - a whole item that is null inherits everything. a null field inside an item
   unsets that field. different nodes, no clash.
-- required-field checks (`prompt`, `harness`, `score` / `agent-id`, suite
+- required-field checks (a prompt, `harness`, `score` / `score-cmd` / `agent`, suite
   `agents` / `tasks`) run on the merged item, so a vector can supply them.
 
 ### sharing defaults between vectors
@@ -209,7 +210,7 @@ the line it came from:
 - references: unknown id, id of the wrong kind, set-of-one where one is
   required, duplicate within an axis.
 - orphans: every item must land in some suite, via its vector or by name. an
-  agent referenced only by a scorer's `agent-id` is exempt.
+  agent referenced only by a scorer's `agent` is exempt.
 
 ## go side
 
