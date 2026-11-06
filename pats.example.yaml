@@ -64,6 +64,10 @@ write-readme:
     simple:
     hard:
     monorepo:
+      # a task can add to its sandbox's egress lists (not its posture), when the sandbox runs the proxy:
+      # egress:
+      #   allow: [registry.npmjs.org]          # a host this task alone needs
+      #   deny: ['github.com/*/monorepo-answers*']
 
 # a scorer (`score` inline, or `score-cmd`) reads a pair's collected output and prints a float in [0,1], or `na`, on its first stdout line.
 style:
