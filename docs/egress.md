@@ -74,7 +74,8 @@ what the proxy enforces, beyond the lists:
 - **the tunnel is bound to its CONNECT host.** the tls ClientHello is read (across records, replayed unchanged) and
   its sni must name the CONNECT host. no sni is refused unless the CONNECT host is an ip; an encrypted ClientHello
   (ech) is refused since the real name cannot be checked; anything that is not tls on port 443 is refused. a non-tls
-  opening on another allowed port (an ssh session on 22) is piped as `kind: raw`. a mitm'd connection gets a leaf for
+  opening on another allowed port (an ssh session on 22) is piped as `kind: raw`, unless the host is mitm'd (a url
+  entry names it, or `methods` is set): then it is refused with `reason: not-tls`. a mitm'd connection gets a leaf for
   the CONNECT host only, and every inner request's `Host` must name it too.
 - **the dial is guarded.** the address actually connected to (after resolution, so a name that resolves or
   re-resolves to one is caught) must not be loopback, link-local, private or v4-mapped unless `allow-private`, and is

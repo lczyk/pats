@@ -127,6 +127,17 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 	// handshake here, or a client that never finishes it holds the conn.
 	_ = raw.SetDeadline(time.Now().Add(helloWait))
 	if err := tconn.Handshake(); err != nil {
+		// an sni mismatch is audited where it is caught. anything else that
+		// fails here (a non-tls client, a client rejecting the leaf) would
+		// otherwise leave no trace.
+		if !errors.Is(err, errSNIMismatch) {
+			reason := "handshake"
+			var rh tls.RecordHeaderError
+			if errors.As(err, &rh) {
+				reason = "not-tls"
+			}
+			p.audit(Event{Ev: "open", Host: host, Port: portStr(port), Kind: "mitm", Rule: "mitm", Reason: reason})
+		}
 		return
 	}
 	_ = raw.SetDeadline(time.Time{})

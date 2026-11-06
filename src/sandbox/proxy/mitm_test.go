@@ -335,3 +335,21 @@ func TestMitmHostBinding(t *testing.T) {
 	assert.Equal(t, audit.last(t).Reason, "host-mismatch")
 	assert.Equal(t, calls, 0)
 }
+
+// a connection forced into mitm that never speaks tls (an ssh-style banner
+// on an allowed port, under a methods posture) is refused on the record, not
+// dropped silently.
+func TestMitmNonTLSAudited(t *testing.T) {
+	p, _, audit := mitmProxy(t, "mitm.test:22", http.DefaultTransport)
+	p.Rule.Methods = map[string]bool{"GET": true}
+	proxy := httptest.NewServer(p)
+	defer proxy.Close()
+	conn, br := connect(t, proxy.Listener.Addr().String(), "mitm.test:22")
+	defer conn.Close()
+	fmt.Fprintf(conn, "SSH-2.0-OpenSSH_9.6\r\n")
+	_, _ = br.ReadByte()
+	ev := audit.last(t)
+	assert.Equal(t, ev.Ev, "open")
+	assert.Equal(t, ev.Allowed, false)
+	assert.Equal(t, ev.Reason, "not-tls")
+}
