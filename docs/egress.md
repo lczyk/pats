@@ -126,7 +126,8 @@ pats clean [--dry-run] [--older-than 24h]
 - `suggest` folds a run's audits into an `allow:` block for review. run once under `default: allow` to discover what
   a task reaches, then lock it down. requests are grouped by user agent; tunnels hide theirs and are listed apart.
 - `log` is the audit as a table.
-- `clean` removes sidecars and networks whose pair's workdir is gone, and temp dirs older than `--older-than`.
+- `clean` removes agent containers, sidecars and networks whose pats process is gone (a killed run leaves its agent
+  running), and temp dirs older than `--older-than` whose process is gone too.
 
 ## standalone
 

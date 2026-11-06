@@ -23,6 +23,18 @@ import (
 // crashed run is easy to spot and sweep up.
 const namePrefix = "sbx-"
 
+// agentName names the agent container after its workdir, as the sidecar is,
+// so `pats clean` can find one that outlived a killed pats (a dead client
+// leaves it running). only a workdir MkTemp made is unique by its base name,
+// and only its owner file says whether the run is gone: others go unnamed.
+func agentName(workdir string) string {
+	root, err := TempRoot()
+	if err != nil || filepath.Dir(workdir) != root {
+		return ""
+	}
+	return namePrefix + "agent-" + filepath.Base(workdir)
+}
+
 // setupEgress applies a Spec's egress policy and returns the extra `docker run`
 // args for the agent container, plus a teardown (nil when nothing to tear down).
 //

@@ -394,3 +394,16 @@ func TestProxyEnvOptions(t *testing.T) {
 	_, err = ProxyEnvOptions(func(k string) string { return env[k] })
 	assert.Error(t, err, "PATS_EGRESS_POLICY")
 }
+
+// an agent is named after its workdir only when MkTemp made it: elsewhere the
+// base name need not be unique (t.TempDir's 001) and clean could not judge it.
+func TestAgentName(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("HOME", cache)
+	work, err := MkTemp("pats-work-")
+	require.NoError(t, err)
+	defer RemoveTemp(work)
+	assert.Equal(t, agentName(work), "sbx-agent-"+filepath.Base(work))
+	assert.Equal(t, agentName(t.TempDir()), "")
+}

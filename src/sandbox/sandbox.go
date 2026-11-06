@@ -148,6 +148,9 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 		"-w", WorkMount,
 		"-v", abs + ":" + WorkMount,
 	}
+	if name := agentName(abs); name != "" {
+		args = append(args, "--name", name)
+	}
 	args = append(args, netArgs...)
 	for _, m := range spec.Mounts {
 		mh, err := filepath.Abs(m.Host)

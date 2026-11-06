@@ -214,8 +214,9 @@ func TestCleanTempDirs(t *testing.T) {
 	assert.Error(t, err, assert.AnyError)
 }
 
-// a sidecar and network belong to a live pair only while the pats process
-// that made the pair's workdir runs; a crashed run's go in the same pass.
+// an agent, sidecar and network belong to a live pair only while the pats
+// process that made the pair's workdir runs; a crashed run's go in the same
+// pass, the agent before the network it holds.
 func TestCleanContainersByOwner(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
@@ -226,13 +227,14 @@ func TestCleanContainersByOwner(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(dead+".owner", []byte("999999999"), 0o600))
 
-	// a fake driver lists one sidecar and one network per workdir and logs rm calls.
+	// a fake driver lists one agent, sidecar and network per workdir and logs
+	// rm calls.
 	bin := t.TempDir()
 	calls := filepath.Join(bin, "calls")
 	script := `#!/bin/sh
 echo "$@" >> ` + calls + `
 case "$1 $2" in
-  "ps -a") printf 'sbx-proxy-%s\nsbx-proxy-%s\n' ` + filepath.Base(live) + ` ` + filepath.Base(dead) + ` ;;
+  "ps -a") p=${4#name=^}; printf '%s%s\n%s%s\n' $p ` + filepath.Base(live) + ` $p ` + filepath.Base(dead) + ` ;;
   "network ls") printf 'sbx-egr-%s\nsbx-egr-%s\n' ` + filepath.Base(live) + ` ` + filepath.Base(dead) + ` ;;
 esac
 `
@@ -246,6 +248,10 @@ esac
 	log := string(b)
 	assert.ContainsString(t, log, "rm -f sbx-proxy-"+filepath.Base(dead))
 	assert.ContainsString(t, log, "network rm sbx-egr-"+filepath.Base(dead))
+	agentRm := strings.Index(log, "rm -f sbx-agent-"+filepath.Base(dead))
+	require.That(t, agentRm >= 0, "dead agent not removed:\n%s", log)
+	assert.That(t, agentRm < strings.Index(log, "network rm sbx-egr-"+filepath.Base(dead)))
+	assert.Equal(t, strings.Contains(log, "rm -f sbx-agent-"+filepath.Base(live)), false)
 	assert.Equal(t, strings.Contains(log, filepath.Base(live)+"\n") && strings.Contains(log, "rm -f sbx-proxy-"+filepath.Base(live)), false)
 	assert.Equal(t, strings.Contains(log, "network rm sbx-egr-"+filepath.Base(live)), false)
 }

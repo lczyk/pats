@@ -22,8 +22,9 @@ type CleanOptions struct {
 	Out       io.Writer
 }
 
-// Clean removes what crashed runs left behind. every sidecar and network pats
-// makes is named after its pair's workdir (sbx-proxy-<dir>, sbx-egr-<dir>),
+// Clean removes what crashed runs left behind. every agent, sidecar and
+// network pats makes is named after its pair's workdir (sbx-agent-<dir>,
+// sbx-proxy-<dir>, sbx-egr-<dir>),
 // and that workdir's owner file names the pats process running the pair, so
 // one whose process is gone (or whose workdir is) is a leftover. a temp dir
 // is kept while its owner runs, and otherwise goes once older than OlderThan.
@@ -49,24 +50,32 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		act = "would remove"
 	}
 	for _, d := range drivers {
-		out, err := exec.CommandContext(ctx, d, "ps", "-a", "--filter", "name=^sbx-proxy-", "--format", "{{.Names}}").Output()
-		if err != nil {
-			fmt.Fprintf(o.Out, "%s: skipped (%v)\n", d, err)
-			continue
-		}
-		for _, name := range strings.Fields(string(out)) {
-			if live(name, "sbx-proxy-") {
-				continue
+		// agents first: one still attached keeps its network from going.
+		skipped := false
+		for _, prefix := range []string{"sbx-agent-", "sbx-proxy-"} {
+			out, err := exec.CommandContext(ctx, d, "ps", "-a", "--filter", "name=^"+prefix, "--format", "{{.Names}}").Output()
+			if err != nil {
+				fmt.Fprintf(o.Out, "%s: skipped (%v)\n", d, err)
+				skipped = true
+				break
 			}
-			if !o.DryRun {
-				if out, err := exec.CommandContext(ctx, d, "rm", "-f", name).CombinedOutput(); err != nil {
-					errs = append(errs, fmt.Errorf("%s rm %s: %w (%s)", d, name, err, strings.TrimSpace(string(out))))
+			for _, name := range strings.Fields(string(out)) {
+				if live(name, prefix) {
 					continue
 				}
+				if !o.DryRun {
+					if out, err := exec.CommandContext(ctx, d, "rm", "-f", name).CombinedOutput(); err != nil {
+						errs = append(errs, fmt.Errorf("%s rm %s: %w (%s)", d, name, err, strings.TrimSpace(string(out))))
+						continue
+					}
+				}
+				fmt.Fprintf(o.Out, "%s %s container %s\n", act, d, name)
 			}
-			fmt.Fprintf(o.Out, "%s %s container %s\n", act, d, name)
 		}
-		out, err = exec.CommandContext(ctx, d, "network", "ls", "--filter", "name=^sbx-egr-", "--format", "{{.Name}}").Output()
+		if skipped {
+			continue
+		}
+		out, err := exec.CommandContext(ctx, d, "network", "ls", "--filter", "name=^sbx-egr-", "--format", "{{.Name}}").Output()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s network ls: %w", d, err))
 			continue
