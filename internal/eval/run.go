@@ -81,8 +81,10 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// resolve build: sandboxes to image ids first -- everything after (preflight
-	// included) then runs on the built image.
+	// resolve images first -- everything after (preflight included) runs on
+	// them: the default pats sandbox for sandboxes naming neither image nor
+	// build, then build: contexts to image ids.
+	defaultImages(cfg, opts, pairs)
 	if err := buildImages(ctx, cfg, opts, pairs); err != nil {
 		return "", err
 	}

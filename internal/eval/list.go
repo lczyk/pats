@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // list helpers print one line per configured item, tab-aligned, with the
@@ -49,8 +50,11 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 			mode = "open" // the default: no egress filtering
 		}
 		image := s.Image
-		if image == "" && s.Build != "" {
+		switch {
+		case image == "" && s.Build != "":
 			image = "build:" + s.Build
+		case image == "":
+			image, _ = sandbox.SandboxImage("") // the published default; a dev build's warning belongs to run, not list
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Vector, s.ID, s.Driver, image, mode)
 	}

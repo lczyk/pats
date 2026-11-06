@@ -87,7 +87,7 @@ SANDBOX_STAMPS := $(addprefix .stamp/sandbox-,$(SEL_VER_ARCH))
 FORCE:
 
 .PHONY: images
-images: $(SANDBOX_STAMPS)  ## Build sandbox images (narrow via VER=.. ARCH=..)
+images: $(SANDBOX_STAMPS)  ## Build sandbox images locally, tagged :v<version>, :latest and :<ubuntu> (narrow via VER=.. ARCH=..)
 
 .stamp/sandbox-%: FORCE | .stamp
 	@hack/build_image.sh sandbox-$*

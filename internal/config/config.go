@@ -25,13 +25,13 @@ type Config struct {
 
 // Sandbox is an isolation environment a task-running agent executes in.
 // container drivers name their image one of two ways: `image` (pull/use
-// as-is) or `build` (a docker build context pats builds at run start) --
-// exactly one.
+// as-is) or `build` (a docker build context pats builds at run start) -- at
+// most one. neither means the published pats sandbox pinned to this version.
 type Sandbox struct {
 	ID     string `yaml:"-"`
 	Vector string `yaml:"-"`
 	Driver string `yaml:"driver"` // docker (default) | podman | bwrap
-	Image  string `yaml:"image"`  // existing image to run
+	Image  string `yaml:"image"`  // existing image to run; "" with no build -> the published pats sandbox
 	Build  string `yaml:"build"`  // build context -- a dir (with a Dockerfile) or a Dockerfile path, relative to the config dir
 	Egress Egress `yaml:"egress"` // outbound network policy (default: open)
 }

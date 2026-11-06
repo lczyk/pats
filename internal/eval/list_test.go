@@ -12,7 +12,8 @@ import (
 )
 
 // listTestConfig is parsed, not validated: it holds a bwrap sandbox and an
-// agent scorer, both rejected by Validate, so list output covers them.
+// agent scorer, both rejected by Validate, so list output covers them. stock
+// names neither image nor build, the published pats sandbox.
 func listTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 	cfg, err := config.Parse([]byte(`
@@ -21,6 +22,7 @@ boxes:
   items:
     box: {image: ubuntu, egress: {mode: proxy}}
     bare: {driver: bwrap}
+    stock: {}
 agents:
   kind: agent
   items:
@@ -59,7 +61,7 @@ func TestListSandboxes(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, ListSandboxes(listTestConfig(t), &out))
 	s := out.String()
-	for _, want := range []string{"proxy", "docker", "bare", "open"} { // docker = resolved driver, open = default egress
+	for _, want := range []string{"proxy", "docker", "bare", "open", "ghcr.io/lczyk/pats/sandbox:"} { // docker = resolved driver, open = default egress
 		assert.ContainsString(t, s, want)
 	}
 }

@@ -107,9 +107,8 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 	for _, s := range c.Sandboxes {
 		switch s.Driver {
 		case "docker", "podman":
-			if s.Image == "" && s.Build == "" {
-				add("sandbox %q: needs an image or a build context", s.ID)
-			}
+			// neither image nor build is fine: the run resolves it to the
+			// published sandbox image pinned to this pats version.
 			if s.Image != "" && s.Build != "" {
 				add("sandbox %q: image and build are mutually exclusive", s.ID)
 			}

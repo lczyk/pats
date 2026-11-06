@@ -1,8 +1,10 @@
 # pats sandbox image: ubuntu 26.04 + agent harness clis + the tooling agents
 # habitually reach for (git, curl, python3, ripgrep). usable out of the box as
 # a pats sandbox, and as a base for task-specific images -- e.g. mason's adds
-# chisel + dpkg-dev on top. published to ghcr.io/lczyk/pats/sandbox:26.04 on
-# tag push (publish_images workflow).
+# chisel + dpkg-dev on top (`ARG PATS_SANDBOX` / `FROM ${PATS_SANDBOX}` gets the
+# version pats passes in). published to ghcr.io/lczyk/pats/sandbox:v<version>
+# on tag push (publish_images workflow), with :latest following the newest
+# stable release.
 #
 # clis installed globally (npm -g -> /usr/*) so they're on PATH for ANY uid --
 # pats runs the container with `--user <host uid>`, which has no home of its
