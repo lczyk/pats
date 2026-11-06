@@ -37,7 +37,21 @@ func (p Policy) Rule() (Rule, error) {
 	default:
 		return Rule{}, fmt.Errorf("deny-response %q: want 403, 404, reset or timeout", p.DenyResponse)
 	}
-	return ParseRule(p.Default == "allow", p.Allow, p.Deny)
+	if len(p.Methods) > 0 {
+		return Rule{}, errors.New("methods is not implemented yet")
+	}
+	r, err := ParseRule(p.Default == "allow", p.Allow, p.Deny)
+	if err != nil {
+		return r, err
+	}
+	// accepting a method prefix the proxy does not enforce would look like
+	// filtering that silently does nothing.
+	for _, e := range append(append([]Entry{}, r.Allow...), r.Deny...) {
+		if e.Methods() != nil {
+			return Rule{}, fmt.Errorf("entry %q: a method prefix is not implemented yet", e.Raw)
+		}
+	}
+	return r, nil
 }
 
 // NeedsCA reports whether the policy terminates tls anywhere.

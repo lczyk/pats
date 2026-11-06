@@ -57,12 +57,17 @@ type material struct {
 // prepare renders the policy and, when it terminates tls anywhere, mints the
 // run CA and merges it into the image's trust bundle (readBundle fetches that
 // bundle from the driver). the caller removes caDir.
-func prepare(eg Egress, readBundle func() ([]byte, error)) (*material, error) {
+func prepare(eg Egress, readBundle func() ([]byte, error)) (_ *material, err error) {
 	y, err := yaml.Marshal(eg.Policy)
 	if err != nil {
 		return nil, err
 	}
 	m := &material{policyYAML: string(y)}
+	defer func() {
+		if err != nil {
+			m.cleanup()
+		}
+	}()
 	if !eg.Policy.NeedsCA() {
 		return m, nil
 	}
@@ -147,15 +152,20 @@ func (m *material) agentEnv(proxyURL string) map[string]string {
 
 // pool is the range pats carves sandbox networks from, one /29 per pair
 // (gateway, proxy, agent). docker's own pool is a handful of /16s and runs
-// out under -j. PATS_EGRESS_POOL overrides it for the host whose lan is here.
-var pool = func() netip.Prefix {
-	if v := os.Getenv("PATS_EGRESS_POOL"); v != "" {
-		if p, err := netip.ParsePrefix(v); err == nil && p.Bits() <= 24 {
-			return p.Masked()
-		}
+// out under -j. PATS_EGRESS_POOL overrides it for the host whose lan is here;
+// a bad override fails every proxy run rather than silently using the default.
+var pool, poolErr = parsePool(os.Getenv("PATS_EGRESS_POOL"))
+
+func parsePool(v string) (netip.Prefix, error) {
+	if v == "" {
+		return netip.MustParsePrefix("10.213.0.0/16"), nil
 	}
-	return netip.MustParsePrefix("10.213.0.0/16")
-}()
+	p, err := netip.ParsePrefix(v)
+	if err != nil || !p.Addr().Is4() || p.Bits() > 24 {
+		return netip.Prefix{}, fmt.Errorf("PATS_EGRESS_POOL %q: want an ipv4 cidr of /24 or wider", v)
+	}
+	return p.Masked(), nil
+}
 
 const slotBits = 29
 
@@ -276,9 +286,12 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// request), stderr carries the readiness line and is otherwise dropped.
 	var audit io.Writer = io.Discard
 	if spec.Egress.AuditPath != "" {
-		if f, err := os.Create(spec.Egress.AuditPath); err == nil {
-			auditF, audit = f, f
+		f, err := os.Create(spec.Egress.AuditPath)
+		if err != nil {
+			teardown()
+			return nil, nil, fmt.Errorf("egress: audit log: %w", err)
 		}
+		auditF, audit = f, f
 	}
 	logsCmd = exec.Command(c.bin, "logs", "-f", proxyName)
 	logsCmd.Stdout = audit
@@ -319,6 +332,9 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 // pool, moving on when the daemon already has that range (another pats, or a
 // network a crashed run left behind).
 func (c *container) createNetwork(ctx context.Context, name string) (netip.Prefix, error) {
+	if poolErr != nil {
+		return netip.Prefix{}, poolErr
+	}
 	var last string
 	for range subnetTries {
 		subnet := nextSubnet()
@@ -386,7 +402,8 @@ func waitReady(r io.Reader, timeout time.Duration) error {
 // tcp4, tcp6, a dns query over udp, and a name lookup. a leak prints leak=1.
 // bash's /dev/tcp and /dev/udp need no tool in the image beyond bash itself;
 // for udp only an answer counts, since connect and write cannot fail on it.
-const canaryScript = `leak=0
+const canaryScript = `for c in timeout getent; do command -v $c >/dev/null 2>&1 || { echo "egress-canary missing=$c"; exit 0; }; done
+leak=0
 timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null && leak=1
 timeout 3 bash -c 'exec 3<>/dev/tcp/2606:4700:4700::1111/443' 2>/dev/null && leak=1
 timeout 3 bash -c 'exec 3<>/dev/udp/8.8.8.8/53; printf "\000\001\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001" >&3; read -t 2 -N 1 <&3' 2>/dev/null && leak=1
@@ -406,6 +423,8 @@ func (c *container) egressCanary(ctx context.Context, net string) error {
 	switch {
 	case strings.Contains(out, "egress-canary leak=0"):
 		return nil
+	case strings.Contains(out, "egress-canary missing="):
+		return fmt.Errorf("egress self-test could not run in image %s: %s", c.image, strings.TrimPrefix(out[strings.Index(out, "egress-canary missing="):], "egress-canary "))
 	case strings.Contains(out, "egress-canary leak=1"):
 		return fmt.Errorf("egress is not fail-closed under driver %s: a direct connection from the sandbox succeeded", c.driver)
 	case err != nil:

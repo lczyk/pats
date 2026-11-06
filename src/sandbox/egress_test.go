@@ -262,6 +262,50 @@ func TestCreateNetworkMovesOnWhenTaken(t *testing.T) {
 	assert.Equal(t, len(fd.calls), 1)
 }
 
+func TestParsePool(t *testing.T) {
+	p, err := parsePool("")
+	require.NoError(t, err)
+	assert.Equal(t, p.String(), "10.213.0.0/16")
+	p, err = parsePool("172.30.4.0/22")
+	require.NoError(t, err)
+	assert.Equal(t, p.String(), "172.30.4.0/22")
+	for _, bad := range []string{"::/0", "fd00::/48", "10.0.0.0/28", "nope"} {
+		_, err := parsePool(bad)
+		assert.Error(t, err, "PATS_EGRESS_POOL", bad)
+	}
+}
+
+// an audit log that cannot be created fails the setup: running on without it
+// would drop the cheat detector silently.
+func TestStartEgressProxyAuditCreateFails(t *testing.T) {
+	fd := newFakeDocker(t)
+	spec := Spec{
+		Workdir: filepath.Join(t.TempDir(), "pats-work-a"),
+		Egress:  Egress{Set: true, AuditPath: filepath.Join(t.TempDir(), "missing", "dir", "egress.log")},
+	}
+	_, _, err := fd.container().startEgressProxy(context.Background(), spec)
+	assert.Error(t, err, "audit log")
+	assert.NotNil(t, fd.call("network rm"))
+}
+
+// a failed prepare removes the CA dir it already made.
+func TestPrepareCleansUpOnError(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("HOME", cache)
+	eg := Egress{Set: true, Policy: proxy.Policy{Deny: []string{"a.test/x*"}}}
+	_, err := prepare(eg, func() ([]byte, error) { return nil, errors.New("no bundle") })
+	assert.Error(t, err, "trust bundle")
+	var left []string
+	_ = filepath.WalkDir(cache, func(p string, d os.DirEntry, err error) error {
+		if d != nil && d.IsDir() && strings.Contains(d.Name(), "mitm-ca-") {
+			left = append(left, p)
+		}
+		return nil
+	})
+	assert.Equal(t, len(left), 0)
+}
+
 func TestNextSubnet(t *testing.T) {
 	a, b := nextSubnet(), nextSubnet()
 	assert.That(t, pool.Contains(a.Addr()) && pool.Contains(b.Addr()))
@@ -294,6 +338,8 @@ func TestEgressCanary(t *testing.T) {
 	assert.Error(t, fd.container().egressCanary(context.Background(), "n"), "not fail-closed")
 	fd.canary = "bash: not found"
 	assert.Error(t, fd.container().egressCanary(context.Background(), "n"), "no verdict")
+	fd.canary = "egress-canary missing=getent"
+	assert.Error(t, fd.container().egressCanary(context.Background(), "n"), "could not run")
 
 	// the self-test runs before the proxy and refuses the run on a leak.
 	fd = newFakeDocker(t)

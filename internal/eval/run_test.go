@@ -628,3 +628,17 @@ func TestEgressForIncludesCodexHosts(t *testing.T) {
 	}
 	assert.Equal(t, len(want), 0)
 }
+
+// sandbox env reaches the agent, under what pats sets itself.
+func TestNewHarnessSandboxEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sb := config.Sandbox{ID: "s", Driver: "docker", Image: "img", Env: map[string]string{"DENO_CERT": "/sbx-ca/bundle.pem", "PATS_PROMPT_FILE": "mine"}}
+	a := config.Agent{ID: "a", Harness: "opencode-openrouter", Model: "m"}
+	var out bytes.Buffer
+	h, err := newHarness(Options{Out: &out}, a, sb, t.TempDir(), "r", "", "a x t")
+	require.NoError(t, err)
+	defer h.cleanup()
+	assert.Equal(t, h.spec.Env["DENO_CERT"], "/sbx-ca/bundle.pem")
+	assert.NotEqual(t, h.spec.Env["PATS_PROMPT_FILE"], "mine")
+	assert.Equal(t, sb.Env["DENO_CERT"], "/sbx-ca/bundle.pem") // the config's map is not written to
+}

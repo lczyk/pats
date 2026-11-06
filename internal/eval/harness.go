@@ -38,7 +38,11 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, workDir, runID,
 	if err != nil {
 		return nil, err
 	}
-	env := agent.Env(a, homeMount+"/"+promptName, sandbox.WorkMount, runID)
+	env := maps.Clone(sb.Env)
+	if env == nil {
+		env = map[string]string{}
+	}
+	maps.Copy(env, agent.Env(a, homeMount+"/"+promptName, sandbox.WorkMount, runID))
 	cenv, hasToken := agent.CredEnv(a.Harness)
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 

@@ -227,11 +227,11 @@ func TestDecideMethodsAndRegexp(t *testing.T) {
 
 func TestNormalizeHost(t *testing.T) {
 	cases := map[string]string{
-		"GitHub.com":     "github.com",
-		"github.com.":    "github.com",
+		"GitHub.com":          "github.com",
+		"github.com.":         "github.com",
 		"b\u00fccher.example": "xn--bcher-kva.example",
-		"[::1]":          "::1",
-		"::FFFF:1.2.3.4": "1.2.3.4",
+		"[::1]":               "::1",
+		"::FFFF:1.2.3.4":      "1.2.3.4",
 	}
 	for in, want := range cases {
 		got, err := NormalizeHost(in)
@@ -249,6 +249,10 @@ func TestPolicyRule(t *testing.T) {
 	assert.Error(t, err, "deny-response")
 	_, err = Policy{Allow: []string{"*"}}.Rule()
 	assert.Error(t, err, `allow "*"`)
+	_, err = Policy{Methods: []string{"GET"}}.Rule()
+	assert.Error(t, err, "methods is not implemented yet")
+	_, err = Policy{Allow: []string{"GET a.test/*"}}.Rule()
+	assert.Error(t, err, "method prefix is not implemented yet")
 	assert.That(t, Policy{Deny: []string{"a.test/x*"}}.NeedsCA())
 	assert.That(t, !Policy{Allow: []string{"a.test"}}.NeedsCA())
 }

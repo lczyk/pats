@@ -123,9 +123,13 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 		NextProtos: []string{"http/1.1"}, // NOTE: no h2; clients downgrade fine
 	})
 	defer tconn.Close()
+	// the server's header timeout stopped applying at the hijack: bound the
+	// handshake here, or a client that never finishes it holds the conn.
+	_ = raw.SetDeadline(time.Now().Add(helloWait))
 	if err := tconn.Handshake(); err != nil {
 		return
 	}
+	_ = raw.SetDeadline(time.Time{})
 
 	br := bufio.NewReader(tconn)
 	for {

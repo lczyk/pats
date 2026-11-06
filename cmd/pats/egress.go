@@ -26,7 +26,7 @@ type EgressCommand struct {
 type EgressRunCommand struct {
 	Policy string   `long:"policy" description:"policy file: a sandbox's egress block, verbatim (env PATS_EGRESS_POLICY holds the yaml itself)"`
 	Listen string   `long:"listen" description:"listen address (env PATS_EGRESS_LISTEN; default :8080)"`
-	Audit  string   `long:"audit" description:"audit log path, one json line per request (default stdout)"`
+	Audit  string   `long:"audit" description:"audit log path, one json line per request (env PATS_EGRESS_AUDIT; default stdout)"`
 	CACert string   `long:"ca-cert" description:"run CA cert for url entries: a pem file, or the pem itself (env PATS_EGRESS_CA_CERT)"`
 	CAKey  string   `long:"ca-key" description:"run CA key (env PATS_EGRESS_CA_KEY)"`
 	Roots  string   `long:"roots" description:"pem bundle upstream certificates verify against (env PATS_EGRESS_ROOTS; default: system roots)"`
@@ -75,6 +75,9 @@ func (c *EgressRunCommand) Execute(args []string) error {
 		}
 	}
 	var audit io.Writer = os.Stdout
+	if c.Audit == "" {
+		c.Audit = os.Getenv("PATS_EGRESS_AUDIT")
+	}
 	if c.Audit != "" {
 		f, err := os.OpenFile(c.Audit, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {

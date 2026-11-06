@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // Validate checks a parsed config: ids, per-kind fields, cross-references,
@@ -122,7 +120,26 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 			add("sandbox %q: unknown driver %q (docker|podman|bwrap)", s.ID, s.Driver)
 		}
 		validateEgress(add, s)
+		for _, k := range sortedKeys(s.Env) {
+			switch {
+			case !envName.MatchString(k):
+				add("sandbox %q: env %q is not a valid variable name", s.ID, k)
+			case strings.HasPrefix(k, "PATS_"):
+				add("sandbox %q: env %q: PATS_* is reserved for pats", s.ID, k)
+			case k == "PATH" || k == "HOME":
+				add("sandbox %q: env %s is set by pats", s.ID, k)
+			}
+		}
 	}
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // validateEgress checks a sandbox's egress policy so a bad entry fails at
@@ -136,14 +153,6 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 	if err != nil {
 		add("sandbox %q: egress: %v", s.ID, err)
 		return
-	}
-	if len(s.Egress.Methods) > 0 {
-		add("sandbox %q: egress methods is not implemented yet", s.ID)
-	}
-	for _, e := range append(append([]proxy.Entry{}, r.Allow...), r.Deny...) {
-		if e.Methods() != nil {
-			add("sandbox %q: egress entry %q: a method prefix is not implemented yet", s.ID, e.Raw)
-		}
 	}
 	// under a denylist a bare allow entry can never matter: deny wins, and
 	// everything else passes anyway. a url allow entry does (it restricts

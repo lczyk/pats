@@ -41,6 +41,10 @@ type Sandbox struct {
 	Image  string `yaml:"image"`  // existing image to run; "" with no build -> the published pats sandbox
 	Build  string `yaml:"build"`  // build context -- a dir (with a Dockerfile) or a Dockerfile path, relative to the config dir
 	Egress Egress `yaml:"egress"` // outbound network policy (absent: open)
+	// Env goes into the sandboxed agent's environment, under what pats sets
+	// itself. the escape hatch for a tool the egress tls contract misses
+	// (e.g. DENO_CERT=/sbx-ca/bundle.pem).
+	Env map[string]string `yaml:"env" tmpl:"-"`
 }
 
 // Egress is a sandbox's outbound network policy. absent, the network is
