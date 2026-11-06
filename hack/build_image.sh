@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build one sandbox image if its input hash differs from the stamp.
+# Build one sandbox image if its input hash differs from the stamp, then apply
+# the tags a pats built from this checkout resolves to.
 # Usage: build_image.sh sandbox-<ver>-<arch>      # e.g. sandbox-26.04-amd64
 set -euo pipefail
 
@@ -15,36 +16,39 @@ rest="${name%-*}"
 ver="${rest##*-}"
 flavour="${rest%-*}"
 
-stamp=".stamp/$name"
-new=$(hack/hash_inputs.sh "$name")
-cur=$(cat "$stamp" 2>/dev/null || true)
-
-if [ "$new" = "$cur" ]; then
-    echo "==> ${flavour}:${ver}-${arch} up-to-date (stamp matches)"
-    exit 0
-fi
-
-echo "==> building ${flavour}:${ver}-${arch} (inputs changed)"
-
 case "$flavour" in
-    sandbox)
-        "$DOCKER" build \
-            --tag "$REGISTRY/sandbox:$ver-$arch" \
-            --file "images/Dockerfile.sandbox-$ver" \
-            --platform "linux/$arch" \
-            .
-        # also apply the tags a pats built from this checkout resolves to --
-        # :v<version> (the pinned default) and :latest -- plus the plain
-        # ubuntu tag for a pats.yaml that names it, so each resolves offline.
-        # multiarch manifests are assembled separately at publish time.
-        for tag in "v$VERSION" latest "$ver"; do
-            "$DOCKER" tag "$REGISTRY/sandbox:$ver-$arch" "$REGISTRY/sandbox:$tag"
-        done
-        ;;
+    sandbox) ;;
     *)
         echo "unknown flavour: $flavour" >&2
         exit 2
         ;;
 esac
 
-echo "$new" > "$stamp"
+image="$REGISTRY/sandbox:$ver-$arch"
+stamp=".stamp/$name"
+new=$(hack/hash_inputs.sh "$name")
+cur=$(cat "$stamp" 2>/dev/null || true)
+
+if [ "$new" = "$cur" ]; then
+    echo "==> ${flavour}:${ver}-${arch} up-to-date (stamp matches)"
+else
+    echo "==> building ${flavour}:${ver}-${arch} (inputs changed)"
+    "$DOCKER" build \
+        --tag "$image" \
+        --file "images/Dockerfile.sandbox-$ver" \
+        --platform "linux/$arch" \
+        .
+    echo "$new" > "$stamp"
+fi
+
+# the arch-less tags -- :v<version> (the pinned default), :latest, and the
+# plain ubuntu tag for a pats.yaml that names it -- resolve offline only for
+# the host's arch, so only that build applies them. they are re-applied on
+# every run: a VERSION bump moves :v<version> without a rebuild. multiarch
+# manifests are assembled separately at publish time.
+host=$("$DOCKER" version --format '{{.Server.Arch}}')
+if [ "$arch" = "$host" ]; then
+    for tag in "v$VERSION" latest "$ver"; do
+        "$DOCKER" tag "$image" "$REGISTRY/sandbox:$tag"
+    done
+fi

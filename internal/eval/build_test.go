@@ -213,13 +213,13 @@ func TestBuildImage(t *testing.T) {
 	require.NoError(t, err)
 	dfData, dfErr := readDockerfile(df)
 	require.NoError(t, dfErr)
-	hash, err := buildContextHash(ctxDir, df, dfData, dfErr, "scratch")
+	hash, err := buildContextHash(ctxDir, df, dfData, dfErr, "")
 	require.NoError(t, err)
 
 	// nothing labelled with this hash yet.
 	assert.Equal(t, cachedImageID(context.Background(), "docker", hash), "")
 
-	id, err := buildImage(context.Background(), "docker", ctxDir, df, hash, "scratch")
+	id, err := buildImage(context.Background(), "docker", ctxDir, df, hash, "")
 	require.NoError(t, err)
 	assert.ContainsString(t, id, "sha256:")
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", id).Run() })
@@ -231,7 +231,7 @@ func TestBuildImage(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("changed\n"), 0o644))
 	dfData2, dfErr2 := readDockerfile(df)
 	require.NoError(t, dfErr2)
-	hash2, err := buildContextHash(ctxDir, df, dfData2, dfErr2, "scratch")
+	hash2, err := buildContextHash(ctxDir, df, dfData2, dfErr2, "")
 	require.NoError(t, err)
 	assert.That(t, hash != hash2, "edit did not change the hash")
 	assert.Equal(t, cachedImageID(context.Background(), "docker", hash2), "")

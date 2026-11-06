@@ -29,6 +29,8 @@ func TestImagePinsEveryVersionShape(t *testing.T) {
 		{"version file fallback", "1.2.3", proxyRepo + ":v1.2.3", false},
 		{"beta", "v1.0.0-beta.1", proxyRepo + ":v1.0.0-beta.1", false},
 		{"rc", "1.0.0-rc", proxyRepo + ":v1.0.0-rc", false},
+		{"dotless rc", "v1.0.0-rc1", proxyRepo + ":v1.0.0-rc1", false},
+		{"other suffix", "v1.0.0-next", latest, true},
 		{"dirty", "v1.2.3-dirty", latest, true},
 		{"pseudo-version", "v1.0.0-beta.1.0.20260101120000-abcdef123456", latest, true},
 		{"branch pseudo-version", "v0.0.0-20260101120000-abcdef123456", latest, true},

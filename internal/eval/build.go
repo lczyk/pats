@@ -64,6 +64,7 @@ func defaultImages(cfg *config.Config, opts Options, pairs []config.TestPair) {
 func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
 	used := usedSandboxes(cfg, pairs)
 	lg := logw{opts.Out, opts.Color}
+	warned := false
 	for i, sb := range cfg.Sandboxes {
 		if !used[sb.ID] || sb.Build == "" {
 			continue
@@ -83,7 +84,15 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		// the dry cache check: hash the build inputs and look for an image
 		// already labelled with that hash -- a hit skips `docker build`
 		// entirely instead of rebuilding and hoping the layer cache holds.
-		base, _ := sandbox.SandboxImage("") // warn (if any) is logged by defaultImages
+		base := ""
+		if bytes.Contains(dfData, []byte(baseArg)) {
+			var warn string
+			base, warn = sandbox.SandboxImage("")
+			if warn != "" && !warned {
+				lg.warn("%s", warn)
+				warned = true
+			}
+		}
 		hash, err := buildContextHash(ctxDir, dockerfile, dfData, dfErr, base)
 		if err != nil {
 			hash = "" // fs hiccup -> just build; the build will surface the real error
@@ -168,9 +177,12 @@ const baseArg = "PATS_SANDBOX"
 
 // buildImage builds one resolved context and returns the image id. a non-empty
 // hash is stamped onto the image (see hashLabel) so the next run can find it;
-// base is handed to the build as PATS_SANDBOX (see baseArg).
+// a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
 func buildImage(ctx context.Context, driver, ctxDir, dockerfile, hash, base string) (string, error) {
-	args := []string{"build", "-q", "-f", dockerfile, "--build-arg", baseArg + "=" + base}
+	args := []string{"build", "-q", "-f", dockerfile}
+	if base != "" {
+		args = append(args, "--build-arg", baseArg+"="+base)
+	}
 	if hash != "" {
 		args = append(args, "--label", hashLabel+"="+hash)
 	}
@@ -224,10 +236,10 @@ func cachedImageID(ctx context.Context, driver, hash string) string {
 //
 // dfData/dfErr are the dockerfile's contents, already read by the caller (see
 // buildImages) -- shared with checkPatsIgnored/usesContext so the dockerfile
-// isn't read more than once per build. base is the PATS_SANDBOX build arg;
-// it joins the hash only when the dockerfile mentions it, so a new pats
-// version rebuilds contexts that derive from the pats sandbox and leaves the
-// rest cached.
+// isn't read more than once per build. base is the PATS_SANDBOX build arg,
+// "" when the dockerfile doesn't mention it; it joins the hash only when it
+// does, so a new pats version rebuilds contexts that derive from the pats
+// sandbox and leaves the rest cached.
 func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error, base string) (string, error) {
 	if dfErr != nil {
 		return "", dfErr

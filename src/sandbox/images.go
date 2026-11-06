@@ -53,7 +53,7 @@ func Image(repo, configured, hint string) (image, warn string) {
 }
 
 // releaseVersion reports whether v is a tagged release: X.Y.Z, optionally
-// with an alpha / beta / rc pre-release (1.0.0-beta.1) -- the shapes that
+// with an alpha / beta / rc pre-release (1.0.0-beta.1, 1.0.0-rc1) -- the shapes that
 // have a published v<version> image. anything else (empty, a dev or dirty
 // suffix, a pseudo-version) has none, so the caller falls back to :latest.
 // callers pass the version with any leading v already stripped.
@@ -71,7 +71,7 @@ func releaseVersion(v string) bool {
 	return pre == "" || preRelease.MatchString(pre)
 }
 
-var preRelease = regexp.MustCompile(`^(alpha|beta|rc)(\.[0-9]+)?$`)
+var preRelease = regexp.MustCompile(`^(alpha|beta|rc)\.?[0-9]*$`)
 
 func digits(s string) bool {
 	return s != "" && strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) < 0
