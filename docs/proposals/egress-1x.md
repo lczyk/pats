@@ -1,6 +1,6 @@
 # proposal: egress on 1.x
 
-status: scoped, not started. each tier below is its own PR or two.
+status: implemented on the 1.x line, all five tiers. `docs/egress.md` is the reference.
 scope: `src/sandbox/proxy`, `src/sandbox/egress.go`, `cmd/egress-proxy`, `internal/config`, `internal/eval`, the
 `pats egress` cli, `images/Dockerfile.egress-proxy`, `.github/workflows/publish_images.yml`, `docs/`. 1.x owes 0.x no
 backwards compatibility.

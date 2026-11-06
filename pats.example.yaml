@@ -22,6 +22,7 @@ sandbox:
       #   # default: allow          # a denylist instead; bare hosts in allow are dead under it
       #   # deny-response: 404      # 403 (default) | 404 | reset | timeout
       #   # allow-private: true     # let entries name lan / loopback targets
+      #   # methods: [GET, HEAD]    # refuse writes everywhere; every allowed host but the harness's gets mitm'd
       # host lists other tasks tend to need, to copy from:
       #   pypi:   pypi.org, files.pythonhosted.org
       #   npm:    registry.npmjs.org

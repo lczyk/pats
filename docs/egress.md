@@ -19,12 +19,14 @@ sandbox:
     box:
       egress:                      # absent: open. `egress: none`: no network at all.
         default: deny              # deny (the default) or allow
+        methods: [GET, HEAD]       # optional: refuse every other method (inspects every allowed host)
         allow:
           - .ubuntu.com            # a host, or a suffix when it starts with a dot
           - github.com:22          # a host on one port; without a port, 80 and 443
           - '.githubusercontent.com/canonical/*'   # a url entry: a host and a path glob
           - 'api.github.com ~^/repos/[^/]+/x$'     # a url entry: a host and a go regexp over path?query
           - 10.0.5.20:5432         # an ip, dialable only with allow-private
+          - POST api.github.com/graphql            # a method prefix: admits POST here whatever methods says
         deny:
           - 'github.com/*/some-answer-repo*'
         deny-response: 403         # 403 | 404 | reset | timeout
@@ -50,8 +52,12 @@ sandbox:
 - **tasks** a task may set `egress: {allow, deny}`. its entries are unioned over the sandbox's for that task's pairs;
   posture (`none`, `default`, `deny-response`, `allow-private`, `image`) stays the sandbox's. a task with `egress`
   paired with an agent whose sandbox runs no proxy is a load error.
-- **methods** `methods: [GET, HEAD]` and method prefixes on entries (`POST api.github.com/graphql`) are reserved and
-  rejected until they are enforced.
+- **methods** `methods: [GET, HEAD]` refuses every other method, with `rule: methods` and `reason: method` in the
+  audit. a tunnel cannot show a method, so the posture makes the proxy inspect every allowed host -- under
+  `default: allow`, every host reached -- except the harness's own (its inference api is never decrypted for it; an
+  explicit url entry on such a host still mitm's it). an entry can carry a method prefix, which needs a url part:
+  `POST api.github.com/graphql` in `allow` admits that method there whatever the posture, `PUT,PATCH github.com/*` in
+  `deny` refuses only those methods. absent, every method passes and nothing extra is inspected.
 
 ## topology
 
