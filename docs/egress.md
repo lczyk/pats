@@ -65,7 +65,8 @@ sandbox:
 the agent container sits on its own `--internal` network: no gateway, no route out. the proxy sidecar sits on that
 network at a fixed address and on the driver's default network, which is its way out. the agent is told
 `HTTP_PROXY=http://<proxy ip>:8080` and needs no resolver: docker's is cut off from upstream with `--dns 0.0.0.0`,
-podman's is disabled on the network. each pair gets its own `/29` out of `10.213.0.0/16` (override with
+podman's is disabled on the network. the host has no address on that network either, so a service listening on the
+host is out of the agent's reach too. each pair gets its own `/29` out of `10.213.0.0/16` (override with
 `PATS_EGRESS_POOL`, an ipv4 cidr of `/24` or wider); a subnet already in use is skipped.
 
 what the proxy enforces, beyond the lists:

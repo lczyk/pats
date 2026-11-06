@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -105,10 +106,13 @@ func TestStartEgressProxy(t *testing.T) {
 	// the pair's network is a /29 out of the pool and the proxy sits at its
 	// second address; the agent joins it with the proxy url by ip and no
 	// upstream resolver.
-	create := strings.Join(fd.call("network create"), " ")
-	assert.ContainsString(t, create, "--internal --subnet 10.213.")
-	assert.ContainsString(t, create, "/29 sbx-egr-pats-work-x")
-	subnet := netip.MustParsePrefix(fd.call("network create")[4])
+	args := fd.call("network create")
+	assert.That(t, slices.Contains(args, "--internal"))
+	assert.Equal(t, args[len(args)-1], "sbx-egr-pats-work-x")
+	i := slices.Index(args, "--subnet")
+	require.That(t, i > 0)
+	subnet := netip.MustParsePrefix(args[i+1])
+	assert.That(t, pool.Contains(subnet.Addr()) && subnet.Bits() == 29, "subnet %s", subnet)
 	proxyIP := subnet.Addr().Next().Next().String()
 
 	joined := strings.Join(netArgs, " ")
@@ -328,6 +332,19 @@ func TestPodmanDefaults(t *testing.T) {
 	assert.ContainsString(t, strings.Join(fd.call("network create"), " "), "--disable-dns")
 	assert.Equal(t, strings.Contains(strings.Join(netArgs, " "), "--dns"), false)
 	assert.Equal(t, (&container{driver: "docker"}).defaultNetwork(), "bridge")
+	assert.Equal(t, strings.Contains(strings.Join(fd.call("network create"), " "), "inhibit_ipv4"), false)
+}
+
+// docker puts a host address on an internal network's bridge unless told not
+// to, and every host service listening on it would be in the agent's reach.
+func TestDockerNetworkHidesHost(t *testing.T) {
+	fd := newFakeDocker(t)
+	c := fd.container()
+	spec := Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-d"), Egress: Egress{Set: true}}
+	_, teardown, err := c.startEgressProxy(context.Background(), spec)
+	require.NoError(t, err)
+	defer teardown()
+	assert.ContainsString(t, strings.Join(fd.call("network create"), " "), "com.docker.network.bridge.inhibit_ipv4=true")
 }
 
 func TestEgressCanary(t *testing.T) {

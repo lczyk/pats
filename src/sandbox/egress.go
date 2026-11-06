@@ -338,7 +338,13 @@ func (c *container) createNetwork(ctx context.Context, name string) (netip.Prefi
 	var last string
 	for range subnetTries {
 		subnet := nextSubnet()
-		args := []string{"network", "create", "--internal", "--subnet", subnet.String()}
+		args := []string{"network", "create", "--internal"}
+		if c.driver == "docker" {
+			// docker gives the host an address on the bridge, which the agent
+			// could reach any host service through: --internal cuts only routes.
+			args = append(args, "-o", "com.docker.network.bridge.inhibit_ipv4=true")
+		}
+		args = append(args, "--subnet", subnet.String())
 		if c.driver == "podman" {
 			// podman's resolver on an internal network answers only for peers,
 			// and the sidecar would inherit it as its only nameserver: it could
