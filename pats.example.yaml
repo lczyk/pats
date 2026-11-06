@@ -10,15 +10,23 @@ sandbox:
     docker:
       # with neither `image:` nor `build:`, the published pats sandbox pinned to this pats version (ghcr.io/lczyk/pats/sandbox:v<version>).
       # `build: <dir or Dockerfile>` builds a context at run start, with that image passed in as the PATS_SANDBOX build arg.
-      # egress is the outbound network policy: open (default) | none | proxy (filter by host) | mitm-proxy (also by url).
+      # egress is the outbound network policy. absent: open. `egress: none`: no network. a mapping: a filtering
+      # proxy the sandbox can only reach the net through. deny always wins, then allow, then `default` (deny).
       # egress:
-      #   mode: mitm-proxy
-      #   default: deny
       #   allow:
-      #     - .ubuntu.com
-      #     - github.com
-      #   deny-urls:
-      #     - "github.com/*/some-answer-repo*"
+      #     - .ubuntu.com                        # apt mirrors (a dot prefix covers subdomains)
+      #     - github.com                         # a host, on 80 and 443; `github.com:22` for one port
+      #     - '.githubusercontent.com/canonical/*'   # a url entry: its host is mitm'd, only matching paths pass
+      #   deny:
+      #     - 'github.com/*/some-answer-repo*'   # the answer source, by url (`*` matches anything, `/` included)
+      #   # default: allow          # a denylist instead; bare hosts in allow are dead under it
+      #   # deny-response: 404      # 403 (default) | 404 | reset | timeout
+      #   # allow-private: true     # let entries name lan / loopback targets
+      # host lists other tasks tend to need, to copy from:
+      #   pypi:   pypi.org, files.pythonhosted.org
+      #   npm:    registry.npmjs.org
+      #   crates: crates.io, static.crates.io, index.crates.io
+      #   go:     proxy.golang.org, sum.golang.org, storage.googleapis.com
 
 # harness: claude-cli-keyless | codex-cli-keyless | copilot-cli-keyless | opencode-openrouter (creds and model ids per harness: see the readme).
 # with one sandbox defined every agent uses it, otherwise set `sandbox:`. `effort:` is optional reasoning effort.
