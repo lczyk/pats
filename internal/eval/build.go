@@ -476,13 +476,20 @@ func ignoresPats(body string) bool {
 	return false
 }
 
-// proxyImageID is the id of the sidecar image a proxy-mode sandbox runs, ""
-// when it cannot be read. pullEgressImages made sure it is local.
+// proxyImageID names the sidecar image a proxy-mode sandbox ran: its registry
+// digest (repo@sha256:...) when it was pulled, else the local image id (a
+// locally built image has no registry digest). "" when neither can be read.
 func proxyImageID(ctx context.Context, sb config.Sandbox) string {
 	img, _ := sandbox.ProxyImage(sb.Egress.Image)
-	out, err := exec.CommandContext(ctx, sb.Driver, "image", "inspect", "--format", "{{.Id}}", img).Output()
+	// docker and podman both expose RepoDigests and Id on `image inspect`.
+	out, err := exec.CommandContext(ctx, sb.Driver, "image", "inspect", "--format",
+		"{{range .RepoDigests}}{{.}} {{end}}|{{.Id}}", img).Output()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	digests, id, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
+	if fields := strings.Fields(digests); len(fields) > 0 {
+		return fields[0]
+	}
+	return strings.TrimSpace(id)
 }

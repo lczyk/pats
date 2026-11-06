@@ -209,12 +209,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	}
 	p.audit(open)
 	var out int64
+	closeEv := func(in int64) {
+		p.audit(Event{Ev: "close", Host: host, Port: portStr(port), Kind: open.Kind, Allowed: true,
+			In: in, Out: out, MS: time.Since(start).Milliseconds()})
+	}
 	if len(hello) > 0 {
 		n, err := remote.Write(hello)
 		out += int64(n)
 		if err != nil {
 			client.Close()
 			remote.Close()
+			closeEv(0)
 			return
 		}
 	}
@@ -225,8 +230,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		go func() { defer wg.Done(); out += pipe(remote, cconn) }()
 		go func() { defer wg.Done(); in = pipe(client, remote) }()
 		wg.Wait()
-		p.audit(Event{Ev: "close", Host: host, Port: portStr(port), Kind: open.Kind, Allowed: true,
-			In: in, Out: out, MS: time.Since(start).Milliseconds()})
+		closeEv(in)
 	}()
 }
 
@@ -265,8 +269,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	n, _ := io.Copy(w, resp.Body)
-	ev.Allowed, ev.Status, ev.In, ev.Out, ev.MS = true, resp.StatusCode, n, body.n, time.Since(start).Milliseconds()
+	// count what came from upstream, not what reached the client: a client
+	// that hangs up early still cost the upstream bytes already read.
+	in := &countReader{r: resp.Body}
+	_, _ = io.Copy(w, in)
+	ev.Allowed, ev.Status, ev.In, ev.Out, ev.MS = true, resp.StatusCode, in.n, body.n, time.Since(start).Milliseconds()
 	p.audit(ev)
 }
 

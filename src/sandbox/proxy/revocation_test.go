@@ -68,6 +68,13 @@ func TestCheckStaple(t *testing.T) {
 	good := tls.ConnectionState{VerifiedChains: chains, OCSPResponse: staple(t, ca, leaf, key, ocsp.Good)}
 	assert.NoError(t, checkStaple(good))
 
+	assert.Equal(t, stapleStatus(good), "good")
+	assert.Equal(t, stapleStatus(revoked), "revoked")
+	unknown := tls.ConnectionState{VerifiedChains: chains, OCSPResponse: staple(t, ca, leaf, key, ocsp.Unknown)}
+	assert.Equal(t, stapleStatus(unknown), "unchecked")
+	assert.NoError(t, checkStaple(unknown))
+	assert.Equal(t, stapleStatus(tls.ConnectionState{VerifiedChains: chains, OCSPResponse: []byte("junk")}), "unchecked")
+
 	// no staple, a staple that does not parse, or no verified chain: pass.
 	assert.NoError(t, checkStaple(tls.ConnectionState{VerifiedChains: chains}))
 	assert.NoError(t, checkStaple(tls.ConnectionState{VerifiedChains: chains, OCSPResponse: []byte("junk")}))

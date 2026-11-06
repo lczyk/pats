@@ -114,7 +114,7 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if chi.ServerName != "" {
 				if got, err := NormalizeHost(chi.ServerName); err != nil || got != want {
-					p.audit(Event{Ev: "open", Host: host, Port: portStr(port), Kind: "mitm", Rule: "mitm", Reason: "sni-mismatch"})
+					p.audit(Event{Ev: "open", Host: host, Port: portStr(port), Kind: "tunnel", Rule: "mitm", Reason: "sni-mismatch"})
 					return nil, errSNIMismatch
 				}
 			}
@@ -172,8 +172,8 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 			return
 		}
 		ev.Revocation = "unchecked"
-		if resp.TLS != nil && len(resp.TLS.OCSPResponse) > 0 {
-			ev.Revocation = "good" // a revoked staple fails the round trip above
+		if resp.TLS != nil {
+			ev.Revocation = stapleStatus(*resp.TLS)
 		}
 		// the upstream leg may be http/2, but the client side of this conn is
 		// http/1.1 (see NextProtos above), so the response can't be written
