@@ -87,8 +87,9 @@ one file, `.pats/images.json`, gitignored with `.pats/`, keyed by target and san
 resolved at init so a later change of default does not silently move a pin:
 
 - containers: the engine and its daemon as resolved at init (`docker:<context>`, `podman:<connection>`), with the
-  daemon's own id (`docker info` / `podman info`) stored in the entry. `DOCKER_HOST`, `docker context use`, colima
-  or a remote daemon all change which daemon answers; a run whose daemon id differs from the pin's treats its
+  daemon's identity stored in the entry: docker's `docker info` id; podman has no such id, so its connection's uri
+  (socket path or `ssh://` host, from `podman system connection list`) stands in. `DOCKER_HOST`, `docker context use`,
+  colima or a remote daemon all change which daemon answers; a run whose daemon id differs from the pin's treats its
   images as missing, rather than trusting a pin made against another daemon.
 - lxd: the resolved remote (`lxd:armstrong`); a config with no `remote:` pins under the default as resolved at init.
 - bwrap: `bwrap:local`, pinning the host tools' versions.
@@ -131,7 +132,8 @@ dockerfile's context).
 - **by id.** a name (an lxd alias, a docker tag) is mutable; an image id or fingerprint is the image. the name stays
   for people and for the cli.
 - **who writes it.** `pats init` only. writes take a lock on `.pats/images.lock`, re-read the file, change only
-  their own entries, and replace it by rename.
+  their own entries, and replace it by rename. each init also drops entries for sandboxes no longer in the config,
+  so a removed sandbox stops protecting its images from `clean --images`.
 - `proxy` only for a sandbox with an egress policy. a sandbox with `image:` is pinned too (its id at init), so
   `run` can tell missing from present, and the upstream check covers it.
 - `version` is the file's own format; a pats that does not know it says to rerun `pats init`.
@@ -208,7 +210,10 @@ follows from it. a `driver: container` plus `engine:` would add a key without ad
 
 `pats clean --images` removes images pats made that nothing pins and nothing used lately:
 
-- **container engines.** the daemon is the user's own, so every project on the machine registers itself: `pats
+- **container engines.** images pats builds carry the same owner label as its containers and networks
+  (`pats.owner=<host>/<uid>/<client id>`), and, like the rest of clean, `--images` leaves a foreign owner's images
+  alone without `--force`: on a daemon several users share, one user's clean does not take another's. within the
+  user's own images, every project on the machine registers itself: `pats
   init` adds the project's path, one line, to `~/.cache/pats/projects`. clean reads each listed project's own
   `.pats/images.json` (one writer, nothing duplicated to drift), drops paths that no longer exist, and walks every
   target in every pin file, not only the current default context or connection. it removes images pats made or
