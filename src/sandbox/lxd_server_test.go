@@ -453,6 +453,21 @@ func TestLXDLease(t *testing.T) {
 		// the last renewal landed at 2m; it is stale past 12m.
 		assert.That(t, mc.Now().Sub(start) > 12*time.Minute, "a run taken before its lease went stale")
 	})
+	t.Run("a marker gone is made again at the next renewal", func(t *testing.T) {
+		f, l, mc := setup(t)
+		f.mu.Lock()
+		delete(f.acls, l.marker())
+		f.mu.Unlock()
+		for range 4 {
+			tick(t, f, l, mc)
+		}
+		f.mu.Lock()
+		cfg := f.acls[l.marker()].config
+		f.mu.Unlock()
+		assert.Equal(t, cfg["user.pats.run"], l.p.token)
+		clean(t, f, mc.Now())
+		assert.That(t, alive(f, l), "a live run whose marker was made again was taken")
+	})
 	t.Run("accepted gap: a cleaner 9m ahead takes a live run", func(t *testing.T) {
 		f, l, mc := setup(t)
 		for range 3 { // the marker's lease, made at 0, is 1m30s old
