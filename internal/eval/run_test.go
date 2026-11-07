@@ -3,6 +3,7 @@ package eval
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -227,15 +228,58 @@ type fakeSandbox struct {
 	blockUntilDone bool
 	// onRun, if set, sees the pair run's spec while its mounts still exist.
 	onRun func(spec sandbox.Spec)
+	// startErr fails the session start; onRoot answers root execs.
+	startErr error
+	onRoot   func(cmd sandbox.Cmd, stdout io.Writer) (int, error)
+	rootCmds []sandbox.Cmd
+	pushed   []string
 }
 
+// Run is only the credential preflight now (a pair starts a session), so it
+// always passes and the canned outcome lands on the pair's agent exec.
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
-	// first call per agent is the credential preflight -- always passes so the
-	// canned outcome lands on the real pair run.
-	if f.calls++; f.calls == 1 {
+	f.calls++
+	return 0, nil
+}
+
+func (f *fakeSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Session, error) {
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
+	return &fakeSession{f: f, spec: spec}, nil
+}
+
+// fakeSession runs root commands (prepare, its cleanup, the hand-over) as
+// recorded no-ops, and the agent with the fake's canned outcome.
+type fakeSession struct {
+	f    *fakeSandbox
+	spec sandbox.Spec
+}
+
+func (s *fakeSession) Push(ctx context.Context, hostPath, path string) error {
+	s.f.pushed = append(s.f.pushed, path)
+	return nil
+}
+
+func (s *fakeSession) Pull(ctx context.Context, path, hostDir string) error { return nil }
+
+func (s *fakeSession) HandOver(ctx context.Context, paths ...string) error { return nil }
+
+func (s *fakeSession) Close() error { return nil }
+
+func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr io.Writer) (int, error) {
+	f := s.f
+	if cmd.Root {
+		f.rootCmds = append(f.rootCmds, cmd)
+		if f.onRoot != nil {
+			return f.onRoot(cmd, stdout)
+		}
 		return 0, nil
 	}
+	f.calls++
 	if f.onRun != nil {
+		spec := s.spec
+		spec.Argv, spec.Env = cmd.Argv, cmd.Env
 		f.onRun(spec)
 	}
 	if f.blockUntilDone {
@@ -521,8 +565,8 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	assert.That(t, !inWorkdir, "prompt staged in the workdir")
 }
 
-// a failing prepare still tears down the HOME it was handed.
-func TestRunPairPrepareFailureCleansHome(t *testing.T) {
+// a failing stage still tears down the HOME it was handed.
+func TestRunPairStageFailureCleansHome(t *testing.T) {
 	old := newSandbox
 	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return &fakeSandbox{}, nil }
 	defer func() { newSandbox = old }()
@@ -671,4 +715,87 @@ func TestEgressForTaskUnion(t *testing.T) {
 	open := egressFor(config.Sandbox{}, te, "opencode-openrouter", "", false)
 	assert.Equal(t, open.Set, false)
 	assert.Equal(t, len(open.Policy.Allow), 0)
+}
+
+// a failed setup step is the pair's error, named in its metadata: the agent
+// never runs and nothing is collected.
+func TestRunPairSetupFailureMetadata(t *testing.T) {
+	for _, c := range []struct {
+		name, task string
+		fake       *fakeSandbox
+		want       string
+	}{
+		{"stage", "stage: exit 3", &fakeSandbox{}, "stage: "},
+		{"start", "env: {X: y}", &fakeSandbox{startErr: errors.New("no daemon")}, "start: no daemon"},
+		{"prepare", "prepare: exit 4", &fakeSandbox{onRoot: func(cmd sandbox.Cmd, stdout io.Writer) (int, error) {
+			if cmd.Argv[0] == "rm" {
+				return 0, nil
+			}
+			io.WriteString(stdout, "apt said no\n")
+			return 4, nil
+		}}, "prepare: exited 4"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			old := newSandbox
+			newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return c.fake, nil }
+			defer func() { newSandbox = old }()
+			dir := t.TempDir()
+			cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: p, `+c.task+`, collect: "touch $PATS_OUTPUT_DIR/collected"}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+			var out bytes.Buffer
+			runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+			require.NoError(t, err)
+			var pm pairMeta
+			b, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(b, &pm))
+			assert.Equal(t, pm.Status, "error")
+			assert.ContainsString(t, pm.Error, c.want)
+			assert.Equal(t, c.fake.calls, 1) // the preflight only, never the pair's agent
+			_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+			assert.That(t, os.IsNotExist(err), "collected after a failed setup")
+			if c.name == "prepare" {
+				log, _ := os.ReadFile(filepath.Join(runDir, "a", "t", "prepare.log"))
+				assert.ContainsString(t, string(log), "apt said no")
+			}
+		})
+	}
+}
+
+// prepare runs inside the sandbox as root: its material pushed in, the
+// pats root's bin/ first on PATH, in-sandbox PATS_* paths, the task env, and
+// the material removed again before the agent.
+func TestRunPairPrepareInSandbox(t *testing.T) {
+	fake := &fakeSandbox{}
+	old := newSandbox
+	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "helper"), []byte("#!/bin/sh\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "setup.sh"), []byte("#!/bin/sh\n"), 0o755))
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: p, prepare-cmd: ./setup.sh --fast, env: {BRANCH: main}}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	assert.Equal(t, strings.Join(fake.pushed, " "), prepareMount)
+	require.That(t, len(fake.rootCmds) >= 2, "root cmds: %v", fake.rootCmds)
+	prep := fake.rootCmds[0]
+	assert.Equal(t, strings.Join(prep.Argv[len(prep.Argv)-2:], " "), prepareMount+"/cmd/setup.sh --fast")
+	assert.ContainsString(t, prep.Argv[2], prepareMount+"/bin:$PATH")
+	assert.Equal(t, prep.Env["PATS_WORKDIR"], sandbox.WorkMount)
+	assert.Equal(t, prep.Env["BRANCH"], "main")
+	_, hasOut := prep.Env["PATS_OUTPUT_DIR"]
+	assert.Equal(t, hasOut, false)
+	assert.Equal(t, strings.Join(fake.rootCmds[1].Argv, " "), "rm -rf "+prepareMount)
+	assert.Equal(t, fake.calls, 2) // preflight, then the agent
 }

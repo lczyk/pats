@@ -270,6 +270,7 @@ var slots = map[string][][]string{
 	"task": {
 		{"prompt", "prompt-file", "prompt-cmd"},
 		{"stage", "stage-cmd"},
+		{"prepare", "prepare-cmd"},
 		{"collect", "collect-cmd"},
 	},
 	"scorer": {

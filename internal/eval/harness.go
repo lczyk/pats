@@ -72,10 +72,24 @@ type harnessRun struct {
 	dur      float64 // seconds
 }
 
-// run executes the harness, bounded by timeout (0 = none) so a stuck agent
-// gets killed rather than hanging the caller. ctx cancel tears down the
-// container (same path as ctrl+C).
+// run executes the harness in a sandbox of its own (start, agent, close),
+// bounded by timeout (0 = none) so a stuck agent gets killed rather than
+// hanging the caller. ctx cancel tears down the container (same path as
+// ctrl+C).
 func (h *harness) run(ctx context.Context, stdout, stderr io.Writer, timeout time.Duration) harnessRun {
+	return bounded(ctx, timeout, func(rctx context.Context) (int, error) {
+		return h.box.Run(rctx, h.spec, stdout, stderr)
+	})
+}
+
+// exec runs the agent in an already started session, bounded the same way.
+func (h *harness) exec(ctx context.Context, sess sandbox.Session, stdout, stderr io.Writer, timeout time.Duration) harnessRun {
+	return bounded(ctx, timeout, func(rctx context.Context) (int, error) {
+		return sess.Exec(rctx, sandbox.Cmd{Argv: h.spec.Argv, Env: h.spec.Env}, stdout, stderr)
+	})
+}
+
+func bounded(ctx context.Context, timeout time.Duration, f func(context.Context) (int, error)) harnessRun {
 	rctx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -83,17 +97,17 @@ func (h *harness) run(ctx context.Context, stdout, stderr io.Writer, timeout tim
 		defer cancel()
 	}
 	t0 := time.Now()
-	code, err := h.box.Run(rctx, h.spec, stdout, stderr)
+	code, err := f(rctx)
 	dur := time.Since(t0).Seconds()
 
-	// decide timeout from rctx.Err(), not err: on deadline the sandbox
-	// SIGTERMs the container, which exits non-zero (143) -- sandbox.container.Run
-	// maps any *exec.ExitError to (code, nil), so err is nil on a timed-out
-	// run too. ctrl+C (context.Canceled on the parent ctx) is not a timeout.
-	// the one exception is a launch failure: sandbox setup (egress in
-	// particular) runs under the same deadline, so a slow setup can fail *and*
-	// leave rctx expired -- that's an error with nothing to collect, not a
-	// timed-out agent, and the real cause belongs in the metadata.
+	// decide timeout from rctx.Err(), not err: on deadline the sandbox kills
+	// the container, which exits non-zero (137) -- the driver maps any
+	// *exec.ExitError to (code, nil), so err is nil on a timed-out run too.
+	// ctrl+C (context.Canceled on the parent ctx) is not a timeout. the one
+	// exception is a launch failure: sandbox setup (egress in particular) can
+	// run under the same deadline, so a slow setup can fail *and* leave rctx
+	// expired -- that's an error with nothing to collect, not a timed-out
+	// agent, and the real cause belongs in the metadata.
 	timedOut := errors.Is(rctx.Err(), context.DeadlineExceeded) && !errors.Is(err, sandbox.ErrLaunch)
 	return harnessRun{code: code, err: err, timedOut: timedOut, dur: dur}
 }

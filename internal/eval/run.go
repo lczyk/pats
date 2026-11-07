@@ -371,18 +371,25 @@ func runPair(
 		hostEnv[k] = v
 	}
 
+	// a failed setup step (stage, start, prepare) is the pair's error: the
+	// agent never runs, nothing is collected, and the metadata names the step.
+	var setupErr error
 	if stage := (step{t.Stage, t.StageCmd, taskDir}); stage.set() {
-		if err := stage.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
-			return fmt.Errorf("stage: %w", err)
+		if err := runLogged(filepath.Join(outDir, "stage.log"), opts.Out, func(w io.Writer) error {
+			return stage.run(opts.ConfigDir, hostEnv, w)
+		}); err != nil {
+			setupErr = fmt.Errorf("stage: %w (see stage.log)", err)
 		}
 	}
 
-	promptData, err := taskPrompt(opts.ConfigDir, taskDir, t, hostEnv)
-	if err != nil {
-		return fmt.Errorf("prompt: %w", err)
-	}
-	if err := os.WriteFile(h.promptPath(), promptData, 0o644); err != nil {
-		return err
+	if setupErr == nil {
+		promptData, err := taskPrompt(opts.ConfigDir, taskDir, t, hostEnv)
+		if err != nil {
+			return fmt.Errorf("prompt: %w", err)
+		}
+		if err := os.WriteFile(h.promptPath(), promptData, 0o644); err != nil {
+			return err
+		}
 	}
 
 	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
@@ -400,7 +407,36 @@ func runPair(
 	// the in-run counters (out lines + per-harness tool parse) -- the full
 	// stdout.log is still written intact. stat is never nil (see doc comment).
 	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Harness)})
-	r := h.run(ctx, stdoutW, stderrF, t.TimeoutDuration())
+
+	// setup -- start, the in-sandbox prepare -- has its own budget; the
+	// task's timeout covers the agent only.
+	var r harnessRun
+	var sess sandbox.Session
+	if setupErr == nil {
+		sctx, scancel := context.WithTimeout(ctx, setupTimeout)
+		var err error
+		sess, err = h.box.Start(sctx, h.spec)
+		switch {
+		case err != nil:
+			setupErr = fmt.Errorf("start: %w", err)
+		default:
+			defer sess.Close()
+			if t.Prepare != "" || t.PrepareCmd != "" {
+				env := prepareEnv(t, a, p.Agent, filepath.Base(runDir))
+				if err := runLogged(filepath.Join(outDir, "prepare.log"), nil, func(w io.Writer) error {
+					return runPrepare(sctx, sess, opts.ConfigDir, taskDir, t, env, w)
+				}); err != nil {
+					setupErr = fmt.Errorf("prepare: %w", err)
+				}
+			}
+		}
+		scancel()
+	}
+	if setupErr != nil {
+		r = harnessRun{code: -1, err: setupErr}
+	} else {
+		r = h.exec(ctx, sess, stdoutW, stderrF, t.TimeoutDuration())
+	}
 	status, errStr := "ok", ""
 	switch {
 	case r.timedOut:
@@ -478,6 +514,21 @@ func runPair(
 	}
 	lg.info("[%s x %s] %s", p.Agent, p.Task, stats)
 	return nil
+}
+
+// runLogged runs f with its output written to logPath and, when tee is set,
+// to tee too.
+func runLogged(logPath string, tee io.Writer, f func(io.Writer) error) error {
+	lf, err := os.Create(logPath)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	var w io.Writer = lf
+	if tee != nil {
+		w = io.MultiWriter(lf, tee)
+	}
+	return f(w)
 }
 
 // homeMount is the in-sandbox HOME for a harness -- a writable dir the agent

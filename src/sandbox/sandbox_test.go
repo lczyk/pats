@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -96,4 +97,44 @@ func TestNewErrors(t *testing.T) {
 func TestSortedEnvStable(t *testing.T) {
 	got := sortedEnv(map[string]string{"B": "2", "A": "1", "C": "3"})
 	assert.EqualArrays(t, got, []string{"A=1", "B=2", "C=3"})
+}
+
+// a session: files pushed in, a root step, what it left handed to the agent
+// user, the agent writing over it, and a deadline that kills the container
+// rather than leaving the process running.
+func TestContainerSession(t *testing.T) {
+	dockerOrSkip(t)
+	sb, err := New("docker", testImage)
+	require.NoError(t, err)
+	work := t.TempDir()
+	sess, err := sb.Start(context.Background(), Spec{Workdir: work})
+	require.NoError(t, err)
+	defer sess.Close()
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "hello"), []byte("pushed\n"), 0o644))
+	require.NoError(t, sess.Push(context.Background(), src, "/pats-x"))
+
+	var out bytes.Buffer
+	code, err := sess.Exec(context.Background(), Cmd{Argv: []string{"sh", "-c", "cat /pats-x/hello > rootfile; id -u"}, Root: true}, &out, &out)
+	require.NoError(t, err)
+	assert.Equal(t, code, 0)
+	assert.ContainsString(t, out.String(), "0")
+	require.NoError(t, sess.HandOver(context.Background(), WorkMount, "/no/such/path"))
+
+	out.Reset()
+	code, err = sess.Exec(context.Background(), Cmd{Argv: []string{"sh", "-c", "echo agent >> rootfile && id -u"}}, &out, &out)
+	require.NoError(t, err)
+	assert.Equal(t, code, 0, "agent could not write what root left: %s", out.String())
+	assert.ContainsString(t, out.String(), fmt.Sprint(os.Getuid()))
+	b, err := os.ReadFile(filepath.Join(work, "rootfile"))
+	require.NoError(t, err)
+	assert.Equal(t, string(b), "pushed\nagent\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	t0 := time.Now()
+	code, _ = sess.Exec(ctx, Cmd{Argv: []string{"sleep", "60"}}, &out, &out)
+	assert.That(t, time.Since(t0) < 20*time.Second, "deadline did not stop the exec")
+	assert.NotEqual(t, code, 0)
 }

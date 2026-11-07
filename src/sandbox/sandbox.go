@@ -28,6 +28,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -64,11 +66,49 @@ type Mount struct {
 	ReadOnly  bool
 }
 
-// Sandbox runs a Spec in isolation, streaming stdout/stderr to the writers and
-// returning the command's exit code. a non-zero exit is NOT a Go error -- only
-// a failure to run (launch, context cancel, driver error) returns a non-nil err.
+// Sandbox runs a Spec in isolation. Start brings it up idle and returns a
+// Session to push files into, run commands in (as root or as the agent) and
+// pull files out of; Run is the one-shot form, Start + one agent Exec of
+// spec.Argv with spec.Env + Close. a non-zero exit is NOT a Go error -- only a
+// failure to run (launch, context cancel, driver error) returns a non-nil err.
 type Sandbox interface {
+	Start(ctx context.Context, spec Spec) (Session, error)
 	Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error)
+}
+
+// Session is one started sandbox. Close tears it down and is safe to call
+// more than once.
+type Session interface {
+	// Push copies a host file or directory to path inside the sandbox.
+	Push(ctx context.Context, hostPath, path string) error
+	// Pull copies path inside the sandbox into hostDir.
+	Pull(ctx context.Context, path, hostDir string) error
+	// Exec runs cmd to completion, streaming its output. on ctx cancel the
+	// sandbox is stopped, since stopping the driver's client does not stop
+	// the process inside.
+	Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error)
+	// HandOver gives what root left under paths to the agent user, after a
+	// root step and before the agent runs. a missing path is skipped.
+	HandOver(ctx context.Context, paths ...string) error
+	Close() error
+}
+
+// Cmd is one process run in a started sandbox.
+type Cmd struct {
+	Argv []string
+	Env  map[string]string // on top of the sandbox's own (the egress env among it)
+	Root bool              // as root; otherwise as the agent user
+	Dir  string            // working directory; "" is WorkMount
+}
+
+// run is Run for any Sandbox: start, exec the agent, close.
+func run(ctx context.Context, sb Sandbox, spec Spec, stdout, stderr io.Writer) (int, error) {
+	sess, err := sb.Start(ctx, spec)
+	if err != nil {
+		return -1, err
+	}
+	defer sess.Close()
+	return sess.Exec(ctx, Cmd{Argv: spec.Argv, Env: spec.Env}, stdout, stderr)
 }
 
 // ErrLaunch marks a Run error raised before the sandboxed process ever started
@@ -124,30 +164,33 @@ func (c *container) dockerOut(ctx context.Context, args ...string) ([]byte, erro
 }
 
 func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error) {
+	return run(ctx, c, spec, stdout, stderr)
+}
+
+// Start brings the container up idle (`sleep infinity` under --init) as root,
+// so a prepare step can run as root and the agent as the host uid, each by
+// exec. the workdir and mounts are bound, so the agent's files are on the
+// host as it writes them.
+func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	abs, err := filepath.Abs(spec.Workdir)
 	if err != nil {
-		return -1, fmt.Errorf("%w: resolve workdir: %w", ErrLaunch, err)
+		return nil, fmt.Errorf("%w: resolve workdir: %w", ErrLaunch, err)
 	}
 	// egress policy: none -> no network; proxy -> sidecar on an internal net.
 	netArgs, teardown, err := c.setupEgress(ctx, spec)
 	if err != nil {
-		return -1, fmt.Errorf("%w: %w", ErrLaunch, err)
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
-	if teardown != nil {
-		defer teardown()
+	if teardown == nil {
+		teardown = func() {}
 	}
 
 	args := []string{
-		"run", "--rm",
+		"run", "-d", "--rm",
 		"--init", // reap zombies if the agent spawns children
 		// an agent run as root (pats itself as root) could otherwise craft raw
 		// frames past its network's routing, or gain privileges via setuid.
 		"--cap-drop", "NET_RAW", "--security-opt", "no-new-privileges",
-		// run as the host user so files the agent writes into the bind-mounted
-		// workdir are host-owned -- else collect + cleanup hit root-owned files
-		// on linux. harness images must tolerate an arbitrary uid (writable
-		// HOME/tmp); that's handled when harness presets land.
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-w", WorkMount,
 		"-v", abs + ":" + WorkMount,
 	}
@@ -158,7 +201,8 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 	for _, m := range spec.Mounts {
 		mh, err := filepath.Abs(m.Host)
 		if err != nil {
-			return -1, fmt.Errorf("%w: resolve mount %s: %w", ErrLaunch, m.Host, err)
+			teardown()
+			return nil, fmt.Errorf("%w: resolve mount %s: %w", ErrLaunch, m.Host, err)
 		}
 		v := mh + ":" + m.Container
 		if m.ReadOnly {
@@ -166,29 +210,101 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 		}
 		args = append(args, "-v", v)
 	}
-	for _, kv := range sortedEnv(spec.Env) {
+	args = append(args, "--entrypoint", "sleep", c.image, "infinity")
+	out, err := c.dockerOut(ctx, args...)
+	if err != nil {
+		teardown()
+		return nil, fmt.Errorf("%w: %s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", ErrLaunch, c.bin, err)
+	}
+	id := strings.TrimSpace(string(out))
+	if i := strings.LastIndexByte(id, '\n'); i >= 0 {
+		id = id[i+1:] // a pull's progress may precede the id
+	}
+	return &containerSession{c: c, id: id, teardown: teardown}, nil
+}
+
+// containerSession is a started container, addressed by id.
+type containerSession struct {
+	c        *container
+	id       string
+	teardown func() // the egress sidecar and network
+	once     sync.Once
+}
+
+func (s *containerSession) Push(ctx context.Context, hostPath, path string) error {
+	if out, err := s.c.docker(ctx, "cp", hostPath, s.id+":"+path); err != nil {
+		return fmt.Errorf("%s cp %s: %w (%s)", s.c.bin, hostPath, err, out)
+	}
+	return nil
+}
+
+func (s *containerSession) Pull(ctx context.Context, path, hostDir string) error {
+	if out, err := s.c.docker(ctx, "cp", s.id+":"+path, hostDir); err != nil {
+		return fmt.Errorf("%s cp %s: %w (%s)", s.c.bin, path, err, out)
+	}
+	return nil
+}
+
+func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error) {
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	if cmd.Root {
+		user = "0:0"
+	}
+	dir := cmd.Dir
+	if dir == "" {
+		dir = WorkMount
+	}
+	// the agent runs as the host uid so the files it writes into the bound
+	// workdir are host-owned -- else collect + cleanup hit root-owned files
+	// on linux. harness images must tolerate an arbitrary uid (writable
+	// HOME/tmp).
+	args := []string{"exec", "-u", user, "-w", dir}
+	for _, kv := range sortedEnv(cmd.Env) {
 		args = append(args, "-e", kv)
 	}
-	args = append(args, c.image)
-	args = append(args, spec.Argv...)
+	args = append(args, s.id)
+	args = append(args, cmd.Argv...)
 
-	cmd := exec.CommandContext(ctx, c.bin, args...)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	// on ctx cancel (ctrl+C), SIGTERM the docker client so it stops the
-	// container (--rm then removes it) instead of orphaning it on SIGKILL.
-	// WaitDelay forces a hard kill if it doesn't exit in time.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 10 * time.Second
+	x := exec.CommandContext(ctx, s.c.bin, args...)
+	x.Stdout = stdout
+	x.Stderr = stderr
+	// on ctx cancel (ctrl+C, the deadline) kill the container: ending the
+	// exec client leaves the process inside running.
+	x.Cancel = func() error {
+		_, _ = s.c.docker(context.Background(), "kill", s.id)
+		return x.Process.Signal(syscall.SIGTERM)
+	}
+	x.WaitDelay = 10 * time.Second
 
-	err = cmd.Run()
+	err := x.Run()
 	if err == nil {
 		return 0, nil
 	}
 	if e, ok := asExitError(err); ok {
-		return e.ExitCode(), nil // ran; non-zero exit is the agent's
+		return e.ExitCode(), nil // ran; non-zero exit is the command's
 	}
-	return -1, fmt.Errorf("%s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", c.bin, err)
+	return -1, fmt.Errorf("%s exec failed: %w", s.c.bin, err)
+}
+
+func (s *containerSession) HandOver(ctx context.Context, paths ...string) error {
+	script := fmt.Sprintf(`for p; do [ -e "$p" ] || continue; chown -R %d:%d "$p" || exit 1; done`, os.Getuid(), os.Getgid())
+	var out strings.Builder
+	code, err := s.Exec(ctx, Cmd{Argv: append([]string{"/bin/sh", "-c", script, "handover"}, paths...), Root: true}, &out, &out)
+	if err == nil && code != 0 {
+		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(out.String()))
+	}
+	if err != nil {
+		return fmt.Errorf("hand over %s: %w", strings.Join(paths, " "), err)
+	}
+	return nil
+}
+
+func (s *containerSession) Close() error {
+	s.once.Do(func() {
+		_, _ = s.c.docker(context.Background(), "rm", "-f", s.id)
+		s.teardown()
+	})
+	return nil
 }
 
 // asExitError extracts a *exec.ExitError from err. cmd.Cancel/WaitDelay above
