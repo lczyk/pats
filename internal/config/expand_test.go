@@ -158,7 +158,38 @@ func TestFilterPairs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 4)
 
-	// unknown filter value -> error (typo guard).
+	// unknown filter value -> error (typo guard), naming the flag and the kind.
 	_, err = c.FilterPairs(pairs, []string{"nope"}, nil)
-	assert.Error(t, err, "no such agent/task")
+	assert.Error(t, err, `--agent "nope": no such agent in the selected suites`)
+	_, err = c.FilterPairs(pairs, nil, []string{"nope"})
+	assert.Error(t, err, `--task "nope": no such task in the selected suites`)
+}
+
+func TestFilterScorePairs(t *testing.T) {
+	c := suiteFixture(t)
+	pairs, err := c.ExpandScorePairs()
+	require.NoError(t, err)
+	// t1 x s1, t1 x s2, t2 x s1, t2 x s2, t3 x s3.
+
+	got, err := c.FilterScorePairs(pairs, nil)
+	require.NoError(t, err)
+	assert.Len(t, got, 5)
+
+	got, err = c.FilterScorePairs(pairs, []string{"s3"})
+	require.NoError(t, err)
+	assert.EqualArrays(t, got, []ScorePair{{Task: "t3", Scorer: "s3"}})
+
+	// a vector id filters to its items.
+	got, err = c.FilterScorePairs(pairs, []string{"scorers"})
+	require.NoError(t, err)
+	assert.Len(t, got, 4)
+
+	_, err = c.FilterScorePairs(pairs, []string{"nope"})
+	assert.Error(t, err, `--scorer "nope": no such scorer in the selected suites`)
+
+	// a scorer that exists but is in no selected suite is the same typo guard.
+	only, err := c.ExpandScorePairs("one")
+	require.NoError(t, err)
+	_, err = c.FilterScorePairs(only, []string{"s3"})
+	assert.Error(t, err, `--scorer "s3": no such scorer in the selected suites`)
 }

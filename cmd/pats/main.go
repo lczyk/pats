@@ -52,7 +52,7 @@ type RunCommand struct {
 	Jobs   int      `long:"jobs" short:"j" default:"1" description:"max pairs to run in parallel; -1 for auto"`
 	Agents []string `long:"agent" short:"a" description:"only run these agents or agent vectors (repeatable); default: all"`
 	Tasks  []string `long:"task" short:"t" description:"only run these tasks or task vectors (repeatable); default: all"`
-	Suites []string `long:"suite" short:"s" description:"only run these suites or suite vectors (repeatable); default: all"`
+	Suites []string `long:"suite" short:"S" description:"only run these suites or suite vectors (repeatable); default: all"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -77,7 +77,10 @@ type ScoreCommand struct {
 	Run     string   `long:"run" short:"r" description:"run to score: a dir, a friendly name like fluffy-bunny, a number (1 = run 001; 0 = latest, -1 = second to last; default: latest), or all"`
 	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
 	Agentic bool     `long:"agentic" description:"also run agent-kind scorers"`
-	Suites  []string `long:"suite" short:"s" description:"only score these suites or suite vectors (repeatable); default: all"`
+	Agents  []string `long:"agent" short:"a" description:"only score these agents' pairs, or agent vectors' (repeatable); default: all"`
+	Tasks   []string `long:"task" short:"t" description:"only score these tasks' pairs, or task vectors' (repeatable); default: all"`
+	Scorers []string `long:"scorer" short:"s" description:"only run these scorers or scorer vectors (repeatable); default: all"`
+	Suites  []string `long:"suite" short:"S" description:"only score these suites or suite vectors (repeatable); default: all"`
 }
 
 func (s *ScoreCommand) Execute(args []string) error {
@@ -91,6 +94,9 @@ func (s *ScoreCommand) Execute(args []string) error {
 		Jobs:      s.Jobs,
 		Agentic:   s.Agentic,
 		Suites:    s.Suites,
+		Agents:    s.Agents,
+		Tasks:     s.Tasks,
+		Scorers:   s.Scorers,
 		Out:       os.Stdout,
 	})
 	return err

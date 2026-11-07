@@ -191,8 +191,8 @@ func (c *Config) FilterPairs(pairs []TestPair, agents, tasks []string) ([]TestPa
 		haveT[p.Task] = true
 	}
 	var errs errList
-	aset := filterSet(&errs, "--agent", agents, c.sets("agent"), haveA)
-	tset := filterSet(&errs, "--task", tasks, c.sets("task"), haveT)
+	aset := filterSet(&errs, "agent", agents, c.sets("agent"), haveA)
+	tset := filterSet(&errs, "task", tasks, c.sets("task"), haveT)
 	if err := errs.err(); err != nil {
 		return nil, err
 	}
@@ -213,9 +213,33 @@ func (c *Config) FilterPairs(pairs []TestPair, agents, tasks []string) ([]TestPa
 	return out, nil
 }
 
-// filterSet expands cli filter ids through sets, keeping those present in
-// some pair. a filter value that reaches no pair is an error.
-func filterSet(errs *errList, flag string, xs []string, sets map[string][]string, have map[string]bool) map[string]bool {
+// FilterScorePairs narrows expanded score pairs to the given scorer ids,
+// vector ids included (empty = no filter), with FilterPairs' typo guard.
+func (c *Config) FilterScorePairs(pairs []ScorePair, scorers []string) ([]ScorePair, error) {
+	if len(scorers) == 0 {
+		return pairs, nil
+	}
+	have := map[string]bool{}
+	for _, p := range pairs {
+		have[p.Scorer] = true
+	}
+	var errs errList
+	set := filterSet(&errs, "scorer", scorers, c.sets("scorer"), have)
+	if err := errs.err(); err != nil {
+		return nil, err
+	}
+	var out []ScorePair
+	for _, p := range pairs {
+		if set[p.Scorer] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// filterSet expands the --<kind> filter's ids through sets, keeping those
+// present in some pair. a filter value that reaches no pair is an error.
+func filterSet(errs *errList, kind string, xs []string, sets map[string][]string, have map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	for _, x := range xs {
 		hit := false
@@ -226,7 +250,7 @@ func filterSet(errs *errList, flag string, xs []string, sets map[string][]string
 			}
 		}
 		if !hit {
-			errs.add("%s %q: no such agent/task in any suite", flag, x)
+			errs.add("--%s %q: no such %s in the selected suites", kind, x, kind)
 		}
 	}
 	return out

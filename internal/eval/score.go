@@ -26,6 +26,9 @@ type ScoreOptions struct {
 	Jobs      int      // max concurrent scorer cells; 0 -> serial (1), negative -> auto (see resolveJobs)
 	Agentic   bool     // also run agent scorers
 	Suites    []string // only expand these suites (empty -> all)
+	Agents    []string // filter the scored pairs to these agents (empty -> all)
+	Tasks     []string // filter the scored pairs to these tasks (empty -> all)
+	Scorers   []string // only run these scorers (empty -> all)
 	Out       io.Writer
 	Color     bool // colour log tags (set internally from Out's tty-ness)
 
@@ -83,6 +86,18 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	scorePairs, err := cfg.ExpandScorePairs(opts.Suites...)
 	if err != nil {
 		return nil, err
+	}
+	pairFilter := len(opts.Agents) > 0 || len(opts.Tasks) > 0
+	if pairFilter {
+		if testPairs, err = cfg.FilterPairs(testPairs, opts.Agents, opts.Tasks); err != nil {
+			return nil, err
+		}
+	}
+	if scorePairs, err = cfg.FilterScorePairs(scorePairs, opts.Scorers); err != nil {
+		return nil, err
+	}
+	if (pairFilter || len(opts.Scorers) > 0) && !anyCell(testPairs, scorePairs) {
+		return nil, fmt.Errorf("no cells match the filters: the selected pairs' tasks have none of the selected scorers")
 	}
 	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.ID })
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
@@ -661,4 +676,18 @@ func splitRunName(name string) (date string, n int, ok bool) {
 	}
 	date, _, _ = strings.Cut(rest, "-")
 	return date, n, true
+}
+
+// anyCell reports whether some test pair's task has a score pair.
+func anyCell(tps []config.TestPair, sps []config.ScorePair) bool {
+	scored := map[string]bool{}
+	for _, sp := range sps {
+		scored[sp.Task] = true
+	}
+	for _, tp := range tps {
+		if scored[tp.Task] {
+			return true
+		}
+	}
+	return false
 }

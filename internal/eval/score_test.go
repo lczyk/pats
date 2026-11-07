@@ -172,6 +172,59 @@ su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one, zero]}}}
 	assert.Equal(t, rep.PerPair["a/t"], 0.5)
 }
 
+// -a / -t / -s narrow the cells scored; they intersect, and a combination
+// that leaves no cell is an error rather than an empty scores.json.
+func TestScoreFilters(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))
+	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
+	for _, p := range []string{"a/t1", "a/t2", "b/t1", "b/t2"} {
+		od := filepath.Join(run, p)
+		require.NoError(t, os.MkdirAll(od, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
+	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+ag: {kind: agent, defaults: {harness: opencode-openrouter, model: m, sandbox: s}, items: {a: ~, b: ~}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1: ~, t2: ~}}
+scorers: {kind: scorer, defaults: {score-cmd: ./one.sh}, items: {x: ~, y: ~}}
+suites:
+  kind: suite
+  items:
+    all: {agents: ag, tasks: tasks, scorers: x}
+    only-t2: {agents: ag, tasks: t2, scorers: y}
+`)
+	cells := func(o ScoreOptions) []string {
+		t.Helper()
+		o.ConfigDir, o.RunDir, o.Out = dir, run, &bytes.Buffer{}
+		rep, err := Score(cfg, o)
+		require.NoError(t, err)
+		var got []string
+		for _, c := range rep.Cells {
+			got = append(got, c.Agent+"/"+c.Task+"/"+c.Scorer)
+		}
+		return got
+	}
+
+	assert.Len(t, cells(ScoreOptions{}), 6) // 4 pairs x x, plus a/t2 and b/t2 x y
+	assert.EqualArraysUnordered(t, cells(ScoreOptions{Scorers: []string{"y"}}), []string{"a/t2/y", "b/t2/y"})
+	assert.EqualArraysUnordered(t, cells(ScoreOptions{Agents: []string{"a"}, Scorers: []string{"x"}}),
+		[]string{"a/t1/x", "a/t2/x"})
+	assert.EqualArraysUnordered(t, cells(ScoreOptions{Tasks: []string{"t1"}}), []string{"a/t1/x", "b/t1/x"})
+	assert.EqualArraysUnordered(t, cells(ScoreOptions{Suites: []string{"only-t2"}, Agents: []string{"b"}}),
+		[]string{"b/t2/y"})
+
+	// each filter alone matches, together they leave nothing.
+	_, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{},
+		Tasks: []string{"t1"}, Scorers: []string{"y"}})
+	assert.Error(t, err, "no cells match the filters")
+
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Scorers: []string{"nope"}})
+	assert.Error(t, err, `--scorer "nope"`)
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Agents: []string{"nope"}})
+	assert.Error(t, err, `--agent "nope"`)
+}
+
 func TestParseScore(t *testing.T) {
 	// first non-empty line is the verdict; later lines ignored.
 	good := map[string]float64{"1.0\n": 1.0, "0\n": 0.0, "  0.5  ": 0.5, "0.25\nnoise\n": 0.25}
