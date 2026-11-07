@@ -152,6 +152,9 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 	default:
 		err = fmt.Errorf("driver %q has no images to init", sb.Driver)
 	}
+	if err == nil {
+		e.Components = h.stamps(ctx, e.Image.ID)
+	}
 	return target, e, err
 }
 
@@ -348,7 +351,12 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			lg.warn("sandbox %q: changed since its pats init: %s; running the pinned image (pats init --sandbox %s to rebuild)",
 				sb.ID, strings.Join(changed, ", "), sb.ID)
 		}
+		if drift := staleComponents(e.Components); len(drift) > 0 {
+			lg.warn("sandbox %q: its harnesses differ from what this pats pins: %s (pats init --sandbox %s to rebuild)",
+				sb.ID, strings.Join(drift, ", "), sb.ID)
+		}
 		cfg.Sandboxes[i].Image = e.Image.ID
+		cfg.Sandboxes[i].Components = e.Components
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
 		}

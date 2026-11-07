@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 
+	"github.com/lczyk/pats/images"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox"
@@ -112,4 +114,23 @@ func proxyMismatch(e *pinEntry) string {
 		return fmt.Sprintf("its egress proxy is from another pats build (%s, this is %s)", e.PatsBuild, patsBuild())
 	}
 	return ""
+}
+
+// staleComponents is each harness in the image whose version is not the
+// one this pats pins, as "claude 2.1.0, pinned 2.1.319". a harness the
+// image lacks is not stale: not every sandbox carries every cli.
+func staleComponents(stamps map[string]string) []string {
+	var out []string
+	pins := images.ComponentPins()
+	names := make([]string, 0, len(pins))
+	for name := range pins {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if got, ok := stamps[name]; ok && got != pins[name] {
+			out = append(out, fmt.Sprintf("%s %s, pinned %s", name, got, pins[name]))
+		}
+	}
+	return out
 }

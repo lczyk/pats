@@ -35,6 +35,7 @@ func TestHarnessVersionsShape(t *testing.T) {
 	require.NoError(t, err)
 	p := pins(t)
 	assert.Equal(t, len(p), 4)
+	assert.Equal(t, len(ComponentPins()), len(p)) // every pin names a component
 	for name, ver := range p {
 		assert.That(t, exact.MatchString(ver), "%s=%s is not an exact version", name, ver)
 		assert.ContainsString(t, ProvisionSandbox, "${"+name+":?no pin}")

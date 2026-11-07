@@ -21,7 +21,7 @@ const ProvisionMount = "/pats-provision"
 
 // provisionerVersion is in every image key: bump it when what pats itself
 // does to a provisioned image changes, so cached images are remade.
-const provisionerVersion = "1"
+const provisionerVersion = "2"
 
 // LXDImageSpec is one provisioning step: argv runs as root in an instance
 // launched from Base, with Material (a host dir) at ProvisionMount and its
@@ -317,12 +317,21 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	if code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", epilogue}, Root: true, Dir: "/"}, &out, &out); err != nil || code != 0 {
 		return fmt.Errorf("provisioning epilogue: %v %s", err, strings.TrimSpace(out.String()))
 	}
+	// the harness versions inside, as image properties init pins and runs check.
+	var stampOut bytes.Buffer
+	if _, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &stampOut, io.Discard); err != nil {
+		return err
+	}
 	if _, err := l.lxc(ctx, "stop", s.inst(), "--project", lxdProject); err != nil {
 		return err
 	}
 	private := alias + "-" + l.p.token
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
 	pub = append(pub, l.meta()...)
+	stamps := parseStamps(stampOut.String())
+	for _, name := range sortedKeys(stamps) {
+		pub = append(pub, componentProp+name+"="+stamps[name])
+	}
 	spec.step(log, "publishing %s", alias)
 	// a publish the client saw fail may still have made the image, so from
 	// here a failed build removes it under the private alias, if it is there.

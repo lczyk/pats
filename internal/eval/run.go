@@ -275,6 +275,8 @@ type pairMeta struct {
 	Egress        *egressRecord `json:"egress,omitempty"`
 	// per-harness digest parsed from the log: cost, tokens, turns, tools.
 	Summary *runSummary `json:"summary,omitempty"`
+	// the harness versions inside the image, as pats init stamped them.
+	Components map[string]string `json:"components,omitempty"`
 }
 
 // egressAudit is a pair's egress.log folded into what the run reports: the
@@ -528,7 +530,8 @@ func runPair(
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
 		PatsVersion:  version.Info.Version,
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
-		Summary: summarize(a.Harness, filepath.Join(outDir, "stdout.log")),
+		Summary:    summarize(a.Harness, filepath.Join(outDir, "stdout.log")),
+		Components: sb.Components,
 	}
 	if sb.Driver == "lxd" {
 		meta.LXD = lxdProvenance(ctx, sb)

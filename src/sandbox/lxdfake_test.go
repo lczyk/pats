@@ -811,6 +811,15 @@ func (f *fakeServer) query(stdout, stderr io.Writer, raw string) error {
 			list = append(list, map[string]any{"name": name, "config": f.acls[name].config})
 		}
 		return out(list)
+	case strings.HasPrefix(p, "/1.0/images/"):
+		if err := project(); err != nil {
+			return err
+		}
+		im := f.images[strings.TrimPrefix(p, "/1.0/images/")]
+		if im == nil {
+			return lxcFail(stderr, "Image not found")
+		}
+		return out(map[string]any{"fingerprint": strings.TrimPrefix(p, "/1.0/images/"), "properties": im.props})
 	case p == "/1.0/images" && q.Get("recursion") == "1":
 		if err := project(); err != nil {
 			return err

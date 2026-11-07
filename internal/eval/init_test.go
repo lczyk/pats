@@ -13,6 +13,7 @@ import (
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 
+	"github.com/lczyk/pats/images"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -220,4 +221,38 @@ func TestPinsFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".pats", pinsName), []byte(`{"version": 9}`), 0o644))
 	_, err = readPins(dir)
 	assert.Error(t, err, "run `pats init`")
+}
+
+// init stamps each image's harness versions into its pin; a run warns when
+// they are not what this pats pins, and records them in each pair's
+// metadata.
+func TestComponentStamps(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.txt"), []byte("p"), 0o644))
+	cfg := parseCfg(t, initCfg)
+	h := newFakeHost("my/image:1")
+	pins := images.ComponentPins()
+	h.stamped = map[string]string{"claude": pins["claude"]}
+	useHost(t, h)
+	useFakeSandbox(t, &fakeSandbox{})
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}}))
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	assert.EqualMaps(t, f.entry("fake:host", "own").Components, map[string]string{"claude": pins["claude"]})
+
+	out.Reset()
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})
+	require.NoError(t, err)
+	assert.That(t, !bytes.Contains(out.Bytes(), []byte("harnesses differ")), "pinned versions warned: %s", out.String())
+	meta, err := os.ReadFile(filepath.Join(runDir, "a-own", "t", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(meta), `"claude": "`+pins["claude"]+`"`)
+
+	h.stamped = map[string]string{"claude": "0.0.1"}
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}}))
+	out.Reset()
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})
+	require.NoError(t, err)
+	assert.ContainsString(t, out.String(), `sandbox "own": its harnesses differ from what this pats pins: claude 0.0.1, pinned `+pins["claude"])
 }
