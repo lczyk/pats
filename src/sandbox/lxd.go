@@ -185,12 +185,15 @@ func (srv *lxdServer) renew() {
 		case <-srv.stop:
 			return
 		case <-t.C():
+			// bounded: shutdown waits for a renewal in flight.
+			ctx, cancel := context.WithTimeout(context.Background(), p.t.cliCleanup)
 			lease := "user.pats.lease=" + strconv.FormatInt(p.clock.Now().Unix(), 10)
 			ref := srv.remote + ":" + srv.l.marker()
-			if out, err := srv.l.lxc(context.Background(), "network", "acl", "set", ref, lease, "--project", "default"); err != nil &&
+			if out, err := srv.l.lxc(ctx, "network", "acl", "set", ref, lease, "--project", "default"); err != nil &&
 				strings.Contains(strings.ToLower(out+err.Error()), "not found") {
-				_, _ = srv.l.lxc(context.Background(), append([]string{"network", "acl", "create", ref, "--project", "default", lease}, srv.l.meta()...)...)
+				_, _ = srv.l.lxc(ctx, append([]string{"network", "acl", "create", ref, "--project", "default", lease}, srv.l.meta()...)...)
 			}
+			cancel()
 		}
 	}
 }
@@ -211,7 +214,9 @@ func (p *process) shutdown() {
 			// delete: it ends first.
 			close(srv.stop)
 			<-srv.done
-			_, _ = srv.l.lxc(context.Background(), "network", "acl", "delete", srv.remote+":"+srv.l.marker(), "--project", "default")
+			ctx, cancel := context.WithTimeout(context.Background(), p.t.cliCleanup)
+			_, _ = srv.l.lxc(ctx, "network", "acl", "delete", srv.remote+":"+srv.l.marker(), "--project", "default")
+			cancel()
 		}
 		delete(x.servers, k)
 	}
