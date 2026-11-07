@@ -436,14 +436,14 @@ func (s *lxdSession) queryPath(p string) string {
 func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
 	c, t := s.l.p.clock, s.l.p.t
 	deadline := c.Now().Add(t.ready)
-	probe := []string{"true"}
+	probe := probeReady
 	if network {
-		probe = []string{"sh", "-c", "ip -4 route show default | grep -q ."}
+		probe = probeRoute
 	}
 	var last error
 	for c.Now().Before(deadline) {
 		var out bytes.Buffer
-		code, err := s.exec(ctx, Cmd{Argv: probe, Root: true, Dir: "/"}, &out, &out)
+		code, err := s.exec(ctx, Cmd{Argv: probe.argv(), Root: true, Dir: "/"}, &out, &out)
 		if err == nil && code == 0 {
 			return nil
 		}
@@ -472,7 +472,6 @@ func (s *lxdSession) reachesInternet(ctx context.Context) error {
 // internet, retrying a few times while a fresh nic settles. an instance with
 // no bash cannot be probed and passes.
 func (s *lxdSession) online(ctx context.Context) bool {
-	probe := `command -v bash >/dev/null 2>&1 || exit 0; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null || timeout 5 bash -c 'exec 3<>/dev/tcp/8.8.8.8/53' 2>/dev/null`
 	for i := 0; i < 3; i++ {
 		if i > 0 {
 			select {
@@ -482,7 +481,7 @@ func (s *lxdSession) online(ctx context.Context) bool {
 			}
 		}
 		var out bytes.Buffer
-		if code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", probe}, Root: true, Dir: "/"}, &out, &out); err == nil && code == 0 {
+		if code, err := s.exec(ctx, Cmd{Argv: probeOnline.argv(), Root: true, Dir: "/"}, &out, &out); err == nil && code == 0 {
 			return true
 		}
 	}
@@ -502,15 +501,13 @@ var dockerBridgeHint = "on a server that also runs docker, docker's FORWARD poli
 // ensureAgentUser makes the agent user when the image lacks it (a prebuilt
 // image: pats provisioning makes it) and records its uid.
 func (s *lxdSession) ensureAgentUser(ctx context.Context) error {
-	script := `id -u ` + lxdAgentUser + ` >/dev/null 2>&1 || useradd -m -s /bin/bash ` + lxdAgentUser + `; id -u ` + lxdAgentUser
 	var out bytes.Buffer
-	code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", script}, Root: true, Dir: "/"}, &out, &out)
+	code, err := s.exec(ctx, Cmd{Argv: probeAgentUser.argv(), Root: true, Dir: "/"}, &out, &out)
 	if err != nil || code != 0 {
 		return fmt.Errorf("lxd: agent user: %v %s", err, strings.TrimSpace(out.String()))
 	}
-	s.uid = lastLine(strings.TrimSpace(out.String()))
-	if _, err := strconv.Atoi(s.uid); err != nil {
-		return fmt.Errorf("lxd: agent user uid %q", s.uid)
+	if s.uid, err = uidVerdict(out.String()); err != nil {
+		return fmt.Errorf("lxd: agent user: %w", err)
 	}
 	return nil
 }

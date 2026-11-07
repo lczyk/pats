@@ -503,35 +503,18 @@ func waitReady(r io.Reader, c clock, timeout time.Duration) error {
 	}
 }
 
-// canaryScript probes every way out of the sandbox with the proxy env unset:
-// tcp4, tcp6, a dns query over udp, and a name lookup. a leak prints leak=1.
-// bash's /dev/tcp and /dev/udp need no tool in the image beyond bash itself;
-// for udp only an answer counts, since connect and write cannot fail on it.
-const canaryScript = `for c in timeout getent; do command -v $c >/dev/null 2>&1 || { echo "egress-canary missing=$c"; exit 0; }; done
-leak=0
-timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null && leak=1
-timeout 3 bash -c 'exec 3<>/dev/tcp/2606:4700:4700::1111/443' 2>/dev/null && leak=1
-timeout 3 bash -c 'exec 3<>/dev/udp/8.8.8.8/53; printf "\000\001\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001" >&3; read -t 2 -N 1 <&3' 2>/dev/null && leak=1
-getent hosts example.com >/dev/null 2>&1 && leak=1
-echo "egress-canary leak=$leak"`
-
 // proxyReachable is the canary's other half: from the internal network, with
 // the proxy up, its port must answer. a host firewall that drops traffic on
 // the driver's internal networks would otherwise fail every pair with a
 // connection error the agent reports in its own words.
 func (c *container) proxyReachable(ctx context.Context, net, addr string) error {
 	host, port, _ := strings.Cut(addr, ":")
-	script := fmt.Sprintf(`timeout 5 bash -c 'exec 3<>/dev/tcp/%s/%s' 2>/dev/null && echo "egress-reach ok=1" || echo "egress-reach ok=0"`, host, port)
-	args := []string{"run", "--rm", "--network", net}
-	if c.driver == "docker" {
-		args = append(args, "--dns", "0.0.0.0")
-	}
-	args = append(args, "--entrypoint", "bash", c.image, "-c", script)
-	out, err := c.docker(ctx, args...)
+	out, err := c.docker(ctx, c.probeArgs(net, probeReach, host, port)...)
+	reached, said := reachVerdict(out)
 	switch {
-	case strings.Contains(out, "egress-reach ok=1"):
+	case reached:
 		return nil
-	case strings.Contains(out, "egress-reach ok=0"):
+	case said:
 		return fmt.Errorf("egress self-test: the sandbox cannot reach the proxy at %s under driver %s; something on the host drops traffic on its internal networks (a firewall rule, a FORWARD policy)", addr, c.driver)
 	case err != nil:
 		return fmt.Errorf("egress self-test could not run in image %s: %w (%s)", c.image, err, out)
@@ -539,33 +522,25 @@ func (c *container) proxyReachable(ctx context.Context, net, addr string) error 
 	return fmt.Errorf("egress self-test gave no verdict: %s", out)
 }
 
+// probeArgs runs p in a throwaway container of the sandbox image on net.
+func (c *container) probeArgs(net string, p probe, args ...string) []string {
+	run := []string{"run", "--rm", "--network", net}
+	if c.driver == "docker" {
+		run = append(run, "--dns", "0.0.0.0")
+	}
+	argv := p.argv(args...)
+	return append(append(run, "--entrypoint", argv[0], c.image), argv[1:]...)
+}
+
 // egressCanary runs the canary on the internal network before the proxy
 // exists: with no route out every probe must fail. a hit refuses the run. an
 // image without bash cannot run it, which is reported, not treated as a leak.
 func (c *container) egressCanary(ctx context.Context, net string) error {
-	args := []string{"run", "--rm", "--network", net}
-	if c.driver == "docker" {
-		args = append(args, "--dns", "0.0.0.0")
-	}
-	args = append(args, "--entrypoint", "bash", c.image, "-c", canaryScript)
-	out, err := c.docker(ctx, args...)
+	out, err := c.docker(ctx, c.probeArgs(net, probeCanary)...)
 	if v := canaryVerdict(out, c.driver, c.image); v == nil || err == nil || strings.Contains(out, "egress-canary") {
 		return v
 	}
 	return fmt.Errorf("egress self-test could not run in image %s (needs bash): %w (%s)", c.image, err, out)
-}
-
-// canaryVerdict reads the canary's output: nil when every probe failed.
-func canaryVerdict(out, driver, image string) error {
-	switch {
-	case strings.Contains(out, "egress-canary leak=0"):
-		return nil
-	case strings.Contains(out, "egress-canary missing="):
-		return fmt.Errorf("egress self-test could not run in image %s: %s", image, strings.TrimPrefix(out[strings.Index(out, "egress-canary missing="):], "egress-canary "))
-	case strings.Contains(out, "egress-canary leak=1"):
-		return fmt.Errorf("egress is not fail-closed under driver %s: a direct connection from the sandbox succeeded", driver)
-	}
-	return fmt.Errorf("egress self-test gave no verdict: %s", out)
 }
 
 // ProxyEnvOptions turns the sidecar's env into proxy.Options: the policy

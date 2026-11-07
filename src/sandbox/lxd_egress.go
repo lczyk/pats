@@ -112,7 +112,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	}
 	if spec.Egress.SelfTest {
 		var out bytes.Buffer
-		_, _ = s.exec(ctx, Cmd{Argv: []string{"bash", "-c", canaryScript}, Root: true, Dir: "/"}, &out, &out)
+		_, _ = s.exec(ctx, Cmd{Argv: probeCanary.argv(), Root: true, Dir: "/"}, &out, &out)
 		if err := canaryVerdict(out.String(), "lxd", l.o.Image); err != nil {
 			return err
 		}
@@ -181,9 +181,8 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	addr := e.ip.String() + ":" + proxyPort
 	if spec.Egress.SelfTest {
 		var out bytes.Buffer
-		script := fmt.Sprintf(`timeout 5 bash -c 'exec 3<>/dev/tcp/%s/%s' 2>/dev/null && echo "egress-reach ok=1" || echo "egress-reach ok=0"`, e.ip, proxyPort)
-		_, _ = s.exec(ctx, Cmd{Argv: []string{"sh", "-c", script}, Root: true, Dir: "/"}, &out, &out)
-		if !strings.Contains(out.String(), "egress-reach ok=1") {
+		_, _ = s.exec(ctx, Cmd{Argv: probeReach.argv(e.ip.String(), proxyPort), Root: true, Dir: "/"}, &out, &out)
+		if reached, _ := reachVerdict(out.String()); !reached {
 			return fmt.Errorf("egress self-test: the sandbox cannot reach its proxy at %s on bridge %s. %s", addr, s.bridge, dockerBridgeHint)
 		}
 		if spec.Sudo {
@@ -209,10 +208,13 @@ func (s *lxdSession) runProxy(ctx context.Context, p *lxdSession, auditPath stri
 	penv["PATS_EGRESS_REFUSE"] = e.refuse.String()
 	penv["PATS_EGRESS_LISTEN"] = e.ip.String() + ":" + proxyPort
 	var uid bytes.Buffer
-	if code, err := p.exec(ctx, Cmd{Argv: []string{"id", "-u", lxdProxyUser}, Root: true, Dir: "/"}, &uid, io.Discard); err != nil || code != 0 {
+	if code, err := p.exec(ctx, Cmd{Argv: probeProxyUser.argv(), Root: true, Dir: "/"}, &uid, io.Discard); err != nil || code != 0 {
 		return fmt.Errorf("egress proxy user: %v", err)
 	}
-	p.uid = strings.TrimSpace(uid.String())
+	var err error
+	if p.uid, err = uidVerdict(uid.String()); err != nil {
+		return fmt.Errorf("egress proxy user: %w", err)
+	}
 
 	var audit io.Writer = io.Discard
 	if auditPath != "" {
@@ -250,14 +252,9 @@ func (s *lxdSession) hostileProbe(ctx context.Context) error {
 		return fmt.Errorf("egress self-test: bridge %s mac: %v", s.bridge, err)
 	}
 	gw := s.egress.agentIP.Next()
-	script := fmt.Sprintf(`ip neigh replace %s lladdr %s dev pats0 nud permanent && ip route replace default via %s dev pats0 && { timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null && echo "egress-hostile leak=1" || echo "egress-hostile leak=0"; }; ip route del default 2>/dev/null; ip neigh del %s dev pats0 2>/dev/null; true`,
-		gw, st.Hwaddr, gw, gw)
 	var res bytes.Buffer
-	_, _ = s.exec(ctx, Cmd{Argv: []string{"sh", "-c", script}, Root: true, Dir: "/"}, &res, &res)
-	if !strings.Contains(res.String(), "egress-hostile leak=0") {
-		return fmt.Errorf("egress is not fail-closed under lxd: a root agent routing through the bridge's host side got out (%s)", strings.TrimSpace(res.String()))
-	}
-	return nil
+	_, _ = s.exec(ctx, Cmd{Argv: probeHostile.argv(gw.String(), st.Hwaddr), Root: true, Dir: "/"}, &res, &res)
+	return hostileVerdict(res.String())
 }
 
 // closeEgress stops the proxy process and container and drops the material.
