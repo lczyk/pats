@@ -11,6 +11,8 @@ import (
 func TestNormalizeRef(t *testing.T) {
 	for in, want := range map[string]string{
 		"ubuntu:26.04":                    "docker.io/library/ubuntu:26.04",
+		"docker.io/ubuntu:26.04":          "docker.io/library/ubuntu:26.04",
+		"index.docker.io/x/y":             "index.docker.io/x/y:latest",
 		"python":                          "docker.io/library/python:latest",
 		"user/img:1":                      "docker.io/user/img:1",
 		"ghcr.io/lczyk/pats/sandbox:v1":   "ghcr.io/lczyk/pats/sandbox:v1",
@@ -61,6 +63,7 @@ func TestRepository(t *testing.T) {
 	for in, want := range map[string]string{
 		"ubuntu:26.04":                          "docker.io/library/ubuntu",
 		"ubuntu":                                "docker.io/library/ubuntu",
+		"docker.io/ubuntu":                      "docker.io/library/ubuntu",
 		"ghcr.io/lczyk/pats/sandbox:v1":         "ghcr.io/lczyk/pats/sandbox",
 		"ghcr.io/lczyk/pats/sandbox@sha256:abc": "ghcr.io/lczyk/pats/sandbox",
 		"localhost:5000/team/img":               "localhost:5000/team/img",

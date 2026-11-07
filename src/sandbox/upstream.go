@@ -20,6 +20,10 @@ func NormalizeRef(ref string) string {
 		}
 		ref = "docker.io/" + ref
 	}
+	// docker hub's official images live under library/, however named.
+	if rest, ok := strings.CutPrefix(ref, "docker.io/"); ok && !strings.Contains(rest, "/") {
+		ref = "docker.io/library/" + rest
+	}
 	if i := strings.LastIndexByte(ref, ':'); i < strings.LastIndexByte(ref, '/') {
 		ref += ":latest"
 	}
