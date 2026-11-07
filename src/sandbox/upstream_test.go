@@ -88,3 +88,18 @@ func TestLXDRemoteFingerprintByFingerprint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, got, want)
 }
+
+// an image of the server's own named by a unique fingerprint prefix
+// resolves, as lxc takes one.
+func TestLXDFingerprintPrefixOnServer(t *testing.T) {
+	f := newFakeServer(t)
+	l := lxdOn(t, f, Options{})
+	require.NoError(t, l.prepareServer(context.Background()))
+	fp, _, err := l.copyImage(context.Background(), "ubuntu:26.04", false)
+	require.NoError(t, err)
+	got, err := l.fingerprint(context.Background(), fp[:12])
+	require.NoError(t, err)
+	assert.Equal(t, got, fp)
+	_, err = l.fingerprint(context.Background(), "ffffffffffff")
+	assert.Error(t, err, "not found")
+}

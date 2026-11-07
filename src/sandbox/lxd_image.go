@@ -149,13 +149,32 @@ func (l *lxd) fingerprint(ctx context.Context, ref string) (string, error) {
 	var al struct {
 		Target string `json:"target"`
 	}
-	if err := l.query(ctx, "/1.0/images/aliases/"+ref+"?project="+lxdProject, &al); err != nil {
-		return "", err
+	aerr := l.query(ctx, "/1.0/images/aliases/"+ref+"?project="+lxdProject, &al)
+	if aerr == nil && al.Target != "" {
+		return al.Target, nil
 	}
-	if al.Target == "" {
-		return "", fmt.Errorf("lxd image alias %s names no image", ref)
+	// not an alias: a unique prefix of a fingerprint, as lxc takes one.
+	if isHex(ref) {
+		var ims []struct {
+			Fingerprint string `json:"fingerprint"`
+		}
+		if err := l.query(ctx, "/1.0/images?project="+lxdProject+"&recursion=1", &ims); err != nil {
+			return "", err
+		}
+		var hits []string
+		for _, im := range ims {
+			if strings.HasPrefix(im.Fingerprint, ref) {
+				hits = append(hits, im.Fingerprint)
+			}
+		}
+		if len(hits) == 1 {
+			return hits[0], nil
+		}
 	}
-	return al.Target, nil
+	if aerr == nil {
+		aerr = fmt.Errorf("lxd image alias %s names no image", ref)
+	}
+	return "", aerr
 }
 
 // fingerprintRe is an lxd image fingerprint: sha256 hex.
