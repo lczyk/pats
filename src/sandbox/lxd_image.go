@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -319,7 +320,14 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	}
 	// the harness versions inside, as image properties init pins and runs check.
 	var stampOut, stampErr bytes.Buffer
-	if code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &stampOut, &stampErr); err != nil {
+	sctx, scancel := context.WithTimeout(ctx, stampTimeout)
+	code, err := s.exec(sctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &stampOut, &stampErr)
+	timedOut := errors.Is(sctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	scancel()
+	if timedOut {
+		return fmt.Errorf("stamping the harness versions took over %s", stampTimeout)
+	}
+	if err != nil {
 		return err
 	} else if code != 0 {
 		return fmt.Errorf("stamping the harness versions exited %d: %s", code, strings.TrimSpace(stampErr.String()))

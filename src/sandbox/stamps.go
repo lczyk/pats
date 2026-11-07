@@ -22,6 +22,9 @@ const stampScript = `for c in claude codex copilot opencode; do
   printf '%s=%s\n' "$c" "$(printf '%s\n' "$v" | head -n1)"
 done`
 
+// stampTimeout bounds a stamp: a hung --version must not hang the init.
+var stampTimeout = 2 * time.Minute
+
 // componentProp prefixes the lxd image properties holding the stamps.
 const componentProp = "pats.component."
 
@@ -50,7 +53,7 @@ func parseStamps(out string) (map[string]string, error) {
 // failure is an error. the container is named, so one a timeout or a
 // failure leaves behind is removed.
 func ContainerStamps(ctx context.Context, driver, id string) (map[string]string, error) {
-	return containerStamps(ctx, cliRunner(driver), id, 2*time.Minute)
+	return containerStamps(ctx, cliRunner(driver), id, stampTimeout)
 }
 
 func containerStamps(ctx context.Context, r runner, id string, timeout time.Duration) (map[string]string, error) {
