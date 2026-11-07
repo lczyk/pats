@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -287,11 +288,37 @@ func (s *lxdSession) closeEgress() {
 	e.m.cleanup()
 }
 
-// proxyImage provisions the proxy container image: a minimal ubuntu with the
-// pats binary for the server's arch, an unprivileged user to run it, and dhcp
-// on the uplink nic. keyed like any provisioned image, the binary's bytes
-// included, so a new pats makes a new one.
+// proxyImages caches the proxy image per server for the process: every
+// proxied pair needs it, and resolving it means fetching the binary.
+var (
+	proxyImagesMu sync.Mutex
+	proxyImages   = map[string]string{}
+)
+
+// proxyImage is the proxy container image on l's server, made once per
+// process; see buildProxyImage.
 func (l *lxd) proxyImage(ctx context.Context) (string, error) {
+	if l.run != nil {
+		return l.buildProxyImage(ctx)
+	}
+	// held across the build, so concurrent pairs wait for one build.
+	proxyImagesMu.Lock()
+	defer proxyImagesMu.Unlock()
+	if alias, ok := proxyImages[l.o.Remote]; ok {
+		return alias, nil
+	}
+	alias, err := l.buildProxyImage(ctx)
+	if err == nil {
+		proxyImages[l.o.Remote] = alias
+	}
+	return alias, err
+}
+
+// buildProxyImage provisions the proxy container image: a minimal ubuntu with
+// the pats binary for the server's arch, an unprivileged user to run it, and
+// dhcp on the uplink nic. keyed like any provisioned image, the binary's bytes
+// included, so a new pats makes a new one.
+func (l *lxd) buildProxyImage(ctx context.Context) (string, error) {
 	arch, err := l.serverArch(ctx)
 	if err != nil {
 		return "", err
