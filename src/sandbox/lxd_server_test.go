@@ -1,0 +1,403 @@
+package sandbox
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/lczyk/assert"
+	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
+)
+
+// the tests in this file run the lxd driver against fakeServer: what the
+// server holds is the assertion, not which calls were made.
+
+// lxdEgressModes are the egress setups a session can start under.
+var lxdEgressModes = []struct {
+	name   string
+	egress Egress
+}{
+	{"none", Egress{None: true}},
+	{"open", Egress{SelfTest: true}},
+	{"proxy", Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}},
+	{"mitm", Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com/x/*"}}}},
+}
+
+func proxyBin(t *testing.T) string {
+	bin := filepath.Join(t.TempDir(), "pats")
+	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
+	return bin
+}
+
+// a whole session under each egress mode: start, a root step, the hand
+// over, the agent, a sync, close; then the process ends and nothing of the
+// run is left on the server.
+func TestLXDSessionOnServer(t *testing.T) {
+	for _, vm := range []bool{false, true} {
+		for _, mode := range lxdEgressModes {
+			t.Run(fmt.Sprintf("%s/vm=%v", mode.name, vm), func(t *testing.T) {
+				f := newFakeServer(t)
+				l := lxdOn(t, f, Options{VM: vm, ProxyBin: proxyBin(t)})
+				work, ro := t.TempDir(), t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(work, "task.md"), []byte("do it"), 0o644))
+				require.NoError(t, os.WriteFile(filepath.Join(ro, "ref"), []byte("ref"), 0o644))
+				var env map[string]string
+				f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
+					if argv[0] == "agent" {
+						f.put(inst, WorkMount+"/out.txt", "done\n")
+					}
+					return nil
+				}
+				sess, err := l.Start(context.Background(), Spec{Workdir: work, Egress: mode.egress,
+					Mounts: []Mount{{Host: ro, Container: "/ref", ReadOnly: true}}})
+				require.NoError(t, err)
+				s := sess.(*lxdSession)
+				env = s.env
+
+				got, ok := f.file(s.name, WorkMount+"/task.md")
+				assert.That(t, ok && got == "do it", "workdir not pushed: %q", got)
+				_, ok = f.file(s.name, "/ref/ref")
+				assert.That(t, ok, "mount not pushed")
+				switch mode.name {
+				case "none":
+					assert.Equal(t, s.bridge, "")
+				case "open":
+					assert.That(t, f.has("network", s.bridge), "no bridge")
+				case "proxy", "mitm":
+					assert.ContainsString(t, env["HTTP_PROXY"], ":"+proxyPort)
+					assert.That(t, f.has("instance", s.name+"-p"), "no proxy")
+				}
+				if mode.name == "mitm" {
+					_, ok = f.file(s.name, agentBundlePath)
+					assert.That(t, ok, "no trust bundle in the agent")
+				}
+
+				code, err := sess.Exec(context.Background(), Cmd{Argv: []string{"setup"}, Root: true}, io.Discard, io.Discard)
+				require.NoError(t, err)
+				assert.Equal(t, code, 0)
+				require.NoError(t, sess.HandOver(context.Background(), WorkMount))
+				code, err = sess.Exec(context.Background(), Cmd{Argv: []string{"agent"}}, io.Discard, io.Discard)
+				require.NoError(t, err)
+				assert.Equal(t, code, 0)
+				require.NoError(t, sess.Sync(context.Background()))
+				b, err := os.ReadFile(filepath.Join(work, "out.txt"))
+				require.NoError(t, err)
+				assert.Equal(t, string(b), "done\n")
+
+				require.NoError(t, sess.Close())
+				l.p.shutdown()
+				assert.Equal(t, strings.Join(f.leftovers(l.p.token), "\n"), "")
+			})
+		}
+	}
+}
+
+// an Exec cancelled mid-agent kills the agent's processes and keeps the
+// instance; a cancelled root step stops it.
+func TestLXDExecCancelOnServer(t *testing.T) {
+	for _, root := range []bool{false, true} {
+		f := newFakeServer(t)
+		l := lxdOn(t, f, Options{})
+		started := make(chan struct{})
+		f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
+			if argv[0] == "agent" {
+				close(started)
+				<-ctx.Done()
+			}
+			return nil
+		}
+		sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
+		require.NoError(t, err)
+		s := sess.(*lxdSession)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-started; cancel() }()
+		_, err = execBounded(t, sess, ctx, Cmd{Argv: []string{"agent"}, Root: root})
+		require.NoError(t, err)
+		f.mu.Lock()
+		running := f.insts[s.name].running
+		f.mu.Unlock()
+		assert.Equal(t, running, !root, "root=%v", root)
+		require.NoError(t, sess.Close())
+	}
+}
+
+// a create the client was killed during finishes on the server after the
+// client gave up; Close still removes it, for the agent and for the proxy.
+func TestLXDKilledCreate(t *testing.T) {
+	for _, which := range []string{"agent", "proxy"} {
+		t.Run(which, func(t *testing.T) {
+			f := newFakeServer(t)
+			l := lxdOn(t, f, Options{ProxyBin: proxyBin(t)})
+			work := t.TempDir()
+			name := lxdName(work)
+			if which == "proxy" {
+				name += "-p"
+			}
+			f.slow[name] = 3
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			_, err := l.Start(ctx, Spec{Workdir: work, Egress: lxdEgressModes[2].egress})
+			require.Error(t, err, "")
+			l.p.shutdown()
+			assert.Equal(t, strings.Join(f.leftovers(l.p.token), "\n"), "")
+		})
+	}
+}
+
+// two processes on one server: concurrent pairs get their own instance,
+// bridge and subnet; two runs missing one image build it and both use it.
+func TestLXDTwoProcesses(t *testing.T) {
+	f := newFakeServer(t)
+	// a driver per pair on a process per run, as internal/eval builds them.
+	a, b := lxdOn(t, f, Options{ProxyBin: proxyBin(t)}), lxdOn(t, f, Options{ProxyBin: proxyBin(t)})
+	type res struct {
+		s   *lxdSession
+		err error
+	}
+	ch := make(chan res, 4)
+	for _, run := range []*lxd{a, a, b, b} {
+		l := newLXD(run.p, run.r, run.o)
+		go func() {
+			sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: lxdEgressModes[2].egress})
+			if err != nil {
+				ch <- res{err: err}
+				return
+			}
+			ch <- res{s: sess.(*lxdSession)}
+		}()
+	}
+	names, bridges, ips := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	var sessions []*lxdSession
+	for range 4 {
+		r := <-ch
+		require.NoError(t, r.err)
+		sessions = append(sessions, r.s)
+		assert.That(t, !names[r.s.name] && !bridges[r.s.bridge], "shared instance or bridge")
+		names[r.s.name], bridges[r.s.bridge] = true, true
+		ips[r.s.egress.ip.String()] = true
+	}
+	// one subnet per pair within a process; the server keeps two
+	// processes' bridges apart, so their addresses may repeat.
+	assert.That(t, len(ips) >= 2, "pairs of one process share a subnet")
+	f.mu.Lock()
+	proxyImages := 0
+	for _, im := range f.images {
+		for _, al := range im.aliases {
+			if strings.HasPrefix(al, "pats-img-") {
+				proxyImages++
+			}
+		}
+	}
+	f.mu.Unlock()
+	assert.Equal(t, proxyImages, 1)
+	for _, s := range sessions {
+		require.NoError(t, s.Close())
+	}
+	a.p.shutdown()
+	b.p.shutdown()
+	assert.Equal(t, strings.Join(f.leftovers(a.p.token), "\n"), "")
+	assert.Equal(t, strings.Join(f.leftovers(b.p.token), "\n"), "")
+}
+
+// a clean by another process leaves a live run alone and takes a dead one.
+func TestLXDCleanOnServer(t *testing.T) {
+	f := newFakeServer(t)
+	live, dead := lxdOn(t, f, Options{}), lxdOn(t, f, Options{})
+	ls, err := live.Start(context.Background(), Spec{Workdir: t.TempDir()})
+	require.NoError(t, err)
+	_, err = dead.Start(context.Background(), Spec{Workdir: t.TempDir()})
+	require.NoError(t, err)
+	// the dead run's process is gone: no Close, no shutdown, its lease is
+	// old to a cleaner an hour on.
+	cleaner := lxdOn(t, f, Options{Remote: "srv"})
+	later := fixedClock{now: time.Now().Add(time.Hour)}
+	cleaner.p.clock = later
+	f.mu.Lock()
+	f.acls[live.marker()].config["user.pats.lease"] = fmt.Sprint(later.now.Unix())
+	f.mu.Unlock()
+	require.NoError(t, cleaner.clean(context.Background(), false, false, io.Discard))
+	assert.Equal(t, strings.Join(f.leftovers(dead.p.token), "\n"), "")
+	assert.That(t, f.has("instance", ls.(*lxdSession).name), "a live run's instance was removed")
+	require.NoError(t, ls.Close())
+}
+
+// faultKinds are the ways one lxc call goes wrong: the server refuses it, or
+// does it and the client still fails; or the run's context ends there, before
+// the server acts or after (an init then finishing on the server).
+var faultKinds = []struct {
+	name          string
+	after, cancel bool
+}{
+	{"fail", false, false},
+	{"fail-after", true, false},
+	{"cancel", false, true},
+	{"cancel-after", true, true},
+}
+
+// sweep runs entry once per lxc call it makes, with that call faulted each
+// way, until a run ends before the fault is reached. after each run the
+// run's process ends, and nothing of the run may be left on the server.
+func sweep(t *testing.T, entry func(t *testing.T, f *fakeServer, ctx context.Context) *process) {
+	for _, kind := range faultKinds {
+		for k := 0; ; k++ {
+			f := newFakeServer(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			f.fault = &fakeFault{at: k, after: kind.after}
+			if kind.cancel {
+				f.fault.cancel = cancel
+			}
+			p := entry(t, f, ctx)
+			cancel()
+			p.shutdown()
+			call := f.hitCall
+			left := f.leftovers(p.token)
+			if len(left) > 0 && isRemoval(call) {
+				// a removal that fails leaves what it removes: the next
+				// clean, once the run is dead, is what takes it.
+				cleanLater(t, f)
+				left = f.leftovers(p.token)
+			}
+			if len(left) > 0 {
+				t.Errorf("%s at fault %d (lxc %s) left:\n  %s", kind.name, k, call, strings.Join(left, "\n  "))
+				return
+			}
+			if !f.hit {
+				assert.That(t, k > 0, "%s: the entry made no calls; the sweep tested nothing", kind.name)
+				break
+			}
+		}
+	}
+}
+
+// isRemoval says whether an lxc call removes something.
+func isRemoval(call string) bool {
+	return strings.HasPrefix(call, "delete ") || strings.Contains(call, " delete ")
+}
+
+// cleanLater runs pats clean from another process an hour on, when every run
+// not renewing its lease is dead.
+func cleanLater(t *testing.T, f *fakeServer) {
+	f.noFaults()
+	c := lxdOn(t, f, Options{Remote: "srv"})
+	c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
+	require.NoError(t, c.clean(context.Background(), false, false, io.Discard))
+}
+
+// every call of Start, under every egress mode, failed or cancelled: what
+// Start made is gone once its own cleanup and the process's end have run.
+// the proxy modes build the proxy image too, so its build is swept here.
+func TestLXDSweepStart(t *testing.T) {
+	bin := proxyBin(t)
+	for _, vm := range []bool{false, true} {
+		for _, mode := range lxdEgressModes {
+			t.Run(fmt.Sprintf("%s/vm=%v", mode.name, vm), func(t *testing.T) {
+				sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
+					l := lxdOn(t, f, Options{VM: vm, ProxyBin: bin})
+					sess, err := l.Start(ctx, Spec{Workdir: t.TempDir(), Egress: mode.egress})
+					f.noFaults()
+					if err == nil {
+						sess.Close()
+					}
+					return l.p
+				})
+			})
+		}
+	}
+}
+
+// every call of an image build: the builder and anything published under
+// the run's private alias are gone; the cached image may stay.
+func TestLXDSweepImage(t *testing.T) {
+	sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
+		l := lxdOn(t, f, Options{})
+		_, _, _ = l.image(ctx, LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
+		return l.p
+	})
+}
+
+// every call of Close, each mode: what a failed call left, the next clean
+// takes.
+func TestLXDSweepClose(t *testing.T) {
+	bin := proxyBin(t)
+	for _, mode := range lxdEgressModes {
+		t.Run(mode.name, func(t *testing.T) {
+			sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
+				at := f.fault.at
+				f.fault = nil
+				l := lxdOn(t, f, Options{ProxyBin: bin})
+				sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: mode.egress})
+				require.NoError(t, err)
+				f.mu.Lock()
+				f.fault = &fakeFault{at: f.n + at}
+				f.mu.Unlock()
+				sess.Close()
+				f.noFaults()
+				return l.p
+			})
+		})
+	}
+}
+
+// crash ends p as a killed pats does: no Close, no shutdown, the lease no
+// longer renewed.
+func crash(p *process) {
+	x := &p.lxd
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for k, srv := range x.servers {
+		if srv.stop != nil {
+			close(srv.stop)
+		}
+		delete(x.servers, k)
+	}
+}
+
+// every call of a clean of a dead run's leftovers: whatever a failed call
+// left, the next clean takes.
+func TestLXDSweepClean(t *testing.T) {
+	bin := proxyBin(t)
+	sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
+		at := f.fault.at
+		f.fault = nil
+		dead := lxdOn(t, f, Options{ProxyBin: bin})
+		_, err := dead.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: lxdEgressModes[2].egress})
+		require.NoError(t, err)
+		crash(dead.p)
+		c := lxdOn(t, f, Options{Remote: "srv"})
+		c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
+		f.mu.Lock()
+		f.fault = &fakeFault{at: f.n + at}
+		f.mu.Unlock()
+		_ = c.clean(ctx, false, false, io.Discard)
+		f.noFaults()
+		cleanLater(t, f)
+		return dead.p
+	})
+}
+
+// another run makes what a run is about to make on first use (the pats
+// project, the uplink) between its check and its create: the create fails,
+// and the run goes on with the other's.
+func TestLXDFirstUseRace(t *testing.T) {
+	f := newFakeServer(t)
+	f.before = func(args []string) {
+		c := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(c, "project create "):
+			f.projects[lxdProject] = true
+		case strings.HasPrefix(c, "network create srv:"+lxdUplink+" "):
+			f.nets[lxdUplink] = &fakeNet{config: map[string]string{"ipv4.address": "10.2.0.1/24"}}
+		}
+	}
+	l := lxdOn(t, f, Options{ProxyBin: proxyBin(t)})
+	sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: lxdEgressModes[2].egress})
+	require.NoError(t, err)
+	require.NoError(t, sess.Close())
+}
