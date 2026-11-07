@@ -1,0 +1,7 @@
+# the harness cli versions this pats release ships, one NAME=version per line,
+# exact versions only. provision-sandbox.sh reads it for any NAME not already
+# set in its env; bump every pin before a release (docs/spec/harness-pins.md).
+CLAUDE_CLI_VERSION=2.1.319
+CODEX_CLI_VERSION=0.167.0
+COPILOT_CLI_VERSION=1.0.107
+OPENCODE_VERSION=1.19.5

@@ -14,6 +14,7 @@ import (
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 
+	"github.com/lczyk/pats/images"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
@@ -48,12 +49,18 @@ func TestLXDImageBuild(t *testing.T) {
 	type call struct {
 		base string
 		argv []string
+		pins string
 	}
 	run := func(t *testing.T, sb config.Sandbox, fail bool) ([]call, string, string, bool, error) {
 		var calls []call
 		old := lxdImageFn
 		lxdImageFn = func(ctx context.Context, o sandbox.Options, spec sandbox.LXDImageSpec, log io.Writer) (string, bool, error) {
-			calls = append(calls, call{spec.Base, spec.Argv})
+			pins := ""
+			if spec.Material != "" {
+				b, _ := os.ReadFile(filepath.Join(spec.Material, "harness-versions"))
+				pins = string(b)
+			}
+			calls = append(calls, call{spec.Base, spec.Argv, pins})
 			assert.Equal(t, o.Driver, "lxd")
 			spec.Progress("building " + spec.Base)
 			spec.Warn("low on space")
@@ -79,6 +86,10 @@ func TestLXDImageBuild(t *testing.T) {
 		require.Equal(t, len(calls), 2)
 		assert.Equal(t, calls[0].base, lxdSandboxBase)
 		assert.Equal(t, calls[1].base, "pats-img-1")
+		// the pats layer carries the pins beside its script (and so in its key);
+		// the project's layer does not.
+		assert.Equal(t, calls[0].pins, images.HarnessVersions)
+		assert.Equal(t, calls[1].pins, "")
 		assert.That(t, len(calls[1].argv) > 0, "the provision step has no argv")
 		assert.That(t, built, "the first build ran, but built is false")
 		assert.ContainsString(t, out, `sandbox "box": building `+lxdSandboxBase)

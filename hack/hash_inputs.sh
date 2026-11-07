@@ -19,6 +19,7 @@ case "$flavour" in
         inputs=(
             "images/Dockerfile.sandbox-$ver"
             "images/provision-sandbox.sh"
+            "images/harness-versions"
         )
         ;;
     *)

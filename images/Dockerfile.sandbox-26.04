@@ -10,14 +10,16 @@
 # runs on a fresh ubuntu instance too, so both sandboxes carry the same tools.
 FROM docker.io/library/ubuntu:26.04
 
-ARG CLAUDE_CLI_VERSION=latest
-ARG CODEX_CLI_VERSION=latest
-ARG COPILOT_CLI_VERSION=latest
-ARG OPENCODE_VERSION=latest
-COPY images/provision-sandbox.sh /tmp/provision-sandbox.sh
+# unset build args take the pins in images/harness-versions; set one to
+# override that harness's pin.
+ARG CLAUDE_CLI_VERSION
+ARG CODEX_CLI_VERSION
+ARG COPILOT_CLI_VERSION
+ARG OPENCODE_VERSION
+COPY images/provision-sandbox.sh images/harness-versions /tmp/provision/
 RUN CLAUDE_CLI_VERSION="$CLAUDE_CLI_VERSION" CODEX_CLI_VERSION="$CODEX_CLI_VERSION" \
     COPILOT_CLI_VERSION="$COPILOT_CLI_VERSION" \
-    OPENCODE_VERSION="$OPENCODE_VERSION" sh /tmp/provision-sandbox.sh && \
-    rm /tmp/provision-sandbox.sh
+    OPENCODE_VERSION="$OPENCODE_VERSION" sh /tmp/provision/provision-sandbox.sh && \
+    rm -r /tmp/provision
 
 CMD ["/bin/bash"]

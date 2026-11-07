@@ -9,3 +9,9 @@ import _ "embed"
 //
 //go:embed provision-sandbox.sh
 var ProvisionSandbox string
+
+// HarnessVersions is harness-versions: the harness cli versions this pats
+// release pins, read by ProvisionSandbox from beside itself.
+//
+//go:embed harness-versions
+var HarnessVersions string
