@@ -190,9 +190,6 @@ func (l *lxd) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int
 // (none, or an open bridge of its own); checks the expanded config adds no
 // other; starts it; and pushes the workdir and mounts in.
 func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
-	if spec.Egress.Set {
-		return nil, fmt.Errorf("%w: lxd: an egress proxy is not implemented yet", ErrLaunch)
-	}
 	if err := l.prepareServer(ctx); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
@@ -237,7 +234,13 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 	s.created = true
 
 	allowed := map[string]bool{}
-	if !spec.Egress.None {
+	switch {
+	case spec.Egress.Set:
+		if err := s.startEgressNetwork(ctx); err != nil {
+			return fail(err)
+		}
+		allowed[s.bridge] = true
+	case !spec.Egress.None:
 		if err := s.openNetwork(ctx); err != nil {
 			return fail(err)
 		}
@@ -249,16 +252,22 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 	if _, err := l.lxc(ctx, "start", l.ref(s.name), "--project", lxdProject); err != nil {
 		return fail(err)
 	}
-	if err := s.waitReady(ctx, !spec.Egress.None); err != nil {
+	// an open sandbox waits for its dhcp route; a proxied one has none.
+	if err := s.waitReady(ctx, !spec.Egress.None && !spec.Egress.Set); err != nil {
 		return fail(err)
 	}
-	if spec.Egress.SelfTest && !spec.Egress.None {
+	if spec.Egress.SelfTest && !spec.Egress.None && !spec.Egress.Set {
 		if err := s.reachesInternet(ctx); err != nil {
 			return fail(err)
 		}
 	}
 	if err := s.ensureAgentUser(ctx); err != nil {
 		return fail(err)
+	}
+	if spec.Egress.Set {
+		if err := s.startProxy(ctx, spec); err != nil {
+			return fail(err)
+		}
 	}
 	s.binds = append(s.binds, bind{host: abs, path: WorkMount})
 	for _, m := range spec.Mounts {
@@ -277,7 +286,6 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 	if err := s.chownAgent(ctx, s.paths(false)...); err != nil {
 		return fail(err)
 	}
-	s.env = spec.Env
 	return s, nil
 }
 
@@ -293,9 +301,10 @@ type lxdSession struct {
 	workdir string
 	sudo    bool
 	binds   []bind
-	env     map[string]string
+	env     map[string]string // the egress env (proxy, tls), set under a proxy policy
 	created bool
-	bridge  string // the open bridge and acl, "" when none
+	bridge  string // the pair's bridge and its acl, "" under egress none
+	egress  *lxdEgress
 	uid     string
 	once    sync.Once
 }
@@ -490,11 +499,11 @@ func (s *lxdSession) execArgs(cmd Cmd) []string {
 	}
 	args := []string{"exec", s.inst(), "--project", lxdProject, "--force-noninteractive",
 		"--user", user, "--group", user, "--cwd", dir}
+	// the egress env reaches every step, root ones included: prepare runs
+	// under the sandbox's policy too.
 	env := map[string]string{}
-	if !cmd.Root {
-		for k, v := range s.env {
-			env[k] = v
-		}
+	for k, v := range s.env {
+		env[k] = v
 	}
 	for k, v := range cmd.Env {
 		env[k] = v
@@ -562,7 +571,7 @@ func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
 	}
 	script := `mkdir -p "$1" && tar -x -m -C "$1"`
 	if !fi.IsDir() {
-		script = `mkdir -p "$1" && tar -x -m -C "$1" && mv "$1/` + filepath.Base(hostPath) + `" "$2"`
+		script = `mkdir -p "$1" && tar -x -m -C "$1" && { [ "$1/` + filepath.Base(hostPath) + `" = "$2" ] || mv "$1/` + filepath.Base(hostPath) + `" "$2"; }`
 	}
 	var out bytes.Buffer
 	code, err := s.execIn(ctx, pr, Cmd{Argv: []string{"sh", "-c", script, "push", dest, path}, Root: true, Dir: "/"}, &out, &out)
@@ -761,6 +770,7 @@ func clearDir(dir string) error {
 func (s *lxdSession) Close() error {
 	s.once.Do(func() {
 		bg := context.Background()
+		s.closeEgress()
 		if s.created {
 			_, _ = s.l.lxc(bg, "delete", s.inst(), "--project", lxdProject, "--force")
 		}

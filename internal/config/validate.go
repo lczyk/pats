@@ -152,9 +152,6 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 					add("sandbox %q: config %s is refused: raw config can add devices pats cannot check", s.ID, k)
 				}
 			}
-			if s.Egress.Set {
-				add("sandbox %q: an egress proxy is not implemented under lxd yet (use open or none)", s.ID)
-			}
 		case "bwrap":
 			add("sandbox %q: bwrap driver not implemented yet", s.ID)
 		default:

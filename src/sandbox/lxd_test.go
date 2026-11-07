@@ -13,6 +13,8 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // fakeLXC records every lxc call and answers the few whose output matters.
@@ -135,14 +137,14 @@ func TestLXDStartRefusesForeignNic(t *testing.T) {
 	assert.Error(t, err, "raw config")
 }
 
-// the agent runs as the pats user with the session's env under its own; root
-// steps get neither. a vm carries agent.nic_config.
+// the agent runs as the pats user, root steps as root, both with the egress
+// env under their own. a vm carries agent.nic_config.
 func TestLXDExecArgs(t *testing.T) {
 	s := &lxdSession{l: &lxd{o: Options{Remote: "srv"}}, name: "pats-x", uid: "1001", env: map[string]string{"A": "1", "B": "2"}}
 	args := strings.Join(s.execArgs(Cmd{Argv: []string{"run", "it"}, Env: map[string]string{"B": "3"}}), " ")
 	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 1001 --group 1001 --cwd /workspace --env A=1 --env B=3 -- run it")
 	args = strings.Join(s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}), " ")
-	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- id")
+	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / --env A=1 --env B=2 -- id")
 
 	l, f := fakeLXD(Options{Driver: "lxd", Image: "img", VM: true})
 	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
@@ -235,4 +237,68 @@ func TestLXDName(t *testing.T) {
 	long := lxdName("/x/" + strings.Repeat("a", 80))
 	assert.That(t, len(long) <= 63, "name too long: %d", len(long))
 	assert.That(t, len(bridgeName("pats-work-123")) <= 15, "bridge name too long")
+}
+
+// a proxied sandbox: an addressless bridge with a reject acl, the agent on it
+// at a static pool address, the canary before the proxy, the proxy container
+// on the bridge and the uplink with forwarding off, listening on the bridge
+// address only, and the agent told where it is.
+func TestLXDStartProxy(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "pats")
+	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
+	t.Setenv(lxdProxyBinEnv, bin)
+	t.Setenv(lxdUplinkEnv, "up0")
+	l, f := fakeLXD(Options{Driver: "lxd", Image: "img"})
+	answers := map[string]string{
+		"egress-canary":   "egress-canary leak=0\n",
+		"egress-reach":    "egress-reach ok=1\n",
+		"id -u patsproxy": "999\n",
+		"image info":      "Fingerprint: abc\n",
+		"query srv:/1.0 ": `{"environment":{"architectures":["x86_64"]}}`,
+	}
+	inner := f.run
+	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		joined := strings.Join(args, " ") + " "
+		for k, v := range answers {
+			if strings.Contains(joined, k) {
+				f.calls = append(f.calls, args)
+				io.WriteString(stdout, v)
+				return nil
+			}
+		}
+		return inner(ctx, stdin, stdout, stderr, args...)
+	}
+	sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+	require.NoError(t, err)
+	s := sess.(*lxdSession)
+
+	net := strings.Join(f.call("network create"), " ")
+	for _, want := range []string{"ipv4.address=none", "ipv6.address=none", "security.acls.default.egress.action=reject", "security.acls.default.ingress.action=reject"} {
+		assert.ContainsString(t, net, want)
+	}
+	assert.Nil(t, f.call("network acl rule add")) // no rule: both defaults reject
+	agentIP := s.egress.agentIP.String()
+	proxyIP := s.egress.ip.String()
+	assert.That(t, pool.Contains(s.egress.ip), "proxy %s outside the pool", proxyIP)
+	all := ""
+	for _, c := range f.calls {
+		all += strings.Join(c, " ") + "\n"
+	}
+	canary := strings.Index(all, "egress-canary")
+	proxyInit := strings.Index(all, "init srv:pats-img-")
+	assert.That(t, canary >= 0 && canary < proxyInit, "canary not run before the proxy exists")
+	assert.ContainsString(t, all, "ip addr replace "+agentIP+"/29 dev pats0")
+	assert.ContainsString(t, all, "network=up0 name=uplink0")
+	assert.ContainsString(t, all, "net.ipv4.ip_forward=0")
+	assert.ContainsString(t, all, "--env PATS_EGRESS_LISTEN="+proxyIP+":8080")
+	assert.ContainsString(t, all, "--user 999 --group 999 --cwd / --env PATS_EGRESS_LISTEN")
+	assert.Equal(t, s.env["HTTP_PROXY"], "http://"+proxyIP+":8080")
+
+	require.NoError(t, sess.Close())
+	all = ""
+	for _, c := range f.calls {
+		all += strings.Join(c, " ") + "\n"
+	}
+	assert.ContainsString(t, all, "delete srv:"+s.name+"-p")
+	assert.ContainsString(t, all, "network delete srv:"+s.bridge)
 }

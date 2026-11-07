@@ -486,15 +486,21 @@ func (c *container) egressCanary(ctx context.Context, net string) error {
 	}
 	args = append(args, "--entrypoint", "bash", c.image, "-c", canaryScript)
 	out, err := c.docker(ctx, args...)
+	if v := canaryVerdict(out, c.driver, c.image); v == nil || err == nil || strings.Contains(out, "egress-canary") {
+		return v
+	}
+	return fmt.Errorf("egress self-test could not run in image %s (needs bash): %w (%s)", c.image, err, out)
+}
+
+// canaryVerdict reads the canary's output: nil when every probe failed.
+func canaryVerdict(out, driver, image string) error {
 	switch {
 	case strings.Contains(out, "egress-canary leak=0"):
 		return nil
 	case strings.Contains(out, "egress-canary missing="):
-		return fmt.Errorf("egress self-test could not run in image %s: %s", c.image, strings.TrimPrefix(out[strings.Index(out, "egress-canary missing="):], "egress-canary "))
+		return fmt.Errorf("egress self-test could not run in image %s: %s", image, strings.TrimPrefix(out[strings.Index(out, "egress-canary missing="):], "egress-canary "))
 	case strings.Contains(out, "egress-canary leak=1"):
-		return fmt.Errorf("egress is not fail-closed under driver %s: a direct connection from the sandbox succeeded", c.driver)
-	case err != nil:
-		return fmt.Errorf("egress self-test could not run in image %s (needs bash): %w (%s)", c.image, err, out)
+		return fmt.Errorf("egress is not fail-closed under driver %s: a direct connection from the sandbox succeeded", driver)
 	}
 	return fmt.Errorf("egress self-test gave no verdict: %s", out)
 }

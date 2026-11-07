@@ -301,7 +301,6 @@ func TestValidateErrors(t *testing.T) {
 		{"image and base", base + "d: {kind: sandbox, items: {d: {image: i, base: ubuntu:26.04}}}\n", "image and base / provision are mutually exclusive"},
 		{"build under lxd", base + "lx: {kind: sandbox, items: {lx: {driver: lxd, build: .}}}\nla: {kind: agent, items: {la: {harness: opencode-openrouter, model: m, sandbox: lx}}}\nsu2: {kind: suite, items: {su2: {agents: la, tasks: t, scorers: sc}}}\n", "build is a dockerfile"},
 		{"raw config under lxd", base + "lx: {kind: sandbox, items: {lx: {driver: lxd, config: {raw.lxc: x}}}}\nla: {kind: agent, items: {la: {harness: opencode-openrouter, model: m, sandbox: lx}}}\nsu2: {kind: suite, items: {su2: {agents: la, tasks: t, scorers: sc}}}\n", "config raw.lxc is refused"},
-		{"proxy under lxd", base + "lx: {kind: sandbox, items: {lx: {driver: lxd, egress: {default: deny}}}}\nla: {kind: agent, items: {la: {harness: opencode-openrouter, model: m, sandbox: lx}}}\nsu2: {kind: suite, items: {su2: {agents: la, tasks: t, scorers: sc}}}\n", "not implemented under lxd yet"},
 		{"bad size", base + "d: {kind: sandbox, items: {d: {limits: {memory: lots}}}}\n", "limits.memory \"lots\" is not a size"},
 		{"task sudo under docker", base + "t3: {kind: task, items: {t3: {prompt: p, sudo: true}}}\nsu3: {kind: suite, items: {su3: {agents: a, tasks: t3, scorers: sc}}}\n", "task \"t3\" sets sudo"},
 	}
