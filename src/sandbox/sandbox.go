@@ -257,8 +257,11 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 		"-w", WorkMount,
 		"-v", abs + ":" + WorkMount,
 	}
+	// the owner label goes on every agent, named or not: it is what says the
+	// container is pats's.
+	args = append(args, "--label", c.p.ownerLabel())
 	if name := agentName(abs); name != "" {
-		args = append(args, "--name", name, "--label", c.p.ownerLabel())
+		args = append(args, "--name", name)
 	}
 	args = append(args, netArgs...)
 	for _, m := range spec.Mounts {
