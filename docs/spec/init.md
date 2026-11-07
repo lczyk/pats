@@ -1,7 +1,7 @@
 # pats init: build once, run many
 
 status: in progress. implemented: `pats init`, the pin file, `run` starting from pins and stopping on a missing one,
-the local staleness warnings and the proxy exception. not yet: component stamps, removing superseded images, the
+the local staleness warnings, the proxy exception and component stamps. not yet: removing superseded images, the
 upstream checks, the lxd specifics and the engine tables.
 
 pats gets three stages: `pats init` makes everything the project's sandboxes need, `pats run` uses
@@ -189,9 +189,11 @@ for all of them together; a check that does not answer in time is skipped silent
 ## component versions
 
 `pats init` stamps what is inside each image: each harness cli's version (`claude --version`, `codex --version`,
-`copilot --version`, `opencode --version`), and later anything else worth knowing. they go into the pin, onto the
-image (docker labels, lxd properties), and into each pair's `metadata.json`, so a score can be read against the
-harness that produced it.
+`copilot --version`, `opencode --version`), and later anything else worth knowing. they go into the pin and into
+each pair's `metadata.json`, so a score can be read against the harness that produced it. an lxd image carries them
+too, as `pats.component.<cli>` properties its builder reads before publishing (`provisionerVersion` went up with
+them, so every pats-made layer has them); init reads them back. a docker image cannot take a label once built, so
+init runs the stamp in a throwaway container of the image and the pin is where they live.
 
 today the harnesses install at `@latest` unless `CLAUDE_CLI_VERSION` and friends are set, so two images of one pats
 version built a week apart carry different harnesses, and the published docker image and an lxd image provisioned from
