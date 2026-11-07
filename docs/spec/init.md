@@ -1,6 +1,10 @@
 # pats init: build once, run many
 
-status: proposed. pats gets three stages: `pats init` makes everything the project's sandboxes need, `pats run` uses
+status: in progress. implemented: `pats init`, the pin file, and `run` starting from pins and stopping on a missing one.
+not yet: the staleness warnings, the proxy exception, component stamps, removing superseded images, the upstream
+checks, the lxd specifics and the engine tables.
+
+pats gets three stages: `pats init` makes everything the project's sandboxes need, `pats run` uses
 it, `pats score` scores. `report`, `list`, `egress` and `clean` stay as tools around them. this applies to every
 driver: docker and podman today, lxd, and bwrap and nerdctl when they come. `lxd.md` is the lxd driver's design;
 `lxd-testing.md` is how its tests get their seams.
