@@ -11,25 +11,28 @@ the sandbox installs its harness clis at `@latest`: `images/provision-sandbox.sh
 `images/Dockerfile.sandbox-26.04` defaults the three build args to `latest`. so what an image holds depends on when it
 was built:
 
-- the published docker sandbox image of a release and an lxd image provisioned from the same script a week later
-  carry different harnesses;
+- the published docker sandbox image of a release and an lxd image provisioned from the same script a week later carry
+  different harnesses;
 - two `pats init` runs of one release on two machines may too;
 - a score cannot be traced to the harness that produced it, beyond what the stamps (`init.md`) record.
 
 ## proposal
 
 - **one file of pins.** `images/harness-versions` holds one `NAME=version` line per harness
-  (`CLAUDE_CLI_VERSION=2.3.1`), exact versions, no ranges or `latest`. the provision script sources it, the
-  dockerfile copies it in before the provision step, and the lxd provisioner pushes it with the script. the build args
-  and env vars stay as overrides for a project that wants another version in its own layer; the stamps record what
-  it got.
-- **part of the image key.** the file's contents go into the lxd image key and the docker build context, so a pin
-  change rebuilds at the next `pats init`, as a provision edit does.
-- **bumped on each release.** before a release, each pin moves to that harness's latest stable version (npm's
-  `latest` dist-tag), the e2e jobs run against the bumped set, and the release notes list the versions. a release
-  that has to hold one back says so in the notes.
-- **between releases** the pins stay put. a dev build gets what the file in its tree says, which is the next
-  release's set once bumped.
+  (`CLAUDE_CLI_VERSION=2.3.1`), exact versions, no ranges or `latest`. the provision script reads it for its defaults,
+  the dockerfile copies it in before the provision step, the lxd provisioner pushes it with the script, and
+  `hack/hash_inputs.sh` lists it as a sandbox image input beside the dockerfile and the script (or a pins-only bump
+  reads as up to date there). an env var or build arg already set still wins over the file (the dockerfile's build
+  args lose their `latest` default, so unset means the file), for a project that wants another version in its own
+  layer; the stamps record what it got.
+- **part of the image key.** the file's contents go into the lxd image key, so a pin change rebuilds the lxd image at
+  the next `pats init`, as a provision edit does. the container drivers pull the published sandbox image, so they get
+  a pin change with the release that carries it.
+- **bumped on each release.** before a release, each pin moves to that harness's latest stable version (npm's `latest`
+  dist-tag), the e2e jobs run against the bumped set, and the release notes list the versions. a release that has to
+  hold one back says so in the notes.
+- **between releases** the pins stay put. a dev build gets what the file in its tree says, which is the next release's
+  set once bumped.
 
 ## later, not designed here
 
