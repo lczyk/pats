@@ -27,6 +27,11 @@ way `run`'s filters do. so `score` gets the same filters, plus one for scorers.
   what it names. for `score`, `-a` / `-t` narrow the pairs scored and `-s` the scorers run on them.
 - a filter value that reaches nothing, and a selection that leaves nothing, are errors (a typo guard), as they are for
   `run` today (`Config.FilterPairs`).
+- a narrowed score (any of `-S`, `-a`, `-t`, `-s`) merges into the run's `scores.json`: the cells it set out to
+  compute are replaced by what it computed (a cell that now fails or says `na` is dropped, not kept stale), every
+  other cell is kept unless the config no longer has its (agent, task, scorer), and the means cover them all. a
+  narrowed score that reaches no cell is an error and leaves the file alone; `-r all` skips a run where that happens
+  and fails only when every run does. an unnarrowed score replaces the file, as before.
 - `--agentic` keeps its meaning and composes: `pats score --agentic -s my-judge` judges that scorer's cells and nothing
   else (`agent-scorers.md`).
 
