@@ -828,3 +828,30 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	require.NoError(t, err, "%s", out.String())
 	assert.Equal(t, string(got), "seeded by 0 for t\nagent\nmaterial-gone\n")
 }
+
+// e2e of base / provision on docker: the provision step runs once into a
+// cached image with the pats root's bin/ on PATH, and the agent runs on it.
+func TestRunE2EProvision(t *testing.T) {
+	dockerOrSkip(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "mark"), []byte("#!/bin/sh\necho \"provisioned $1\" > /etc/pats-mark\n"), 0o755))
+
+	old := agent.HarnessCmds["opencode-openrouter"]
+	agent.HarnessCmds["opencode-openrouter"] = `cat /etc/pats-mark > got.txt`
+	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
+
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {base: ubuntu:26.04, provision-cmd: "mark once"}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $PATS_OUTPUT_DIR/"}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "got.txt"))
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, string(got), "provisioned once\n")
+	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", cfg.Sandboxes[0].Image).Run() })
+}
