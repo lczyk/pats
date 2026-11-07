@@ -212,14 +212,14 @@ follows from it. a `driver: container` plus `engine:` would add a key without ad
 
 - **container engines.** images pats builds carry the same owner label as its containers and networks
   (`pats.owner=<host>/<uid>/<client id>`), and, like the rest of clean, `--images` leaves a foreign owner's images
-  alone without `--force`: on a daemon several users share, one user's clean does not take another's. within the
-  user's own images, every project on the machine registers itself: `pats
-  init` adds the project's path, one line, to `~/.cache/pats/projects`. clean reads each listed project's own
-  `.pats/images.json` (one writer, nothing duplicated to drift), drops paths that no longer exist, and walks every
-  target in every pin file, not only the current default context or connection. it removes images pats made or
-  pulled (labelled `pats.*`, or from the published `ghcr.io/lczyk/pats/*` repos) on that daemon that no pin names
-  and that were created more than a day ago, so an image an in-flight `pats init` built and has not pinned yet
-  stays.
+  alone without `--force`, and treats a pulled published image (`ghcr.io/lczyk/pats/*`, which carries no owner) as
+  foreign too: on a daemon several users share, one user's clean does not take another's. within the user's own
+  images, every project on the machine registers itself: `pats init` adds the project's path, one line, to
+  `~/.cache/pats/projects`. clean reads each listed project's own `.pats/images.json` (one writer, nothing duplicated
+  to drift), drops paths that no longer exist, and walks every target in every pin file, not only the current default
+  context or connection. it removes the user's images pats made (labelled `pats.*`), and with `--force` the pulled
+  published ones too, on that daemon that no pin names and that were created more than a day ago, so an image an
+  in-flight `pats init` built and has not pinned yet stays.
 - **lxd.** a server is shared across machines, so no registry can be complete. clean removes `pats-img-*` images
   that this project does not pin, that are not run-private (`pats-img-<key>-<token>`, a build between publish and
   claim), and that nothing used for 30 days: `last_used_at`, or `uploaded_at` for an image no instance was made
