@@ -401,3 +401,85 @@ func TestLXDFirstUseRace(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, sess.Close())
 }
+
+// the lease, on clocks that move only when the test says (the requirements
+// in docs/spec/fizz/lxd_lease.fizz): a live run renewing on time survives
+// every clean, from a cleaner on its clock or up to 7.5 minutes ahead (R1);
+// once its process dies, the first clean after the lease goes stale takes it
+// (R2); and the accepted gap: a cleaner further ahead takes a live run.
+func TestLXDLease(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	setup := func(t *testing.T) (*fakeServer, *lxd, *manualClock) {
+		f := newFakeServer(t)
+		mc := newManualClock(start)
+		l := lxdOn(t, f, Options{})
+		l.p.clock = mc
+		l.p.t.leaseEvery, l.p.t.leaseStale = 2*time.Minute, 10*time.Minute
+		_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir()})
+		require.NoError(t, err)
+		return f, l, mc
+	}
+	lease := func(f *fakeServer, l *lxd) string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if a := f.acls[l.marker()]; a != nil {
+			return a.config["user.pats.lease"]
+		}
+		return ""
+	}
+	// tick moves the run's clock on by 30s and waits for a renewal that
+	// fell due to land, as one on time does.
+	tick := func(t *testing.T, f *fakeServer, l *lxd, mc *manualClock) {
+		mc.Advance(30 * time.Second)
+		now := mc.Now()
+		if now.Sub(start)%(2*time.Minute) != 0 {
+			return
+		}
+		want := fmt.Sprint(now.Unix())
+		deadline := time.Now().Add(5 * time.Second)
+		for lease(f, l) != want {
+			require.That(t, time.Now().Before(deadline), "the renewal due at %s did not land", now)
+			time.Sleep(time.Millisecond)
+		}
+	}
+	clean := func(t *testing.T, f *fakeServer, at time.Time) {
+		c := lxdOn(t, f, Options{Remote: "srv"})
+		c.p.clock = fixedClock{now: at}
+		c.p.t.leaseStale = 10 * time.Minute
+		require.NoError(t, c.clean(context.Background(), false, false, io.Discard))
+	}
+	alive := func(f *fakeServer, l *lxd) bool { return len(f.leftovers(l.p.token)) > 0 }
+
+	t.Run("R1 a live run survives", func(t *testing.T) {
+		for _, ahead := range []time.Duration{0, 7*time.Minute + 30*time.Second} {
+			f, l, mc := setup(t)
+			for range 60 {
+				tick(t, f, l, mc)
+				clean(t, f, mc.Now().Add(ahead))
+				require.That(t, alive(f, l), "a cleaner %s ahead took a live run at %s", ahead, mc.Now().Sub(start))
+			}
+		}
+	})
+	t.Run("R2 a dead run goes", func(t *testing.T) {
+		f, l, mc := setup(t)
+		for range 5 {
+			tick(t, f, l, mc)
+		}
+		crash(l.p)
+		for i := 0; alive(f, l); i++ {
+			require.That(t, i < 21, "a dead run outlived its stale lease")
+			mc.Advance(30 * time.Second)
+			clean(t, f, mc.Now())
+		}
+		// the last renewal landed at 2m; it is stale past 12m.
+		assert.That(t, mc.Now().Sub(start) > 12*time.Minute, "a run taken before its lease went stale")
+	})
+	t.Run("accepted gap: a cleaner 9m ahead takes a live run", func(t *testing.T) {
+		f, l, mc := setup(t)
+		for range 3 { // the marker's lease, made at 0, is 1m30s old
+			tick(t, f, l, mc)
+		}
+		clean(t, f, mc.Now().Add(9*time.Minute))
+		assert.That(t, !alive(f, l), "the gap the lease model accepts closed: update docs/spec/fizz/lxd_lease.fizz")
+	})
+}

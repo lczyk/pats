@@ -162,3 +162,88 @@ func (f *callLog) find(sub string) []string {
 	}
 	return nil
 }
+
+// manualClock is a clock that moves only when a test advances it: After and
+// a ticker fire as it passes their time. an After of zero or less fires at
+// once.
+type manualClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	waiters []manualWaiter
+	tickers []*manualTicker
+}
+
+type manualWaiter struct {
+	at time.Time
+	ch chan time.Time
+}
+
+type manualTicker struct {
+	c       *manualClock
+	every   time.Duration
+	next    time.Time
+	ch      chan time.Time
+	stopped bool
+}
+
+func newManualClock(now time.Time) *manualClock { return &manualClock{now: now} }
+
+func (c *manualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *manualClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	if d <= 0 {
+		ch <- c.now
+		return ch
+	}
+	c.waiters = append(c.waiters, manualWaiter{c.now.Add(d), ch})
+	return ch
+}
+
+func (c *manualClock) NewTicker(d time.Duration) ticker {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := &manualTicker{c: c, every: d, next: c.now.Add(d), ch: make(chan time.Time, 1)}
+	c.tickers = append(c.tickers, t)
+	return t
+}
+
+func (t *manualTicker) C() <-chan time.Time { return t.ch }
+
+func (t *manualTicker) Stop() {
+	t.c.mu.Lock()
+	t.stopped = true
+	t.c.mu.Unlock()
+}
+
+// Advance moves the clock on by d, firing what falls due. a ticker drops
+// ticks its reader has not taken, as time.Ticker does.
+func (c *manualClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+	var left []manualWaiter
+	for _, w := range c.waiters {
+		if !w.at.After(c.now) {
+			w.ch <- c.now
+		} else {
+			left = append(left, w)
+		}
+	}
+	c.waiters = left
+	for _, t := range c.tickers {
+		for !t.stopped && !t.next.After(c.now) {
+			select {
+			case t.ch <- t.next:
+			default:
+			}
+			t.next = t.next.Add(t.every)
+		}
+	}
+}
