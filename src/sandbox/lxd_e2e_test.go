@@ -34,12 +34,12 @@ func TestLXDE2E(t *testing.T) {
 		build.Env = append(build.Env, "GOARCH="+arch) // a server of another arch than this machine
 	}
 	out, err := build.CombinedOutput()
-	require.NoError(t, err, "%s", out)
+	require.NoError(t, err, "%v\n%s", err, out)
 	o := Options{Driver: "lxd", ProxyBin: bin}.WithEnv()
 
 	var log bytes.Buffer
 	img, _, err := LXDImage(ctx, o, LXDImageSpec{Base: "ubuntu:24.04"}, &log)
-	require.NoError(t, err, "%s", log.String())
+	require.NoError(t, err, "%v\n%s", err, log.String())
 	o.Image = img
 	sb, err := New(o)
 	require.NoError(t, err)
