@@ -617,3 +617,15 @@ func TestLXDProxyImageProgress(t *testing.T) {
 	require.That(t, len(steps) > 0, "no progress")
 	assert.ContainsString(t, steps[0], "egress proxy: building lxd image pats-img-")
 }
+
+// a fresh client's first command prints a banner before the remote's name.
+func TestDefaultRemoteAfterBanner(t *testing.T) {
+	l, _ := fakeLXD(t, Options{Driver: "lxd"})
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		io.WriteString(stdout, "To start your first container, try: lxc launch ubuntu:24.04\nOr for a virtual machine: lxc launch ubuntu:24.04 --vm\n\nlocal\n")
+		return nil
+	})
+	got, err := l.defaultRemote(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, got, "local")
+}

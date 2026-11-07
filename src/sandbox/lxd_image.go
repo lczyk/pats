@@ -228,7 +228,7 @@ func LXDRemote(ctx context.Context, o Options) (string, error) {
 	if o.Remote != "" {
 		return o.Remote, nil
 	}
-	return newLXD(defaultProcess, lxcCLI, o).lxc(ctx, "remote", "get-default")
+	return newLXD(defaultProcess, lxcCLI, o).defaultRemote(ctx)
 }
 
 // LXDProxyImage makes (or finds) the egress proxy image on o's server and

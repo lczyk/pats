@@ -222,7 +222,7 @@ func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error)
 // kernelArch is the server's architecture as lxd names it (x86_64).
 func (l *lxd) kernelArch(ctx context.Context) (string, error) {
 	if l.o.Remote == "" {
-		remote, err := l.lxc(ctx, "remote", "get-default")
+		remote, err := l.defaultRemote(ctx)
 		if err != nil {
 			return "", err
 		}

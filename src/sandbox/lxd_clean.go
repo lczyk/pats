@@ -41,7 +41,7 @@ type lxdResource struct {
 func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer) error {
 	now, stale := l.p.clock.Now(), l.p.t.leaseStale
 	if l.o.Remote == "" {
-		r, err := l.lxc(ctx, "remote", "get-default")
+		r, err := l.defaultRemote(ctx)
 		if err != nil {
 			return err
 		}

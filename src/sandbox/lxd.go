@@ -84,6 +84,17 @@ func (l *lxd) ref(name string) string {
 	return l.o.Remote + ":" + name
 }
 
+// defaultRemote is the cli's default remote. a client's first ever command
+// prints a welcome banner before its output, so the name is the last line.
+func (l *lxd) defaultRemote(ctx context.Context) (string, error) {
+	out, err := l.lxc(ctx, "remote", "get-default")
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	return strings.TrimSpace(lines[len(lines)-1]), nil
+}
+
 // lxdServer is what a process learns and makes once per lxd server: the
 // pinned remote, the pool, and the run's marker.
 type lxdServer struct {
@@ -129,7 +140,7 @@ func (l *lxd) prepareServer(ctx context.Context) error {
 func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) {
 	remote = l.o.Remote
 	if remote == "" {
-		if remote, err = l.lxc(ctx, "remote", "get-default"); err != nil {
+		if remote, err = l.defaultRemote(ctx); err != nil {
 			return "", "", err
 		}
 	}
