@@ -113,6 +113,15 @@ func run(ctx context.Context, sb Sandbox, spec Spec, stdout, stderr io.Writer) (
 		return -1, err
 	}
 	defer sess.Close()
+	paths := []string{WorkMount}
+	for _, m := range spec.Mounts {
+		if !m.ReadOnly {
+			paths = append(paths, m.Container)
+		}
+	}
+	if err := sess.HandOver(ctx, paths...); err != nil {
+		return -1, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
 	return sess.Exec(ctx, Cmd{Argv: spec.Argv, Env: spec.Env}, stdout, stderr)
 }
 
@@ -246,9 +255,26 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	if c.limits.Memory != "" {
 		args = append(args, "--memory", c.limits.Memory)
 	}
+	// the cid file names the container even when the cli is killed after the
+	// daemon made it, so a failed or cancelled start removes it.
+	cidf, err := os.CreateTemp("", "pats-cid-")
+	if err != nil {
+		teardown()
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
+	cid := cidf.Name()
+	cidf.Close()
+	os.Remove(cid) // the cli refuses an existing file
+	defer os.Remove(cid)
+	args = append(args, "--cidfile", cid)
 	args = append(args, "--entrypoint", "sleep", c.image, "infinity")
 	out, err := c.dockerOut(ctx, args...)
 	if err != nil {
+		if b, rerr := os.ReadFile(cid); rerr == nil && len(b) > 0 {
+			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_, _ = c.docker(rctx, "rm", "-f", strings.TrimSpace(string(b)))
+			cancel()
+		}
 		teardown()
 		return nil, fmt.Errorf("%w: %s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", ErrLaunch, c.bin, err)
 	}

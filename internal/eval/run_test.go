@@ -736,6 +736,12 @@ func TestRunPairSetupFailureMetadata(t *testing.T) {
 			io.WriteString(stdout, "apt said no\n")
 			return 4, nil
 		}}, "prepare: exited 4"},
+		{"prepare cleanup", "prepare: exit 0", &fakeSandbox{onRoot: func(cmd sandbox.Cmd, stdout io.Writer) (int, error) {
+			if cmd.Argv[0] == "rm" {
+				return 1, nil // the material would stay where the agent can read it
+			}
+			return 0, nil
+		}}, "remove /pats-prepare: exited 1"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			old := newSandbox

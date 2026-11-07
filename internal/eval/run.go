@@ -266,6 +266,7 @@ type pairMeta struct {
 	Task        string  `json:"task"`
 	Sandbox     string  `json:"sandbox"`
 	Image       string  `json:"image"`
+	Sudo        bool    `json:"sudo,omitempty"` // the agent could sudo (lxd)
 	ExitCode    int     `json:"exit_code"`
 	DurationS   float64 `json:"duration_s"`
 	Status      string  `json:"status"` // ok | nonzero | error
@@ -479,11 +480,14 @@ func runPair(
 	} else {
 		r = h.exec(ctx, sess, stdoutW, stderrF, t.TimeoutDuration())
 		// bring the agent's writes home for collect (a no-op where the
-		// workdir is bound). a timed-out agent left files too.
-		if r.err == nil || r.timedOut {
-			if err := sess.Sync(context.WithoutCancel(ctx)); err != nil && r.err == nil {
+		// workdir is bound). a timed-out agent left files too; a run
+		// interrupted by ctrl+c is not waited on.
+		if (r.err == nil || r.timedOut) && ctx.Err() == nil {
+			sctx, scancel := context.WithTimeout(ctx, syncTimeout)
+			if err := sess.Sync(sctx); err != nil && r.err == nil {
 				r.err = fmt.Errorf("sync: %w", err)
 			}
+			scancel()
 		}
 	}
 	status, errStr := "ok", ""
@@ -518,7 +522,7 @@ func runPair(
 
 	meta := pairMeta{
 		Agent: p.Agent, Harness: a.Harness, Task: p.Task,
-		Sandbox: sbID, Image: sb.Image,
+		Sandbox: sbID, Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
 		PatsVersion:  version.Info.Version,
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,

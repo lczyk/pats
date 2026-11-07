@@ -19,6 +19,9 @@ import (
 // push, the in-sandbox prepare. the task's timeout covers the agent only.
 const setupTimeout = 10 * time.Minute
 
+// syncTimeout bounds bringing the agent's files home after it ran.
+const syncTimeout = 10 * time.Minute
+
 // prepareMount is where the prepare step's material lives inside the sandbox
 // while it runs: the script, a -cmd's file, and the pats root's bin/. it is
 // removed before the agent starts, since the agent can read everything else.
@@ -122,8 +125,14 @@ func runPrepare(ctx context.Context, sess sandbox.Session, root, taskDir string,
 		return err
 	}
 	code, err := sess.Exec(ctx, sandbox.Cmd{Argv: inPath(prepareMount, argv), Env: env, Root: true}, log, log)
-	cleanup := []string{"rm", "-rf", prepareMount}
-	if _, cerr := sess.Exec(context.WithoutCancel(ctx), sandbox.Cmd{Argv: cleanup, Root: true}, io.Discard, io.Discard); cerr != nil && err == nil {
+	// the agent must never see this material: a failed removal fails setup.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	ccode, cerr := sess.Exec(cctx, sandbox.Cmd{Argv: []string{"rm", "-rf", prepareMount}, Root: true}, io.Discard, io.Discard)
+	if cerr == nil && ccode != 0 {
+		cerr = fmt.Errorf("exited %d", ccode)
+	}
+	if cerr != nil && err == nil {
 		err = fmt.Errorf("remove %s: %w", prepareMount, cerr)
 	}
 	if err != nil {
