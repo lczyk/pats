@@ -37,8 +37,10 @@ sandbox:
 ```
 
 - **open** no `egress` key means no filtering at all: the agent reaches the internet, and also the host, its lan and
-  a cloud host's metadata endpoint (`169.254.169.254`). `egress: {default: allow}` is the internet without those:
-  every host passes, but the dial guard refuses private, loopback and link-local targets.
+  a cloud host's metadata endpoint (`169.254.169.254`). `egress: {default: allow}` passes every host but has the dial
+  guard refuse what is never the public internet: loopback, rfc1918 and `fc00::/7`, link-local (the metadata endpoint
+  among it), multicast and carrier-grade nat `100.64.0.0/10` (where tailscale and the like put a host's network). a
+  host or lan numbered out of global addresses is not covered: it looks like the internet from here.
 - **precedence** a deny match always wins, then an allow match, then `default`. both lists apply under both postures.
   a bare host in `allow` under `default: allow` can never matter and is a load error.
 - **url entries** a glob's `*` matches anything, `/` included, over the whole path (and the query, when the glob names

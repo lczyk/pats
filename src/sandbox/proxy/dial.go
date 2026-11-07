@@ -50,11 +50,16 @@ func (g *Guard) check(addr netip.Addr) error {
 	}
 	switch {
 	case addr.IsLoopback(), addr.IsPrivate(), addr.IsLinkLocalUnicast(),
-		addr.IsLinkLocalMulticast(), addr.IsInterfaceLocalMulticast(), addr.IsMulticast():
+		addr.IsLinkLocalMulticast(), addr.IsInterfaceLocalMulticast(), addr.IsMulticast(),
+		sharedSpace.Contains(addr.Unmap()):
 		return &RefusedError{addr, "private"}
 	}
 	return nil
 }
+
+// sharedSpace is rfc 6598's carrier-grade nat range: never the public
+// internet, and where an overlay like tailscale puts a host's own network.
+var sharedSpace = netip.MustParsePrefix("100.64.0.0/10")
 
 func (g *Guard) control(_ context.Context, _, address string, _ syscall.RawConn) error {
 	ap, err := netip.ParseAddrPort(address)

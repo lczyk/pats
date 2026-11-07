@@ -11,8 +11,8 @@ sandbox:
       # with neither `image:` nor `build:`, the published pats sandbox pinned to this pats version (ghcr.io/lczyk/pats/sandbox:v<version>).
       # `build: <dir or Dockerfile>` builds a context at run start, with that image passed in as the PATS_SANDBOX build arg.
       # egress is the outbound network policy. absent: open, unfiltered (the host and its lan too). `egress: none`:
-      # no network. a mapping: a filtering proxy the sandbox can only reach the net through; `{default: allow}` is
-      # the internet without the host, lan or metadata endpoint. deny always wins, then allow, then `default` (deny).
+      # no network. a mapping: a filtering proxy the sandbox can only reach the net through; `{default: allow}` passes
+      # every host but private, link-local (metadata), multicast and cgnat addresses (a global-numbered lan still passes). deny always wins, then allow, then `default` (deny).
       # egress:
       #   allow:
       #     - .ubuntu.com                        # apt mirrors (a dot prefix covers subdomains)

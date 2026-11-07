@@ -283,6 +283,8 @@ func TestGuard(t *testing.T) {
 		{"fd00::1", false, true, "private"},
 		{"::ffff:10.0.0.5", false, true, "private"},
 		{"224.0.0.1", false, true, "private"},
+		{"100.100.1.1", false, true, "private"}, // cgnat: tailscale and the like
+		{"::ffff:100.64.0.1", false, true, "private"},
 		{"0.0.0.0", false, false, "unspecified"},
 		{"::", false, false, "unspecified"},
 		{"10.213.4.2", false, false, "refused-range"},
