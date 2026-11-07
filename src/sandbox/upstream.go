@@ -26,6 +26,17 @@ func NormalizeRef(ref string) string {
 	return ref
 }
 
+// Repository is ref's normalised repository, without its tag or digest:
+// what a RepoDigests entry names.
+func Repository(ref string) string {
+	ref, _, _ = strings.Cut(ref, "@")
+	n := NormalizeRef(ref)
+	if i := strings.LastIndexByte(n, ':'); i > strings.LastIndexByte(n, '/') {
+		n = n[:i]
+	}
+	return n
+}
+
 // RegistryDigest is the digest a tag names in its registry now, by a HEAD of
 // its manifest, with an anonymous token when the registry asks for one.
 func RegistryDigest(ctx context.Context, ref string) (string, error) {

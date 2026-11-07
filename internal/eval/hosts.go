@@ -119,8 +119,14 @@ func (h containerHost) inspect(ctx context.Context, ref string) (id, digest stri
 		return "", "", err
 	}
 	id, digests, _ := strings.Cut(out, "|")
-	if f := strings.Fields(digests); len(f) > 0 {
-		_, digest, _ = strings.Cut(f[0], "@")
+	// an image pulled from two repositories has a digest in each: the one
+	// of the repository asked for.
+	want := sandbox.Repository(ref)
+	for _, rd := range strings.Fields(digests) {
+		if name, d, ok := strings.Cut(rd, "@"); ok && sandbox.Repository(name) == want {
+			digest = d
+			break
+		}
 	}
 	return id, digest, nil
 }

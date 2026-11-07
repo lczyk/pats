@@ -139,3 +139,11 @@ func TestPublishedRepo(t *testing.T) {
 	assert.That(t, !publishedRepo("ghcr.io/lczyk/pats/sandbox:26.04"), "the ubuntu tag moves, and is not skipped")
 	assert.That(t, !publishedRepo("ubuntu:26.04"), "another image is not pats's")
 }
+
+// a pinned proxy that can move upstream is checked like the image.
+func TestUpstreamProxy(t *testing.T) {
+	e := &pinEntry{Inputs: map[string]string{}, Image: pinImage{Name: "my/image:1", Digest: "sha256:i"},
+		Proxy: &pinImage{Name: "ghcr.io/example/proxy:latest", Digest: "sha256:p"}}
+	upstreamInputs(context.Background(), config.Sandbox{Image: "my/image:1"}, t.TempDir(), newFakeHost(), e)
+	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:my/image:1": "sha256:i", "upstream:ghcr.io/example/proxy:latest": "sha256:p"})
+}

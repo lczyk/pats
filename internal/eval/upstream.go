@@ -61,6 +61,9 @@ func upstreamInputs(ctx context.Context, sb config.Sandbox, configDir string, h 
 	if !provisions(sb) && sb.Build == "" {
 		add(e.Image.Name, e.Image.Digest)
 	}
+	if e.Proxy != nil {
+		add(e.Proxy.Name, e.Proxy.Digest)
+	}
 }
 
 // fromImages are the images a container sandbox's build starts FROM.

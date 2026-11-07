@@ -56,3 +56,15 @@ func TestSplitRefHosts(t *testing.T) {
 	_, _, _, err := splitRef("team/image:latest")
 	assert.Error(t, err, "names no registry host")
 }
+
+func TestRepository(t *testing.T) {
+	for in, want := range map[string]string{
+		"ubuntu:26.04":                          "docker.io/library/ubuntu",
+		"ubuntu":                                "docker.io/library/ubuntu",
+		"ghcr.io/lczyk/pats/sandbox:v1":         "ghcr.io/lczyk/pats/sandbox",
+		"ghcr.io/lczyk/pats/sandbox@sha256:abc": "ghcr.io/lczyk/pats/sandbox",
+		"localhost:5000/team/img":               "localhost:5000/team/img",
+	} {
+		assert.Equal(t, Repository(in), want, in)
+	}
+}
