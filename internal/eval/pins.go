@@ -195,9 +195,32 @@ func (f *pinFile) setPin(target, sb string, e *pinEntry, now time.Time) {
 		f.Targets[target] = map[string]*pinEntry{}
 	}
 	if old := f.Targets[target][sb]; old != nil {
+		e.inheritOwnership(old)
 		f.supersede(target, old, e, now)
 	}
 	f.Targets[target][sb] = e
+}
+
+// inheritOwnership keeps what pats made as pats's when a new pin keeps the
+// same image: an init that finds its earlier pull present pulls nothing, but
+// the image is still the one pats brought.
+func (e *pinEntry) inheritOwnership(old *pinEntry) {
+	owned := map[string]pinImage{}
+	for _, im := range old.images() {
+		if im.owned() {
+			owned[im.ID] = im
+		}
+	}
+	keep := func(im *pinImage) {
+		if o, ok := owned[im.ID]; ok {
+			im.Built = im.Built || o.Built
+			im.Pulled = im.Pulled || o.Pulled
+		}
+	}
+	keep(&e.Image)
+	if e.Proxy != nil {
+		keep(e.Proxy)
+	}
 }
 
 // dropMissing removes the entries of sandboxes not in keep, superseding what

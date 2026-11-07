@@ -112,8 +112,10 @@ func (l *lxd) poolSpace(ctx context.Context) (free, total uint64, ok bool) {
 // fingerprint is an image's fingerprint: a pats-img- alias in the pats
 // project, anything else as the cli resolves it.
 func (l *lxd) fingerprint(ctx context.Context, ref string) (string, error) {
+	// a ref with no remote is an image on the sandbox's own server, where
+	// instances are made from it: in the pats project.
 	args := []string{"image", "info"}
-	if strings.HasPrefix(ref, "pats-img-") || isFingerprint(ref) {
+	if !strings.Contains(ref, ":") {
 		args = append(args, l.ref(ref), "--project", lxdProject)
 	} else {
 		args = append(args, ref)
@@ -144,6 +146,35 @@ func LXDFingerprint(ctx context.Context, o Options, ref string) (string, error) 
 		return "", err
 	}
 	return l.fingerprint(ctx, ref)
+}
+
+// LXDCopyImage brings ref, an image on another remote (ubuntu:26.04), onto
+// o's server in the pats project, so instances start from it there without a
+// download; present already, it is left alone unless force. it returns the
+// fingerprint, and whether this call copied it.
+func LXDCopyImage(ctx context.Context, o Options, ref string, force bool) (string, bool, error) {
+	l := newLXD(defaultProcess, lxcCLI, o)
+	if err := l.prepareServer(ctx); err != nil {
+		return "", false, err
+	}
+	return l.copyImage(ctx, ref, force)
+}
+
+func (l *lxd) copyImage(ctx context.Context, ref string, force bool) (string, bool, error) {
+	fp, err := l.fingerprint(ctx, ref)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := l.fingerprint(ctx, fp); err == nil && !force {
+		return fp, false, nil
+	}
+	if _, err := l.lxc(ctx, "image", "copy", ref, l.o.Remote+":", "--target-project", lxdProject); err != nil {
+		// a forced copy of what is already there: lxd says it exists.
+		if _, ferr := l.fingerprint(ctx, fp); ferr != nil {
+			return "", false, err
+		}
+	}
+	return fp, true, nil
 }
 
 // LXDRemote is the remote o names, or the cli's default when it names none,

@@ -44,6 +44,7 @@ type fakeServer struct {
 	acls     map[string]*fakeACL     // the default project's
 	images   map[string]*fakeImage   // the pats project's, by fingerprint
 	bases    map[string]string       // refs on image servers -> fingerprint
+	copies   int                     // image copies onto the server
 	ops      []*fakeOp
 	execs    map[*fakeExec]bool
 	seq      int
@@ -191,7 +192,7 @@ func (a fakeArgs) flag(name string) string {
 
 func (f *fakeServer) parse(args []string) (fakeArgs, error) {
 	a := fakeArgs{flags: map[string][]string{}, bools: map[string]bool{}}
-	valued := map[string]bool{"--project": true, "--storage": true, "-c": true, "-d": true, "-p": true, "-n": true,
+	valued := map[string]bool{"--project": true, "--target-project": true, "--storage": true, "-c": true, "-d": true, "-p": true, "-n": true,
 		"--user": true, "--group": true, "--cwd": true, "--env": true, "--alias": true}
 	boolean := map[string]bool{"--vm": true, "--force": true, "--force-noninteractive": true}
 	for i := 0; i < len(args); i++ {
@@ -631,12 +632,34 @@ func (f *fakeServer) image(stdout, stderr io.Writer, a fakeArgs) error {
 		if err := f.needProject(stderr, a, lxdProject); err != nil {
 			return err
 		}
-		_, name := lxcRef(ref)
+		r, name := lxcRef(ref)
+		if fp, ok := f.bases[name]; ok && r == f.remote {
+			fmt.Fprintf(stdout, "Fingerprint: %s\nSize: 100.00MiB\n", fp)
+			return nil
+		}
 		fp := f.lookupImage(name)
 		if fp == "" {
 			return lxcFail(stderr, "not found")
 		}
 		fmt.Fprintf(stdout, "Fingerprint: %s\nSize: 100.00MiB\n", fp)
+		return nil
+	case p[1] == "copy":
+		fp, ok := f.bases[p[2]]
+		if !ok {
+			return lxcFail(stderr, "Image not found")
+		}
+		if r, _ := lxcRef(p[3]); r != f.remote {
+			f.t.Errorf("fake lxd: image copy to %s, not the pinned remote", p[3])
+			return lxcFail(stderr, "The remote %q does not exist", r)
+		}
+		if got := a.flag("--target-project"); got != lxdProject {
+			f.t.Errorf("fake lxd: image copy into project %q", got)
+		}
+		if f.images[fp] != nil {
+			return lxcFail(stderr, "Image with same fingerprint already exists")
+		}
+		f.images[fp] = &fakeImage{props: map[string]string{}}
+		f.copies++
 		return nil
 	case p[1] == "alias" && p[2] == "create":
 		if err := f.needProject(stderr, a, lxdProject); err != nil {

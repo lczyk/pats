@@ -231,13 +231,22 @@ func ensurePulled(ctx context.Context, h puller, ref string, published, force bo
 // initLXD makes an lxd sandbox's layers and proxy on its server, logging to
 // .pats/init/<sandbox>.log, and pins them by fingerprint.
 func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, o sandbox.Options, e *pinEntry) error {
-	if sb.Image != "" {
+	switch {
+	case strings.Contains(sb.Image, ":"):
+		// an image of another remote: copied onto the server now, so a run
+		// never downloads it.
+		fp, copied, err := sandbox.LXDCopyImage(ctx, o, sb.Image, opts.Force)
+		if err != nil {
+			return err
+		}
+		e.Image = pinImage{ID: fp, Name: sb.Image, Pulled: copied}
+	case sb.Image != "":
 		fp, err := sandbox.LXDFingerprint(ctx, o, sb.Image)
 		if err != nil {
 			return err
 		}
 		e.Image = pinImage{ID: fp, Name: sb.Image}
-	} else {
+	default:
 		logPath := filepath.Join(ro.ConfigDir, ".pats", "init", sb.ID+".log")
 		alias, layers, _, err := lxdImage(ctx, sb, ro, logPath)
 		if err != nil {
@@ -274,17 +283,6 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 	return nil
 }
 
-// runImage is the ref a run starts the sandbox from: the pinned id, on the
-// remote the configured image named for an lxd image of another server.
-func (e *pinEntry) runImage(sb config.Sandbox) string {
-	if sb.Driver == "lxd" && sb.Image != "" {
-		if remote, _, ok := strings.Cut(e.Image.Name, ":"); ok {
-			return remote + ":" + e.Image.ID
-		}
-	}
-	return e.Image.ID
-}
-
 // usePins points each sandbox the pairs use at its pinned images, and stops
 // the run, naming the init that fixes it, when one is not pinned for where
 // the run would start it, or its image is gone.
@@ -312,7 +310,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reason = "not pinned for " + target
 		case e.Daemon != daemon:
 			reason = "pinned against another " + sb.Driver + " daemon"
-		case !h.present(ctx, e.runImage(sb)):
+		case !h.present(ctx, e.Image.ID):
 			reason = "its pinned image " + short(e.Image.ID) + " is gone"
 		case sb.Egress.Set && e.Proxy == nil:
 			reason = "no egress proxy pinned"
@@ -324,7 +322,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reasons = append(reasons, fmt.Sprintf("  %s: %s", sb.ID, reason))
 			continue
 		}
-		cfg.Sandboxes[i].Image = e.runImage(sb)
+		cfg.Sandboxes[i].Image = e.Image.ID
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
 		}

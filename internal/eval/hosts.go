@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -61,6 +62,11 @@ func (h containerHost) cli(ctx context.Context, args ...string) (string, error) 
 // it has no connection configured.
 func (h containerHost) target(ctx context.Context) (string, string, error) {
 	if h.driver == "podman" {
+		// the cli's own overrides first: a service uri, then a named connection.
+		if uri := os.Getenv("CONTAINER_HOST"); uri != "" {
+			return "podman:" + uri, uri, nil
+		}
+		want := os.Getenv("CONTAINER_CONNECTION")
 		out, err := h.cli(ctx, "system", "connection", "list", "--format", "json")
 		if err != nil {
 			return "", "", err
@@ -72,9 +78,12 @@ func (h containerHost) target(ctx context.Context) (string, string, error) {
 		}
 		_ = json.Unmarshal([]byte(out), &conns)
 		for _, c := range conns {
-			if c.Default {
+			if (want != "" && c.Name == want) || (want == "" && c.Default) {
 				return "podman:" + c.Name, c.URI, nil
 			}
+		}
+		if want != "" {
+			return "", "", fmt.Errorf("podman connection %q (CONTAINER_CONNECTION) not found", want)
 		}
 		return "podman:local", "local", nil
 	}

@@ -530,3 +530,33 @@ func TestLXDLease(t *testing.T) {
 		assert.That(t, !alive(f, l), "the gap the lease model accepts closed: update docs/spec/fizz/lxd_lease.fizz")
 	})
 }
+
+// an image of another remote is copied onto the server once, into the pats
+// project, and found there by its fingerprint after; force copies again.
+func TestLXDCopyImageOnServer(t *testing.T) {
+	f := newFakeServer(t)
+	l := lxdOn(t, f, Options{})
+	require.NoError(t, l.prepareServer(context.Background()))
+	fp, copied, err := l.copyImage(context.Background(), "ubuntu:26.04", false)
+	require.NoError(t, err)
+	assert.Equal(t, fp, fakeFP("ubuntu:26.04"))
+	assert.That(t, copied, "the first copy did not copy")
+	got, err := l.fingerprint(context.Background(), fp)
+	require.NoError(t, err)
+	assert.Equal(t, got, fp)
+
+	_, copied, err = l.copyImage(context.Background(), "ubuntu:26.04", false)
+	require.NoError(t, err)
+	assert.That(t, !copied, "a present image was copied again")
+	assert.Equal(t, f.copies, 1)
+	_, copied, err = l.copyImage(context.Background(), "ubuntu:26.04", true)
+	require.NoError(t, err) // lxd's "already exists" is not an error here
+	assert.That(t, copied, "force did not copy")
+
+	// an unqualified ref is an image on the sandbox's server, not the cli default's.
+	f.reset()
+	got, err = l.fingerprint(context.Background(), "img")
+	require.NoError(t, err)
+	assert.Equal(t, got, fakeFP("img"))
+	assert.ContainsString(t, strings.Join(f.call("image info"), " "), "image info srv:img --project pats")
+}
