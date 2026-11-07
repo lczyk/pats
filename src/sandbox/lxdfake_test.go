@@ -826,11 +826,13 @@ func sortedNames[V any](m map[string]V) []string {
 	return out
 }
 
-// killExecs ends the execs running in inst, all or only user's; f.mu is held.
+// killExecs ends the execs running in inst, all or only user's; f.mu is
+// held. they are gone from the server at once, as a killed process is.
 func (f *fakeServer) killExecs(inst, user string) {
 	for x := range f.execs {
 		if x.inst == inst && (user == "" || x.user == user) {
 			x.kill()
+			delete(f.execs, x)
 		}
 	}
 }
