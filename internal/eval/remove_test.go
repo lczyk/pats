@@ -188,7 +188,7 @@ type vanishingHost struct {
 
 func (h vanishingHost) inspect(ctx context.Context, ref string) (string, string, error) {
 	id, digest, err := h.fakeHost.inspect(ctx, ref)
-	if *h.inspects++; *h.inspects == 2 { // the second is the one init pins
+	if *h.inspects++; *h.inspects == 1 { // the one init pins
 		delete(h.refs, ref)
 	}
 	return id, digest, err
@@ -378,4 +378,17 @@ func TestForcedPullOfTheSameImage(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualArrays(t, h.pulls, []string{"u/img:1"})
 	assert.That(t, !im.owned(), "an unchanged forced pull took the user's image")
+}
+
+// a pull that lands on an image the daemon already held untagged does not
+// make it pats's.
+func TestPullOntoAnUntaggedImage(t *testing.T) {
+	h := newFakeHost()
+	h.untagged = map[string]bool{"sha256:x": true}
+	h.pullTo = "sha256:x"
+	var out bytes.Buffer
+	im, err := ensurePulled(context.Background(), h, "u/img:1", false, logw{&out, false}, &out)
+	require.NoError(t, err)
+	assert.Equal(t, im.ID, "sha256:x")
+	assert.That(t, !im.owned(), "a pull onto a held image took it as pats's")
 }

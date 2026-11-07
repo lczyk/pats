@@ -33,6 +33,8 @@ type puller interface {
 	inspect(ctx context.Context, ref string) (id, digest string, err error)
 	// pull fetches ref, its progress to log.
 	pull(ctx context.Context, ref string, log io.Writer) error
+	// ids is every image id the daemon holds, tagged or not.
+	ids(ctx context.Context) (map[string]bool, error)
 }
 
 // hostFor is the image host of a sandbox's driver; a var so tests fake it.
@@ -121,6 +123,18 @@ func (h containerHost) inspect(ctx context.Context, ref string) (id, digest stri
 		_, digest, _ = strings.Cut(f[0], "@")
 	}
 	return id, digest, nil
+}
+
+func (h containerHost) ids(ctx context.Context) (map[string]bool, error) {
+	out, err := h.cli(ctx, "images", "-a", "-q", "--no-trunc")
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{}
+	for _, id := range strings.Fields(out) {
+		ids[id] = true
+	}
+	return ids, nil
 }
 
 func (h containerHost) pull(ctx context.Context, ref string, log io.Writer) error {

@@ -22,7 +22,9 @@ type fakeHost struct {
 	pulls              []string
 	stamped            map[string]string // the stamps every image carries
 	stampErr           error
-	samePull           bool // a pull finds the image it already has
+	samePull           bool            // a pull finds the image it already has
+	untagged           map[string]bool // ids held with no ref
+	pullTo             string          // the id a pull lands on, when set
 }
 
 func newFakeHost(refs ...string) *fakeHost {
@@ -67,6 +69,17 @@ func (h *fakeHost) inspect(_ context.Context, ref string) (string, string, error
 	return "", "", errNoImage
 }
 
+func (h *fakeHost) ids(context.Context) (map[string]bool, error) {
+	ids := map[string]bool{}
+	for _, id := range h.refs {
+		ids[id] = true
+	}
+	for id := range h.untagged {
+		ids[id] = true
+	}
+	return ids, nil
+}
+
 func (h *fakeHost) pull(_ context.Context, ref string, log io.Writer) error {
 	fmt.Fprintf(log, "pulled %s\n", ref)
 	h.pulls = append(h.pulls, ref)
@@ -74,6 +87,9 @@ func (h *fakeHost) pull(_ context.Context, ref string, log io.Writer) error {
 		return nil
 	}
 	h.refs[ref] = "sha256:pulled-" + ref
+	if h.pullTo != "" {
+		h.refs[ref] = h.pullTo
+	}
 	return nil
 }
 
