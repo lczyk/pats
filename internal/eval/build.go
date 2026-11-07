@@ -108,6 +108,10 @@ func provisions(sb config.Sandbox) bool {
 	return sb.Base != "" || sb.Provision != "" || sb.ProvisionCmd != ""
 }
 
+// lxdImageFn is sandbox.LXDImage, a var like newSandbox, so the build's
+// progress, warnings and errors are tested without a server.
+var lxdImageFn = sandbox.LXDImage
+
 // lxdImage provisions an lxd sandbox's image: with no base, the pats
 // sandbox's tools on ubuntu first, then the sandbox's own provision on top --
 // two cached images in a chain, the first's alias in the second's key. the
@@ -136,7 +140,7 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 			return "", false, err
 		}
 		defer sandbox.RemoveTemp(material)
-		base, anyBuilt, err = sandbox.LXDImage(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn}, logF)
+		base, anyBuilt, err = lxdImageFn(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn}, logF)
 		if err != nil {
 			return "", false, fail(err)
 		}
@@ -150,7 +154,7 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 		defer sandbox.RemoveTemp(material)
 		spec.Material, spec.Argv = material, argv
 	}
-	alias, built, err := sandbox.LXDImage(ctx, o, spec, logF)
+	alias, built, err := lxdImageFn(ctx, o, spec, logF)
 	if err != nil {
 		return "", false, fail(err)
 	}
