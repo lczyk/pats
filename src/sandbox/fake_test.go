@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -246,4 +247,81 @@ func (c *manualClock) Advance(d time.Duration) {
 			t.next = t.next.Add(t.every)
 		}
 	}
+}
+
+// fakeFault fails one call of a fake cli: the fake does nothing of it, or,
+// with after, does it and the client still sees a failure. with cancel, the
+// call's context is ended there instead (a deadline, ctrl+c): before the
+// fake acts, or after, when the client is killed while the daemon carries
+// on.
+type fakeFault struct {
+	at     int // the call it hits, counting from 0
+	after  bool
+	cancel context.CancelFunc
+}
+
+// faults puts at most one fault into a fake cli's calls.
+type faults struct {
+	mu      sync.Mutex
+	plan    *fakeFault
+	n       int    // calls so far
+	hit     bool   // the fault was reached
+	hitCall string // the call it hit
+}
+
+// arm faults the at-th call from now.
+func (fs *faults) arm(at int, after bool, cancel context.CancelFunc) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.plan = &fakeFault{at: fs.n + at, after: after, cancel: cancel}
+}
+
+// off ends fault injection: what follows is outside the swept calls.
+func (fs *faults) off() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.plan != nil && fs.plan.at >= fs.n {
+		fs.plan = nil
+	}
+}
+
+func (fs *faults) reached() (bool, string) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.hit, fs.hitCall
+}
+
+// call serves one call of a fake cli through do, faulting it if it is the
+// planned one. do is told when the client dies after the fake acted.
+func (fs *faults) call(ctx context.Context, args []string, stderr io.Writer, do func(killed bool) error) error {
+	fs.mu.Lock()
+	n := fs.n
+	fs.n++
+	var f *fakeFault
+	if fs.plan != nil && fs.plan.at == n {
+		f = fs.plan
+		fs.hit, fs.hitCall = true, strings.Join(args, " ")
+	}
+	fs.mu.Unlock()
+	// a context already done starts nothing, as with os/exec.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switch {
+	case f == nil:
+		return do(false)
+	case !f.after && f.cancel != nil:
+		f.cancel()
+		return exitStatus(-1)
+	case !f.after:
+		fmt.Fprintln(stderr, "Error: injected fault")
+		return exitStatus(1)
+	case f.cancel != nil:
+		_ = do(true)
+		f.cancel()
+		return exitStatus(-1)
+	}
+	_ = do(false)
+	fmt.Fprintln(stderr, "Error: injected fault after the daemon acted")
+	return exitStatus(1)
 }

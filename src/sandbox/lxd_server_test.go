@@ -249,14 +249,15 @@ func sweep(t *testing.T, entry func(t *testing.T, f *fakeServer, ctx context.Con
 		for k := 0; ; k++ {
 			f := newFakeServer(t)
 			ctx, cancel := context.WithCancel(context.Background())
-			f.fault = &fakeFault{at: k, after: kind.after}
+			var stop context.CancelFunc
 			if kind.cancel {
-				f.fault.cancel = cancel
+				stop = cancel
 			}
+			f.faults.arm(k, kind.after, stop)
 			p := entry(t, f, ctx)
 			cancel()
 			p.shutdown()
-			call := f.hitCall
+			hit, call := f.faults.reached()
 			left := f.leftovers(p.token)
 			if len(left) > 0 && isRemoval(call) {
 				// a removal that fails leaves what it removes: the next
@@ -268,7 +269,7 @@ func sweep(t *testing.T, entry func(t *testing.T, f *fakeServer, ctx context.Con
 				t.Errorf("%s at fault %d (lxc %s) left:\n  %s", kind.name, k, call, strings.Join(left, "\n  "))
 				return
 			}
-			if !f.hit {
+			if !hit {
 				assert.That(t, k > 0, "%s: the entry made no calls; the sweep tested nothing", kind.name)
 				break
 			}
@@ -284,7 +285,7 @@ func isRemoval(call string) bool {
 // cleanLater runs pats clean from another process an hour on, when every run
 // not renewing its lease is dead.
 func cleanLater(t *testing.T, f *fakeServer) {
-	f.noFaults()
+	f.faults.off()
 	c := lxdOn(t, f, Options{Remote: "srv"})
 	c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
 	require.NoError(t, c.clean(context.Background(), false, false, io.Discard))
@@ -301,7 +302,7 @@ func TestLXDSweepStart(t *testing.T) {
 				sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
 					l := lxdOn(t, f, Options{VM: vm, ProxyBin: bin})
 					sess, err := l.Start(ctx, Spec{Workdir: t.TempDir(), Egress: mode.egress})
-					f.noFaults()
+					f.faults.off()
 					if err == nil {
 						sess.Close()
 					}
@@ -329,16 +330,14 @@ func TestLXDSweepClose(t *testing.T) {
 	for _, mode := range lxdEgressModes {
 		t.Run(mode.name, func(t *testing.T) {
 			sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
-				at := f.fault.at
-				f.fault = nil
+				plan := f.faults.plan
+				f.faults.off()
 				l := lxdOn(t, f, Options{ProxyBin: bin})
 				sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: mode.egress})
 				require.NoError(t, err)
-				f.mu.Lock()
-				f.fault = &fakeFault{at: f.n + at}
-				f.mu.Unlock()
+				f.faults.arm(plan.at, plan.after, plan.cancel)
 				sess.Close()
-				f.noFaults()
+				f.faults.off()
 				return l.p
 			})
 		})
@@ -364,19 +363,17 @@ func crash(p *process) {
 func TestLXDSweepClean(t *testing.T) {
 	bin := proxyBin(t)
 	sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
-		at := f.fault.at
-		f.fault = nil
+		plan := f.faults.plan
+		f.faults.off()
 		dead := lxdOn(t, f, Options{ProxyBin: bin})
 		_, err := dead.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: lxdEgressModes[2].egress})
 		require.NoError(t, err)
 		crash(dead.p)
 		c := lxdOn(t, f, Options{Remote: "srv"})
 		c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
-		f.mu.Lock()
-		f.fault = &fakeFault{at: f.n + at}
-		f.mu.Unlock()
+		f.faults.arm(plan.at, plan.after, plan.cancel)
 		_ = c.clean(ctx, false, false, io.Discard)
-		f.noFaults()
+		f.faults.off()
 		cleanLater(t, f)
 		return dead.p
 	})

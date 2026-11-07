@@ -66,20 +66,7 @@ type fakeServer struct {
 	// another client did to the server meanwhile.
 	before func(args []string)
 
-	fault   *fakeFault
-	n       int  // calls so far
-	hit     bool // the fault was reached
-	hitCall string
-}
-
-// fakeFault fails the at-th call (from 0): the server does nothing of it, or,
-// with after, does it and the client still sees a failure. with cancel, the
-// call's context is ended there instead (a deadline, ctrl+c), and an init or
-// launch the server had begun finishes on the next call.
-type fakeFault struct {
-	at     int
-	after  bool
-	cancel context.CancelFunc
+	faults faults
 }
 
 type fakeProfile struct {
@@ -163,51 +150,14 @@ func lxdOn(t *testing.T, f *fakeServer, o Options) *lxd {
 func (f *fakeServer) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 	f.record(args)
 	f.mu.Lock()
-	n := f.n
-	f.n++
 	f.tickOps()
 	if f.before != nil {
 		f.before(args)
 	}
-	fault := f.fault
-	if fault == nil || fault.at != n {
-		fault = nil
-	} else {
-		f.hit, f.hitCall = true, strings.Join(args, " ")
-	}
 	f.mu.Unlock()
-
-	// a context already done starts nothing, as with os/exec.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if fault != nil && !fault.after {
-		if fault.cancel != nil {
-			fault.cancel()
-			return exitStatus(-1)
-		}
-		fmt.Fprintln(stderr, "Error: injected fault")
-		return exitStatus(1)
-	}
-	if fault != nil && fault.cancel != nil && len(args) > 2 && (args[0] == "init" || args[0] == "launch") {
-		// the client is killed; the server's half of the create goes on.
-		fault.cancel()
-		f.mu.Lock()
-		_, name := lxcRef(args[2])
-		f.slow[name] = 1
-		f.mu.Unlock()
-		return f.do(ctx, stdin, stdout, stderr, args)
-	}
-	err := f.do(ctx, stdin, stdout, stderr, args)
-	if fault != nil {
-		if fault.cancel != nil {
-			fault.cancel()
-			return exitStatus(-1)
-		}
-		fmt.Fprintln(stderr, "Error: injected fault after the server acted")
-		return exitStatus(1)
-	}
-	return err
+	return f.faults.call(ctx, args, stderr, func(killed bool) error {
+		return f.do(ctx, stdin, stdout, stderr, args, killed)
+	})
 }
 
 // tickOps advances every running operation by one call; f.mu is held.
@@ -292,7 +242,8 @@ func lxcFail(stderr io.Writer, format string, a ...any) error {
 	return exitStatus(1)
 }
 
-func (f *fakeServer) do(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+// do serves one call; killed says the client dies once the server acted.
+func (f *fakeServer) do(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string, killed bool) error {
 	a, err := f.parse(args)
 	if err != nil {
 		return lxcFail(stderr, "%v", err)
@@ -335,7 +286,7 @@ func (f *fakeServer) do(ctx context.Context, stdin io.Reader, stdout, stderr io.
 	case at(0) == "network":
 		return f.network(stdout, stderr, a)
 	case at(0) == "init" || at(0) == "launch":
-		return f.create(ctx, stderr, a)
+		return f.create(ctx, stderr, a, killed)
 	case at(0) == "config" && at(1) == "device" && at(2) == "add":
 		return f.deviceAdd(stderr, a)
 	case at(0) == "start":
@@ -539,7 +490,7 @@ func (f *fakeServer) lookupImage(name string) string {
 	return ""
 }
 
-func (f *fakeServer) create(ctx context.Context, stderr io.Writer, a fakeArgs) error {
+func (f *fakeServer) create(ctx context.Context, stderr io.Writer, a fakeArgs, killed bool) error {
 	if err := f.needProject(stderr, a, lxdProject); err != nil {
 		return err
 	}
@@ -587,6 +538,11 @@ func (f *fakeServer) create(ctx context.Context, stderr io.Writer, a fakeArgs) e
 		inst.running = true
 	}
 	mk := func() { f.insts[name] = inst }
+	if killed {
+		// the client is gone; the server's half of the create goes on.
+		f.ops = append(f.ops, &fakeOp{inst: name, left: 1, make: mk})
+		return exitStatus(-1)
+	}
 	if calls, ok := f.slow[name]; ok {
 		delete(f.slow, name)
 		f.ops = append(f.ops, &fakeOp{inst: name, left: calls, make: mk})
@@ -1117,15 +1073,6 @@ func (f *fakeServer) leftovers(token string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// noFaults ends fault injection: what follows is outside the swept call.
-func (f *fakeServer) noFaults() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.fault != nil && f.fault.at >= f.n {
-		f.fault = nil
-	}
 }
 
 // put stores a file in an instance, for a test to pull.
