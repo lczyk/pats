@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,15 +198,15 @@ func TestBuildImage(t *testing.T) {
 	require.NoError(t, err)
 
 	// nothing labelled with this hash yet.
-	assert.Equal(t, cachedImageID(context.Background(), "docker", hash), "")
+	assert.Equal(t, cachedImageID(context.Background(), cliRunner("docker"), hash), "")
 
-	id, err := buildImage(context.Background(), "docker", ctxDir, df, hash, "")
+	id, err := buildImage(context.Background(), cliRunner("docker"), "docker", ctxDir, df, hash, "")
 	require.NoError(t, err)
 	assert.ContainsString(t, id, "sha256:")
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", id).Run() })
 
 	// same inputs -> the label lookup finds the image, no rebuild needed.
-	assert.Equal(t, cachedImageID(context.Background(), "docker", hash), id)
+	assert.Equal(t, cachedImageID(context.Background(), cliRunner("docker"), hash), id)
 
 	// an edit changes the hash -> lookup misses.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("changed\n"), 0o644))
@@ -213,10 +215,10 @@ func TestBuildImage(t *testing.T) {
 	hash2, err := buildContextHash(ctxDir, df, dfData2, dfErr2, "")
 	require.NoError(t, err)
 	assert.That(t, hash != hash2, "edit did not change the hash")
-	assert.Equal(t, cachedImageID(context.Background(), "docker", hash2), "")
+	assert.Equal(t, cachedImageID(context.Background(), cliRunner("docker"), hash2), "")
 
 	// empty hash (hashing failed upstream) never matches anything.
-	assert.Equal(t, cachedImageID(context.Background(), "docker", ""), "")
+	assert.Equal(t, cachedImageID(context.Background(), cliRunner("docker"), ""), "")
 }
 
 // the bases a dockerfile builds on, as the build resolves them: the pats arg
@@ -247,16 +249,24 @@ FROM scratch
 // a base refreshed locally changes the key; an absent one is pulled first, as
 // the build would, so the key does not move again on the next run.
 func TestBaseImageIDs(t *testing.T) {
-	dir := t.TempDir()
-	state := filepath.Join(dir, "pulled")
-	drv := filepath.Join(dir, "drv")
-	script := `#!/bin/sh
-case "$1" in
-  image) [ -f ` + state + ` ] && echo sha256:new || { [ "$5" = present:1 ] && echo sha256:old || exit 1; } ;;
-  pull) touch ` + state + ` ;;
-esac
-`
-	require.NoError(t, os.WriteFile(drv, []byte(script), 0o755))
+	pulled := false
+	drv := runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		switch args[0] {
+		case "image":
+			switch {
+			case pulled:
+				io.WriteString(stdout, "sha256:new\n")
+			case args[len(args)-1] == "present:1":
+				io.WriteString(stdout, "sha256:old\n")
+			default:
+				io.WriteString(stderr, "no such image")
+				return errors.New("exit status 1")
+			}
+		case "pull":
+			pulled = true
+		}
+		return nil
+	})
 	ids, err := baseImageIDs(context.Background(), drv, []string{"present:1"})
 	require.NoError(t, err)
 	assert.Equal(t, ids, "present:1=sha256:old\n")

@@ -25,13 +25,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/lczyk/pats/src/sandbox/proxy"
 )
@@ -71,7 +68,8 @@ type Mount struct {
 // Session to push files into, run commands in (as root or as the agent) and
 // pull files out of; Run is the one-shot form, Start + one agent Exec of
 // spec.Argv with spec.Env + Close. a non-zero exit is NOT a Go error -- only a
-// failure to run (launch, context cancel, driver error) returns a non-nil err.
+// failure to run (launch, a context already done, driver error) returns a
+// non-nil err.
 type Sandbox interface {
 	Start(ctx context.Context, spec Spec) (Session, error)
 	Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error)
@@ -86,7 +84,8 @@ type Session interface {
 	Pull(ctx context.Context, path, hostDir string) error
 	// Exec runs cmd to completion, streaming its output. on ctx cancel the
 	// sandbox is stopped, since stopping the driver's client does not stop
-	// the process inside.
+	// the process inside; what was killed reports its exit status, not an
+	// error, so the caller tells a cancel by its context.
 	Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error)
 	// HandOver ends the root part of a session: what root left under paths
 	// goes to the agent user (a missing path is skipped), and the agent gets
@@ -143,10 +142,29 @@ type Options struct {
 	VM       bool              // a virtual machine rather than a system container
 	Profiles []string          // in the pats project
 	Config   map[string]string // instance config, passed through
+	Uplink   string            // an existing bridge for builders and proxies; "" -> pats's own
+	ProxyBin string            // a linux pats for the server's arch, put in the proxy image
+	// EgressPool is the cidr egress networks are carved from; "" -> the
+	// default. docker, podman and lxd.
+	EgressPool string
 	// Progress and Warn, when set, get the steps and warnings of an image
 	// the driver builds on its own (lxd's egress proxy image).
 	Progress func(msg string)
 	Warn     func(msg string)
+}
+
+// WithEnv fills what o leaves unset from the environment: EgressPoolEnv,
+// LXDUplinkEnv, LXDProxyBinEnv. the drivers themselves read none of it.
+func (o Options) WithEnv() Options {
+	set := func(f *string, env string) {
+		if *f == "" {
+			*f = os.Getenv(env)
+		}
+	}
+	set(&o.EgressPool, EgressPoolEnv)
+	set(&o.Uplink, LXDUplinkEnv)
+	set(&o.ProxyBin, LXDProxyBinEnv)
+	return o
 }
 
 // Limits caps a sandbox's resources; zero values leave the driver's default.
@@ -156,19 +174,20 @@ type Limits struct {
 	Disk   string // lxd only
 }
 
-// New builds a Sandbox for o.Driver. every driver needs an image.
+// New builds a Sandbox for o.Driver. every driver needs an image. the drivers
+// read no environment: a caller that honours it passes o.WithEnv().
 func New(o Options) (Sandbox, error) {
 	switch o.Driver {
 	case "docker", "podman":
 		if o.Image == "" {
 			return nil, fmt.Errorf("sandbox driver %q needs an image", o.Driver)
 		}
-		return &container{driver: o.Driver, bin: o.Driver, image: o.Image, limits: o.Limits}, nil
+		return newContainer(defaultProcess, cliRunner(o.Driver), o), nil
 	case "lxd":
 		if o.Image == "" {
 			return nil, errors.New("sandbox driver lxd needs an image")
 		}
-		return newLXD(o), nil
+		return newLXD(defaultProcess, lxcCLI, o), nil
 	case "bwrap":
 		return nil, errors.New("sandbox driver bwrap not implemented yet")
 	case "":
@@ -178,32 +197,31 @@ func New(o Options) (Sandbox, error) {
 	}
 }
 
-// container drives docker / podman (cli-compatible). driver is which of the
-// two; bin is the executable, the same name outside tests.
+// container drives docker / podman (cli-compatible); driver is which of the
+// two, and the cli r runs.
 type container struct {
+	p      *process
+	r      runner
 	driver string
-	bin    string
 	image  string
 	limits Limits
-	// exec/execOut run the cli, swappable in tests (nil -> real exec). they
-	// cover the setup/teardown plumbing (egress etc.); the main agent `run`
-	// streams via exec.CommandContext directly and stays e2e-tested.
-	exec    func(ctx context.Context, bin string, args ...string) (string, error)
-	execOut func(ctx context.Context, bin string, args ...string) ([]byte, error)
+	// egressPool is Options.EgressPool, parsed when a proxy needs it.
+	egressPool string
 }
 
+func newContainer(p *process, r runner, o Options) *container {
+	return &container{p: p, r: r, driver: o.Driver, image: o.Image, limits: o.Limits, egressPool: o.EgressPool}
+}
+
+// docker runs the cli and returns its output, stdout and stderr together.
 func (c *container) docker(ctx context.Context, args ...string) (string, error) {
-	if c.exec != nil {
-		return c.exec(ctx, c.bin, args...)
-	}
-	return docker(ctx, c.bin, args...)
+	return combined(ctx, c.r, args...)
 }
 
+// dockerOut runs the cli and returns its stdout alone, stderr in the error:
+// else a failed `docker run` collapses to a bare "exit status 125".
 func (c *container) dockerOut(ctx context.Context, args ...string) ([]byte, error) {
-	if c.execOut != nil {
-		return c.execOut(ctx, c.bin, args...)
-	}
-	return dockerOut(ctx, c.bin, args...)
+	return output(ctx, c.r, args...)
 }
 
 func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error) {
@@ -238,7 +256,7 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 		"-v", abs + ":" + WorkMount,
 	}
 	if name := agentName(abs); name != "" {
-		args = append(args, "--name", name, "--label", OwnerLabel())
+		args = append(args, "--name", name, "--label", c.p.ownerLabel())
 	}
 	args = append(args, netArgs...)
 	for _, m := range spec.Mounts {
@@ -275,12 +293,12 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	out, err := c.dockerOut(ctx, args...)
 	if err != nil {
 		if b, rerr := os.ReadFile(cid); rerr == nil && len(b) > 0 {
-			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			rctx, cancel := context.WithTimeout(context.Background(), c.p.t.cliCleanup)
 			_, _ = c.docker(rctx, "rm", "-f", strings.TrimSpace(string(b)))
 			cancel()
 		}
 		teardown()
-		return nil, fmt.Errorf("%w: %s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", ErrLaunch, c.bin, err)
+		return nil, fmt.Errorf("%w: %s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", ErrLaunch, c.driver, err)
 	}
 	id := strings.TrimSpace(string(out))
 	if i := strings.LastIndexByte(id, '\n'); i >= 0 {
@@ -300,14 +318,14 @@ type containerSession struct {
 
 func (s *containerSession) Push(ctx context.Context, hostPath, path string) error {
 	if out, err := s.c.docker(ctx, "cp", hostPath, s.id+":"+path); err != nil {
-		return fmt.Errorf("%s cp %s: %w (%s)", s.c.bin, hostPath, err, out)
+		return fmt.Errorf("%s cp %s: %w (%s)", s.c.driver, hostPath, err, out)
 	}
 	return nil
 }
 
 func (s *containerSession) Pull(ctx context.Context, path, hostDir string) error {
 	if out, err := s.c.docker(ctx, "cp", s.id+":"+path, hostDir); err != nil {
-		return fmt.Errorf("%s cp %s: %w (%s)", s.c.bin, path, err, out)
+		return fmt.Errorf("%s cp %s: %w (%s)", s.c.driver, path, err, out)
 	}
 	return nil
 }
@@ -333,25 +351,10 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	args = append(args, s.id)
 	args = append(args, cmd.Argv...)
 
-	x := exec.CommandContext(ctx, s.c.bin, args...)
-	x.Stdout = stdout
-	x.Stderr = stderr
 	// on ctx cancel (ctrl+C, the deadline) kill the container: ending the
 	// exec client leaves the process inside running.
-	x.Cancel = func() error {
-		_, _ = s.c.docker(context.Background(), "kill", s.id)
-		return x.Process.Signal(syscall.SIGTERM)
-	}
-	x.WaitDelay = 10 * time.Second
-
-	err := x.Run()
-	if err == nil {
-		return 0, nil
-	}
-	if e, ok := asExitError(err); ok {
-		return e.ExitCode(), nil // ran; non-zero exit is the command's
-	}
-	return -1, fmt.Errorf("%s exec failed: %w", s.c.bin, err)
+	kill := func() { _, _ = s.c.docker(context.Background(), "kill", s.id) }
+	return exitResult(s.c.p.execCancellable(ctx, s.c.r, stdout, stderr, kill, args...), s.c.driver+" exec failed")
 }
 
 func (s *containerSession) Sync(ctx context.Context) error { return nil }
@@ -378,16 +381,6 @@ func (s *containerSession) Close() error {
 		s.teardown()
 	})
 	return nil
-}
-
-// asExitError extracts a *exec.ExitError from err. cmd.Cancel/WaitDelay above
-// can wrap the exit error inside another error (e.g. on ctx cancel racing the
-// process exit), so this must use errors.As -- a bare `err.(*exec.ExitError)`
-// type assertion panics on exactly that wrapped case.
-func asExitError(err error) (*exec.ExitError, bool) {
-	var e *exec.ExitError
-	ok := errors.As(err, &e)
-	return e, ok
 }
 
 // sortedEnv renders the env map as sorted KEY=VALUE entries (stable argv).

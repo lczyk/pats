@@ -40,7 +40,7 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskE
 		Limits:   sandbox.Limits{CPU: sb.Limits.CPU, Memory: sb.Limits.Memory, Disk: sb.Limits.Disk},
 		Progress: func(msg string) { logw{opts.Out, opts.Color}.info("sandbox %q: %s", sb.ID, msg) },
 		Warn:     func(msg string) { logw{opts.Out, opts.Color}.warn("sandbox %q: %s", sb.ID, msg) },
-	})
+	}.WithEnv())
 	if err != nil {
 		return nil, err
 	}

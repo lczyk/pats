@@ -61,7 +61,7 @@ const lowPoolSpace = 5 << 30
 // refreshed base or an edited script makes a new image. log gets the build's
 // output. built reports whether one ran.
 func LXDImage(ctx context.Context, o Options, spec LXDImageSpec, log io.Writer) (alias string, built bool, err error) {
-	l := newLXD(o)
+	l := newLXD(defaultProcess, lxcCLI, o)
 	return l.image(ctx, spec, log)
 }
 
@@ -165,11 +165,11 @@ func imageKey(fp string, spec LXDImageSpec, vm bool) (string, error) {
 }
 
 // uplink is the bridge builders and proxies reach the internet through: the
-// one lxdUplinkEnv names, or lxdUplink, made on first use. it is shared by
+// one Options.Uplink names, or lxdUplink, made on first use. it is shared by
 // every run, so it carries no run token and `pats clean` leaves it.
 func (l *lxd) uplink(ctx context.Context) (string, error) {
-	if name := os.Getenv(lxdUplinkEnv); name != "" {
-		return name, nil
+	if l.o.Uplink != "" {
+		return l.o.Uplink, nil
 	}
 	if _, err := l.lxc(ctx, "network", "show", l.ref(lxdUplink), "--project", "default"); err == nil {
 		return lxdUplink, nil
@@ -194,7 +194,7 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	if err != nil {
 		return err
 	}
-	name := "pats-build-" + lxdRunToken + "-" + strings.TrimPrefix(alias, "pats-img-")[:8]
+	name := "pats-build-" + l.p.token + "-" + strings.TrimPrefix(alias, "pats-img-")[:8]
 	s := &lxdSession{l: l, name: name}
 	defer func() {
 		derr := l.deleteInstance(name)
@@ -214,18 +214,16 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	if l.o.VM {
 		args = append(args, "--vm")
 	}
-	for _, kv := range lxdMeta() {
-		args = append(args, "-c", kv)
-	}
+	args = append(args, l.metaFlags()...)
 	spec.step(log, "launching builder %s", name)
 	if _, err := l.lxc(ctx, args...); err != nil {
 		return err
 	}
 	if err := s.waitReady(ctx, true); err != nil {
-		return fmt.Errorf("%w (does the uplink bridge %s reach the internet? on a host running docker, a new bridge needs an admin rule; or set %s to a bridge that works)", err, net, lxdUplinkEnv)
+		return fmt.Errorf("%w (does the uplink bridge %s reach the internet? on a host running docker, a new bridge needs an admin rule; or set %s to a bridge that works)", err, net, LXDUplinkEnv)
 	}
 	if !s.online(ctx) {
-		return fmt.Errorf("lxd: the image builder on bridge %s does not reach the internet. %s. or set %s to a bridge that does (e.g. lxdbr0)", net, dockerBridgeHint, lxdUplinkEnv)
+		return fmt.Errorf("lxd: the image builder on bridge %s does not reach the internet. %s. or set %s to a bridge that does (e.g. lxdbr0)", net, dockerBridgeHint, LXDUplinkEnv)
 	}
 	// cloud-init may still be configuring the base on first boot.
 	_, _ = s.exec(ctx, Cmd{Argv: []string{"sh", "-c", "command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1; true"}, Root: true, Dir: "/"}, io.Discard, io.Discard)
@@ -255,9 +253,9 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	if _, err := l.lxc(ctx, "stop", s.inst(), "--project", lxdProject); err != nil {
 		return err
 	}
-	private := alias + "-" + lxdRunToken
+	private := alias + "-" + l.p.token
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
-	pub = append(pub, lxdMeta()...)
+	pub = append(pub, l.meta()...)
 	spec.step(log, "publishing %s", alias)
 	if _, err := l.lxc(ctx, pub...); err != nil {
 		return err
@@ -289,7 +287,7 @@ type LXDProvenance struct {
 
 // LXDInfo resolves o's remote, image fingerprint and server version.
 func LXDInfo(ctx context.Context, o Options) (LXDProvenance, error) {
-	l := newLXD(o)
+	l := newLXD(defaultProcess, lxcCLI, o)
 	if err := l.prepareServer(ctx); err != nil {
 		return LXDProvenance{}, err
 	}

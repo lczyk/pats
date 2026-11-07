@@ -13,18 +13,18 @@ import (
 
 // CleanLXD removes what dead runs left on an lxd server ("" is the cli's
 // default remote). a run is everything carrying its user.pats.run token; it is
-// dead once its marker's lease is older than leaseStale, or, with no marker
+// dead once its marker's lease is older than ten minutes, or, with no marker
 // left, once the newest of its resources is. a live run is left whoever owns
 // it, since its owner may be another machine. force takes every run's leftovers
 // and the shared uplink, live or not; cached images stay either way, being a
 // cache, not a leftover.
 //
 // the lease is a time on the run's clock read against this machine's, so the
-// two clocks must agree to within leaseStale less a renewal or two: a cleaner
+// two clocks must agree to within that less a renewal or two: a cleaner
 // about eight minutes fast removes a live run (docs/spec/fizz/lxd_lease.fizz).
 func CleanLXD(ctx context.Context, remote string, force, dryRun bool, out io.Writer) error {
-	l := newLXD(Options{Remote: remote})
-	return l.clean(ctx, force, dryRun, out, time.Now())
+	l := newLXD(defaultProcess, lxcCLI, Options{Remote: remote})
+	return l.clean(ctx, force, dryRun, out)
 }
 
 // lxdResource is one run-owned thing on the server.
@@ -38,7 +38,8 @@ type lxdResource struct {
 	marker  bool
 }
 
-func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now time.Time) error {
+func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer) error {
+	now, stale := l.p.clock.Now(), l.p.t.leaseStale
 	if l.o.Remote == "" {
 		r, err := l.lxc(ctx, "remote", "get-default")
 		if err != nil {
@@ -67,7 +68,7 @@ func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now 
 	live := 0
 	var dead []string
 	for _, tok := range tokens {
-		if force || runDead(runs[tok], now) {
+		if force || runDead(runs[tok], now.Add(-stale)) {
 			dead = append(dead, tok)
 		} else {
 			live++
@@ -100,7 +101,7 @@ func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now 
 		}
 	}
 	if live > 0 {
-		fmt.Fprintf(out, "lxd %s: left %d live run(s) (lease renewed within %s); --force removes them\n", l.o.Remote, live, leaseStale)
+		fmt.Fprintf(out, "lxd %s: left %d live run(s) (lease renewed within %s); --force removes them\n", l.o.Remote, live, stale)
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("lxd clean: %s", strings.Join(errs, "; "))
@@ -108,10 +109,10 @@ func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now 
 	return nil
 }
 
-// runDead says whether a run's group may go: its marker's lease is stale, or
-// it has no marker and nothing of it is younger than leaseStale.
-func runDead(group []lxdResource, now time.Time) bool {
-	cut := now.Add(-leaseStale).Unix()
+// runDead says whether a run's group may go: its marker's lease is older than
+// cutoff, or it has no marker and nothing of it is younger.
+func runDead(group []lxdResource, cutoff time.Time) bool {
+	cut := cutoff.Unix()
 	for _, r := range group {
 		if r.marker {
 			return r.lease < cut

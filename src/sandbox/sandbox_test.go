@@ -63,12 +63,10 @@ func TestContainerExitCode(t *testing.T) {
 	assert.Equal(t, code, 7)
 }
 
-// COVER: Run's real run path (cmd.Run via exec.CommandContext) isn't
-// fakeable through the container's exec/execOut seams, and reproducing the
-// ctx-cancel race that makes os/exec wrap the *exec.ExitError isn't reliable
-// to trigger from a test. so this exercises asExitError directly: a bare
-// `err.(*exec.ExitError)` type assertion (the pre-fix code) panics on a
-// wrapped ExitError; errors.As must not.
+// COVER: reproducing the ctx-cancel race that makes os/exec wrap the
+// *exec.ExitError isn't reliable to trigger from a test, so this exercises
+// asExitError directly: a bare `err.(*exec.ExitError)` type assertion panics
+// on a wrapped ExitError; errors.As must not.
 func TestAsExitErrorUnwrapsWrapped(t *testing.T) {
 	raw := exec.Command("sh", "-c", "exit 3").Run()
 	var rawExit *exec.ExitError

@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,15 +12,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
 )
 
 // the lxd driver drives a (usually remote) lxd server through the lxc cli and
@@ -41,39 +37,22 @@ const lxdProject = "pats"
 // refuse their permission-bypass flags as root.
 const lxdAgentUser = "pats"
 
-// lxdUplinkEnv names an existing bridge to use as the uplink instead of the
+// LXDUplinkEnv names an existing bridge to use as the uplink instead of the
 // one pats makes, for a server where a new bridge cannot forward (a host
 // whose docker drops forwarded traffic from bridges it was not told about).
-const lxdUplinkEnv = "PATS_LXD_UPLINK"
+const LXDUplinkEnv = "PATS_LXD_UPLINK"
 
 // lxdUplink is the shared bridge only builders and egress proxies join.
 const lxdUplink = "patsup"
 
-// lxdRunToken names this pats process in everything it makes on the server.
-var lxdRunToken = func() string {
-	b := make([]byte, 6)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}()
-
-// lxdOwner is the host and uid that made a resource.
-func lxdOwner() string {
-	host, _ := os.Hostname()
-	return fmt.Sprintf("%s/%d/%s", host, os.Getuid(), clientID())
-}
-
 type lxd struct {
-	o   Options
-	bin string
-	// run executes the cli; swappable in tests (nil -> real exec).
-	run func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error
-
-	setup    sync.Once
-	setupErr error
-	pool     string // the storage pool the default project's default profile uses
+	p    *process
+	r    runner
+	o    Options
+	pool string // the storage pool the default project's default profile uses
 }
 
-func newLXD(o Options) *lxd { return &lxd{o: o, bin: "lxc"} }
+func newLXD(p *process, r runner, o Options) *lxd { return &lxd{p: p, r: r, o: o} }
 
 // lxc runs the cli with args and returns its trimmed combined output.
 func (l *lxd) lxc(ctx context.Context, args ...string) (string, error) {
@@ -87,12 +66,7 @@ func (l *lxd) lxc(ctx context.Context, args ...string) (string, error) {
 }
 
 func (l *lxd) exec(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
-	if l.run != nil {
-		return l.run(ctx, stdin, stdout, stderr, args...)
-	}
-	cmd := exec.CommandContext(ctx, l.bin, args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	return cmd.Run()
+	return l.r.Run(ctx, stdin, stdout, stderr, args...)
 }
 
 func lastLine(s string) string {
@@ -121,40 +95,22 @@ type lxdServer struct {
 	l      *lxd
 }
 
-var (
-	lxdServersMu sync.Mutex
-	lxdServers   = map[string]*lxdServer{}
-)
+// marker is the run's marker acl: the first thing a run makes on a server,
+// holding its lease.
+func (l *lxd) marker() string { return "pats-run-" + l.p.token }
 
-// leaseEvery is how often a live run renews its marker's lease; leaseStale
-// is how old a lease must be before `pats clean` takes the run as gone.
-const (
-	leaseEvery = 2 * time.Minute
-	leaseStale = 10 * time.Minute
-)
-
-// markerName is the run's marker acl: the first thing a run makes on a
-// server, holding its lease.
-func markerName() string { return "pats-run-" + lxdRunToken }
-
-// prepareServer readies the server once per process (per driver under
-// tests, whose fake cli is per driver): see setupServer.
+// prepareServer readies the server once per process: see setupServer.
 func (l *lxd) prepareServer(ctx context.Context) error {
-	if l.run != nil {
-		l.setup.Do(func() {
-			l.o.Remote, l.pool, l.setupErr = l.setupServer(ctx, false)
-		})
-		return l.setupErr
-	}
-	lxdServersMu.Lock()
-	srv := lxdServers[l.o.Remote]
+	x := &l.p.lxd
+	x.mu.Lock()
+	srv := x.servers[l.o.Remote]
 	if srv == nil {
 		srv = &lxdServer{l: l}
-		lxdServers[l.o.Remote] = srv
+		x.servers[l.o.Remote] = srv
 	}
-	lxdServersMu.Unlock()
+	x.mu.Unlock()
 	srv.once.Do(func() {
-		srv.remote, srv.pool, srv.err = l.setupServer(ctx, true)
+		srv.remote, srv.pool, srv.err = l.setupServer(ctx)
 		if srv.err == nil {
 			srv.stop = make(chan struct{})
 			go srv.renew()
@@ -169,18 +125,18 @@ func (l *lxd) prepareServer(ctx context.Context) error {
 // the run's marker before anything else of the run exists, makes the pats
 // project on first use and finds the storage pool new instances get their
 // root disk from.
-func (l *lxd) setupServer(ctx context.Context, real bool) (remote, pool string, err error) {
+func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) {
 	remote = l.o.Remote
 	if remote == "" {
 		if remote, err = l.lxc(ctx, "remote", "get-default"); err != nil {
 			return "", "", err
 		}
 	}
-	marker := append([]string{"network", "acl", "create", remote + ":" + markerName(), "--project", "default",
-		"user.pats.lease=" + strconv.FormatInt(time.Now().Unix(), 10)}, lxdMeta()...)
+	marker := append([]string{"network", "acl", "create", remote + ":" + l.marker(), "--project", "default",
+		"user.pats.lease=" + strconv.FormatInt(l.p.clock.Now().Unix(), 10)}, l.meta()...)
 	if _, err := l.lxc(ctx, marker...); err != nil {
 		// the same server reached under a second name already made it.
-		if _, serr := l.lxc(ctx, "network", "acl", "show", remote+":"+markerName(), "--project", "default"); serr != nil {
+		if _, serr := l.lxc(ctx, "network", "acl", "show", remote+":"+l.marker(), "--project", "default"); serr != nil {
 			return "", "", fmt.Errorf("lxd: run marker: %w", err)
 		}
 	}
@@ -202,15 +158,16 @@ func (l *lxd) setupServer(ctx context.Context, real bool) (remote, pool string, 
 
 // renew keeps the marker's lease fresh while the process lives.
 func (srv *lxdServer) renew() {
-	t := time.NewTicker(leaseEvery)
+	p := srv.l.p
+	t := p.clock.NewTicker(p.t.leaseEvery)
 	defer t.Stop()
 	for {
 		select {
 		case <-srv.stop:
 			return
-		case <-t.C:
-			_, _ = srv.l.lxc(context.Background(), "network", "acl", "set", srv.remote+":"+markerName(),
-				"user.pats.lease="+strconv.FormatInt(time.Now().Unix(), 10), "--project", "default")
+		case <-t.C():
+			_, _ = srv.l.lxc(context.Background(), "network", "acl", "set", srv.remote+":"+srv.l.marker(),
+				"user.pats.lease="+strconv.FormatInt(p.clock.Now().Unix(), 10), "--project", "default")
 		}
 	}
 }
@@ -219,15 +176,18 @@ func (srv *lxdServer) renew() {
 // renewal stops and the marker goes. what the run made is already gone (each
 // session closes its own); a crash skips this, and `pats clean` sees the
 // lease go stale.
-func ShutdownLXD() {
-	lxdServersMu.Lock()
-	defer lxdServersMu.Unlock()
-	for k, srv := range lxdServers {
+func ShutdownLXD() { defaultProcess.shutdown() }
+
+func (p *process) shutdown() {
+	x := &p.lxd
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for k, srv := range x.servers {
 		if srv.stop != nil {
 			close(srv.stop)
-			_, _ = srv.l.lxc(context.Background(), "network", "acl", "delete", srv.remote+":"+markerName(), "--project", "default")
+			_, _ = srv.l.lxc(context.Background(), "network", "acl", "delete", srv.remote+":"+srv.l.marker(), "--project", "default")
 		}
-		delete(lxdServers, k)
+		delete(x.servers, k)
 	}
 }
 
@@ -246,18 +206,27 @@ func lxdName(workdir string) string {
 }
 
 // bridgeName is a slot bridge's name: linux caps interface names at 15.
-func bridgeName(instance string) string {
-	sum := sha256.Sum256([]byte(instance + lxdRunToken))
+func (l *lxd) bridgeName(instance string) string {
+	sum := sha256.Sum256([]byte(instance + l.p.token))
 	return "patsbr" + hex.EncodeToString(sum[:])[:8]
 }
 
-// lxdMeta are the -c flags stamping a resource as this run's.
-func lxdMeta() []string {
+// meta are the config keys stamping a resource as this run's.
+func (l *lxd) meta() []string {
 	return []string{
-		"user.pats.run=" + lxdRunToken,
-		"user.pats.owner=" + lxdOwner(),
-		"user.pats.created=" + strconv.FormatInt(time.Now().Unix(), 10),
+		"user.pats.run=" + l.p.token,
+		"user.pats.owner=" + l.p.owner(),
+		"user.pats.created=" + strconv.FormatInt(l.p.clock.Now().Unix(), 10),
 	}
+}
+
+// metaFlags are meta as -c flags.
+func (l *lxd) metaFlags() []string {
+	var out []string
+	for _, kv := range l.meta() {
+		out = append(out, "-c", kv)
+	}
+	return out
 }
 
 // openRanges are what an open sandbox may not reach: the server's lan, the
@@ -294,9 +263,7 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		// a vm honours a nic's name only with this.
 		args = append(args, "--vm", "-c", "agent.nic_config=true")
 	}
-	for _, kv := range lxdMeta() {
-		args = append(args, "-c", kv)
-	}
+	args = append(args, l.metaFlags()...)
 	if l.o.Limits.CPU > 0 {
 		args = append(args, "-c", "limits.cpu="+strconv.Itoa(l.o.Limits.CPU))
 	}
@@ -403,13 +370,10 @@ func (s *lxdSession) inst() string { return s.l.ref(s.name) }
 // the internet, but none of openRanges. bridge acls apply at the bridge-host
 // boundary, which is exactly where the server's lan and other instances are.
 func (s *lxdSession) openNetwork(ctx context.Context) error {
-	s.bridge = bridgeName(s.name)
-	acl := s.bridge
 	l := s.l
-	aclArgs := []string{"network", "acl", "create", l.ref(acl), "--project", "default"}
-	for _, kv := range lxdMeta() {
-		aclArgs = append(aclArgs, kv)
-	}
+	s.bridge = l.bridgeName(s.name)
+	acl := s.bridge
+	aclArgs := append([]string{"network", "acl", "create", l.ref(acl), "--project", "default"}, l.meta()...)
 	if _, err := l.lxc(ctx, aclArgs...); err != nil {
 		return err
 	}
@@ -422,7 +386,7 @@ func (s *lxdSession) openNetwork(ctx context.Context) error {
 		"security.acls=" + acl,
 		"security.acls.default.egress.action=allow",
 		"security.acls.default.ingress.action=reject"}
-	netArgs = append(netArgs, lxdMeta()...)
+	netArgs = append(netArgs, l.meta()...)
 	if _, err := l.lxc(ctx, netArgs...); err != nil {
 		return err
 	}
@@ -470,13 +434,14 @@ func (s *lxdSession) queryPath(p string) string {
 // waitReady waits for exec to work (a vm's agent comes up after boot) and,
 // with a network, for a default route.
 func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
-	deadline := time.Now().Add(3 * time.Minute)
+	c, t := s.l.p.clock, s.l.p.t
+	deadline := c.Now().Add(t.ready)
 	probe := []string{"true"}
 	if network {
 		probe = []string{"sh", "-c", "ip -4 route show default | grep -q ."}
 	}
 	var last error
-	for time.Now().Before(deadline) {
+	for c.Now().Before(deadline) {
 		var out bytes.Buffer
 		code, err := s.exec(ctx, Cmd{Argv: probe, Root: true, Dir: "/"}, &out, &out)
 		if err == nil && code == 0 {
@@ -486,10 +451,10 @@ func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Second):
+		case <-c.After(t.readyPoll):
 		}
 	}
-	return fmt.Errorf("lxd: %s not ready after 3m: %v", s.name, last)
+	return fmt.Errorf("lxd: %s not ready after %s: %v", s.name, t.ready, last)
 }
 
 // reachesInternet is the open sandbox's self-test: its bridge must forward.
@@ -513,7 +478,7 @@ func (s *lxdSession) online(ctx context.Context) bool {
 			select {
 			case <-ctx.Done():
 				return false
-			case <-time.After(2 * time.Second):
+			case <-s.l.p.clock.After(s.l.p.t.onlineRetry):
 			}
 		}
 		var out bytes.Buffer
@@ -631,43 +596,22 @@ func (s *lxdSession) execArgs(cmd Cmd) []string {
 }
 
 func (s *lxdSession) execIn(ctx context.Context, stdin io.Reader, cmd Cmd, stdout, stderr io.Writer) (int, error) {
-	err := s.l.exec(ctx, stdin, stdout, stderr, s.execArgs(cmd)...)
-	if err == nil {
-		return 0, nil
-	}
-	if e, ok := asExitError(err); ok {
-		return e.ExitCode(), nil
-	}
-	return -1, fmt.Errorf("lxc exec: %w", err)
+	return exitResult(s.l.exec(ctx, stdin, stdout, stderr, s.execArgs(cmd)...), "lxc exec")
 }
 
 // Exec runs cmd; on ctx cancel the agent's processes are killed and the
 // instance kept, so Sync can still pull what it wrote. a cancelled root step
 // stops the instance outright: setup failed, nothing is collected.
 func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error) {
-	if s.l.run != nil {
-		return s.execIn(ctx, nil, cmd, stdout, stderr)
-	}
-	x := exec.CommandContext(ctx, s.l.bin, s.execArgs(cmd)...)
-	x.Stdout, x.Stderr = stdout, stderr
-	x.Cancel = func() error {
+	cancel := func() {
 		bg := context.Background()
 		if cmd.Root {
 			_, _ = s.l.lxc(bg, "stop", s.inst(), "--project", lxdProject, "--force")
 		} else {
 			_, _ = s.exec(bg, Cmd{Argv: []string{"pkill", "-KILL", "-u", s.uid}, Root: true, Dir: "/"}, io.Discard, io.Discard)
 		}
-		return x.Process.Signal(syscall.SIGTERM)
 	}
-	x.WaitDelay = 10 * time.Second
-	err := x.Run()
-	if err == nil {
-		return 0, nil
-	}
-	if e, ok := asExitError(err); ok {
-		return e.ExitCode(), nil
-	}
-	return -1, fmt.Errorf("lxc exec: %w", err)
+	return exitResult(s.l.p.execCancellable(ctx, s.l.r, stdout, stderr, cancel, s.execArgs(cmd)...), "lxc exec")
 }
 
 // Push streams hostPath into path as a tar over exec. a directory's contents
@@ -912,10 +856,6 @@ func (s *lxdSession) Close() error {
 	return nil
 }
 
-// instanceGone bounds deleteInstance's wait for a server operation still
-// working on the instance.
-var instanceGone = 5 * time.Minute
-
 // deleteInstance removes an instance of the pats project for good. killing
 // lxc does not stop the server's half of an init, so an instance whose init
 // was cut short (a deadline, ctrl+c) can appear after a delete has already
@@ -924,7 +864,8 @@ var instanceGone = 5 * time.Minute
 // operations are read before each delete, not after: a create that was over
 // before the delete cannot finish after it (docs/spec/fizz/lxd_delete.fizz).
 func (l *lxd) deleteInstance(name string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), instanceGone)
+	t := l.p.t
+	ctx, cancel := context.WithTimeout(context.Background(), t.instanceGone)
 	defer cancel()
 	for {
 		busy := l.instanceBusy(ctx, name)
@@ -937,8 +878,8 @@ func (l *lxd) deleteInstance(name string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("instance %s: a server operation on it outlived %s; pats clean removes it once this run has ended", name, instanceGone)
-		case <-time.After(2 * time.Second):
+			return fmt.Errorf("instance %s: a server operation on it outlived %s; pats clean removes it once this run has ended", name, t.instanceGone)
+		case <-l.p.clock.After(t.deleteRetry):
 		}
 	}
 }
@@ -968,7 +909,7 @@ func (l *lxd) instanceBusy(ctx context.Context, name string) bool {
 // ServerCPUs is the lxd server's cpu count, 0 when it cannot be read: -j auto
 // sizes the run by the machine the pairs run on.
 func ServerCPUs(ctx context.Context, remote string) int {
-	l := newLXD(Options{Remote: remote})
+	l := newLXD(defaultProcess, lxcCLI, Options{Remote: remote})
 	p := "/1.0/resources"
 	if remote != "" {
 		p = remote + ":" + p

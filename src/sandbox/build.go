@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -28,6 +27,10 @@ type ContainerBuild struct {
 // only when the dockerfile names PATS_SANDBOX, and handed in as that build
 // arg. built reports whether a build ran.
 func BuildContainerImage(ctx context.Context, driver string, b ContainerBuild, base func() string) (id string, built bool, err error) {
+	return buildContainerImage(ctx, cliRunner(driver), driver, b, base)
+}
+
+func buildContainerImage(ctx context.Context, r runner, driver string, b ContainerBuild, base func() string) (id string, built bool, err error) {
 	// read once, shared by checkPatsIgnored (via usesContext) and
 	// buildContextHash below.
 	dfData, dfErr := os.ReadFile(b.Dockerfile)
@@ -50,17 +53,17 @@ func BuildContainerImage(ctx context.Context, driver string, b ContainerBuild, b
 		if !exact {
 			hash = "" // the key could not name the base the build uses: build, the layer cache decides
 		} else {
-			ids, err := baseImageIDs(ctx, driver, refs)
+			ids, err := baseImageIDs(ctx, r, refs)
 			if err != nil {
 				return "", false, err
 			}
 			hash = rehash(hash, ids)
 		}
 	}
-	if id := cachedImageID(ctx, driver, hash); id != "" {
+	if id := cachedImageID(ctx, r, hash); id != "" {
 		return id, false, nil
 	}
-	id, err = buildImage(ctx, driver, b.Dir, b.Dockerfile, hash, baseImg)
+	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg)
 	return id, err == nil, err
 }
 
@@ -110,7 +113,7 @@ const baseArg = "PATS_SANDBOX"
 // buildImage builds one resolved context and returns the image id. a non-empty
 // hash is stamped onto the image (see hashLabel) so the next run can find it;
 // a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
-func buildImage(ctx context.Context, driver, ctxDir, dockerfile, hash, base string) (string, error) {
+func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash, base string) (string, error) {
 	args := []string{"build", "-q", "-f", dockerfile}
 	if base != "" {
 		args = append(args, "--build-arg", baseArg+"="+base)
@@ -118,11 +121,8 @@ func buildImage(ctx context.Context, driver, ctxDir, dockerfile, hash, base stri
 	if hash != "" {
 		args = append(args, "--label", hashLabel+"="+hash)
 	}
-	cmd := exec.CommandContext(ctx, driver, append(args, ctxDir)...)
 	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
+	if err := r.Run(ctx, nil, &out, &errb, append(args, ctxDir)...); err != nil {
 		return "", fmt.Errorf("%s build %s: %w%s", driver, ctxDir, err, stderrTail(&errb))
 	}
 	id := strings.TrimSpace(out.String())
@@ -137,13 +137,12 @@ func buildImage(ctx context.Context, driver, ctxDir, dockerfile, hash, base stri
 // same staleness the layer cache always had: a mutable FROM tag or a RUN that
 // fetches "latest" won't refresh until the dockerfile or context changes (or
 // the image is removed -- `docker rmi` is the force-rebuild escape hatch).
-func cachedImageID(ctx context.Context, driver, hash string) string {
+func cachedImageID(ctx context.Context, r runner, hash string) string {
 	if hash == "" {
 		return ""
 	}
 	// -a: `build -q` leaves the image untagged, which plain `images` hides.
-	out, err := exec.CommandContext(ctx, driver, "images", "-a", "--no-trunc", "-q",
-		"--filter", "label="+hashLabel+"="+hash).Output()
+	out, err := output(ctx, r, "images", "-a", "--no-trunc", "-q", "--filter", "label="+hashLabel+"="+hash)
 	if err != nil {
 		return ""
 	}
@@ -212,15 +211,15 @@ func fromRefs(dfData []byte, base string) (refs []string, exact bool) {
 // local one, pulled first when absent, as the build itself would. a base the
 // user refreshes with a pull then changes the cache key and forces a
 // rebuild, where hashing the tag alone would keep the stale image forever.
-func baseImageIDs(ctx context.Context, driver string, refs []string) (string, error) {
+func baseImageIDs(ctx context.Context, r runner, refs []string) (string, error) {
 	var b strings.Builder
 	for _, ref := range refs {
-		id, err := exec.CommandContext(ctx, driver, "image", "inspect", "--format", "{{.Id}}", ref).Output()
+		id, err := output(ctx, r, "image", "inspect", "--format", "{{.Id}}", ref)
 		if err != nil {
-			if out, err := exec.CommandContext(ctx, driver, "pull", "-q", ref).CombinedOutput(); err != nil {
-				return "", fmt.Errorf("pull base %s: %w (%s)", ref, err, strings.TrimSpace(string(out)))
+			if out, err := combined(ctx, r, "pull", "-q", ref); err != nil {
+				return "", fmt.Errorf("pull base %s: %w (%s)", ref, err, out)
 			}
-			if id, err = exec.CommandContext(ctx, driver, "image", "inspect", "--format", "{{.Id}}", ref).Output(); err != nil {
+			if id, err = output(ctx, r, "image", "inspect", "--format", "{{.Id}}", ref); err != nil {
 				return "", fmt.Errorf("inspect base %s: %w", ref, err)
 			}
 		}

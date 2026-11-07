@@ -122,7 +122,7 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 		return "", false, err
 	}
 	defer logF.Close()
-	o := sandbox.Options{Driver: "lxd", Remote: sb.Remote, VM: sb.VM}
+	o := sandbox.Options{Driver: "lxd", Remote: sb.Remote, VM: sb.VM}.WithEnv()
 	lg := logw{opts.Out, opts.Color}
 	progress := func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
 	warn := func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }

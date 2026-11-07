@@ -23,14 +23,14 @@ import (
 
 // fakeLXC records every lxc call and answers the few whose output matters.
 type fakeLXC struct {
-	calls   [][]string
+	callLog
 	devices map[string]map[string]string // the expanded devices a query returns
 	config  map[string]string
 	failOn  string
 }
 
 func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
-	f.calls = append(f.calls, args)
+	f.record(args)
 	joined := strings.Join(args, " ")
 	if f.failOn != "" && strings.Contains(joined, f.failOn) {
 		io.WriteString(stderr, "Error: fake failure")
@@ -49,6 +49,10 @@ func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 		stdout.Write(b)
 	case args[0] == "exec" && strings.Contains(joined, "id -u pats"):
 		io.WriteString(stdout, "1001\n")
+	case args[0] == "exec" && strings.Contains(joined, "pats egress run"):
+		io.WriteString(stderr, "listening fake\n")
+		<-ctx.Done()
+		return ctx.Err()
 	case args[0] == "exec" && strings.Contains(joined, "tar -c"):
 		tw := tar.NewWriter(stdout)
 		tw.WriteHeader(&tar.Header{Name: "out.txt", Mode: 0o644, Size: 3, Typeflag: tar.TypeReg})
@@ -62,27 +66,16 @@ type fakeExit struct{}
 
 func (fakeExit) Error() string { return "exit status 1" }
 
-func (f *fakeLXC) call(prefix string) []string {
-	for _, c := range f.calls {
-		if strings.HasPrefix(strings.Join(c, " "), prefix) {
-			return c
-		}
-	}
-	return nil
-}
-
-func fakeLXD(o Options) (*lxd, *fakeLXC) {
+func fakeLXD(t *testing.T, o Options) (*lxd, *fakeLXC) {
 	f := &fakeLXC{}
-	l := newLXD(o)
-	l.run = f.run
-	return l, f
+	return newLXD(testProcess(t), runFunc(f.run), o), f
 }
 
 // an open sandbox: made stopped from the image in the pats project on the
 // pinned remote, stamped as this run's, its own bridge and acl in the default
 // project, the expanded config checked before start, the workdir pushed.
 func TestLXDStartOpen(t *testing.T) {
-	l, f := fakeLXD(Options{Driver: "lxd", Image: "pats-img-x", Limits: Limits{CPU: 2, Memory: "4GiB", Disk: "10GiB"}})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "pats-img-x", Limits: Limits{CPU: 2, Memory: "4GiB", Disk: "10GiB"}})
 	work := t.TempDir()
 	sess, err := l.Start(context.Background(), Spec{Workdir: work})
 	require.NoError(t, err)
@@ -91,7 +84,7 @@ func TestLXDStartOpen(t *testing.T) {
 
 	init := strings.Join(f.call("init"), " ")
 	for _, want := range []string{"init pats-img-x srv:" + s.name, "--project pats", "--storage default",
-		"user.pats.run=" + lxdRunToken, "limits.cpu=2", "limits.memory=4GiB", "root,size=10GiB"} {
+		"user.pats.run=" + l.p.token, "limits.cpu=2", "limits.memory=4GiB", "root,size=10GiB"} {
 		assert.ContainsString(t, init, want)
 	}
 	acl := strings.Join(f.call("network acl rule add"), " ")
@@ -105,8 +98,8 @@ func TestLXDStartOpen(t *testing.T) {
 
 	// the device check runs before the start.
 	q, st := -1, -1
-	for i, c := range f.calls {
-		switch c[0] {
+	for i, c := range f.all() {
+		switch strings.Fields(c)[0] {
 		case "query":
 			q = i
 		case "start":
@@ -126,7 +119,7 @@ func TestLXDStartOpen(t *testing.T) {
 // a nic a profile adds is refused, and so is raw config, before anything
 // starts; under egress none the instance gets no nic at all.
 func TestLXDStartRefusesForeignNic(t *testing.T) {
-	l, f := fakeLXD(Options{Driver: "lxd", Image: "img", Profiles: []string{"extra"}})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img", Profiles: []string{"extra"}})
 	f.devices = map[string]map[string]string{"eth9": {"type": "nic", "network": "lxdbr0"}}
 	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
 	assert.Error(t, err, "would bypass the sandbox's egress")
@@ -135,7 +128,7 @@ func TestLXDStartRefusesForeignNic(t *testing.T) {
 	assert.NotNil(t, f.call("delete"))
 	assert.ContainsString(t, strings.Join(f.call("init"), " "), "-p extra")
 
-	l, f = fakeLXD(Options{Driver: "lxd", Image: "img"})
+	l, f = fakeLXD(t, Options{Driver: "lxd", Image: "img"})
 	f.config = map[string]string{"raw.lxc": "lxc.net.0.type=veth"}
 	_, err = l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
 	assert.Error(t, err, "raw config")
@@ -150,7 +143,7 @@ func TestLXDExecArgs(t *testing.T) {
 	args = strings.Join(s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}), " ")
 	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / --env A=1 --env B=2 -- id")
 
-	l, f := fakeLXD(Options{Driver: "lxd", Image: "img", VM: true})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img", VM: true})
 	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
 	require.NoError(t, err)
 	assert.ContainsString(t, strings.Join(f.call("init"), " "), "--vm -c agent.nic_config=true")
@@ -159,15 +152,12 @@ func TestLXDExecArgs(t *testing.T) {
 // HandOver writes the sudoers rule only when the pair allows sudo.
 func TestLXDHandOverSudo(t *testing.T) {
 	for _, sudo := range []bool{false, true} {
-		l, f := fakeLXD(Options{Driver: "lxd", Image: "img"})
+		l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img"})
 		sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}, Sudo: sudo})
 		require.NoError(t, err)
-		f.calls = nil
+		f.reset()
 		require.NoError(t, sess.HandOver(context.Background(), WorkMount))
-		joined := ""
-		for _, c := range f.calls {
-			joined += strings.Join(c, " ") + "\n"
-		}
+		joined := strings.Join(f.all(), "\n")
 		assert.ContainsString(t, joined, "chown -R 1001:1001")
 		assert.Equal(t, strings.Contains(joined, "NOPASSWD"), sudo)
 		assert.Equal(t, strings.Contains(joined, "rm -f /etc/sudoers.d/pats"), !sudo)
@@ -176,7 +166,7 @@ func TestLXDHandOverSudo(t *testing.T) {
 
 // Sync replaces each writable bind's host copy with what is in the instance.
 func TestLXDSync(t *testing.T) {
-	l, _ := fakeLXD(Options{Driver: "lxd", Image: "img"})
+	l, _ := fakeLXD(t, Options{Driver: "lxd", Image: "img"})
 	work, ro := t.TempDir(), t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(work, "stale"), []byte("x"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(ro, "keep"), []byte("x"), 0o644))
@@ -269,16 +259,16 @@ func TestLXDPushReportsLocalError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root reads a mode 000 file")
 	}
-	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv"})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv"})
 	inner := f.run
-	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		if strings.Contains(strings.Join(args, " "), "tar -x") {
 			_, _ = io.Copy(io.Discard, stdin)
 			io.WriteString(stdout, "tar: Unexpected EOF in archive")
 			return &fakeExit{}
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
-	}
+	})
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "secret"), []byte("x"), 0o000))
 	s := &lxdSession{l: l, name: "pats-x"}
@@ -292,7 +282,8 @@ func TestLXDName(t *testing.T) {
 	assert.Equal(t, lxdName("/x/Odd_Name.1"), "pats-odd-name-1")
 	long := lxdName("/x/" + strings.Repeat("a", 80))
 	assert.That(t, len(long) <= 63, "name too long: %d", len(long))
-	assert.That(t, len(bridgeName("pats-work-123")) <= 15, "bridge name too long")
+	l := newLXD(newProcess(wallClock{}, defaultTimings), nil, Options{})
+	assert.That(t, len(l.bridgeName("pats-work-123")) <= 15, "bridge name too long")
 }
 
 // a proxied sandbox: an addressless bridge with a reject acl, the agent on it
@@ -302,9 +293,7 @@ func TestLXDName(t *testing.T) {
 func TestLXDStartProxy(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "pats")
 	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
-	t.Setenv(lxdProxyBinEnv, bin)
-	t.Setenv(lxdUplinkEnv, "up0")
-	l, f := fakeLXD(Options{Driver: "lxd", Image: "img"})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img", ProxyBin: bin, Uplink: "up0"})
 	answers := map[string]string{
 		"egress-canary":   "egress-canary leak=0\n",
 		"egress-reach":    "egress-reach ok=1\n",
@@ -313,17 +302,17 @@ func TestLXDStartProxy(t *testing.T) {
 		"query srv:/1.0 ": `{"environment":{"architectures":["x86_64"]}}`,
 	}
 	inner := f.run
-	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		joined := strings.Join(args, " ") + " "
 		for k, v := range answers {
 			if strings.Contains(joined, k) {
-				f.calls = append(f.calls, args)
+				f.record(args)
 				io.WriteString(stdout, v)
 				return nil
 			}
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
-	}
+	})
 	sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}})
 	require.NoError(t, err)
 	s := sess.(*lxdSession)
@@ -335,19 +324,16 @@ func TestLXDStartProxy(t *testing.T) {
 	agentIP := s.egress.agentIP.String()
 	proxyIP := s.egress.ip.String()
 	var rules []string
-	for _, c := range f.calls {
-		if j := strings.Join(c, " "); strings.Contains(j, "network acl rule add") {
+	for _, j := range f.all() {
+		if strings.Contains(j, "network acl rule add") {
 			rules = append(rules, j)
 		}
 	}
 	// one rule, agent to proxy port: both defaults reject the rest.
 	assert.Equal(t, len(rules), 1)
 	assert.ContainsString(t, rules[0], "egress --project default action=allow source="+agentIP+"/32 destination="+proxyIP+"/32 protocol=tcp destination_port=8080")
-	assert.That(t, pool.Contains(s.egress.ip), "proxy %s outside the pool", proxyIP)
-	all := ""
-	for _, c := range f.calls {
-		all += strings.Join(c, " ") + "\n"
-	}
+	assert.That(t, testPool.Contains(s.egress.ip), "proxy %s outside the pool", proxyIP)
+	all := strings.Join(f.all(), "\n")
 	canary := strings.Index(all, "egress-canary")
 	proxyInit := strings.Index(all, "init srv:pats-img-")
 	assert.That(t, canary >= 0 && canary < proxyInit, "canary not run before the proxy exists")
@@ -359,10 +345,7 @@ func TestLXDStartProxy(t *testing.T) {
 	assert.Equal(t, s.env["HTTP_PROXY"], "http://"+proxyIP+":8080")
 
 	require.NoError(t, sess.Close())
-	all = ""
-	for _, c := range f.calls {
-		all += strings.Join(c, " ") + "\n"
-	}
+	all = strings.Join(f.all(), "\n")
 	assert.ContainsString(t, all, "delete srv:"+s.name+"-p")
 	assert.ContainsString(t, all, "network delete srv:"+s.bridge)
 }
@@ -405,8 +388,9 @@ func TestLXDClean(t *testing.T) {
 		},
 	}
 	var calls []string
-	l := newLXD(Options{Remote: "srv"})
-	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	l := newLXD(testProcess(t), nil, Options{Remote: "srv"})
+	l.p.clock = fixedClock{now: now}
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		if args[0] == "query" {
 			for k, v := range answers {
@@ -420,9 +404,9 @@ func TestLXDClean(t *testing.T) {
 			return &fakeExit{}
 		}
 		return nil
-	}
+	})
 	var out bytes.Buffer
-	require.NoError(t, l.clean(context.Background(), false, false, &out, now))
+	require.NoError(t, l.clean(context.Background(), false, false, &out))
 	log := strings.Join(calls, "\n")
 	for _, want := range []string{"delete srv:pats-dead", "network delete srv:patsbrdead", "network acl delete srv:patsbrdead",
 		"image delete srv:bbbbbbbbbbbbbbbb", "network acl delete srv:pats-run-dead", "delete srv:pats-orphan"} {
@@ -436,7 +420,7 @@ func TestLXDClean(t *testing.T) {
 	assert.ContainsString(t, out.String(), "left 2 live run(s)")
 
 	calls = nil
-	require.NoError(t, l.clean(context.Background(), true, false, &out, now))
+	require.NoError(t, l.clean(context.Background(), true, false, &out))
 	assert.ContainsString(t, strings.Join(calls, "\n"), "delete srv:pats-live")
 }
 
@@ -444,38 +428,37 @@ func TestLXDClean(t *testing.T) {
 // builder with no internet failing fast with the docker hint, before any
 // provisioning runs. a builder the cleanup could not delete is named.
 func TestLXDImageBuild(t *testing.T) {
-	t.Setenv(lxdUplinkEnv, "up0")
 	run := func(t *testing.T, offline, keepBuilder bool) (*fakeLXC, []string, []string, error) {
-		l, f := fakeLXD(Options{Driver: "lxd"})
+		l, f := fakeLXD(t, Options{Driver: "lxd", Uplink: "up0"})
 		inner := f.run
-		l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 			joined := strings.Join(args, " ")
 			switch {
 			case strings.HasPrefix(joined, "image info ubuntu:26.04"):
-				f.calls = append(f.calls, args)
+				f.record(args)
 				io.WriteString(stdout, "Fingerprint: abc\n")
 				return nil
 			case strings.HasPrefix(joined, "image info srv:pats-img-"):
-				f.calls = append(f.calls, args)
-				if strings.Contains(joined, "-"+lxdRunToken+" ") {
+				f.record(args)
+				if strings.Contains(joined, "-"+l.p.token+" ") {
 					io.WriteString(stdout, "Fingerprint: def\n") // the run-private alias, published
 					return nil
 				}
 				return &fakeExit{}
 			case strings.Contains(joined, "/storage-pools/default/resources"):
-				f.calls = append(f.calls, args)
+				f.record(args)
 				io.WriteString(stdout, `{"space":{"used":`+strconv.Itoa(27<<30)+`,"total":`+strconv.Itoa(28<<30)+`}}`)
 				return nil
 			case offline && strings.Contains(joined, "/dev/tcp/1.1.1.1/443"):
-				f.calls = append(f.calls, args)
+				f.record(args)
 				return &fakeExit{}
 			case keepBuilder && strings.HasPrefix(joined, "delete srv:pats-build-"):
-				f.calls = append(f.calls, args)
+				f.record(args)
 				io.WriteString(stderr, "Error: busy")
 				return &fakeExit{}
 			}
 			return inner(ctx, stdin, stdout, stderr, args...)
-		}
+		})
 		var steps, warns []string
 		spec := LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"},
 			Progress: func(m string) { steps = append(steps, m) }, Warn: func(m string) { warns = append(warns, m) }}
@@ -487,9 +470,9 @@ func TestLXDImageBuild(t *testing.T) {
 		f, _, warns, err := run(t, true, false)
 		require.Error(t, err, "image builder on bridge up0 does not reach the internet")
 		assert.ContainsString(t, err.Error(), "DOCKER-USER")
-		assert.ContainsString(t, err.Error(), lxdUplinkEnv)
-		for _, c := range f.calls {
-			assert.That(t, !strings.Contains(strings.Join(c, " "), "provision true"), "provisioned offline")
+		assert.ContainsString(t, err.Error(), LXDUplinkEnv)
+		for _, c := range f.all() {
+			assert.That(t, !strings.Contains(c, "provision true"), "provisioned offline")
 		}
 		assert.Equal(t, len(warns), 1)
 		assert.ContainsString(t, warns[0], "1.0 GiB free of 28.0 GiB")
@@ -528,14 +511,14 @@ func TestLogTail(t *testing.T) {
 // a delete that lands while the server is still creating the instance says
 // "not found"; it is retried until the create is over, and then removes it.
 func TestLXDDeleteInstanceWaitsForCreate(t *testing.T) {
-	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv"})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv"})
 	busy := 2
 	inner := f.run
-	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.HasPrefix(joined, "query srv:/1.0/operations"):
-			f.calls = append(f.calls, args)
+			f.record(args)
 			if busy > 0 {
 				busy--
 				io.WriteString(stdout, `{"running":[{"resources":{"instances":["/1.0/instances/pats-x?project=pats"]}}]}`)
@@ -544,7 +527,7 @@ func TestLXDDeleteInstanceWaitsForCreate(t *testing.T) {
 			}
 			return nil
 		case strings.HasPrefix(joined, "delete srv:pats-x"):
-			f.calls = append(f.calls, args)
+			f.record(args)
 			if busy > 0 {
 				io.WriteString(stderr, `Error: Failed to fetch instance "pats-x" in project "pats": Instance not found`)
 				return &fakeExit{}
@@ -552,11 +535,11 @@ func TestLXDDeleteInstanceWaitsForCreate(t *testing.T) {
 			return nil
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
-	}
+	})
 	require.NoError(t, l.deleteInstance("pats-x"))
 	deletes := 0
-	for _, c := range f.calls {
-		if c[0] == "delete" {
+	for _, c := range f.all() {
+		if strings.HasPrefix(c, "delete ") {
 			deletes++
 		}
 	}
@@ -568,10 +551,10 @@ func TestLXDDeleteInstanceWaitsForCreate(t *testing.T) {
 // were read before that delete, so the round is retried and the instance,
 // now there, goes (docs/spec/fizz/lxd_delete.fizz).
 func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
-	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv"})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv"})
 	creating, present := true, false
 	inner := f.run
-	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.HasPrefix(joined, "query srv:/1.0/operations"):
@@ -593,7 +576,7 @@ func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
 			return &fakeExit{}
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
-	}
+	})
 	require.NoError(t, l.deleteInstance("pats-x"))
 	assert.That(t, !present, "instance left behind")
 }
@@ -603,19 +586,17 @@ func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
 func TestLXDProxyImageProgress(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "pats")
 	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
-	t.Setenv(lxdProxyBinEnv, bin)
-	t.Setenv(lxdUplinkEnv, "up0")
 	var steps []string
-	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv", Progress: func(m string) { steps = append(steps, m) }})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv", ProxyBin: bin, Uplink: "up0", Progress: func(m string) { steps = append(steps, m) }})
 	inner := f.run
-	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.HasPrefix(joined, "image info "+lxdProxyBase):
 			io.WriteString(stdout, "Fingerprint: abc\n")
 			return nil
 		case strings.HasPrefix(joined, "image info srv:pats-img-"):
-			if strings.Contains(joined, "-"+lxdRunToken+" ") {
+			if strings.Contains(joined, "-"+l.p.token+" ") {
 				io.WriteString(stdout, "Fingerprint: def\n")
 				return nil
 			}
@@ -625,7 +606,7 @@ func TestLXDProxyImageProgress(t *testing.T) {
 			return nil
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
-	}
+	})
 	_, err := l.buildProxyImage(context.Background())
 	require.NoError(t, err)
 	require.That(t, len(steps) > 0, "no progress")

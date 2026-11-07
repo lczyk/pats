@@ -35,12 +35,13 @@ func TestLXDE2E(t *testing.T) {
 	}
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, "%s", out)
-	t.Setenv(lxdProxyBinEnv, bin)
+	o := Options{Driver: "lxd", ProxyBin: bin}.WithEnv()
 
 	var log bytes.Buffer
-	img, _, err := LXDImage(ctx, Options{Driver: "lxd"}, LXDImageSpec{Base: "ubuntu:24.04"}, &log)
+	img, _, err := LXDImage(ctx, o, LXDImageSpec{Base: "ubuntu:24.04"}, &log)
 	require.NoError(t, err, "%s", log.String())
-	sb, err := New(Options{Driver: "lxd", Image: img})
+	o.Image = img
+	sb, err := New(o)
 	require.NoError(t, err)
 
 	run := func(t *testing.T, sess Session, root bool, script string) (int, string) {

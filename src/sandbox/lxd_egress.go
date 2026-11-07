@@ -8,11 +8,9 @@ import (
 	"io"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -26,9 +24,9 @@ import (
 // proxy port: with br_netfilter loaded (docker loads it) traffic between two
 // nics on one bridge passes the host's forward hook, where the acl sits.
 
-// lxdProxyBinEnv names a linux pats binary for the server's arch, for a dev
+// LXDProxyBinEnv names a linux pats binary for the server's arch, for a dev
 // build with no published image.
-const lxdProxyBinEnv = "PATS_LXD_PROXY_BIN"
+const LXDProxyBinEnv = "PATS_LXD_PROXY_BIN"
 
 // lxdProxyBase is what the proxy container is provisioned on.
 const lxdProxyBase = "ubuntu-minimal:26.04"
@@ -49,9 +47,9 @@ type lxdEgress struct {
 	ip      netip.Addr
 	agentIP netip.Addr
 	prefix  int
+	refuse  netip.Prefix // the egress pool, which the proxy refuses to dial
 	m       *material
-	cmd     *exec.Cmd
-	cancel  context.CancelFunc
+	run     *follower // `pats egress run`, through lxc exec
 	auditF  *os.File
 }
 
@@ -60,14 +58,14 @@ type lxdEgress struct {
 // is running and has passed the canary.
 func (s *lxdSession) startEgressNetwork(ctx context.Context) error {
 	l := s.l
-	s.bridge = bridgeName(s.name)
-	aclArgs := append([]string{"network", "acl", "create", l.ref(s.bridge), "--project", "default"}, lxdMeta()...)
+	s.bridge = l.bridgeName(s.name)
+	aclArgs := append([]string{"network", "acl", "create", l.ref(s.bridge), "--project", "default"}, l.meta()...)
 	if _, err := l.lxc(ctx, aclArgs...); err != nil {
 		return err
 	}
 	netArgs := append([]string{"network", "create", l.ref(s.bridge), "--project", "default",
 		"ipv4.address=none", "ipv6.address=none", "security.acls=" + s.bridge,
-		"security.acls.default.egress.action=reject", "security.acls.default.ingress.action=reject"}, lxdMeta()...)
+		"security.acls.default.egress.action=reject", "security.acls.default.ingress.action=reject"}, l.meta()...)
 	if _, err := l.lxc(ctx, netArgs...); err != nil {
 		return err
 	}
@@ -96,8 +94,13 @@ func (s *lxdSession) setAddress(ctx context.Context, inst string, addr netip.Pre
 // gives the agent the proxy env.
 func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	l := s.l
-	subnet := nextSubnet()
-	e := &lxdEgress{proxy: s.name + "-p", ip: subnet.Addr().Next().Next(), agentIP: subnet.Addr().Next().Next().Next(), prefix: subnet.Bits()}
+	pool, err := parsePool(l.o.EgressPool)
+	if err != nil {
+		return err
+	}
+	subnet := l.p.nextSubnet(pool)
+	e := &lxdEgress{proxy: s.name + "-p", ip: subnet.Addr().Next().Next(), agentIP: subnet.Addr().Next().Next().Next(),
+		prefix: subnet.Bits(), refuse: pool}
 	s.egress = e
 	if _, err := l.lxc(ctx, "network", "acl", "rule", "add", l.ref(s.bridge), "egress", "--project", "default",
 		"action=allow", "source="+e.agentIP.String()+"/32", "destination="+e.ip.String()+"/32",
@@ -137,7 +140,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 		return err
 	}
 	p := &lxdSession{l: l, name: e.proxy}
-	args := append([]string{"init", l.ref(img), p.inst(), "--project", lxdProject, "--storage", l.pool}, metaFlags()...)
+	args := append([]string{"init", l.ref(img), p.inst(), "--project", lxdProject, "--storage", l.pool}, l.metaFlags()...)
 	if _, err := l.lxc(ctx, args...); err != nil {
 		return err
 	}
@@ -193,15 +196,6 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	return nil
 }
 
-// metaFlags are lxdMeta as -c flags.
-func metaFlags() []string {
-	var out []string
-	for _, kv := range lxdMeta() {
-		out = append(out, "-c", kv)
-	}
-	return out
-}
-
 // runProxy starts `pats egress run` in the proxy container as an
 // unprivileged user, listening on the bridge address only, its stdout (the
 // audit) streamed to auditPath, and waits for its listening line.
@@ -212,7 +206,7 @@ func (s *lxdSession) runProxy(ctx context.Context, p *lxdSession, auditPath stri
 		roots = lxdProxyRoots
 	}
 	penv := e.m.proxyEnv(roots)
-	penv["PATS_EGRESS_REFUSE"] = pool.String()
+	penv["PATS_EGRESS_REFUSE"] = e.refuse.String()
 	penv["PATS_EGRESS_LISTEN"] = e.ip.String() + ":" + proxyPort
 	var uid bytes.Buffer
 	if code, err := p.exec(ctx, Cmd{Argv: []string{"id", "-u", lxdProxyUser}, Root: true, Dir: "/"}, &uid, io.Discard); err != nil || code != 0 {
@@ -228,23 +222,13 @@ func (s *lxdSession) runProxy(ctx context.Context, p *lxdSession, auditPath stri
 		}
 		e.auditF, audit = f, f
 	}
-	pctx, cancel := context.WithCancel(context.Background())
-	e.cancel = cancel
 	args := p.execArgs(Cmd{Argv: []string{"/usr/local/bin/pats", "egress", "run"}, Env: penv, Dir: "/"})
-	if s.l.run != nil {
-		// tests: the fake cli has no process to stream.
-		return s.l.run(ctx, nil, audit, io.Discard, args...)
-	}
-	e.cmd = exec.CommandContext(pctx, s.l.bin, args...)
-	e.cmd.Stdout = audit
-	stderr, err := e.cmd.StderrPipe()
+	run, err := follow(s.l.r, audit, args...)
 	if err != nil {
-		return err
-	}
-	if err := e.cmd.Start(); err != nil {
 		return fmt.Errorf("egress: start proxy: %w", err)
 	}
-	if err := waitReady(stderr, readyWait); err != nil {
+	e.run = run
+	if err := run.ready(s.l.p.clock, s.l.p.t.proxyReady); err != nil {
 		return fmt.Errorf("egress: proxy %s: %w", e.proxy, err)
 	}
 	return nil
@@ -282,11 +266,8 @@ func (s *lxdSession) closeEgress() {
 	if e == nil {
 		return
 	}
-	if e.cancel != nil {
-		e.cancel()
-	}
-	if e.cmd != nil {
-		_ = e.cmd.Wait()
+	if e.run != nil {
+		e.run.stop(s.l.p.clock, 0)
 	}
 	if e.auditF != nil {
 		_ = e.auditF.Close()
@@ -297,28 +278,20 @@ func (s *lxdSession) closeEgress() {
 	}
 }
 
-// proxyImages caches the proxy image per server for the process: every
-// proxied pair needs it, and resolving it means fetching the binary.
-var (
-	proxyImagesMu sync.Mutex
-	proxyImages   = map[string]string{}
-)
-
 // proxyImage is the proxy container image on l's server, made once per
-// process; see buildProxyImage.
+// process (every proxied pair needs it, and resolving it means fetching the
+// binary); see buildProxyImage.
 func (l *lxd) proxyImage(ctx context.Context) (string, error) {
-	if l.run != nil {
-		return l.buildProxyImage(ctx)
-	}
 	// held across the build, so concurrent pairs wait for one build.
-	proxyImagesMu.Lock()
-	defer proxyImagesMu.Unlock()
-	if alias, ok := proxyImages[l.o.Remote]; ok {
+	x := &l.p.lxd
+	x.proxyMu.Lock()
+	defer x.proxyMu.Unlock()
+	if alias, ok := x.proxyImages[l.o.Remote]; ok {
 		return alias, nil
 	}
 	alias, err := l.buildProxyImage(ctx)
 	if err == nil {
-		proxyImages[l.o.Remote] = alias
+		x.proxyImages[l.o.Remote] = alias
 	}
 	return alias, err
 }
@@ -337,7 +310,7 @@ func (l *lxd) buildProxyImage(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer RemoveTemp(material)
-	if err := proxyBinary(ctx, arch, filepath.Join(material, "pats")); err != nil {
+	if err := proxyBinary(ctx, l.o.ProxyBin, arch, filepath.Join(material, "pats"), l.p.t.proxyFetch); err != nil {
 		return "", err
 	}
 	netplan := "network:\n  version: 2\n  ethernets:\n    uplink0:\n      dhcp4: true\n"
@@ -351,7 +324,7 @@ mkdir -p /etc/netplan /etc/pats && cp ` + ProvisionMount + `/60-pats-uplink.yaml
 	if err := os.WriteFile(filepath.Join(material, "script"), []byte(script), 0o644); err != nil {
 		return "", err
 	}
-	pl := &lxd{o: Options{Driver: "lxd", Remote: l.o.Remote}, bin: l.bin, run: l.run}
+	pl := newLXD(l.p, l.r, Options{Driver: "lxd", Remote: l.o.Remote, Uplink: l.o.Uplink})
 	spec := LXDImageSpec{Base: lxdProxyBase, Material: material, Argv: []string{"/bin/sh", ProvisionMount + "/script"},
 		Progress: prefixed(l.o.Progress, "egress proxy: "), Warn: prefixed(l.o.Warn, "egress proxy: ")}
 	var log bytes.Buffer
@@ -393,10 +366,9 @@ func (l *lxd) serverArch(ctx context.Context) (string, error) {
 	}
 }
 
-// proxyBinary puts a linux pats for arch at dst: the file lxdProxyBinEnv
-// names, this binary when it is one, else the published proxy image's.
-func proxyBinary(ctx context.Context, arch, dst string) error {
-	src := os.Getenv(lxdProxyBinEnv)
+// proxyBinary puts a linux pats for arch at dst: src (Options.ProxyBin) when
+// set, this binary when it is one, else the published proxy image's.
+func proxyBinary(ctx context.Context, src, arch, dst string, timeout time.Duration) error {
 	if src == "" && runtime.GOOS == "linux" && runtime.GOARCH == arch {
 		if exe, err := os.Executable(); err == nil {
 			src = exe
@@ -410,10 +382,10 @@ func proxyBinary(ctx context.Context, arch, dst string) error {
 		return os.WriteFile(dst, b, 0o755)
 	}
 	img, _ := ProxyImage("")
-	deadline, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := fetchImageFile(deadline, img, arch, "pats", dst); err != nil {
-		return fmt.Errorf("fetch the proxy binary from %s (or set %s): %w", img, lxdProxyBinEnv, err)
+		return fmt.Errorf("fetch the proxy binary from %s (or set %s): %w", img, LXDProxyBinEnv, err)
 	}
 	return nil
 }

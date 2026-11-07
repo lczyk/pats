@@ -10,12 +10,10 @@ import (
 	"io"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,9 +29,14 @@ const namePrefix = "sbx-"
 // OwnerLabel is the label pats puts on every container and network it makes:
 // the host and uid that made it, so `pats clean` only judges its own. another
 // user's workdir owner files live in their cache, or on another machine.
-func OwnerLabel() string {
+func OwnerLabel() string { return defaultProcess.ownerLabel() }
+
+func (p *process) ownerLabel() string { return "pats.owner=" + p.owner() }
+
+// hostOwner is the host, uid and client id that made a resource.
+func hostOwner() string {
 	host, _ := os.Hostname()
-	return fmt.Sprintf("pats.owner=%s/%d/%s", host, os.Getuid(), clientID())
+	return fmt.Sprintf("%s/%d/%s", host, os.Getuid(), clientID())
 }
 
 // clientID is a random id made once per user and kept beside the temp root:
@@ -257,40 +260,26 @@ func (m *material) agentEnv(proxyURL string) map[string]string {
 	return env
 }
 
-// pool is the range pats carves sandbox networks from, one /29 per pair
-// (gateway, proxy, agent). docker's own pool is a handful of /16s and runs
-// out under -j. PATS_EGRESS_POOL overrides it for the host whose lan is here;
-// a bad override fails every proxy run rather than silently using the default.
-var pool, poolErr = parsePool(os.Getenv("PATS_EGRESS_POOL"))
+// EgressPoolEnv overrides the egress pool (Options.EgressPool).
+const EgressPoolEnv = "PATS_EGRESS_POOL"
 
+// parsePool reads the range pats carves sandbox networks from, one /29 per
+// pair (gateway, proxy, agent). docker's own pool is a handful of /16s and
+// runs out under -j. an override is for the host whose lan is in the
+// default; a bad one fails every proxy run rather than silently using the
+// default.
 func parsePool(v string) (netip.Prefix, error) {
 	if v == "" {
 		return netip.MustParsePrefix("10.213.0.0/16"), nil
 	}
 	p, err := netip.ParsePrefix(v)
 	if err != nil || !p.Addr().Is4() || p.Bits() > 24 {
-		return netip.Prefix{}, fmt.Errorf("PATS_EGRESS_POOL %q: want an ipv4 cidr of /24 or wider", v)
+		return netip.Prefix{}, fmt.Errorf("egress pool %q (%s): want an ipv4 cidr of /24 or wider", v, EgressPoolEnv)
 	}
 	return p.Masked(), nil
 }
 
 const slotBits = 29
-
-// slot hands out the next /29 of the pool. it only orders attempts within
-// this process: another pats on the same daemon, or a network a crashed run
-// left behind, makes `network create` fail, and the caller moves on.
-var slot atomic.Uint32
-
-func nextSubnet() netip.Prefix {
-	n := slot.Add(1) - 1
-	count := uint32(1) << (slotBits - pool.Bits())
-	base := pool.Addr().As4()
-	off := (n % count) << (32 - slotBits)
-	ip := netip.AddrFrom4([4]byte{
-		base[0] | byte(off>>24), base[1] | byte(off>>16), base[2] | byte(off>>8), base[3] | byte(off),
-	})
-	return netip.PrefixFrom(ip, slotBits)
-}
 
 // proxyPort is where the sidecar listens.
 const proxyPort = "8080"
@@ -308,7 +297,11 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	proxyName := namePrefix + "proxy-" + id
 	img, _ := ProxyImage(spec.Egress.Image) // warn (if any) is logged by the pre-pull pass
 
-	subnet, err := c.createNetwork(ctx, net)
+	pool, err := parsePool(c.egressPool)
+	if err != nil {
+		return nil, nil, err
+	}
+	subnet, err := c.createNetwork(ctx, net, pool)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -317,7 +310,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// below), not dumped at the end. teardown stops it + removes proxy + network
 	// + the mitm CA dir, using a fresh context so it still runs if the agent run
 	// was cancelled.
-	var logsCmd *exec.Cmd
+	var logs *follower
 	var auditF *os.File
 	var m *material
 	teardown := func() {
@@ -330,15 +323,8 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		// errors on the missing container and we ignore that.
 		_, _ = c.docker(context.Background(), "rm", "-f", proxyName)
 
-		if logsCmd != nil && logsCmd.Process != nil {
-			done := make(chan error, 1)
-			go func() { done <- logsCmd.Wait() }()
-			select {
-			case <-done: // saw EOF on its own once the container went away
-			case <-time.After(2 * time.Second):
-				_ = logsCmd.Process.Kill()
-				<-done
-			}
+		if logs != nil {
+			logs.stop(c.p.clock, c.p.t.followerGrace)
 		}
 		if auditF != nil {
 			_ = auditF.Close()
@@ -366,7 +352,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// the first), so the agent needs no resolver to find it.
 	proxyIP := subnet.Addr().Next().Next()
 	runArgs := []string{"run", "-d", "--rm", "--name", proxyName, "--network", net, "--ip", proxyIP.String(),
-		"--label", OwnerLabel(),
+		"--label", c.p.ownerLabel(),
 		// the sidecar also sits on the default network, where a container
 		// could hand-craft frames at it to be routed out: it forwards nothing
 		// and needs no capability to listen on an unprivileged port.
@@ -410,18 +396,11 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		}
 		auditF, audit = f, f
 	}
-	logsCmd = exec.Command(c.bin, "logs", "-f", proxyName)
-	logsCmd.Stdout = audit
-	stderr, err := logsCmd.StderrPipe()
-	if err != nil {
-		teardown()
-		return nil, nil, err
-	}
-	if err := logsCmd.Start(); err != nil {
+	if logs, err = follow(c.r, audit, "logs", "-f", proxyName); err != nil {
 		teardown()
 		return nil, nil, fmt.Errorf("egress: follow proxy logs: %w", err)
 	}
-	if err := waitReady(stderr, readyWait); err != nil {
+	if err := logs.ready(c.p.clock, c.p.t.proxyReady); err != nil {
 		teardown()
 		return nil, nil, fmt.Errorf("egress: proxy %s: %w", proxyName, err)
 	}
@@ -454,14 +433,11 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 // createNetwork makes the pair's internal network on the next free /29 of the
 // pool, moving on when the daemon already has that range (another pats, or a
 // network a crashed run left behind).
-func (c *container) createNetwork(ctx context.Context, name string) (netip.Prefix, error) {
-	if poolErr != nil {
-		return netip.Prefix{}, poolErr
-	}
+func (c *container) createNetwork(ctx context.Context, name string, pool netip.Prefix) (netip.Prefix, error) {
 	var last string
 	for range subnetTries {
-		subnet := nextSubnet()
-		args := []string{"network", "create", "--internal", "--label", OwnerLabel()}
+		subnet := c.p.nextSubnet(pool)
+		args := []string{"network", "create", "--internal", "--label", c.p.ownerLabel()}
 		if c.driver == "docker" {
 			// docker gives the host an address on the bridge, which the agent
 			// could reach any host service through: --internal cuts only routes.
@@ -483,7 +459,7 @@ func (c *container) createNetwork(ctx context.Context, name string) (netip.Prefi
 			return netip.Prefix{}, fmt.Errorf("egress: create network: %w (%s)", err, out)
 		}
 	}
-	return netip.Prefix{}, fmt.Errorf("egress: no free subnet in %s after %d tries (%s); `pats clean` or set PATS_EGRESS_POOL", pool, subnetTries, last)
+	return netip.Prefix{}, fmt.Errorf("egress: no free subnet in %s after %d tries (%s); `pats clean` or set %s", pool, subnetTries, last, EgressPoolEnv)
 }
 
 // subnetTaken recognises the daemon saying the range is in use.
@@ -502,7 +478,7 @@ func (c *container) defaultNetwork() string {
 
 // waitReady reads the proxy's stderr until its listening line, then keeps
 // draining it so the follower never blocks on a full pipe.
-func waitReady(r io.Reader, timeout time.Duration) error {
+func waitReady(r io.Reader, c clock, timeout time.Duration) error {
 	br := bufio.NewReader(r)
 	ready := make(chan error, 1)
 	go func() {
@@ -522,7 +498,7 @@ func waitReady(r io.Reader, timeout time.Duration) error {
 	select {
 	case err := <-ready:
 		return err
-	case <-time.After(timeout):
+	case <-c.After(timeout):
 		return errors.New("not listening after " + timeout.String())
 	}
 }
@@ -590,24 +566,6 @@ func canaryVerdict(out, driver, image string) error {
 		return fmt.Errorf("egress is not fail-closed under driver %s: a direct connection from the sandbox succeeded", driver)
 	}
 	return fmt.Errorf("egress self-test gave no verdict: %s", out)
-}
-
-// dockerOut runs docker with stdout captured alone (no stderr mixed in) -- for
-// reading file content out of an image. on failure the daemon's message lands
-// on ExitError.Stderr (Output captures it there), so surface it -- else a
-// failed `docker run` collapses to a bare "exit status 125".
-func dockerOut(ctx context.Context, bin string, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, bin, args...).Output()
-	var e *exec.ExitError
-	if errors.As(err, &e) && len(e.Stderr) > 0 {
-		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(e.Stderr)))
-	}
-	return out, err
-}
-
-func docker(ctx context.Context, bin string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
 }
 
 // ProxyEnvOptions turns the sidecar's env into proxy.Options: the policy
