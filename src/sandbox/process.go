@@ -35,6 +35,7 @@ type process struct {
 	owner func() string // read on first use: it may persist the client id
 	clock clock
 	t     timings
+	reg   registry
 
 	slot atomic.Uint32 // the next egress subnet
 
@@ -87,7 +88,7 @@ var defaultTimings = timings{
 func newProcess(c clock, t timings) *process {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
-	return &process{token: hex.EncodeToString(b), owner: sync.OnceValue(hostOwner), clock: c, t: t,
+	return &process{token: hex.EncodeToString(b), owner: sync.OnceValue(hostOwner), clock: c, t: t, reg: defaultRegistry,
 		lxd: lxdProcess{servers: map[string]*lxdServer{}, proxyImages: map[string]string{}}}
 }
 

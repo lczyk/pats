@@ -16,16 +16,26 @@ import (
 	"strings"
 )
 
+// registry is how a process reaches image registries: the http client, and
+// the base url of a registry host. production uses https and the default
+// client; a test points both at an httptest server.
+type registry struct {
+	client *http.Client
+	url    func(host string) string
+}
+
+var defaultRegistry = registry{client: http.DefaultClient, url: func(host string) string { return "https://" + host }}
+
 // fetchImageFile copies one file out of a public image's top layer, straight
 // from the registry's http api (token, index, per-arch manifest, blob): the
 // lxd driver gets the proxy binary for the server's arch this way, with no
 // docker on the machine pats runs on. ref is host/repo:tag; arch is a go arch.
-func fetchImageFile(ctx context.Context, ref, arch, name, dst string) error {
+func (reg registry) fetchImageFile(ctx context.Context, ref, arch, name, dst string) error {
 	host, repo, tag, err := splitRef(ref)
 	if err != nil {
 		return err
 	}
-	c := &registryClient{ctx: ctx, base: "https://" + host + "/v2/" + repo}
+	c := &registryClient{ctx: ctx, http: reg.client, root: reg.url(host), base: reg.url(host) + "/v2/" + repo}
 	if err := c.auth(host, repo); err != nil {
 		return err
 	}
@@ -147,18 +157,20 @@ func splitRef(ref string) (host, repo, tag string, err error) {
 
 type registryClient struct {
 	ctx   context.Context
-	base  string
+	http  *http.Client
+	root  string // the registry host's base url
+	base  string // the repo's, under /v2
 	token string
 }
 
 // auth gets an anonymous pull token, the way a public ghcr image is read.
 func (c *registryClient) auth(host, repo string) error {
-	u := "https://" + host + "/token?service=" + url.QueryEscape(host) + "&scope=" + url.QueryEscape("repository:"+repo+":pull")
+	u := c.root + "/token?service=" + url.QueryEscape(host) + "&scope=" + url.QueryEscape("repository:"+repo+":pull")
 	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
@@ -187,7 +199,7 @@ func (c *registryClient) get(path, accept string) (io.ReadCloser, error) {
 	if accept != "" {
 		req.Header.Set("Accept", accept)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +237,7 @@ func (c *registryClient) manifest(tag string) (digest, mediaType string, err err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", indexAccept+", "+manifestAccept)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", "", err
 	}

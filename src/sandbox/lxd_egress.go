@@ -307,7 +307,7 @@ func (l *lxd) buildProxyImage(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer RemoveTemp(material)
-	if err := proxyBinary(ctx, l.o.ProxyBin, arch, filepath.Join(material, "pats"), l.p.t.proxyFetch); err != nil {
+	if err := proxyBinary(ctx, l.p.reg, l.o.ProxyBin, arch, filepath.Join(material, "pats"), l.p.t.proxyFetch); err != nil {
 		return "", err
 	}
 	netplan := "network:\n  version: 2\n  ethernets:\n    uplink0:\n      dhcp4: true\n"
@@ -365,7 +365,7 @@ func (l *lxd) serverArch(ctx context.Context) (string, error) {
 
 // proxyBinary puts a linux pats for arch at dst: src (Options.ProxyBin) when
 // set, this binary when it is one, else the published proxy image's.
-func proxyBinary(ctx context.Context, src, arch, dst string, timeout time.Duration) error {
+func proxyBinary(ctx context.Context, reg registry, src, arch, dst string, timeout time.Duration) error {
 	if src == "" && runtime.GOOS == "linux" && runtime.GOARCH == arch {
 		if exe, err := os.Executable(); err == nil {
 			src = exe
@@ -381,7 +381,7 @@ func proxyBinary(ctx context.Context, src, arch, dst string, timeout time.Durati
 	img, _ := ProxyImage("")
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := fetchImageFile(deadline, img, arch, "pats", dst); err != nil {
+	if err := reg.fetchImageFile(deadline, img, arch, "pats", dst); err != nil {
 		return fmt.Errorf("fetch the proxy binary from %s (or set %s): %w", img, LXDProxyBinEnv, err)
 	}
 	return nil
