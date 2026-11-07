@@ -83,8 +83,9 @@ what the proxy enforces, beyond the lists:
 - **upstream tls** verifies against the sandbox image's own trust bundle, not the sidecar's, and a stapled ocsp
   response that says revoked fails the request.
 - **the topology is checked.** preflight runs a canary on the internal network before the proxy exists: tcp4, tcp6, a
-  dns query over udp and a name lookup must all fail, or the run refuses to start. the canary needs `bash`,
-  `timeout` and `getent` in the image and says so when they are missing.
+  dns query over udp and a name lookup must all fail, or the run refuses to start. once the proxy is up, its port must
+  answer from that network, so a host firewall dropping internal traffic is named before any pair runs. the canary
+  needs `bash`, `timeout` and `getent` in the image and says so when they are missing.
 
 the sandbox trusts the run CA through `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `REQUESTS_CA_BUNDLE`,
 `CARGO_HTTP_CAINFO` (all the merged bundle at `/sbx-ca/bundle.pem`) and `NODE_EXTRA_CA_CERTS` (the CA alone at

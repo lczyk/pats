@@ -34,6 +34,7 @@ type fakeDocker struct {
 	failed   int
 	out      []byte // execOut payload (the image trust bundle)
 	canary   string // what the canary run prints
+	reach    string // what the reachability probe prints; "" is a pass
 }
 
 func newFakeDocker(t *testing.T) *fakeDocker {
@@ -58,6 +59,12 @@ func (f *fakeDocker) exec(ctx context.Context, bin string, args ...string) (stri
 	if f.failOn != "" && strings.Contains(joined, f.failOn) && (f.failN == 0 || f.failed < f.failN) {
 		f.failed++
 		return f.failOut, errors.New("fake docker failure")
+	}
+	if strings.Contains(joined, "egress-reach") {
+		if f.reach == "" {
+			return "egress-reach ok=1", nil
+		}
+		return f.reach, nil
 	}
 	if strings.Contains(joined, "--entrypoint bash") {
 		return f.canary, nil
@@ -370,6 +377,20 @@ func TestEgressCanary(t *testing.T) {
 	assert.Error(t, err, "not fail-closed")
 	assert.Nil(t, fd.call("run -d"))
 	assert.NotNil(t, fd.call("network rm"))
+
+	// with the proxy up, its port must answer from the internal network.
+	fd = newFakeDocker(t)
+	fd.canary = "egress-canary leak=0"
+	fd.reach = "egress-reach ok=0"
+	spec = Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-r"), Egress: Egress{Set: true, SelfTest: true}}
+	_, _, err = fd.container().startEgressProxy(context.Background(), spec)
+	assert.Error(t, err, "cannot reach the proxy")
+	assert.NotNil(t, fd.call("rm -f sbx-proxy-pats-work-r"))
+	fd.reach = ""
+	spec.Workdir = filepath.Join(t.TempDir(), "pats-work-s")
+	_, teardown, err := fd.container().startEgressProxy(context.Background(), spec)
+	require.NoError(t, err)
+	teardown()
 }
 
 func TestWaitReady(t *testing.T) {

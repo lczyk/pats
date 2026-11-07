@@ -338,6 +338,12 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		teardown()
 		return nil, nil, fmt.Errorf("egress: proxy %s: %w", proxyName, err)
 	}
+	if spec.Egress.SelfTest {
+		if err := c.proxyReachable(ctx, net, proxyIP.String()+":"+proxyPort); err != nil {
+			teardown()
+			return nil, nil, err
+		}
+	}
 
 	netArgs := []string{"--network", net}
 	if c.driver == "docker" {
@@ -445,6 +451,30 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/2606:4700:4700::1111/443' 2>/dev/null && lea
 timeout 3 bash -c 'exec 3<>/dev/udp/8.8.8.8/53; printf "\000\001\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001" >&3; read -t 2 -N 1 <&3' 2>/dev/null && leak=1
 getent hosts example.com >/dev/null 2>&1 && leak=1
 echo "egress-canary leak=$leak"`
+
+// proxyReachable is the canary's other half: from the internal network, with
+// the proxy up, its port must answer. a host firewall that drops traffic on
+// the driver's internal networks would otherwise fail every pair with a
+// connection error the agent reports in its own words.
+func (c *container) proxyReachable(ctx context.Context, net, addr string) error {
+	host, port, _ := strings.Cut(addr, ":")
+	script := fmt.Sprintf(`timeout 5 bash -c 'exec 3<>/dev/tcp/%s/%s' 2>/dev/null && echo "egress-reach ok=1" || echo "egress-reach ok=0"`, host, port)
+	args := []string{"run", "--rm", "--network", net}
+	if c.driver == "docker" {
+		args = append(args, "--dns", "0.0.0.0")
+	}
+	args = append(args, "--entrypoint", "bash", c.image, "-c", script)
+	out, err := c.docker(ctx, args...)
+	switch {
+	case strings.Contains(out, "egress-reach ok=1"):
+		return nil
+	case strings.Contains(out, "egress-reach ok=0"):
+		return fmt.Errorf("egress self-test: the sandbox cannot reach the proxy at %s under driver %s; something on the host drops traffic on its internal networks (a firewall rule, a FORWARD policy)", addr, c.driver)
+	case err != nil:
+		return fmt.Errorf("egress self-test could not run in image %s: %w (%s)", c.image, err, out)
+	}
+	return fmt.Errorf("egress self-test gave no verdict: %s", out)
+}
 
 // egressCanary runs the canary on the internal network before the proxy
 // exists: with no route out every probe must fail. a hit refuses the run. an
