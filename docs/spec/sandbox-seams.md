@@ -121,40 +121,60 @@ contract.
 
 status: proposed. `pats clean` removes what dead runs left, on every backend, by one rule: a run is alive while its
 lease is fresh, wherever the lease is kept. today lxd judges by a lease and docker and podman by an owner file's pid;
-both are liveness records, kept in different places.
+both are liveness records, kept in different places. images are not clean's but `pats init`'s (`init.md`), with one
+exception below.
 
-- **stamps.** everything a run makes carries its run token: lxd's `user.pats.run` (as today), a `pats.run` label on
-  docker and podman containers and networks (set at creation; labels never change, and the token does not need to),
-  the token in a temp dir's owner file.
+- **stamps.** everything a run makes carries its run token and its owner: lxd's `user.pats.run` and
+  `user.pats.owner` (as today), `pats.run` and `pats.owner` labels on docker and podman containers and networks (set
+  at creation; labels never change, and neither do these), the token in a temp dir's owner file. that includes what
+  `pats init` runs, the docker `pats-stamp-*` containers among them, which today carry neither and outlive a killed
+  init.
 - **the lease.** one record per run, renewed every `leaseEvery` (2m), stale after `leaseStale` (10m), by the
-  process's one renewal loop. lxd keeps it as the marker acl's `user.pats.lease` (as today). docker and podman keep it
-  as the modification time of a lease file beside the temp root (`run-<token>.lease`), touched by the same loop: a
-  daemon pats binds into is on this machine, or in a vm sharing `$HOME`, so the cleaner reads the record the run
-  writes. the lease file replaces the pid check, and with it pid reuse (a dead run's pid handed to a live process).
-  the record names the host and pid that wrote it: on that host, a pid that is gone is dead at once, so a crashed
-  docker run need not wait out the stale window. the lease stays the rule, the pid only an early answer.
-- **the verdict, per run.** a stale lease: dead. no record, and everything of the run older than `leaseStale` (a run
-  that died before making its record, or a clean that died after removing it): dead. a fresh lease: alive. a record
-  this cleaner cannot read (another user's runs on a shared docker daemon, whose lease file is in their cache):
-  unknown.
-- **removal.** dead runs go in one order on every backend: sandboxes, then networks and acls, then images a run
-  published under its private alias, then the record last, so a clean that dies halfway leaves a run still judged.
-  a removal that fails is left for the next clean (the bar the sweeps test).
-- **`--force`.** also removes unknown runs, never alive ones. lxd's force loses "runs whose lease is live": a run
-  that is really dead goes stale within 10m anyway. force still removes shared resources no run uses (lxd's
-  `patsup`), which the daemon refuses while a run's instance is on it.
+  process's one renewal loop, made before anything else of the run (lxd's marker already is). lxd keeps it as the
+  marker acl's `user.pats.lease`. docker and podman keep it as the modification time of `run-<token>.lease` beside the
+  temp root, written before the first `docker run`. the loop wakes every 30s and renews once `leaseEvery` has passed
+  on the wall clock, so a machine waking from sleep renews within 30s, not a whole period later. the lease file
+  replaces the pid check and with it pid reuse. the record names the host and pid that wrote it, and the pid is an
+  early answer one way only: on that host, a pid that is gone makes the run dead at once; a pid that exists says
+  nothing (it may be reused), and the lease decides.
+- **who can judge a docker run.** a run's lease file is in its user's cache dir, so a run is judged by a clean that
+  shares that cache dir: the same user, the same `$HOME` and `XDG_CACHE_HOME`, the same machine. another user's
+  runs on a shared daemon, a `sudo pats clean`, another client of a `DOCKER_HOST` daemon all see an unreadable record.
+  a `$HOME` shared over the network by two machines brings two clocks to one record, and with them lxd's accepted
+  skew (below).
+- **the verdict, per run.** a stale lease, or a gone pid on the record's host: dead. no record, and everything of the
+  run older than `leaseStale`: dead (a run that died before its record, or a clean that died after removing it;
+  docker's networks have no creation time in `network ls`, so the driver inspects them). a fresh lease: alive. a
+  record this clean cannot read: unknown.
+- **removal.** dead runs go in one order on every backend: sandboxes, then networks and acls, then images still held
+  under the run's private alias (`pats-img-<key>-<token>`: a build that died between its publish and its alias claim),
+  then the record last, so a clean that dies halfway leaves a run still judged. no other image: one a run built and
+  published still carries its token after a re-pointed alias left it, and `pats init` keeps it while pins elsewhere
+  may name it. a removal that fails is left for the next clean (the bar the sweeps test). orphan lease files (stale,
+  naming no run any driver lists and no temp dir) go with the temp dirs, matched as `run-*.lease` exactly: the client
+  id and init's project registry sit beside them.
+- **`--force`.** also removes unknown runs. an unknown run may be alive on another machine or under another user, and
+  the output says so before force takes it; a run whose fresh lease clean can read is never removed by force. what
+  force loses of lxd's today (live runs) comes back named: `pats clean --run <token>` removes that one run whatever
+  its lease, for a wedged process whose renewal still ticks or an admin clearing a shared server. force still removes
+  shared resources no run uses (lxd's `patsup`), which the daemon refuses while an instance is on it, and an init
+  build holds a live marker while it uses one.
 - **where it lives.** each driver lists its runs (token, owner, resources, verdict) and removes a resource, behind the
   runner, in `src/sandbox`; the order, the verdict and `--force` are shared. `internal/eval`'s clean loops over the
-  drivers and the temp dirs, with no docker calls of its own. the docker clean gets the fake-daemon sweep lxd's has.
-- **the clock.** docker's lease and its cleaner share one clock, the host's. lxd's are two machines' clocks, the run's
-  writing the lease and the cleaner's reading it: a cleaner about 7.5m fast takes a live run. accepted
-  (`fizz/lxd_lease.fizz`): ntp keeps real machines far closer, and the server's clock cannot be read cheaply (acls
-  carry no server timestamp, `lxc query` does not show the `Date` header, and a server-stamped `created_at` needs a
-  write per read).
-- **older runs.** containers and networks from a pats before this carry no `pats.run`: for one release, clean judges
-  `sbx-*` without it by today's rule (name, owner label, the workdir owner file's pid), then the fallback goes.
-- **a gap kept.** a docker agent whose workdir is outside the temp root has no `sbx-` name. it carries the token and
-  the owner label, so the new clean finds it by label, which today's clean, filtering by name, does not.
+  drivers and the temp dirs, with no docker calls of its own. it takes `pats init`'s machine lock while it removes,
+  so the two never act on one daemon at once. the docker clean gets the fake-daemon sweep lxd's has.
+- **the clock.** docker's lease and its cleaner share one clock where they share one cache dir (above). lxd's are two
+  machines' clocks, the run's writing the lease and the cleaner's reading it: a cleaner about 7.5m fast takes a live
+  run. accepted (`fizz/lxd_lease.fizz`): ntp keeps real machines far closer, and the server's clock cannot be read
+  cheaply (acls carry no server timestamp, `lxc query` does not show the `Date` header, and a server-stamped
+  `created_at` needs a write per read). a machine asleep longer than `leaseStale` looks dead to a clean run before its
+  first renewal after waking: with the 30s wake renewal that is a window of seconds, accepted and not modelled.
+- **older runs.** a pats before this stamps no `pats.run`. containers and networks named `sbx-*` without it are
+  listed for good, not for a release: judged for one release by today's rule (the owner label and the workdir owner
+  file's pid), and after that unknown, so `--force` still takes them. temp dirs whose owner file predates the token
+  are judged by pid, as today, for the same release.
+- **a gap closed.** a docker agent whose workdir is outside the temp root has no `sbx-` name; it carries the token and
+  the owner label, so this clean finds it by label, which today's clean, filtering by name, does not.
 
 ## not in this
 
