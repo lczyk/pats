@@ -143,16 +143,16 @@ driver, from a process, a runner and its options (`newBackend(p, r, o)` in tests
 ```go
 type Backend interface {
 	// where
-	Target(ctx context.Context) (Target, error) // the pin key (docker:<context>, lxd:<remote>) and daemon identity
+	Target(ctx context.Context) (Target, error) // pin key (docker:<ctx>, lxd:<remote>), daemon id, server version
 	CPUs(ctx context.Context) int               // for -j auto; 0 when unknown
 
 	// images
 	Resolve(ctx context.Context, ref string) (Image, error) // id, digest; ErrNoImage when absent
 	Images(ctx context.Context) (map[string]bool, error)    // every image id held, tagged or not
-	Pull(ctx context.Context, ref string, log io.Writer) error
-	Build(ctx context.Context, spec BuildSpec, log io.Writer) (img Image, built bool, err error)
+	Pull(ctx context.Context, ref string, force bool, log io.Writer) (fetched bool, err error)
+	Build(ctx context.Context, spec BuildSpec, log io.Writer) (img Image, base string, built bool, err error)
+	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (Image, error)
 	Stamps(ctx context.Context, id string) (map[string]string, error)
-	Usage(ctx context.Context, id string) (ImageUse, error) // what init's removal judges by
 	RemoveImage(ctx context.Context, id string) error
 	Upstream(ctx context.Context, ref string) (string, error) // the source's current id or digest, for staleness
 
@@ -160,41 +160,70 @@ type Backend interface {
 	Sandbox(o SandboxOptions) (Sandbox, error) // today's Sandbox and Session, unchanged
 
 	// leftovers (see clean)
-	Runs(ctx context.Context) ([]Run, error) // token, owner, resources, verdict
+	Runs(ctx context.Context) ([]RunRecord, error) // what the backend holds of each run, unjudged
 	Remove(ctx context.Context, r Resource) error
+}
+
+// ImageUsage is what lxd's server records of an image's use; a container
+// daemon records none, and init judges container images by the projects'
+// pins instead (init.md). eval asks for it by type assertion.
+type ImageUsage interface {
+	Usage(ctx context.Context, id string) (ImageUse, error)
 }
 ```
 
-- **two levels of options.** today's `Options` mixes the place (driver, remote, uplink, proxy binary, egress pool)
-  with one sandbox (image, limits, vm, profiles, config). `Open` takes the first, `Sandbox` the second, so one
-  backend serves every sandbox on its daemon and init and run share it.
+- **two levels of options.** the place: driver, remote, uplink, proxy binary, egress pool, podman's connection
+  (`CONTAINER_HOST`, `CONTAINER_CONNECTION`, filled by `WithEnv` like the others, so no backend reads the
+  environment), and the instance type (`vm`). the sandbox: image, the pinned proxy image, limits, profiles, config.
+  `vm` is the place's because every lxd image method depends on it (the image key, the builder and stamp instances,
+  the upstream image picked by type) as much as the sandbox does: a server serving both types is two backends,
+  sharing the process's per-server state. a container backend ignores it. today's `ForceImages`, `Progress` and
+  `Warn` become call parameters (`force`, `BuildSpec`'s, the `log` writer and its progress lines).
 - **one implementation per backend family.** `containerBackend` (docker, podman, nerdctl through the engine table),
   `lxdBackend`, later `bwrapBackend`, whose image methods say there are none and whose `Runs` lists temp dirs. what
   differs by engine stays in the engine table.
+- **what the image methods mean on each.**
+  - `Pull` makes `ref` present: fetched when absent or forced, a no-op otherwise, `fetched` saying whether it
+    brought something (what init records as pulled). docker pulls; lxd copies a remote image into the project.
+  - `Build` builds one layer and returns the base it built on, as resolved for the key: an alias moving during a
+    long provision cannot make the pin name a base the image never saw. eval composes lxd's two-layer chain and
+    container `base:` / `provision:` from it.
+  - `ProxyImage` makes the egress proxy image the backend's sandboxes use present: a container backend pulls `ref`
+    (the published image); lxd builds its own (the binary, the netplan, the key rules stay inside) and caches it per
+    process.
+  - `Upstream` is, for a container backend, `RegistryDigest` of the ref; for lxd, the image server's current
+    fingerprint for the backend's instance type.
+  - `Usage` is lxd's only (`ImageUsage`, above).
 - **`BuildSpec`** carries what init builds on any backend: a base, provision material and argv, or a dockerfile and
-  its context (container backends only; lxd refuses it), the role and sandbox for lxd's properties, and force. the
-  per-backend keys, the claim protocol and the re-pointing stay inside each backend.
+  its context (container backends only; lxd refuses it), the role and sandbox for lxd's properties, force, and the
+  progress and warn callbacks. the per-backend keys, the claim protocol and the re-pointing stay inside each backend.
 - **eval holds policy only:** pins, staleness, what to build, pull or remove and when, the order of a run, what clean
   reports. it declares the narrow interfaces it uses, as `imageHost` does today, and a backend satisfies them; init's
   `fakeHost` keeps testing init's logic. eval runs no cli and names no driver beyond picking the backend.
 - **the process stays one per pats.** a backend holds the process it was built on; leases, the subnet counter and
   per-server setup stay on the process, shared by every backend it opened. `ShutdownLXD` becomes `sandbox.Shutdown`,
   ending every lease the process holds, on any backend.
-- **pure helpers stay functions:** `SandboxImage`, `ProxyImage`, `NormalizeRef`, `Repository`, `RegistryDigest`,
-  `ContextHash`, `DockerfileFroms`, `MkTemp` and friends touch no daemon.
+- **pure helpers stay functions:** `SandboxImage`, `ProxyImage`'s ref resolution (`sandbox.ProxyImage` as a name),
+  `NormalizeRef`, `Repository`, `RegistryDigest`, `ContextHash`, `DockerfileFroms`, `MkTemp` and friends touch no
+  daemon.
+- **an alternative weighed.** moving only the container argv into `src/sandbox` behind the runner, and keeping eval's
+  per-concern interfaces (`imageHost`, `puller`, the removers), buys the argv tests and a cli-free eval without `Open`
+  or the options split. `Backend` adds one construction seam (no `newLXD(defaultProcess, ...)` rebuilt per call)
+  and the home clean's `Runs` and `Remove` need, which is why it is the proposal.
 
 ### tests
 
 each backend's argv is tested on its fake, like its sessions: `fakeDaemon` learns images (inspect, the image list,
 pull, rmi, the target commands), and `fakeServer` already holds what lxd's image methods use. a backend conformance
 table, beside the session one, runs what every backend promises against each fake: resolve after pull and after
-build, a missing ref as `ErrNoImage`, an image in use refused removal, `Images` after a removal, `Target` stable
-across calls. eval's tests keep their method-level fakes.
+build, a second pull fetching nothing, a missing ref as `ErrNoImage`, an image in use refused removal, `Images` after
+a removal, `Target` stable across calls. `Usage` has rows for lxd only. eval's tests keep their method-level fakes.
 
 ### the move
 
-one cut, not a staged migration: 1.x is still moving and may break between commits. `Backend`, `Open` and the two
-option levels land together with docker and podman's argv moving into `containerBackend`, the lxd exports and
+one cut, not a staged migration: 1.x is still moving and may break between commits. behaviour changes it brings along
+are taken, not avoided: `-j auto` on podman asks podman for its cpus, where it asked docker. `Backend`, `Open` and the
+two option levels land together with docker and podman's argv moving into `containerBackend`, the lxd exports and
 `BuildContainerImage` / `ContainerStamps` going, and eval's `hostFor` and driver switches replaced. clean follows on
 `Runs` and `Remove`. `src/sandbox`'s exported surface is then `Open`, `Shutdown`, the types and the pure helpers.
 
@@ -240,8 +269,10 @@ exception below.
   its lease, for a wedged process whose renewal still ticks or an admin clearing a shared server. force still removes
   shared resources no run uses (lxd's `patsup`), which the daemon refuses while an instance is on it, and an init
   build holds a live marker while it uses one.
-- **where it lives.** each backend lists its runs (token, owner, resources, verdict) and removes a resource
-  (`Backend.Runs`, `Backend.Remove`, above); the order, the verdict and `--force` are shared in `src/sandbox`.
+- **where it lives.** each backend lists what it holds of each run, unjudged (`Backend.Runs`: token, owner,
+  resources with their creation times, and for lxd the marker's lease) and removes a resource (`Backend.Remove`).
+  the verdict is the shared clean's, in `src/sandbox`: it reads the docker lease files from this host's cache dir,
+  which a backend on a remote daemon could not, and the order and `--force` are shared with it.
   `internal/eval`'s clean loops over the backends and the temp dirs, with no cli calls of its own. it takes `pats
   init`'s machine lock while it removes, so the two never act on one daemon at once. the docker clean gets the
   fake-daemon sweep lxd's has.
