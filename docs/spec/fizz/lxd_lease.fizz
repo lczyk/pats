@@ -14,44 +14,36 @@ deadlock_detection: true
 # pats clean vs a live run's lease, with clocks that disagree.
 #
 # models: src/sandbox/lxd.go setupServer / renew (the run's marker acl and its
-# user.pats.lease) and src/sandbox/lxd_clean.go clean (runDead, then the wait
-# and recheck). one run, one cleaner. time is real time in ticks of 30s; each
-# machine stamps with its own clock, the cleaner's offset by COFF. the lxc
-# call that renews may fail (its error is ignored) or land late. a model, not
-# the code.
+# user.pats.lease) and src/sandbox/lxd_clean.go clean (runDead). one run, one
+# cleaner. time is real time in ticks of 30s; each machine stamps with its own
+# clock, the cleaner's COFF ticks ahead. the lxc call that renews may fail
+# (its error is ignored) or land late. a model, not the code.
 #
 # run: timeout -k 10 300 fizz lxd_lease.fizz
 #
 # requirements:
-# R1: THE SYSTEM SHALL NOT remove the resources of a run whose process is
-#     alive, whatever the two clocks say.
-# R2: IF a run's process has died and its lease looks stale, THEN clean
-#     SHALL be able to remove it.
+# R1: WHILE the cleaner's clock runs less than COFF_MAX ahead of the run's
+#     and renewals land within 30s, THE SYSTEM SHALL NOT remove the
+#     resources of a run whose process is alive.
+# R2: IF a run's process has died, THEN clean SHALL be able to remove it
+#     once its lease looks stale.
 #
-# known gap, accepted (2026-11-07): R1 holds only while every renewal lands
-# within 30s of being sent. the cleaner trusts a stale-looking lease once it
-# has stayed put for W = leaseEvery + 30s; a cleaner whose clock runs about
-# 8m or more fast, plus one renewal that fails (its error is ignored) or lands
-# late in that window, removes a live run. a longer fixed W only needs more
-# misses in a row. what closes it is a lease both sides time on their own
-# clocks: the cleaner waits the whole stale window (~10m) with the lease
-# unchanged, and the run fences itself once its last good renewal is that old.
-# not done: pats clean is not to wait that long. FENCE = True, W = S + 1
-# (TMAX = W + 2) is that design and passes with failed and late renewals;
-# LATE = 2 or RENEW_FAILS = True reproduces the gap.
+# accepted (2026-11-07): clean reads the lease, a time on the run's clock,
+# against its own clock and acts at once, with no wait. so R1 is conditional.
+# with renewals on time the cleaner may run up to 7.5m ahead (COFF = 15
+# passes, 16 fails); each renewal that fails outright takes another 2m off
+# that (RENEW_FAILS = True); a renewal landing 60s late takes 30s (LATE = 2).
+# closing the gap means a lease both sides time on their own clocks, and that
+# needs clean to wait out a whole stale window, which it is not to do.
 #
 # constants (ticks of 30s): renewal every E (leaseEvery = 2m), stale after S
-# (leaseStale = 10m), recheck after W (leaseEvery + 30s). COFF is how far the
-# cleaner's clock runs ahead: S makes every lease look stale, as on a machine
-# whose clock is 10m fast.
+# (leaseStale = 10m).
 
 E = 4
 S = 20
-COFF = 20
-LATE = 1   # a renewal that lands this many ticks after it was sent
-FENCE = False
-RENEW_FAILS = False  # whether a renewal may fail outright
-W = E + 1
+COFF = 15        # the most skew R1 survives with renewals on time
+LATE = 1         # a renewal lands this many ticks after it was sent
+RENEW_FAILS = False
 TMAX = 14
 
 action Init:
@@ -60,11 +52,7 @@ action Init:
     lease = 0             # the marker's user.pats.lease, run's clock
     next_renew = E
     pending = None        # a renewal in flight: record(value, lands)
-    last_ok = 0           # send time of the last renewal seen to succeed
-    fenced = False        # the run stopped using its resources
-    cstate = "idle"       # cleaner: idle | waiting | done
-    seen = None
-    t0 = 0
+    cstate = "idle"       # cleaner: idle | done
     removed = False
     removed_live = False
 
@@ -73,57 +61,38 @@ atomic fair action Tick:
     require t < TMAX
     require not (alive and t >= next_renew and pending == None)
     require not (pending != None and t >= pending.lands)
-    require not (FENCE and alive and not fenced and t - last_ok >= S)
     t = t + 1
 
 atomic fair action Renew:
-    require alive and not fenced and t >= next_renew and pending == None
+    require alive and t >= next_renew and pending == None
     pending = record(value=t, lands=t)
     next_renew = next_renew + E
 
 atomic action RenewLate:
-    require alive and not fenced and t >= next_renew and pending == None
+    require alive and t >= next_renew and pending == None
     pending = record(value=t, lands=t + LATE)
     next_renew = next_renew + E
 
 atomic action RenewFail:
-    require RENEW_FAILS and alive and not fenced and t >= next_renew and pending == None
+    require RENEW_FAILS and alive and t >= next_renew and pending == None
     next_renew = next_renew + E
 
 atomic fair action Land:
     require pending != None and t >= pending.lands
     lease = pending.value
-    if alive and not fenced:
-        last_ok = pending.value
     pending = None
-
-# the run, not having renewed for S by its own clock, stops using its
-# resources before any cleaner may take them.
-atomic fair action Fence:
-    require FENCE and alive and not fenced and t - last_ok >= S
-    fenced = True
 
 atomic action Crash:
     require alive
     alive = False
     pending = None
 
-# clean's first listing: runDead by the cleaner's clock.
-atomic action Snapshot:
-    require cstate == "idle" and not removed
+# runDead by the cleaner's clock, and removal straight after.
+atomic action Clean:
+    require cstate == "idle"
     if lease < t + COFF - S:
-        seen = lease
-        t0 = t
-        cstate = "waiting"
-    else:
-        cstate = "done"
-
-# after the wait: still the same lease -> dead.
-atomic fair action Recheck:
-    require cstate == "waiting" and t >= t0 + W
-    if lease == seen:
         removed = True
-        if alive and not fenced:
+        if alive:
             removed_live = True
     cstate = "done"
 
@@ -139,6 +108,6 @@ always assertion NeverRemovesLive:
 exists assertion RemovesDead:
     return removed and not removed_live
 
-# coverage: a live run survives a stale-looking lease.
-exists assertion LiveSurvivesSkew:
-    return cstate == "done" and seen != None and not removed and alive
+# coverage: clean looked at a live run and left it.
+exists assertion KeepsLive:
+    return cstate == "done" and not removed and alive

@@ -268,13 +268,11 @@ halfway, a hand deletion) is judged by its resources' `user.pats.created` agains
 is left alone whoever owns it; `--force` takes everything in the project, for a laptop that is gone. a run that ends,
 or is interrupted, removes its own.
 
-the two machines' clocks need not agree: a lease that looks stale by the cleaner's clock is only trusted once it has
-stayed unchanged over a wait longer than a live run takes to renew it (two and a half minutes). known gap, accepted:
-that holds only while renewals land on time. a cleaner whose clock runs about eight minutes or more fast, plus one
-renewal that fails (its error is ignored) or lands over 30s late inside that wait, removes a live run. closing it
-needs a lease both sides time on their own clocks -- the cleaner waiting the whole ten minutes, the run stopping
-once it has not renewed for that long -- and `pats clean` is not to wait that long. `fizz/lxd_lease.fizz` has the
-trace and the variant that closes it.
+clean acts at once, with no wait: the lease is a time on the run's clock read against the cleaner's, so the two
+clocks must roughly agree. known gap, accepted: with renewals on time a cleaner may run up to about seven and a half
+minutes fast; each renewal that fails outright (its error is ignored) takes two more minutes off that, and past it a
+live run is removed. closing it needs a lease both sides time on their own clocks, which means clean waiting out a
+whole stale window, and `pats clean` is not to wait. `fizz/lxd_lease.fizz` has the bounds.
 
 ## metadata
 
