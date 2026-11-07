@@ -65,6 +65,7 @@ func (e *pinEntry) images() []pinImage {
 // can remove it.
 type superseded struct {
 	Target string    `json:"target"`
+	Daemon string    `json:"daemon,omitempty"`
 	ID     string    `json:"id"`
 	Name   string    `json:"name,omitempty"`
 	Since  time.Time `json:"since"`
@@ -254,7 +255,7 @@ func (f *pinFile) supersede(target string, old, next *pinEntry, now time.Time) {
 			continue
 		}
 		listed[target+"\x00"+im.ID] = true
-		f.Superseded = append(f.Superseded, superseded{Target: target, ID: im.ID, Name: im.Name, Since: now.UTC()})
+		f.Superseded = append(f.Superseded, superseded{Target: target, Daemon: old.Daemon, ID: im.ID, Name: im.Name, Since: now.UTC()})
 	}
 }
 

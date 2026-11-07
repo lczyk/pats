@@ -77,11 +77,18 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	for _, sb := range cfg.Sandboxes {
 		keep[sb.ID] = true
 	}
+	projects, perr := registerProject(opts.ConfigDir)
+	if perr != nil {
+		lg.warn("cannot register this project in %s: %v; keeping superseded container images", projectsFile(), perr)
+	}
 	err = updatePins(opts.ConfigDir, func(f *pinFile) error {
 		for _, p := range done {
 			f.setPin(p.target, p.sb, p.e, opts.Now)
 		}
 		f.dropMissing(keep, opts.Now)
+		if perr == nil {
+			removeSuperseded(ctx, f, opts.ConfigDir, projects, opts.Now, lg)
+		}
 		return nil
 	})
 	if err != nil {

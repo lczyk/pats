@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeServer answers the lxc cli the way an lxd 5.21 server does, for the
@@ -97,8 +98,9 @@ type fakeACL struct {
 }
 
 type fakeImage struct {
-	props   map[string]string
-	aliases []string
+	props              map[string]string
+	aliases            []string
+	lastUsed, uploaded time.Time
 }
 
 type fakeOp struct {
@@ -819,7 +821,16 @@ func (f *fakeServer) query(stdout, stderr io.Writer, raw string) error {
 		if im == nil {
 			return lxcFail(stderr, "Image not found")
 		}
-		return out(map[string]any{"fingerprint": strings.TrimPrefix(p, "/1.0/images/"), "properties": im.props})
+		var aliases []map[string]string
+		for _, al := range im.aliases {
+			aliases = append(aliases, map[string]string{"name": al})
+		}
+		lastUsed := im.lastUsed
+		if lastUsed.IsZero() {
+			lastUsed = time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC) // lxd's never
+		}
+		return out(map[string]any{"fingerprint": strings.TrimPrefix(p, "/1.0/images/"), "properties": im.props,
+			"aliases": aliases, "last_used_at": lastUsed, "uploaded_at": im.uploaded})
 	case p == "/1.0/images" && q.Get("recursion") == "1":
 		if err := project(); err != nil {
 			return err
