@@ -101,17 +101,21 @@ passes before it ships:
   result; a clean exit after the cancel as the cancel; a context already done; a clean finish not signalled.
 - `TestSessionConformance`: what `Session` promises of Push, Pull and Exec (a directory's contents to a new or an
   existing path, a file to a path, a directory's contents out into hostDir, a non-zero exit as the command's), and a
-  second Close with nothing left. the copy rules are also checked on a real docker where one runs.
+  second Close with nothing left. the drivers in it: lxd, docker and podman. the copy rules are also checked on a
+  real docker and podman where they run.
 
 per driver, on its fake: a whole session under each egress mode (`TestLXDSessionOnServer`,
 `TestContainerSessionOnDaemon`), and the sweep: every cli call of Start under each egress mode, of Close, and for lxd
 of the image builds and clean, faulted each way, after which nothing of the run is left. where the faulted call was
 itself a removal, what it failed to remove must be what `pats clean` takes: for lxd the next clean once the run is
-dead, for docker a name and the owner label `pats clean` finds.
+dead, for docker and podman an `sbx-` name and the owner label. the latter is a stand-in for `internal/eval`'s clean,
+which stays out of `src/sandbox` (see below) and is not run by the sweep.
 
 the sweeps found, and the code now handles: two runs creating the lxd project at once; an lxd marker, a published
-image or a run's alias left by a setup or build that failed; a marker removed under a live run; a docker network a
-failed create made after all; and docker's Push and Pull nesting a directory one level deeper than the contract.
+image or a run's alias left by a setup or build that failed; a marker removed under a live run, or made again after
+shutdown; a docker network a failed create made after all, and a taken name read as a taken range; an agent
+container without the owner label; and docker's Push and Pull nesting a directory one level deeper than the
+contract.
 
 ## not in this
 
@@ -130,9 +134,9 @@ failed create made after all; and docker's Push and Pull nesting a directory one
 
 - the fakes answer by argv and can drift from the clis. the checks: the e2e jobs (`TestLXDE2E`, the docker session
   tests that skip without a daemon), lxd's contract scenarios (`TestLXDContract`, run against the fake and the ci
-  job's lxd), and docker's copy rules on a real docker (`TestContainerCopyRules`). docker has no contract scenarios
-  beyond those; the daemon behaviours `fakeDaemon` encodes (a taken name or subnet, a network with endpoints, `--rm`
-  on kill) are checked only by the e2e paths that happen to hit them.
+  job's lxd), and the copy rules on a real docker and podman (`TestContainerCopyRules`). docker has no contract
+  scenarios beyond those; the daemon behaviours `fakeDaemon` encodes (a taken name or subnet, a network with
+  endpoints, `--rm` on kill) are checked only by the e2e paths that happen to hit them.
 - `combined` and `output` trim and split output differently from the helpers they replace; each call site keeps the
   shape it had (`docker()` combined and trimmed, `dockerOut()` stdout with stderr in the error, `lxc()` combined with
   the args in the error).
