@@ -257,6 +257,13 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
 	pub = append(pub, l.meta()...)
 	spec.step(log, "publishing %s", alias)
+	// a publish the client saw fail may still have made the image, so from
+	// here a failed build removes it under the private alias, if it is there.
+	defer func() {
+		if err != nil {
+			_, _ = l.lxc(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)
+		}
+	}()
 	if _, err := l.lxc(ctx, pub...); err != nil {
 		return err
 	}
