@@ -289,7 +289,11 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
 
-	args := []string{"init", l.o.Image, l.ref(s.name), "--project", lxdProject, "--storage", l.pool}
+	img := l.o.Image
+	if !strings.Contains(img, ":") {
+		img = l.ref(img) // a pats image or fingerprint on the instance's own server
+	}
+	args := []string{"init", img, l.ref(s.name), "--project", lxdProject, "--storage", l.pool}
 	if l.o.VM {
 		// a vm honours a nic's name only with this.
 		args = append(args, "--vm", "-c", "agent.nic_config=true")

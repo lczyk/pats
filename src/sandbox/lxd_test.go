@@ -71,7 +71,7 @@ func fakeLXD(t *testing.T, o Options) (*lxd, *fakeLXC) {
 	return newLXD(testProcess(t), runFunc(f.run), o), f
 }
 
-// an open sandbox: made stopped from the image in the pats project on the
+// an open sandbox: made stopped from the image (on its own server) in the pats project on the
 // pinned remote, stamped as this run's, its own bridge and acl in the default
 // project, the expanded config checked before start, the workdir pushed.
 func TestLXDStartOpen(t *testing.T) {
@@ -83,7 +83,7 @@ func TestLXDStartOpen(t *testing.T) {
 	f.devices = map[string]map[string]string{}
 
 	init := strings.Join(f.call("init"), " ")
-	for _, want := range []string{"init pats-img-x srv:" + s.name, "--project pats", "--storage default",
+	for _, want := range []string{"init srv:pats-img-x srv:" + s.name, "--project pats", "--storage default",
 		"user.pats.run=" + l.p.token, "limits.cpu=2", "limits.memory=4GiB", "root,size=10GiB"} {
 		assert.ContainsString(t, init, want)
 	}

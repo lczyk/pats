@@ -513,6 +513,9 @@ func (f *fakeServer) resolveImage(ref string) bool {
 	if r != "" && r != f.remote {
 		return false
 	}
+	if _, ok := f.bases[name]; ok && r == f.remote {
+		return true // an image of the server's own, named on its remote
+	}
 	return f.lookupImage(name) != ""
 }
 
