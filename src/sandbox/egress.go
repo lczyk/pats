@@ -475,7 +475,8 @@ func (c *container) createNetwork(ctx context.Context, name string, pool netip.P
 // already used".
 func nameTaken(out string) bool {
 	l := strings.ToLower(out)
-	return strings.Contains(l, "name") && (strings.Contains(l, "already exists") || strings.Contains(l, "already used"))
+	return (strings.Contains(l, "network with name ") && strings.Contains(l, "already exists")) ||
+		(strings.Contains(l, "network name ") && strings.Contains(l, "already used"))
 }
 
 // subnetTaken recognises the daemon saying the range is in use: docker's
