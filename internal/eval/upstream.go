@@ -93,6 +93,8 @@ type upstreamCheck struct {
 func checkUpstream(ctx context.Context, checks []upstreamCheck, budget time.Duration) []string {
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+	// read once: a lookup past the budget runs on after this returns.
+	registry, lxd := registryDigest, lxdRemoteFingerprint
 	var mu sync.Mutex
 	var warns []string
 	var wg sync.WaitGroup
@@ -108,9 +110,9 @@ func checkUpstream(ctx context.Context, checks []upstreamCheck, budget time.Dura
 				var now string
 				var err error
 				if c.lxd {
-					now, err = lxdRemoteFingerprint(ctx, ref)
+					now, err = lxd(ctx, ref)
 				} else {
-					now, err = registryDigest(ctx, ref)
+					now, err = registry(ctx, ref)
 				}
 				if err != nil || ctx.Err() != nil || now == pinned {
 					return
