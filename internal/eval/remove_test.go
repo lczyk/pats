@@ -179,13 +179,18 @@ func TestPinsReclaimOwnership(t *testing.T) {
 	assert.Len(t, f.Superseded, 1) // and goes back on the list when b drops it
 }
 
-// vanishingHost loses an image right after init inspects it: another
-// project's init removed it before this one's pin was written.
-type vanishingHost struct{ *fakeHost }
+// vanishingHost loses an image once init has pinned it, before the pin is
+// written: another project's init removed it in between.
+type vanishingHost struct {
+	*fakeHost
+	inspects *int
+}
 
 func (h vanishingHost) inspect(ctx context.Context, ref string) (string, string, error) {
 	id, digest, err := h.fakeHost.inspect(ctx, ref)
-	delete(h.refs, ref)
+	if *h.inspects++; *h.inspects == 2 { // the second is the one init pins
+		delete(h.refs, ref)
+	}
 	return id, digest, err
 }
 
@@ -194,7 +199,7 @@ func (h vanishingHost) inspect(ctx context.Context, ref string) (string, string,
 func TestInitImageRemovedBeforePin(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, initCfg)
-	useHost(t, vanishingHost{newFakeHost("my/image:1")})
+	useHost(t, vanishingHost{newFakeHost("my/image:1"), new(int)})
 	var out bytes.Buffer
 	err := Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}})
 	assert.Error(t, err, "init failed for sandbox(es) own")
@@ -361,4 +366,16 @@ func TestInitRemovesOnlyAfterPinsAreWritten(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(pats, 0o755) })
 	assert.That(t, Init(cfg, opts) != nil, "init succeeded with an unwritable pin file")
 	assert.Len(t, h.removed, 0)
+}
+
+// a forced pull of an image already there, unchanged, does not make it
+// pats's.
+func TestForcedPullOfTheSameImage(t *testing.T) {
+	h := newFakeHost("u/img:1")
+	h.samePull = true
+	var out bytes.Buffer
+	im, err := ensurePulled(context.Background(), h, "u/img:1", true, logw{&out, false}, &out)
+	require.NoError(t, err)
+	assert.EqualArrays(t, h.pulls, []string{"u/img:1"})
+	assert.That(t, !im.owned(), "an unchanged forced pull took the user's image")
 }

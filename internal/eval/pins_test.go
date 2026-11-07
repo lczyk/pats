@@ -22,6 +22,7 @@ type fakeHost struct {
 	pulls              []string
 	stamped            map[string]string // the stamps every image carries
 	stampErr           error
+	samePull           bool // a pull finds the image it already has
 }
 
 func newFakeHost(refs ...string) *fakeHost {
@@ -69,6 +70,9 @@ func (h *fakeHost) inspect(_ context.Context, ref string) (string, string, error
 func (h *fakeHost) pull(_ context.Context, ref string, log io.Writer) error {
 	fmt.Fprintf(log, "pulled %s\n", ref)
 	h.pulls = append(h.pulls, ref)
+	if h.samePull && h.refs[ref] != "" {
+		return nil
+	}
 	h.refs[ref] = "sha256:pulled-" + ref
 	return nil
 }

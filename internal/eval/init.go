@@ -267,19 +267,24 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 // pats's own only when this pull brought it: one already there, even a
 // published pats image, may be the user's (a local `make images` build).
 func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw, log io.Writer) (pinImage, error) {
-	pulled := false
-	if force || !h.present(ctx, ref) {
+	before := ""
+	if h.present(ctx, ref) {
+		if id, _, err := h.inspect(ctx, ref); err == nil {
+			before = id
+		}
+	}
+	if force || before == "" {
 		lg.info("pulling %s", ref)
 		if err := h.pull(ctx, ref, log); err != nil {
 			return pinImage{}, err
 		}
-		pulled = true
 	}
 	id, digest, err := h.inspect(ctx, ref)
 	if err != nil {
 		return pinImage{}, err
 	}
-	return pinImage{ID: id, Name: ref, Digest: digest, Pulled: pulled}, nil
+	// a forced pull that found the same image brought nothing of pats's.
+	return pinImage{ID: id, Name: ref, Digest: digest, Pulled: id != before}, nil
 }
 
 // initLXD makes an lxd sandbox's layers and proxy on its server, logging to
