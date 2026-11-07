@@ -1,7 +1,7 @@
 # pats init: build once, run many
 
 status: in progress. implemented: `pats init`, the pin file, `run` starting from pins and stopping on a missing one,
-the local staleness warnings, the proxy exception and component stamps. not yet: removing superseded images, the
+the local staleness warnings, the proxy exception, component stamps and removing superseded images. not yet: the
 upstream checks, the lxd specifics and the engine tables.
 
 pats gets three stages: `pats init` makes everything the project's sandboxes need, `pats run` uses
