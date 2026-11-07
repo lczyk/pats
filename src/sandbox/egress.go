@@ -270,7 +270,13 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// the proxy sits at a fixed address on the internal net (the gateway takes
 	// the first), so the agent needs no resolver to find it.
 	proxyIP := subnet.Addr().Next().Next()
-	runArgs := []string{"run", "-d", "--rm", "--name", proxyName, "--network", net, "--ip", proxyIP.String()}
+	runArgs := []string{"run", "-d", "--rm", "--name", proxyName, "--network", net, "--ip", proxyIP.String(),
+		// the sidecar also sits on the default network, where a container
+		// could hand-craft frames at it to be routed out: it forwards nothing
+		// and needs no capability to listen on an unprivileged port.
+		"--sysctl", "net.ipv4.ip_forward=0", "--sysctl", "net.ipv6.conf.all.forwarding=0",
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+	}
 	// the proxy sidecar is rootless and reads its config from env; the trust
 	// bundle is the one thing too big for env, so it is mounted read-only.
 	if m.caCert != "" {
@@ -278,6 +284,9 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	}
 	penv := m.proxyEnv(agentBundlePath)
 	penv["PATS_EGRESS_REFUSE"] = pool.String()
+	// on the internal address only: on :8080 any container on the default
+	// network could use this pair's policy and write into its audit.
+	penv["PATS_EGRESS_LISTEN"] = proxyIP.String() + ":" + proxyPort
 	for _, kv := range sortedEnv(penv) {
 		runArgs = append(runArgs, "-e", kv)
 	}

@@ -37,7 +37,7 @@ func TestContainerRunMountsAndEnv(t *testing.T) {
 	var out, errb bytes.Buffer
 	// proves env passthrough + cwd == mounted workdir (marker.txt visible).
 	code, err := sb.Run(context.Background(), Spec{
-		Argv:    []string{"sh", "-c", "echo $PATS_GREETING; cat marker.txt"},
+		Argv:    []string{"sh", "-c", "echo $PATS_GREETING; cat marker.txt; grep NoNewPrivs /proc/self/status"},
 		Workdir: dir,
 		Env:     map[string]string{"PATS_GREETING": "hello-pats"},
 	}, &out, &errb)
@@ -45,6 +45,7 @@ func TestContainerRunMountsAndEnv(t *testing.T) {
 	assert.Equal(t, code, 0)
 	assert.ContainsString(t, out.String(), "hello-pats")
 	assert.ContainsString(t, out.String(), "hi")
+	assert.ContainsString(t, out.String(), "NoNewPrivs:\t1")
 }
 
 func TestContainerExitCode(t *testing.T) {

@@ -140,6 +140,9 @@ func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer
 	args := []string{
 		"run", "--rm",
 		"--init", // reap zombies if the agent spawns children
+		// an agent run as root (pats itself as root) could otherwise craft raw
+		// frames past its network's routing, or gain privileges via setuid.
+		"--cap-drop", "NET_RAW", "--security-opt", "no-new-privileges",
 		// run as the host user so files the agent writes into the bind-mounted
 		// workdir are host-owned -- else collect + cleanup hit root-owned files
 		// on linux. harness images must tolerate an arbitrary uid (writable

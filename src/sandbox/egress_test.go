@@ -135,6 +135,10 @@ func TestStartEgressProxy(t *testing.T) {
 		"deny:\n    - evil.example.com",
 		"deny-response: \"404\"",
 		"PATS_EGRESS_REFUSE=10.213.0.0/16",
+		// reachable only from the pair's own network, routing nothing.
+		"PATS_EGRESS_LISTEN=" + proxyIP + ":8080",
+		"--sysctl net.ipv4.ip_forward=0",
+		"--cap-drop ALL",
 	} {
 		assert.ContainsString(t, run, want)
 	}
