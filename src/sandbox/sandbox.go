@@ -257,15 +257,15 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	}
 	// the cid file names the container even when the cli is killed after the
 	// daemon made it, so a failed or cancelled start removes it.
-	cidf, err := os.CreateTemp("", "pats-cid-")
+	// a private dir: in a shared one another user could plant the file, and
+	// a failed start would then remove a container of their choosing.
+	cidDir, err := os.MkdirTemp("", "pats-cid-")
 	if err != nil {
 		teardown()
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
-	cid := cidf.Name()
-	cidf.Close()
-	os.Remove(cid) // the cli refuses an existing file
-	defer os.Remove(cid)
+	defer os.RemoveAll(cidDir)
+	cid := filepath.Join(cidDir, "cid")
 	args = append(args, "--cidfile", cid)
 	args = append(args, "--entrypoint", "sleep", c.image, "infinity")
 	out, err := c.dockerOut(ctx, args...)

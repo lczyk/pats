@@ -449,6 +449,10 @@ func runPair(
 	// task's timeout covers the agent only.
 	var r harnessRun
 	var sess sandbox.Session
+	// synced: the host copy of the agent's files is current, so collect
+	// can read it.
+	synced := false
+	var syncErr error
 	if setupErr == nil {
 		sctx, scancel := context.WithTimeout(ctx, setupTimeout)
 		var err error
@@ -484,8 +488,10 @@ func runPair(
 		// interrupted by ctrl+c is not waited on.
 		if (r.err == nil || r.timedOut) && ctx.Err() == nil {
 			sctx, scancel := context.WithTimeout(ctx, syncTimeout)
-			if err := sess.Sync(sctx); err != nil && r.err == nil {
-				r.err = fmt.Errorf("sync: %w", err)
+			if syncErr = sess.Sync(sctx); syncErr == nil {
+				synced = true
+			} else if r.err == nil {
+				r.err = fmt.Errorf("sync: %w", syncErr)
 			}
 			scancel()
 		}
@@ -494,6 +500,9 @@ func runPair(
 	switch {
 	case r.timedOut:
 		status, errStr = "timeout", fmt.Sprintf("timed out after %s", t.TimeoutDuration())
+		if syncErr != nil {
+			errStr += fmt.Sprintf("; sync: %v", syncErr)
+		}
 	case r.err != nil:
 		status, errStr = "error", r.err.Error()
 	case r.code != 0:
@@ -502,11 +511,10 @@ func runPair(
 
 	lg := logw{opts.Out, opts.Color}
 
-	// collect when the agent ran and left something to gather: either it
-	// finished (r.err == nil) or it timed out mid-run -- either way the
-	// container produced files. a launch failure (r.err != nil, !timedOut)
-	// left nothing to collect.
-	if collect := (step{t.Collect, t.CollectCmd, taskDir}); (r.err == nil || r.timedOut) && collect.set() {
+	// collect when the agent ran, left something to gather (it finished, or
+	// timed out mid-run) and its files are on the host. a launch failure left
+	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
+	if collect := (step{t.Collect, t.CollectCmd, taskDir}); (r.err == nil || r.timedOut) && synced && collect.set() {
 		if err := collect.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
 			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
 		}
