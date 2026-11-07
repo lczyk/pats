@@ -181,7 +181,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 		script := fmt.Sprintf(`timeout 5 bash -c 'exec 3<>/dev/tcp/%s/%s' 2>/dev/null && echo "egress-reach ok=1" || echo "egress-reach ok=0"`, e.ip, proxyPort)
 		_, _ = s.exec(ctx, Cmd{Argv: []string{"sh", "-c", script}, Root: true, Dir: "/"}, &out, &out)
 		if !strings.Contains(out.String(), "egress-reach ok=1") {
-			return fmt.Errorf("egress self-test: the sandbox cannot reach its proxy at %s on bridge %s. on a server that also runs docker, docker's FORWARD policy (with br_netfilter) drops ipv4 between instances on bridges it was not told about; an admin allows pats's bridges once:\n  iptables -I DOCKER-USER -i patsbr+ -j ACCEPT\n  iptables -I DOCKER-USER -o patsbr+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", addr, s.bridge)
+			return fmt.Errorf("egress self-test: the sandbox cannot reach its proxy at %s on bridge %s. %s", addr, s.bridge, dockerBridgeHint)
 		}
 		if spec.Sudo {
 			if err := s.hostileProbe(ctx); err != nil {

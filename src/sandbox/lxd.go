@@ -502,8 +502,18 @@ func (s *lxdSession) reachesInternet(ctx context.Context) error {
 	if err == nil && code == 0 {
 		return nil
 	}
-	return fmt.Errorf("lxd: the sandbox's bridge %s does not reach the internet. on a server that also runs docker, docker's FORWARD policy drops traffic from bridges it was not told about; an admin allows pats's bridges once:\n  iptables -I DOCKER-USER -i patsbr+ -j ACCEPT\n  iptables -I DOCKER-USER -o patsbr+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n  (and the same for %s)", s.bridge, lxdUplink)
+	return fmt.Errorf("lxd: the sandbox's bridge %s does not reach the internet. %s", s.bridge, dockerBridgeHint)
 }
+
+// dockerBridgeHint is what an admin does once on a server whose docker drops
+// pats's bridges. the sysctl route works because docker leaves the FORWARD
+// policy alone when it finds forwarding already on; lxd's docs recommend it
+// only from docker 28, before which an accept policy exposed container ports.
+var dockerBridgeHint = "on a server that also runs docker, docker's FORWARD policy (with br_netfilter) drops traffic on bridges it was not told about. an admin lets pats's bridges through once, and makes it persist across reboots, either with\n" +
+	"  iptables -I DOCKER-USER -i patsbr+ -j ACCEPT\n" +
+	"  iptables -I DOCKER-USER -o patsbr+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n" +
+	"  (and the same two for " + lxdUplink + ")\n" +
+	"or, with docker 28 or later, by turning ipv4 forwarding on before docker starts (net.ipv4.ip_forward=1 in /etc/sysctl.d), so docker leaves the FORWARD policy at accept"
 
 // ensureAgentUser makes the agent user when the image lacks it (a prebuilt
 // image: pats provisioning makes it) and records its uid.
