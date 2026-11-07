@@ -517,6 +517,11 @@ func (f *fakeServer) resolveImage(ref string) bool {
 		return true
 	}
 	r, name := lxcRef(ref)
+	for base, fp := range f.bases {
+		if br, _ := lxcRef(base); fp == name && (br == r || r == f.remote) {
+			return true // a base named by its fingerprint, on its remote or the server's
+		}
+	}
 	if r != "" && r != f.remote {
 		return false
 	}

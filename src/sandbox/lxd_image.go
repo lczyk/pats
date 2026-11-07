@@ -105,7 +105,7 @@ func (l *lxd) image(ctx context.Context, spec LXDImageSpec, log io.Writer) (stri
 	if free, total, ok := l.poolSpace(ctx); ok && free < lowPoolSpace {
 		spec.warn(log, "storage pool %s on %s has %.1f GiB free of %.1f GiB; a build takes a few", l.pool, l.o.Remote, float64(free)/(1<<30), float64(total)/(1<<30))
 	}
-	if err := l.build(ctx, spec, alias, log); err != nil {
+	if err := l.build(ctx, spec, fp, alias, log); err != nil {
 		return "", false, err
 	}
 	return alias, true, nil
@@ -306,7 +306,7 @@ func (l *lxd) uplink(ctx context.Context) (string, error) {
 // publishes under a run-private alias first and only then claims alias, so
 // two runs missing the same image never replace one in use: the loser's copy
 // is deleted, the winner's is identical by construction.
-func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io.Writer) (err error) {
+func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string, log io.Writer) (err error) {
 	net, err := l.uplink(ctx)
 	if err != nil {
 		return err
@@ -324,10 +324,13 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 			err = fmt.Errorf("%w (%s)", err, msg)
 		}
 	}()
-	args := []string{"launch", spec.Base, s.inst(), "--project", lxdProject, "--storage", l.pool, "-n", net}
-	if !strings.Contains(spec.Base, ":") {
-		args[1] = l.ref(spec.Base) // an image of the server's own, as fingerprint resolves it
+	// from the fingerprint the key was made of, not the base's name again:
+	// an alias another init re-points meanwhile must not change the base.
+	from := l.ref(baseFP)
+	if remote, _, ok := strings.Cut(spec.Base, ":"); ok {
+		from = remote + ":" + baseFP
 	}
+	args := []string{"launch", from, s.inst(), "--project", lxdProject, "--storage", l.pool, "-n", net}
 	if l.o.VM {
 		args = append(args, "--vm")
 	}

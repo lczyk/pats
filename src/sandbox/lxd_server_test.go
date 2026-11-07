@@ -563,13 +563,14 @@ func TestLXDCopyImageOnServer(t *testing.T) {
 }
 
 // a base named without a remote is an image of the sandbox's own server: the
-// builder launches from it there, as its key's fingerprint was read there.
+// builder launches from it there, by the fingerprint its key was read as.
 func TestLXDImageOwnBaseOnServer(t *testing.T) {
 	f := newFakeServer(t)
 	l := lxdOn(t, f, Options{})
 	_, _, err := l.image(context.Background(), LXDImageSpec{Base: "img", Argv: []string{"true"}}, io.Discard)
 	require.NoError(t, err)
-	assert.ContainsString(t, strings.Join(f.call("launch"), " "), "launch srv:img ")
+	// by the fingerprint its key was made of, never the name again.
+	assert.ContainsString(t, strings.Join(f.call("launch"), " "), "launch srv:"+fakeFP("img")+" ")
 }
 
 // a build is published with what it is, for lxc image list; a forced build
