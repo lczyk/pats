@@ -276,3 +276,26 @@ func TestRegisterProjectKeepsUnreadable(t *testing.T) {
 	require.NoError(t, err)
 	assert.ContainsString(t, strings.Join(got, "\n"), locked)
 }
+
+// this project's pin of the same image under another target keeps it, and
+// ownership moves only between pins of one daemon.
+func TestRemoveAcrossTargetsAndDaemons(t *testing.T) {
+	now := time.Now()
+	h := &removingHost{fakeHost: newFakeHost()}
+	useTargets(t, map[string]imageHost{"docker:a": h, "docker:b": h})
+	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
+	f.setPin("docker:a", "s1", &pinEntry{Daemon: "d", Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("docker:b", "s2", &pinEntry{Daemon: "d", Image: pinImage{ID: "x"}}, now)
+	f.setPin("docker:a", "s1", &pinEntry{Daemon: "d", Image: pinImage{ID: "y", Pulled: true}}, now)
+	var out bytes.Buffer
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	assert.Len(t, h.removed, 0)
+	assert.ContainsString(t, out.String(), "this project still pins it under another target")
+
+	// the same target, another daemon: no ownership moves.
+	g := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{},
+		Superseded: []superseded{{Target: "docker:a", Daemon: "old", ID: "x", Pulled: true}}}
+	g.setPin("docker:a", "s", &pinEntry{Daemon: "new", Image: pinImage{ID: "x"}}, now)
+	assert.Len(t, g.Superseded, 1)
+	assert.That(t, !g.entry("docker:a", "s").Image.Pulled, "another daemon's image took the ownership")
+}

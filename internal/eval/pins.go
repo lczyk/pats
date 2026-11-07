@@ -210,6 +210,9 @@ func (f *pinFile) setPin(target, sb string, e *pinEntry, now time.Time) {
 func (f *pinFile) claim(s superseded) bool {
 	claimed := false
 	for _, e := range f.Targets[s.Target] {
+		if e.Daemon != s.Daemon {
+			continue // the same name on another daemon is another image
+		}
 		take := func(im *pinImage) {
 			if im.ID == s.ID {
 				im.Built, im.Pulled = im.Built || s.Built, im.Pulled || s.Pulled
@@ -235,7 +238,7 @@ func (f *pinFile) reclaim(target string, e *pinEntry) {
 	for _, s := range f.Superseded {
 		claimed := false
 		take := func(im *pinImage) {
-			if s.Target == target && im.ID == s.ID {
+			if s.Target == target && s.Daemon == e.Daemon && im.ID == s.ID {
 				im.Built, im.Pulled = im.Built || s.Built, im.Pulled || s.Pulled
 				claimed = true
 			}
@@ -245,7 +248,7 @@ func (f *pinFile) reclaim(target string, e *pinEntry) {
 			take(e.Proxy)
 		}
 		for _, l := range e.Layers {
-			if s.Target == target && l == s.ID {
+			if s.Target == target && s.Daemon == e.Daemon && l == s.ID {
 				claimed = true
 			}
 		}

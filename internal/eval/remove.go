@@ -195,6 +195,7 @@ func removeSuperseded(ctx context.Context, f *pinFile, configDir string, project
 		}
 	}
 
+	mine := f.pinnedIDs()
 	var keep []superseded
 	for _, s := range f.Superseded {
 		why := ""
@@ -202,6 +203,9 @@ func removeSuperseded(ctx context.Context, f *pinFile, configDir string, project
 		switch {
 		case f.claim(s):
 			continue // pinned again here, and pats's own there now
+		case mine[s.ID]:
+			// two targets may reach one daemon or server.
+			why = "this project still pins it under another target"
 		case !ok:
 			why = "its " + s.Target + " is not the one answering now"
 		default:
