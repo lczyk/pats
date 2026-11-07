@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,4 +238,41 @@ func TestGoneMsg(t *testing.T) {
 	assert.That(t, goneMsg(errors.New("Error response from daemon: No such image: x")), "docker's gone")
 	assert.That(t, goneMsg(errors.New("x: image not known")), "podman's gone")
 	assert.That(t, !goneMsg(errors.New("Cannot connect to the Docker daemon")), "an unreachable daemon read as gone")
+}
+
+// two sandboxes on one image, pulled for the first: when the first moves
+// off it, the second's pin becomes pats's own, so dropping the second later
+// lists the image again.
+func TestRemoveHandsOwnershipToTheOtherPin(t *testing.T) {
+	now := time.Now()
+	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
+	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("t", "b", &pinEntry{Image: pinImage{ID: "x"}}, now)
+	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "y", Pulled: true}}, now)
+	useTargets(t, map[string]imageHost{"t": &removingHost{fakeHost: newFakeHost()}})
+	var out bytes.Buffer
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	assert.Len(t, f.Superseded, 0)
+	assert.That(t, f.entry("t", "b").Image.Pulled, "b's pin did not take the ownership")
+	f.dropMissing(map[string]bool{"a": true}, now)
+	assert.Len(t, f.Superseded, 1)
+}
+
+// a listed project this process cannot look at stays listed; only one that
+// is gone is forgotten.
+func TestRegisterProjectKeepsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	parent := t.TempDir()
+	locked := filepath.Join(parent, "p")
+	require.NoError(t, os.Mkdir(locked, 0o755))
+	_, err := registerProject(locked)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(parent, 0o000))
+	t.Cleanup(func() { os.Chmod(parent, 0o755) })
+	got, err := registerProject(t.TempDir())
+	require.NoError(t, err)
+	assert.ContainsString(t, strings.Join(got, "\n"), locked)
 }

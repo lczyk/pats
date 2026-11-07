@@ -205,6 +205,28 @@ func (f *pinFile) setPin(target, sb string, e *pinEntry, now time.Time) {
 	f.Targets[target][sb] = e
 }
 
+// claim hands s's ownership to every pin of this file that pins s's image
+// on s's target, and says whether there was one.
+func (f *pinFile) claim(s superseded) bool {
+	claimed := false
+	for _, e := range f.Targets[s.Target] {
+		take := func(im *pinImage) {
+			if im.ID == s.ID {
+				im.Built, im.Pulled = im.Built || s.Built, im.Pulled || s.Pulled
+				claimed = true
+			}
+		}
+		take(&e.Image)
+		if e.Proxy != nil {
+			take(e.Proxy)
+		}
+		for _, l := range e.Layers {
+			claimed = claimed || l == s.ID
+		}
+	}
+	return claimed
+}
+
 // reclaim takes off the superseded list the images a new pin pins again,
 // keeping them pats's own: an image pats pulled for one sandbox and another
 // sandbox now pins as found is still pats's to remove later.

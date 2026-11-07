@@ -3,7 +3,9 @@ package eval
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,20 +113,31 @@ func registerProject(configDir string) ([]string, error) {
 	}
 	var out []string
 	seen := map[string]bool{}
-	if f, err := os.Open(path); err == nil {
+	f, err := os.Open(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return nil, err
+	default:
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
 			p := strings.TrimSpace(sc.Text())
 			if p == "" || seen[p] {
 				continue
 			}
-			if _, err := os.Stat(p); err != nil {
+			// only a project that is surely gone is forgotten: one this
+			// process cannot look at now may still pin images.
+			if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			seen[p] = true
 			out = append(out, p)
 		}
+		err := sc.Err()
 		f.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !seen[configDir] {
 		out = append(out, configDir)
@@ -163,7 +176,7 @@ func removeSuperseded(ctx context.Context, f *pinFile, configDir string, project
 	if len(f.Superseded) == 0 {
 		return
 	}
-	mine := f.pinnedIDs()
+
 	// every listed project's pins, for container images; nil when one
 	// cannot be read, and then no container image goes.
 	others := map[string]bool{}
@@ -187,8 +200,8 @@ func removeSuperseded(ctx context.Context, f *pinFile, configDir string, project
 		why := ""
 		h, ok := hostForTarget(ctx, s.Target, s.Daemon)
 		switch {
-		case mine[s.ID]:
-			continue // pinned again: not superseded any more
+		case f.claim(s):
+			continue // pinned again here, and pats's own there now
 		case !ok:
 			why = "its " + s.Target + " is not the one answering now"
 		default:
