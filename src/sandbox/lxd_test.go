@@ -278,9 +278,17 @@ func TestLXDStartProxy(t *testing.T) {
 	for _, want := range []string{"ipv4.address=none", "ipv6.address=none", "security.acls.default.egress.action=reject", "security.acls.default.ingress.action=reject"} {
 		assert.ContainsString(t, net, want)
 	}
-	assert.Nil(t, f.call("network acl rule add")) // no rule: both defaults reject
 	agentIP := s.egress.agentIP.String()
 	proxyIP := s.egress.ip.String()
+	var rules []string
+	for _, c := range f.calls {
+		if j := strings.Join(c, " "); strings.Contains(j, "network acl rule add") {
+			rules = append(rules, j)
+		}
+	}
+	// one rule, agent to proxy port: both defaults reject the rest.
+	assert.Equal(t, len(rules), 1)
+	assert.ContainsString(t, rules[0], "egress --project default action=allow source="+agentIP+"/32 destination="+proxyIP+"/32 protocol=tcp destination_port=8080")
 	assert.That(t, pool.Contains(s.egress.ip), "proxy %s outside the pool", proxyIP)
 	all := ""
 	for _, c := range f.calls {

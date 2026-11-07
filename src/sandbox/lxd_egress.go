@@ -22,7 +22,9 @@ import (
 // addresses out of the egress pool. the proxy's other nic, on the shared
 // uplink, is the only way out, and the proxy forwards nothing. a bridge acl
 // with both defaults reject still fences the bridge-host boundary, in case
-// something else on the server routes.
+// something else on the server routes. its one rule lets the agent reach the
+// proxy port: with br_netfilter loaded (docker loads it) traffic between two
+// nics on one bridge passes the host's forward hook, where the acl sits.
 
 // lxdProxyBinEnv names a linux pats binary for the server's arch, for a dev
 // build with no published image.
@@ -97,6 +99,11 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	subnet := nextSubnet()
 	e := &lxdEgress{proxy: s.name + "-p", ip: subnet.Addr().Next().Next(), agentIP: subnet.Addr().Next().Next().Next(), prefix: subnet.Bits()}
 	s.egress = e
+	if _, err := l.lxc(ctx, "network", "acl", "rule", "add", l.ref(s.bridge), "egress", "--project", "default",
+		"action=allow", "source="+e.agentIP.String()+"/32", "destination="+e.ip.String()+"/32",
+		"protocol=tcp", "destination_port="+proxyPort); err != nil {
+		return err
+	}
 	if err := s.setAddress(ctx, s.name, netip.PrefixFrom(e.agentIP, e.prefix)); err != nil {
 		return err
 	}
