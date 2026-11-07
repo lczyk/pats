@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"syscall"
@@ -120,45 +121,63 @@ var lxdContracts = []struct {
 		assert.That(t, found, "the published image is not listed")
 	}},
 	{"a create names its instance in a running operation, and a delete meanwhile says not found", func(t *testing.T, c *contractEnv) {
-		inst := "pats-ct-" + c.tag + "-op"
-		c.slow(inst)
-		var out bytes.Buffer
-		x, err := c.r.Start(nil, &out, &out, "init", c.image, c.ref(inst), "--project", lxdProject, "--storage", c.pool)
-		require.NoError(t, err)
-		c.later(t, "delete", c.ref(inst), "--project", lxdProject, "--force")
-		defer func() {
-			_ = x.Signal(syscall.SIGKILL)
-			_ = x.Wait()
-		}()
-		want := "/1.0/instances/" + inst + "?project=" + lxdProject
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			var ops struct {
-				Running []struct {
-					Resources map[string][]string `json:"resources"`
-				} `json:"running"`
+		// a create from a cached image can finish between two reads; each
+		// such attempt is retried under a new name, and running out of
+		// attempts fails rather than skips: deleteInstance rests on this.
+		for attempt := range 3 {
+			if contractCreateRace(t, c, fmt.Sprintf("pats-ct-%s-op%d", c.tag, attempt)) {
+				return
 			}
-			require.NoError(t, json.Unmarshal([]byte(c.must(t, "query", c.remote+":/1.0/operations?project="+lxdProject+"&recursion=1")), &ops))
-			for _, op := range ops.Running {
-				for _, r := range op.Resources["instances"] {
-					if r != want {
-						continue
-					}
-					dout, derr := c.lxc("delete", c.ref(inst), "--project", lxdProject, "--force")
-					if derr == nil {
-						t.Skip("the create finished between the operation read and the delete")
-					}
-					assert.ContainsString(t, strings.ToLower(dout), "not found")
-					return
-				}
-			}
-			if _, err := c.lxc("query", c.remote+":/1.0/instances/"+inst+"?project="+lxdProject); err == nil {
-				t.Skip("the create finished before its operation was seen")
-			}
-			time.Sleep(10 * time.Millisecond)
 		}
-		t.Fatal("no operation named the instance")
+		t.Fatal("every create finished before an operation naming it was seen")
 	}},
+}
+
+// contractCreateRace starts a create of inst and, while an operation names
+// it, deletes it: false when the create finished before that could be seen.
+func contractCreateRace(t *testing.T, c *contractEnv, inst string) bool {
+	c.slow(inst)
+	var out bytes.Buffer
+	x, err := c.r.Start(nil, &out, &out, "init", c.image, c.ref(inst), "--project", lxdProject, "--storage", c.pool)
+	require.NoError(t, err)
+	c.later(t, "delete", c.ref(inst), "--project", lxdProject, "--force")
+	defer func() {
+		_ = x.Signal(syscall.SIGKILL)
+		_ = x.Wait()
+	}()
+	// matched as the driver matches it (instanceBusy): with or without the
+	// project query.
+	want := "/1.0/instances/" + inst
+	deadline := time.Now().Add(2 * time.Minute) // a first pull of the image
+	for time.Now().Before(deadline) {
+		var ops struct {
+			Running []struct {
+				Resources map[string][]string `json:"resources"`
+			} `json:"running"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(c.must(t, "query", c.remote+":/1.0/operations?project="+lxdProject+"&recursion=1")), &ops))
+		for _, op := range ops.Running {
+			for _, r := range op.Resources["instances"] {
+				if r != want && !strings.HasPrefix(r, want+"?") {
+					continue
+				}
+				dout, derr := c.lxc("delete", c.ref(inst), "--project", lxdProject, "--force")
+				if derr == nil {
+					t.Logf("%s: the create finished between the operation read and the delete", inst)
+					return false
+				}
+				assert.ContainsString(t, strings.ToLower(dout), "not found")
+				return true
+			}
+		}
+		if _, err := c.lxc("query", c.remote+":/1.0/instances/"+inst+"?project="+lxdProject); err == nil {
+			t.Logf("%s: the create finished before its operation was seen", inst)
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s: no operation named the instance", inst)
+	return false
 }
 
 func contractTag() string {
