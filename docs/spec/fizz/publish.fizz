@@ -7,8 +7,7 @@ options:
 # publish_images (.github/workflows/publish_images.yml): concurrent workflow runs
 # racing on the registry's rolling tags.
 #
-# run: make spec    (each design in turn; expected: snapshot and selfres FAIL R2,
-#                    converge PASSES)
+# run: make specs   (converge, the default, PASSES; snapshot and selfres FAIL R2)
 #      or: timeout -k 10 120 fizz --preinit-hook 'DESIGN = "converge"' publish.fizz
 #
 # what it models: each pushed git tag starts one workflow run. a run's jobs are

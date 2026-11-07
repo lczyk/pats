@@ -41,9 +41,19 @@ cover:  ## Show test coverage per function in the CLI
 	go test -coverprofile=/tmp/pats-cover.out ./...
 	go tool cover -func=/tmp/pats-cover.out
 
+# every model in docs/spec/fizz must pass as written. publish.fizz also keeps the designs it rejects:
+# snapshot and selfres must still fail R2 (the race the aliases job exists for).
 .PHONY: specs
-specs:  ## Model-check the fizzbee specs (needs fizz)
-	cd docs/spec/fizz && for f in *.fizz; do timeout -k 10 300 fizz $$f || exit 1; done
+specs:  ## Model-check the fizzbee specs in docs/spec/fizz
+	@if ! command -v fizz >/dev/null 2>&1; then echo "fizz not found, skipping (https://github.com/fizzbee-io/fizzbee)"; exit 0; fi; \
+	cd docs/spec/fizz && for f in *.fizz; do \
+		printf '%-24s ' "$$f"; \
+		timeout -k 10 300 fizz $$f 2>&1 | grep -E '^PASSED' || { echo "not passed"; exit 1; }; \
+	done; \
+	for d in snapshot selfres; do \
+		printf '%-24s ' "publish.fizz $$d"; \
+		timeout -k 10 300 fizz --preinit-hook "DESIGN = \"$$d\"" publish.fizz 2>&1 | grep -E '^FAILED' || { echo "passed, expected to fail"; exit 1; }; \
+	done
 
 FUZZTIME ?= 10s
 
@@ -60,16 +70,6 @@ bench:  ## Run all benchmarks
 
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test
-
-# docs/spec/publish.fizz checks each design in turn: snapshot and selfres fail R2 (the race the
-# aliases job exists for), converge -- the workflow as written -- passes.
-.PHONY: spec
-spec:  ## Model-check the image publish pipeline with fizzbee (docs/spec/publish.fizz)
-	@if ! command -v fizz >/dev/null 2>&1; then echo "fizz not found, skipping (https://github.com/fizzbee-io/fizzbee)"; exit 0; fi; \
-	cd docs/spec && for d in snapshot selfres converge; do \
-		printf '%-9s ' "$$d"; \
-		timeout -k 10 300 fizz --preinit-hook "DESIGN = \"$$d\"" publish.fizz 2>&1 | grep -E '^(PASSED|FAILED)' || echo "no result"; \
-	done
 
 .PHONY: clean
 clean:  ## Remove build artifacts

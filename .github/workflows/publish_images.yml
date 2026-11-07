@@ -8,7 +8,7 @@
 # pins to. a workflow_dispatch run publishes under the branch name, with / mapped
 # to - (a docker tag can't hold a /). the rolling aliases (:latest, and
 # sandbox:26.04) are only ever moved by the aliases job at the end -- see its
-# comment, and docs/spec/publish.fizz for the model behind it.
+# comment, and docs/spec/fizz/publish.fizz for the model behind it.
 name: publish_images
 
 on:
