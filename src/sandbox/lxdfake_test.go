@@ -641,7 +641,7 @@ func (f *fakeServer) image(stdout, stderr io.Writer, a fakeArgs) error {
 		}
 		fp := f.lookupImage(name)
 		if fp == "" {
-			return lxcFail(stderr, "not found")
+			return lxcFail(stderr, "Image not found")
 		}
 		fmt.Fprintf(stdout, "Fingerprint: %s\nSize: 100.00MiB\n", fp)
 		return nil

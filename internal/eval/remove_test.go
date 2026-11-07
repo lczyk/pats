@@ -237,7 +237,10 @@ func (h *lxdErrHost) usage(context.Context, string) (sandbox.LXDImageUse, error)
 func TestGoneMsg(t *testing.T) {
 	assert.That(t, goneMsg(errors.New("Error response from daemon: No such image: x")), "docker's gone")
 	assert.That(t, goneMsg(errors.New("x: image not known")), "podman's gone")
+	assert.That(t, goneMsg(errors.New("lxc query srv:/1.0/images/x: exit status 1 (Error: Image not found)")), "lxd's gone")
 	assert.That(t, !goneMsg(errors.New("Cannot connect to the Docker daemon")), "an unreachable daemon read as gone")
+	assert.That(t, !goneMsg(errors.New(`exec: "lxc": executable file not found in $PATH`)), "a missing cli read as gone")
+	assert.That(t, !goneMsg(errors.New("Error: Project not found")), "a missing project read as gone")
 }
 
 // two sandboxes on one image, pulled for the first: when the first moves

@@ -69,7 +69,7 @@ func LXDDeleteImage(ctx context.Context, o Options, fp string) error {
 		return err
 	}
 	if _, err := l.lxc(ctx, "image", "delete", l.ref(fp), "--project", lxdProject); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+		if strings.Contains(strings.ToLower(err.Error()), "image not found") {
 			return nil
 		}
 		return err

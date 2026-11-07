@@ -60,7 +60,8 @@ func (h containerHost) remove(ctx context.Context, id string) error {
 // there, as opposed to a failure to ask.
 func goneMsg(err error) bool {
 	m := strings.ToLower(err.Error())
-	return strings.Contains(m, "no such image") || strings.Contains(m, "image not known") || strings.Contains(m, "not found")
+	// docker's, podman's and lxd's own words for an image that is not there.
+	return strings.Contains(m, "no such image") || strings.Contains(m, "image not known") || strings.Contains(m, "image not found")
 }
 
 func (h lxdHost) remove(ctx context.Context, id string) error {
