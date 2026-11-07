@@ -53,8 +53,9 @@ haiku:
 
 # the prompt is `prompt` (literal text), `prompt-file` or `prompt-cmd` (its stdout). stage and collect are an inline script
 # (`stage`, `collect`) or a command line (`stage-cmd`, `collect-cmd`), run on the host with PATS_* env set and this dir's
-# bin/ on PATH: stage before the sandbox starts, collect after the agent. `env:` adds variables for the task's scripts.
-# timeout is per pair, 10m by default.
+# bin/ on PATH: stage before the sandbox starts, collect after the agent. `prepare` / `prepare-cmd` runs inside the
+# sandbox as root, after stage and before the agent. `env:` adds variables for the task's scripts. timeout is per
+# pair, 10m by default, and covers the agent only.
 # a task vector can instead take `dir: <path>`: every directory under it holding a task.yaml is one task, configured by that
 # file alone, with its scripts run and its paths resolved in its own directory.
 write-readme:
