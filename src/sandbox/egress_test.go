@@ -274,6 +274,18 @@ func TestCreateNetworkMovesOnWhenTaken(t *testing.T) {
 	assert.Error(t, err, "create network")
 	assert.Equal(t, len(fd.calls), 2)
 	assert.Equal(t, strings.Join(fd.calls[1], " "), "network rm sbx-egr-t")
+
+	// a name taken is not a range taken: no other subnet helps, and the
+	// network is not this pair's to remove.
+	for _, msg := range []string{"Error response from daemon: network with name sbx-egr-t already exists",
+		"Error: network name sbx-egr-t already used: network already exists"} {
+		fd = newFakeDocker(t)
+		fd.failOn, fd.failOut = "network create", msg
+		_, err = fd.container().createNetwork(context.Background(), "sbx-egr-t", testPool)
+		assert.Error(t, err, "the name sbx-egr-t is taken")
+		assert.Equal(t, len(fd.calls), 1)
+	}
+	assert.That(t, subnetTaken("Error: subnet 10.213.0.0/29 is already used on the host or by another config"), "podman's subnet clash")
 }
 
 func TestParsePool(t *testing.T) {
