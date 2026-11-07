@@ -99,9 +99,9 @@ resolved at init so a later change of default does not silently move a pin:
   "version": 1,
   "lxd:armstrong": {
     "mason": {
-      "image": {"id": "<fingerprint>", "name": "pats-img-<key>"},
+      "image": {"id": "<fingerprint>", "name": "pats-img-<key>", "built": true},
       "layers": ["<fingerprint>", "<fingerprint>"],
-      "proxy": {"id": "<fingerprint>", "name": "pats-img-<key>"},
+      "proxy": {"id": "<fingerprint>", "name": "pats-img-<key>", "built": true},
       "pats_version": "1.0.0-beta.4",
       "pats_build": "release",
       "built": "2026-11-07T11:00:00Z",
@@ -112,8 +112,10 @@ resolved at init so a later change of default does not silently move a pin:
   "docker:default": {
     "haiku-docker": {
       "daemon": "<docker info id>",
-      "image": {"id": "sha256:...", "name": "ghcr.io/lczyk/pats/sandbox:v1.0.0-beta.4", "digest": "sha256:..."},
-      "proxy": {"id": "sha256:...", "name": "ghcr.io/lczyk/pats/egress-proxy:v1.0.0-beta.4", "digest": "sha256:..."},
+      "image": {"id": "sha256:...", "name": "ghcr.io/lczyk/pats/sandbox:v1.0.0-beta.4", "digest": "sha256:...",
+                "pulled": true},
+      "proxy": {"id": "sha256:...", "name": "ghcr.io/lczyk/pats/egress-proxy:v1.0.0-beta.4", "digest": "sha256:...",
+                "pulled": true},
       "pats_version": "1.0.0-beta.4",
       "pats_build": "release",
       "built": "2026-11-07T11:02:00Z",
@@ -211,21 +213,26 @@ follows from it. a `driver: container` plus `engine:` would add a key without ad
 ## removing superseded images
 
 `pats init` removes what it replaces. there is no sweep of a daemon or server and no `clean --images`: the only
-candidates are images this project's own pins pointed at until this init moved them (a new base, an edited provision,
-a pats upgrade) or dropped them (a sandbox gone from the config). plain `pats clean` stays as it is (runs' leftovers)
-and never touches images.
+candidates are images pats itself built or pulled (the pin entry says which: `built` or `pulled`; an image that was
+already there, say an `image:` sandbox's the user pulled, is never one) that this project's own pins pointed at until
+this init moved them (a new base, an edited provision, a pats upgrade) or dropped them (a sandbox gone from the
+config). plain `pats clean` stays as it is (runs' leftovers) and never touches images.
+
+a candidate that is not removed yet goes on the pin file's `superseded` list (target, id, since when), and every later
+`pats init` tries the list again, on every driver.
 
 a candidate goes only when no one else may still want it:
 
 - **container engines.** every project on the machine registers itself: `pats init` adds the project's path, one
   line, to `~/.cache/pats/projects` (the pins stay in each project's `.pats/images.json`; the list only says where to
-  find them). a candidate is removed when no listed project's pins name it, on any target. the engine itself refuses
-  to remove an image a container (running or stopped) still uses, so a pair mid-run is safe.
+  find them), and drops listed paths that no longer exist. a candidate is removed when no listed project's pins name
+  it, on any target. the engine itself refuses to remove an image a container (running or stopped) still uses, so a
+  pair mid-run is safe; such a candidate stays on `superseded` until a later init, after `pats clean` has taken the
+  stopped container.
 - **lxd.** a server is shared across machines, whose pins no list can reach. a candidate is removed when this project
   no longer pins it, it is not run-private (`pats-img-<key>-<token>`), and nothing used it for 30 days:
   `last_used_at`, or `uploaded_at` for an image no instance was made from. an image this project used until today
-  fails that test on the day it is replaced, so the pin file keeps a `superseded` list (target, id, since when) and
-  every later `pats init` tries those again; a candidate goes once 30 days pass without a use.
+  fails that test on the day it is replaced, so it waits on `superseded` and goes once 30 days pass without a use.
 
 init prints what it removed and what it kept and why (`kept pats-img-ab12...: used 3 days ago, may serve another
 machine`), so a missing image in another project can be traced to the init that took it.
