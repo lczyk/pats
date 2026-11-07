@@ -318,8 +318,14 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 		return fmt.Errorf("provisioning epilogue: %v %s", err, strings.TrimSpace(out.String()))
 	}
 	// the harness versions inside, as image properties init pins and runs check.
-	var stampOut bytes.Buffer
-	if _, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &stampOut, io.Discard); err != nil {
+	var stampOut, stampErr bytes.Buffer
+	if code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &stampOut, &stampErr); err != nil {
+		return err
+	} else if code != 0 {
+		return fmt.Errorf("stamping the harness versions exited %d: %s", code, strings.TrimSpace(stampErr.String()))
+	}
+	stamps, err := parseStamps(stampOut.String())
+	if err != nil {
 		return err
 	}
 	if _, err := l.lxc(ctx, "stop", s.inst(), "--project", lxdProject); err != nil {
@@ -328,7 +334,6 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	private := alias + "-" + l.p.token
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
 	pub = append(pub, l.meta()...)
-	stamps := parseStamps(stampOut.String())
 	for _, name := range sortedKeys(stamps) {
 		pub = append(pub, componentProp+name+"="+stamps[name])
 	}

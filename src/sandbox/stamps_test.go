@@ -2,7 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +18,47 @@ import (
 // each cli's --version line, as the clis print them, reduces to its version;
 // a cli the image lacks has no stamp.
 func TestParseStamps(t *testing.T) {
-	out := "claude=2.1.319 (Claude Code)\n\ncodex=codex-cli 0.167.0\n\ncopilot=GitHub Copilot CLI 1.0.107.\n\nopencode=\n\n"
-	assert.EqualMaps(t, parseStamps(out), map[string]string{"claude": "2.1.319", "codex": "0.167.0", "copilot": "1.0.107"})
-	assert.EqualMaps(t, parseStamps("x=1.0.0-beta.4 build\n"), map[string]string{"x": "1.0.0-beta.4"})
+	out := "claude=2.1.319 (Claude Code)\ncodex=codex-cli 0.167.0\ncopilot=GitHub Copilot CLI 1.0.107.\n"
+	got, err := parseStamps(out)
+	require.NoError(t, err)
+	assert.EqualMaps(t, got, map[string]string{"claude": "2.1.319", "codex": "0.167.0", "copilot": "1.0.107"})
+	got, err = parseStamps("x=1.0.0-beta.4 build\n")
+	require.NoError(t, err)
+	assert.EqualMaps(t, got, map[string]string{"x": "1.0.0-beta.4"})
+	_, err = parseStamps("codex=error while loading shared libraries\n")
+	assert.Error(t, err, "codex --version said")
+}
+
+// the script itself: a cli the image lacks has no line, one that cannot say
+// its version stops it with 3.
+func TestStampScript(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755))
+	}
+	write("claude", "echo '2.1.319 (Claude Code)'")
+	write("codex", "echo 'codex-cli 0.167.0'")
+	run := func() (string, error) {
+		cmd := exec.Command(sh, "-c", stampScript)
+		cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	out, err := run()
+	require.NoError(t, err)
+	got, err := parseStamps(out)
+	require.NoError(t, err)
+	assert.EqualMaps(t, got, map[string]string{"claude": "2.1.319", "codex": "0.167.0"})
+
+	write("codex", "echo 'cannot load' >&2; exit 1")
+	_, err = run()
+	var ee *exec.ExitError
+	require.That(t, errors.As(err, &ee), "a failing --version did not fail the script: %v", err)
+	assert.Equal(t, ee.ExitCode(), 3)
 }
 
 // a provisioned lxd image is published with the harness versions inside it
@@ -25,7 +67,7 @@ func TestLXDImageStampsOnServer(t *testing.T) {
 	f := newFakeServer(t)
 	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
 		if len(argv) == 3 && argv[2] == stampScript {
-			io.WriteString(stdout, "claude=2.1.319 (Claude Code)\ncodex=\n")
+			io.WriteString(stdout, "claude=2.1.319 (Claude Code)\n")
 		}
 		return nil
 	}

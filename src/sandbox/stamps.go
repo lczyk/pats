@@ -13,29 +13,36 @@ import (
 	"time"
 )
 
-// stampScript prints each harness cli's version line, name=line, in the
-// image it runs in; a cli the image lacks prints an empty line.
-const stampScript = `for c in claude codex copilot opencode; do printf '%s=' "$c"; ("$c" --version 2>/dev/null || true) | head -n1; echo; done`
+// stampScript prints name=<first --version line> for each harness cli the
+// image has, skipping those it lacks, and exits 3 when one it has cannot say
+// its version.
+const stampScript = `for c in claude codex copilot opencode; do
+  command -v "$c" >/dev/null 2>&1 || continue
+  v=$("$c" --version 2>&1) || { echo "$c --version failed: $v" >&2; exit 3; }
+  printf '%s=%s\n' "$c" "$(printf '%s\n' "$v" | head -n1)"
+done`
 
 // componentProp prefixes the lxd image properties holding the stamps.
 const componentProp = "pats.component."
 
 var versionRe = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]*[0-9A-Za-z])?`)
 
-// parseStamps reads stampScript's output into name -> version, skipping
-// the clis the image lacks.
-func parseStamps(out string) map[string]string {
+// parseStamps reads stampScript's output into name -> version; a cli
+// whose version line holds no version is an error.
+func parseStamps(out string) (map[string]string, error) {
 	stamps := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
 		name, rest, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok || name == "" {
 			continue
 		}
-		if v := versionRe.FindString(rest); v != "" {
-			stamps[name] = v
+		v := versionRe.FindString(rest)
+		if v == "" {
+			return nil, fmt.Errorf("%s --version said %q, no version in it", name, rest)
 		}
+		stamps[name] = v
 	}
-	return stamps
+	return stamps, nil
 }
 
 // ContainerStamps runs stampScript in a throwaway container of image id
@@ -55,7 +62,7 @@ func containerStamps(ctx context.Context, r runner, id string, timeout time.Dura
 	var out, errb bytes.Buffer
 	err := r.Run(rctx, nil, &out, &errb, "run", "--rm", "--name", name, "--network", "none", "--entrypoint", "sh", id, "-c", stampScript)
 	if err == nil {
-		return parseStamps(out.String()), nil
+		return parseStamps(out.String())
 	}
 	cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 	_ = r.Run(cctx, nil, io.Discard, io.Discard, "rm", "-f", name)
