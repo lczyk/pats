@@ -35,6 +35,9 @@ type LXDImageSpec struct {
 	// happen; the log gets them too.
 	Progress func(msg string)
 	Warn     func(msg string)
+	// Based, when set, gets the fingerprint Base resolved to: what the
+	// image's key, and so the image, is built on.
+	Based func(fp string)
 }
 
 func (s LXDImageSpec) step(log io.Writer, format string, a ...any) {
@@ -74,6 +77,9 @@ func (l *lxd) image(ctx context.Context, spec LXDImageSpec, log io.Writer) (stri
 	fp, err := l.fingerprint(ctx, spec.Base)
 	if err != nil {
 		return "", false, fmt.Errorf("base %s: %w", spec.Base, err)
+	}
+	if spec.Based != nil {
+		spec.Based(fp)
 	}
 	key, err := imageKey(fp, spec, l.o.VM)
 	if err != nil {

@@ -45,13 +45,22 @@ var lxdImageFn = sandbox.LXDImage
 // two cached images in a chain, the first's alias in the second's key. the
 // builds log to logPath. layers are the aliases under the image, bottom
 // first.
-func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath string) (alias string, layers []string, built bool, err error) {
+func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath string) (alias string, layers []string, built bool, upstream map[string]string, err error) {
+	// the bottom layer's base on an image remote, and the fingerprint the
+	// build keyed on: what a run later checks upstream.
+	upstream = map[string]string{}
+	based := func(ref string) func(string) {
+		if !strings.Contains(ref, ":") || strings.HasPrefix(ref, "pats-img-") {
+			return nil
+		}
+		return func(fp string) { upstream[ref] = fp }
+	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return "", nil, false, err
+		return "", nil, false, nil, err
 	}
 	logF, err := os.Create(logPath)
 	if err != nil {
-		return "", nil, false, err
+		return "", nil, false, nil, err
 	}
 	defer logF.Close()
 	o := sandbox.Options{Driver: "lxd", Remote: sb.Remote, VM: sb.VM}.WithEnv()
@@ -65,37 +74,37 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath stri
 	if base == "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, images.ProvisionSandbox, "", sandbox.ProvisionMount)
 		if err != nil {
-			return "", nil, false, err
+			return "", nil, false, nil, err
 		}
 		defer sandbox.RemoveTemp(material)
 		// the script reads its pins from beside itself; in the material they
 		// are also in the image key, so a pin bump reprovisions.
 		if err := os.WriteFile(filepath.Join(material, "harness-versions"), []byte(images.HarnessVersions), 0o644); err != nil {
-			return "", nil, false, err
+			return "", nil, false, nil, err
 		}
-		base, anyBuilt, err = lxdImageFn(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn}, logF)
+		base, anyBuilt, err = lxdImageFn(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn, Based: based(lxdSandboxBase)}, logF)
 		if err != nil {
-			return "", nil, false, fail(err)
+			return "", nil, false, nil, fail(err)
 		}
 		layers = append(layers, base)
 	}
-	spec := sandbox.LXDImageSpec{Base: base, Progress: progress, Warn: warn}
+	spec := sandbox.LXDImageSpec{Base: base, Progress: progress, Warn: warn, Based: based(base)}
 	if sb.Provision != "" || sb.ProvisionCmd != "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
 		if err != nil {
-			return "", nil, false, err
+			return "", nil, false, nil, err
 		}
 		defer sandbox.RemoveTemp(material)
 		spec.Material, spec.Argv = material, argv
 	} else if len(layers) > 0 {
 		// no project layer: the pats sandbox layer is the image.
-		return base, nil, anyBuilt, nil
+		return base, nil, anyBuilt, upstream, nil
 	}
 	alias, built, err = lxdImageFn(ctx, o, spec, logF)
 	if err != nil {
-		return "", nil, false, fail(err)
+		return "", nil, false, nil, fail(err)
 	}
-	return alias, layers, built || anyBuilt, nil
+	return alias, layers, built || anyBuilt, upstream, nil
 }
 
 // fileTail is up to n bytes off the end of a file, "" when it can't be read.

@@ -47,19 +47,10 @@ func upstreamInputs(ctx context.Context, sb config.Sandbox, configDir string, h 
 		}
 	}
 	if sb.Driver == "lxd" {
-		var refs []string
-		switch {
-		case strings.Contains(sb.Image, ":"):
-			refs = append(refs, sb.Image)
-		case sb.Image == "" && sb.Base == "":
-			refs = append(refs, lxdSandboxBase)
-		case strings.Contains(sb.Base, ":"):
-			refs = append(refs, sb.Base)
-		}
-		for _, ref := range refs {
-			if fp, err := lxdRemoteFingerprint(ctx, ref); err == nil {
-				add(ref, fp)
-			}
+		// a base the build keyed on is recorded by initLXD; an image of
+		// another remote was copied, and its fingerprint is the pin's.
+		if strings.Contains(sb.Image, ":") {
+			add(sb.Image, e.Image.ID)
 		}
 		return
 	}
@@ -68,16 +59,19 @@ func upstreamInputs(ctx context.Context, sb config.Sandbox, configDir string, h 
 		return
 	}
 	var refs []string
+	published, _ := sandbox.SandboxImage("")
 	switch {
-	case provisions(sb):
+	case provisions(sb) && sb.Base != "":
 		refs = append(refs, sb.Base)
+	case provisions(sb):
+		refs = append(refs, published) // a layer on the pats sandbox
 	case sb.Build != "":
 		if _, dockerfile, err := resolveBuildSpec(configDir, sb.Build); err == nil {
-			base, _ := sandbox.SandboxImage("")
-			refs, _ = sandbox.DockerfileFroms(dockerfile, base)
+			refs, _ = sandbox.DockerfileFroms(dockerfile, published)
 		}
-	case sb.Image != "":
-		add(sb.Image, e.Image.Digest)
+	default:
+		// an image: sandbox's, or the pats sandbox's (:latest on a dev build).
+		add(e.Image.Name, e.Image.Digest)
 	}
 	for _, ref := range refs {
 		if _, digest, err := p.inspect(ctx, ref); err == nil {

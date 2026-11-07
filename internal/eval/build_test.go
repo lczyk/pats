@@ -51,6 +51,7 @@ func TestLXDImageBuild(t *testing.T) {
 		argv []string
 		pins string
 	}
+	var lastUpstream map[string]string
 	run := func(t *testing.T, sb config.Sandbox, fail bool) ([]call, []string, string, string, bool, error) {
 		var calls []call
 		old := lxdImageFn
@@ -61,6 +62,9 @@ func TestLXDImageBuild(t *testing.T) {
 				pins = string(b)
 			}
 			calls = append(calls, call{spec.Base, spec.Argv, pins})
+			if spec.Based != nil {
+				spec.Based("fp-" + spec.Base)
+			}
 			assert.Equal(t, o.Driver, "lxd")
 			spec.Progress("building " + spec.Base)
 			spec.Warn("low on space")
@@ -75,8 +79,9 @@ func TestLXDImageBuild(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
 		logPath := filepath.Join(t.TempDir(), "init", sb.ID+".log")
-		_, layers, built, err := lxdImage(context.Background(), sb, Options{ConfigDir: dir, Out: &out}, logPath)
+		_, layers, built, upstream, err := lxdImage(context.Background(), sb, Options{ConfigDir: dir, Out: &out}, logPath)
 		b, _ := os.ReadFile(logPath)
+		lastUpstream = upstream
 		return calls, layers, out.String(), string(b), built, err
 	}
 
@@ -85,6 +90,8 @@ func TestLXDImageBuild(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 2)
 		assert.EqualArrays(t, layers, []string{"pats-img-1"})
+		// the base the bottom layer keyed on, for the upstream check.
+		assert.EqualMaps(t, lastUpstream, map[string]string{lxdSandboxBase: "fp-" + lxdSandboxBase})
 		assert.Equal(t, calls[0].base, lxdSandboxBase)
 		assert.Equal(t, calls[1].base, "pats-img-1")
 		// the pats layer carries the pins beside its script (and so in its key);
@@ -103,6 +110,7 @@ func TestLXDImageBuild(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 1)
 		assert.Len(t, layers, 0)
+		assert.EqualMaps(t, lastUpstream, map[string]string{"ubuntu:24.04": "fp-ubuntu:24.04"})
 		assert.Equal(t, calls[0].base, "ubuntu:24.04")
 		assert.That(t, built, "built is false")
 	})

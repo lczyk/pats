@@ -12,6 +12,8 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/internal/config"
 )
 
 func fakeLookups(t *testing.T, registry, lxd func(ctx context.Context, ref string) (string, error)) {
@@ -78,12 +80,23 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
 	e := &pinEntry{Inputs: map[string]string{}}
 	upstreamInputs(ctx, cfg.Sandboxes[0], dir, h, e)
 	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:python:3": "sha256:pydigest"})
-	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Digest: "sha256:mine"}}
+	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Name: "my/image:1", Digest: "sha256:mine"}}
 	upstreamInputs(ctx, cfg.Sandboxes[1], dir, h, e)
 	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:my/image:1": "sha256:mine"})
-	e = &pinEntry{Inputs: map[string]string{}}
-	upstreamInputs(ctx, cfg.Sandboxes[2], dir, h, e)
-	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:" + lxdSandboxBase: "fp-" + lxdSandboxBase})
+	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{ID: "fp-copied", Name: "ubuntu:24.04"}}
+	box := cfg.Sandboxes[2]
+	box.Image = "ubuntu:24.04"
+	upstreamInputs(ctx, box, dir, h, e)
+	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:ubuntu:24.04": "fp-copied"})
+
+	// the default sandbox on a dev build: :latest, which moves, is recorded;
+	// a release's own tag is not.
+	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Name: "ghcr.io/lczyk/pats/sandbox:latest", Digest: "sha256:l"}}
+	upstreamInputs(ctx, config.Sandbox{ID: "d"}, dir, h, e)
+	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:ghcr.io/lczyk/pats/sandbox:latest": "sha256:l"})
+	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Name: "ghcr.io/lczyk/pats/sandbox:v1.0.0", Digest: "sha256:r"}}
+	upstreamInputs(ctx, config.Sandbox{ID: "d"}, dir, h, e)
+	assert.Len(t, e.Inputs, 0)
 }
 
 // a run checks upstream while preflight runs and warns; --offline skips it.

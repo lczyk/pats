@@ -311,9 +311,12 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 		e.Image = pinImage{ID: fp, Name: sb.Image}
 	default:
 		logPath := initLogPath(ro.ConfigDir, sb.ID)
-		alias, layers, _, err := lxdImage(ctx, sb, ro, logPath)
+		alias, layers, _, upstream, err := lxdImage(ctx, sb, ro, logPath)
 		if err != nil {
 			return err
+		}
+		for ref, fp := range upstream {
+			e.Inputs[upstreamPrefix+ref] = fp
 		}
 		fp, err := sandbox.LXDFingerprint(ctx, o, alias)
 		if err != nil {
