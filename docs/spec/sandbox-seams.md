@@ -266,14 +266,17 @@ exception below.
   record this clean cannot read: unknown.
 - **removal.** dead runs go in one order on every backend: sandboxes, then networks and acls, then the run's private
   image aliases (`pats-img-<key>-<token>`), then the record last, so a clean that dies halfway leaves a run still
-  judged. a private alias goes always; the image under it goes only when it carries no other alias and no instance
-  was ever made from it (`last_used_at` unset): a build that died between its publish and its alias claim. an alias
-  alone does not say the image is unpublished: a claim can succeed and the private alias's removal fail, and a later
-  forced init can re-point the public alias away, leaving a pinned image under the private one. no other image: one a
-  run built still carries its token after a re-pointed alias left it, and `pats init` keeps it while pins elsewhere
-  may name it. a removal that fails is left for the next clean (the bar the sweeps test). orphan lease files (stale,
-  naming no run any driver lists and no temp dir) go with the temp dirs, matched as `run-*.lease` exactly: the client
-  id and init's project registry sit beside them.
+  judged. a private alias on an image that also carries another alias goes alone (the claim succeeded, its removal did
+  not). an image whose only alias is the private one is either a build that died between its publish and its claim, or a
+  claimed image a forced init re-pointed the public alias away from, which a pin may still name, used or not (stamps
+  read its properties, creating no instance): nothing on the image tells the two apart. so it is judged as init judges a
+  superseded lxd image: it goes, private alias and all, once nothing used it for 30 days (`last_used_at`, or
+  `uploaded_at` for an image no instance was made from), and until then the private alias stays, marking it for the next
+  clean. init.md's accepted failure applies unchanged: a pin dormant for over 30 days finds its image gone. no other
+  image: one a run built still carries its token after a re-pointed alias left it, and `pats init` keeps it while pins
+  elsewhere may name it. a removal that fails is left for the next clean (the bar the sweeps test). orphan lease files
+  (stale, naming no run any driver lists and no temp dir) go with the temp dirs, matched as `run-*.lease` exactly: the
+  client id and init's project registry sit beside them.
 - **`--force`.** also removes unknown runs. an unknown run may be alive on another machine or under another user, and
   the output says so before force takes it; a run whose fresh lease clean can read is never removed by force. what
   force loses of lxd's today (live runs) comes back named: `pats clean --run <token>` removes that one run whatever
