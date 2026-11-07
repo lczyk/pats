@@ -72,6 +72,15 @@ podman's is disabled on the network. the host has no address on that network eit
 host is out of the agent's reach too. each pair gets its own `/29` out of `10.213.0.0/16` (override with
 `PATS_EGRESS_POOL`, an ipv4 cidr of `/24` or wider); a subnet already in use is skipped.
 
+under lxd the agent sits on a bridge of its pair's own with no host address: no dhcp, no dns, no routing, no host to
+reach, and a rule-less acl rejecting both ways fences the bridge-host boundary besides. its only neighbour is the
+proxy, a container of its own at a static address from the same pool, whose second nic on the shared `patsup` bridge is
+the only way out; the proxy forwards nothing and listens on the bridge address only. the proxy binary is this pats
+for the server's arch when it can be, else the published proxy image's, read from the registry without docker
+(`PATS_LXD_PROXY_BIN` names a file instead). the canary runs from the agent before the proxy exists, preflight then
+checks the agent reaches the proxy, and with `sudo: true` it also tries, as root, to route out through the bridge's
+host side.
+
 what the proxy enforces, beyond the lists:
 
 - **the tunnel is bound to its CONNECT host.** the tls ClientHello is read (across records, replayed unchanged) and

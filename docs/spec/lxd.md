@@ -1,6 +1,7 @@
 # spec: an lxd backend
 
-status: phases 1 and 2 implemented; 3 to 5 in progress. phases at the end; each is a PR or two.
+status: phases 1 to 5 implemented, but for phase 5's ci job (a runner with lxd) and the mason migration, which
+lives in mason's repo. phases at the end; each is a PR or two.
 scope: `src/sandbox` (a session-based driver seam, a docker driver on it, an lxd driver), the task steps (`stage` /
 `prepare` / `collect`), the sandbox schema, `internal/eval`, `images/`. 1.x owes 0.x no backwards compatibility.
 

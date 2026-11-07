@@ -29,6 +29,15 @@ sandbox:
       #   npm:    registry.npmjs.org
       #   crates: crates.io, static.crates.io, index.crates.io
       #   go:     proxy.golang.org, sum.golang.org, storage.googleapis.com
+      # `base:` + `provision:` / `provision-cmd:` make the image instead (any driver): the step runs once per image, as root.
+      # `limits: {cpu: 4, memory: 8GiB}` caps resources; `max-parallel: 2` caps this sandbox's concurrent pairs.
+    # an lxd sandbox: a system container (or `vm: true`) on the server an lxc remote names. with no `base` it is
+    # provisioned with the pats sandbox's tools; `sudo: true` lets the agent sudo, `config:` and `profiles:` pass through.
+    # lxd:
+    #   driver: lxd
+    #   remote: my-server
+    #   provision: |
+    #     apt-get update && apt-get -y install dpkg-dev
 
 # harness: claude-cli-keyless | codex-cli-keyless | copilot-cli-keyless | opencode-openrouter (creds and model ids per harness: see the readme).
 # with one sandbox defined every agent uses it, otherwise set `sandbox:`. `effort:` is optional reasoning effort.
