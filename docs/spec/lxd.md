@@ -268,6 +268,14 @@ halfway, a hand deletion) is judged by its resources' `user.pats.created` agains
 is left alone whoever owns it; `--force` takes everything in the project, for a laptop that is gone. a run that ends,
 or is interrupted, removes its own.
 
+the two machines' clocks need not agree: a lease that looks stale by the cleaner's clock is only trusted once it has
+stayed unchanged over a wait longer than a live run takes to renew it (two and a half minutes). known gap, accepted:
+that holds only while renewals land on time. a cleaner whose clock runs about eight minutes or more fast, plus one
+renewal that fails (its error is ignored) or lands over 30s late inside that wait, removes a live run. closing it
+needs a lease both sides time on their own clocks -- the cleaner waiting the whole ten minutes, the run stopping
+once it has not renewed for that long -- and `pats clean` is not to wait that long. `fizz/lxd_lease.fizz` has the
+trace and the variant that closes it.
+
 ## metadata
 
 each pair's `metadata.json` gains the remote, the instance type, the image fingerprint, the lxd server version and
@@ -333,3 +341,5 @@ whether the agent had sudo.
 - checked on the target server: stateful vm snapshots (they do not complete, see above), `lxc publish` of a vm
   (works), a bridge in a non-default project (needs ovn), forwarding from a new bridge on a host running docker
   (ipv4 dropped until the admin rule is in place).
+- fizzbee models in `docs/spec/fizz/` (`make specs`): `lxd_delete.fizz` (an instance delete racing a create its
+  client stopped waiting for) and `lxd_lease.fizz` (pats clean vs a live run with a skewed clock).
