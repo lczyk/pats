@@ -13,6 +13,7 @@ import (
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 
+	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
@@ -558,7 +559,7 @@ func TestLXDCopyImageOnServer(t *testing.T) {
 	got, err = l.fingerprint(context.Background(), "img")
 	require.NoError(t, err)
 	assert.Equal(t, got, fakeFP("img"))
-	assert.ContainsString(t, strings.Join(f.call("image info"), " "), "image info srv:img --project pats")
+	assert.ContainsString(t, strings.Join(f.call("query"), " "), "query srv:/1.0/images/aliases/img?project=pats")
 }
 
 // a base named without a remote is an image of the sandbox's own server: the
@@ -569,4 +570,56 @@ func TestLXDImageOwnBaseOnServer(t *testing.T) {
 	_, _, err := l.image(context.Background(), LXDImageSpec{Base: "img", Argv: []string{"true"}}, io.Discard)
 	require.NoError(t, err)
 	assert.ContainsString(t, strings.Join(f.call("launch"), " "), "launch srv:img ")
+}
+
+// a build is published with what it is, for lxc image list; a forced build
+// makes a new image and points the alias at it in one step, the old image
+// staying for whoever pins it.
+func TestLXDImagePropsAndForceOnServer(t *testing.T) {
+	f := newFakeServer(t)
+	l := lxdOn(t, f, Options{})
+	spec := LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}, Role: "project", Sandbox: "mason"}
+	alias, built, err := l.image(context.Background(), spec, io.Discard)
+	require.NoError(t, err)
+	assert.That(t, built, "the first build did not build")
+	first := f.lookupImage(alias)
+	props := f.images[first].props
+	assert.Equal(t, props["pats.role"], "project")
+	assert.Equal(t, props["pats.sandbox"], "mason")
+	assert.Equal(t, props["pats.version"], version.Info.Version)
+	assert.Equal(t, "pats-img-"+props["pats.inputs"], alias)
+
+	_, built, err = l.image(context.Background(), spec, io.Discard)
+	require.NoError(t, err)
+	assert.That(t, !built, "an unforced build of a present key built")
+
+	spec.Force = true
+	again, built, err := l.image(context.Background(), spec, io.Discard)
+	require.NoError(t, err)
+	assert.That(t, built && again == alias, "a forced build: built %v, alias %s", built, again)
+	second := f.lookupImage(alias)
+	assert.That(t, second != first, "the alias still names the old image")
+	assert.That(t, f.images[first] != nil, "the old image went with the force")
+	for _, im := range f.images {
+		for _, a := range im.aliases {
+			assert.That(t, !runPrivateAlias(a), "a run-private alias was left: %s", a)
+		}
+	}
+}
+
+// the key carries the pats version, and a Key stands for the material.
+func TestImageKeyVersionAndKey(t *testing.T) {
+	old := version.Info
+	t.Cleanup(func() { version.Info = old })
+	spec := LXDImageSpec{Argv: []string{"true"}}
+	a, err := imageKey("fp", spec, false)
+	require.NoError(t, err)
+	version.Info.Version = "9.9.9"
+	b, err := imageKey("fp", spec, false)
+	require.NoError(t, err)
+	assert.That(t, a != b, "a new pats version kept the key")
+
+	x, _ := imageKey("fp", LXDImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"a"}}, false)
+	y, _ := imageKey("fp", LXDImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"b"}}, false)
+	assert.Equal(t, x, y)
 }

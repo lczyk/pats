@@ -295,11 +295,12 @@ func TestLXDStartProxy(t *testing.T) {
 	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
 	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img", ProxyBin: bin, Uplink: "up0"})
 	answers := map[string]string{
-		"egress-canary":   "egress-canary leak=0\n",
-		"egress-reach":    "egress-reach ok=1\n",
-		"id -u patsproxy": "999\n",
-		"image info":      "Fingerprint: abc\n",
-		"query srv:/1.0 ": `{"environment":{"architectures":["x86_64"]}}`,
+		"egress-canary":        "egress-canary leak=0\n",
+		"egress-reach":         "egress-reach ok=1\n",
+		"id -u patsproxy":      "999\n",
+		"image list":           `[{"fingerprint":"abc","aliases":[{"name":"26.04"}]}]`,
+		"/1.0/images/aliases/": `{"target":"abc"}`,
+		"query srv:/1.0 ":      `{"environment":{"architectures":["x86_64"]}}`,
 	}
 	inner := f.run
 	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
@@ -434,14 +435,14 @@ func TestLXDImageBuild(t *testing.T) {
 		l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 			joined := strings.Join(args, " ")
 			switch {
-			case strings.HasPrefix(joined, "image info ubuntu:26.04"):
+			case strings.HasPrefix(joined, "image list ubuntu: 26.04"):
 				f.record(args)
-				io.WriteString(stdout, "Fingerprint: abc\n")
+				io.WriteString(stdout, `[{"fingerprint":"abc","aliases":[{"name":"26.04"}]}]`)
 				return nil
-			case strings.HasPrefix(joined, "image info srv:pats-img-"):
+			case strings.HasPrefix(joined, "query srv:/1.0/images/aliases/pats-img-"):
 				f.record(args)
-				if strings.Contains(joined, "-"+l.p.token+" ") {
-					io.WriteString(stdout, "Fingerprint: def\n") // the run-private alias, published
+				if strings.Contains(joined, "-"+l.p.token+"?") {
+					io.WriteString(stdout, `{"target":"def"}`) // the run-private alias, published
 					return nil
 				}
 				return &fakeExit{}
@@ -592,12 +593,12 @@ func TestLXDProxyImageProgress(t *testing.T) {
 	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		joined := strings.Join(args, " ")
 		switch {
-		case strings.HasPrefix(joined, "image info "+lxdProxyBase):
-			io.WriteString(stdout, "Fingerprint: abc\n")
+		case strings.HasPrefix(joined, "image list ubuntu-minimal: 26.04"):
+			io.WriteString(stdout, `[{"fingerprint":"abc","aliases":[{"name":"26.04"}]}]`)
 			return nil
-		case strings.HasPrefix(joined, "image info srv:pats-img-"):
-			if strings.Contains(joined, "-"+l.p.token+" ") {
-				io.WriteString(stdout, "Fingerprint: def\n")
+		case strings.HasPrefix(joined, "query srv:/1.0/images/aliases/pats-img-"):
+			if strings.Contains(joined, "-"+l.p.token+"?") {
+				io.WriteString(stdout, `{"target":"def"}`) // the run-private alias, published
 				return nil
 			}
 			return &fakeExit{}

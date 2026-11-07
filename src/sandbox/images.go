@@ -51,6 +51,13 @@ func Image(repo, configured, hint string) (image, warn string) {
 	return repo + ":v" + v, ""
 }
 
+// releaseBuild says whether this binary is a tagged install of a release:
+// no vcs stamp, a release-shaped version. a clone build counts as dev even
+// at its tag.
+func releaseBuild() bool {
+	return version.Info.CommitSHA == "" && IsRelease(version.Info.Version)
+}
+
 // IsRelease reports whether v (a leading v allowed) is a tagged release
 // version, one with published images.
 func IsRelease(v string) bool { return releaseVersion(strings.TrimPrefix(v, "v")) }

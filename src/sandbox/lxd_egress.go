@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/lczyk/pats/internal/version"
 )
 
 // the proxy topology under lxd is fail-closed by construction, not by acl:
@@ -326,7 +328,13 @@ mkdir -p /etc/netplan /etc/pats && cp ` + ProvisionMount + `/60-pats-uplink.yaml
 	}
 	pl := newLXD(l.p, l.r, Options{Driver: "lxd", Remote: l.o.Remote, Uplink: l.o.Uplink})
 	spec := LXDImageSpec{Base: lxdProxyBase, Material: material, Argv: []string{"/bin/sh", ProvisionMount + "/script"},
-		Progress: prefixed(l.o.Progress, "egress proxy: "), Warn: prefixed(l.o.Warn, "egress proxy: ")}
+		Progress: prefixed(l.o.Progress, "egress proxy: "), Warn: prefixed(l.o.Warn, "egress proxy: "),
+		Role: "proxy", Force: l.o.ForceImages}
+	// a release's proxy is its version on this arch; a dev build's is its
+	// binary's bytes, so every rebuild of pats makes a new one.
+	if releaseBuild() {
+		spec.Key = "proxy " + version.Info.Version + " " + arch
+	}
 	var log bytes.Buffer
 	alias, _, err := pl.image(ctx, spec, &log)
 	if err != nil {

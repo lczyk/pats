@@ -323,7 +323,7 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 		e.Image = pinImage{ID: fp, Name: sb.Image}
 	default:
 		logPath := initLogPath(ro.ConfigDir, sb.ID)
-		alias, layers, _, upstream, err := lxdImage(ctx, sb, ro, logPath)
+		alias, layers, _, upstream, err := lxdImage(ctx, sb, ro, logPath, opts.Force)
 		if err != nil {
 			return err
 		}
@@ -348,6 +348,7 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 		lg := logw{ro.Out, ro.Color}
 		po.Progress = func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
 		po.Warn = func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
+		po.ForceImages = opts.Force
 		alias, err := sandbox.LXDProxyImage(ctx, po)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)

@@ -45,7 +45,7 @@ var lxdImageFn = sandbox.LXDImage
 // two cached images in a chain, the first's alias in the second's key. the
 // builds log to logPath. layers are the aliases under the image, bottom
 // first.
-func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath string) (alias string, layers []string, built bool, upstream map[string]string, err error) {
+func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath string, force bool) (alias string, layers []string, built bool, upstream map[string]string, err error) {
 	// the bottom layer's base on an image remote, and the fingerprint the
 	// build keyed on: what a run later checks upstream.
 	upstream = map[string]string{}
@@ -82,13 +82,14 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath stri
 		if err := os.WriteFile(filepath.Join(material, "harness-versions"), []byte(images.HarnessVersions), 0o644); err != nil {
 			return "", nil, false, nil, err
 		}
-		base, anyBuilt, err = lxdImageFn(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn, Based: based(lxdSandboxBase)}, logF)
+		base, anyBuilt, err = lxdImageFn(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn, Based: based(lxdSandboxBase),
+			Role: "sandbox", Sandbox: sb.ID, Force: force}, logF)
 		if err != nil {
 			return "", nil, false, nil, fail(err)
 		}
 		layers = append(layers, base)
 	}
-	spec := sandbox.LXDImageSpec{Base: base, Progress: progress, Warn: warn, Based: based(base)}
+	spec := sandbox.LXDImageSpec{Base: base, Progress: progress, Warn: warn, Based: based(base), Role: "project", Sandbox: sb.ID, Force: force}
 	if sb.Provision != "" || sb.ProvisionCmd != "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
 		if err != nil {

@@ -149,6 +149,9 @@ type Options struct {
 	// ProxyImage is the egress proxy image a run uses as is, never building
 	// one: a fingerprint or alias in the pats project. "" -> built on demand.
 	ProxyImage string
+	// ForceImages rebuilds the images the driver makes on its own (lxd's
+	// egress proxy) even when one of the key exists.
+	ForceImages bool
 	// EgressPool is the cidr egress networks are carved from; "" -> the
 	// default. docker, podman and lxd.
 	EgressPool string

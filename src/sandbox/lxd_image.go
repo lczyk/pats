@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/lczyk/pats/internal/version"
 )
 
 // ProvisionMount is where provisioning material lives in a builder while the
@@ -38,6 +40,16 @@ type LXDImageSpec struct {
 	// Based, when set, gets the fingerprint Base resolved to: what the
 	// image's key, and so the image, is built on.
 	Based func(fp string)
+	// Role (sandbox | project | proxy) and Sandbox are recorded on the
+	// image as pats.role and pats.sandbox, for people listing images.
+	Role, Sandbox string
+	// Force builds even when an image of the key exists, and points the
+	// key's alias at the new one.
+	Force bool
+	// Key, when set, stands for Argv and Material in the image key: what
+	// the image is, when its material holds bytes that do not matter (the
+	// proxy of a release, keyed on the version, not the binary).
+	Key string
 }
 
 func (s LXDImageSpec) step(log io.Writer, format string, a ...any) {
@@ -86,7 +98,7 @@ func (l *lxd) image(ctx context.Context, spec LXDImageSpec, log io.Writer) (stri
 		return "", false, err
 	}
 	alias := "pats-img-" + key
-	if _, err := l.fingerprint(ctx, alias); err == nil {
+	if _, err := l.fingerprint(ctx, alias); err == nil && !spec.Force {
 		return alias, false, nil
 	}
 	spec.step(log, "building lxd image %s on %s from %s", alias, l.o.Remote, spec.Base)
@@ -119,24 +131,31 @@ func (l *lxd) poolSpace(ctx context.Context) (free, total uint64, ok bool) {
 // fingerprint is an image's fingerprint: a pats-img- alias in the pats
 // project, anything else as the cli resolves it.
 func (l *lxd) fingerprint(ctx context.Context, ref string) (string, error) {
-	// a ref with no remote is an image on the sandbox's own server, where
-	// instances are made from it: in the pats project.
-	args := []string{"image", "info"}
-	if !strings.Contains(ref, ":") {
-		args = append(args, l.ref(ref), "--project", lxdProject)
-	} else {
-		args = append(args, ref)
+	// json, never lxc image info's text: an image on another remote through
+	// image list, one on the sandbox's own server (where instances are made
+	// from it, in the pats project) through the rest api.
+	if strings.Contains(ref, ":") {
+		return l.remoteFingerprint(ctx, ref)
 	}
-	out, err := l.lxc(ctx, args...)
-	if err != nil {
+	if isFingerprint(ref) {
+		var im struct {
+			Fingerprint string `json:"fingerprint"`
+		}
+		if err := l.query(ctx, "/1.0/images/"+ref+"?project="+lxdProject, &im); err != nil {
+			return "", err
+		}
+		return im.Fingerprint, nil
+	}
+	var al struct {
+		Target string `json:"target"`
+	}
+	if err := l.query(ctx, "/1.0/images/aliases/"+ref+"?project="+lxdProject, &al); err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Fingerprint:"); ok {
-			return strings.TrimSpace(v), nil
-		}
+	if al.Target == "" {
+		return "", fmt.Errorf("lxd image alias %s names no image", ref)
 	}
-	return "", fmt.Errorf("no fingerprint in lxc image info %s", ref)
+	return al.Target, nil
 }
 
 // fingerprintRe is an lxd image fingerprint: sha256 hex.
@@ -206,7 +225,12 @@ func LXDProxyImage(ctx context.Context, o Options) (string, error) {
 // imageKey digests every input of a provisioned image.
 func imageKey(fp string, spec LXDImageSpec, vm bool) (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "provisioner=%s\nbase=%s\nvm=%v\n", provisionerVersion, fp, vm)
+	// the pats version too: a layer on a custom base inherits no other.
+	fmt.Fprintf(h, "provisioner=%s\nbase=%s\nvm=%v\npats=%s\n", provisionerVersion, fp, vm, version.Info.Version)
+	if spec.Key != "" {
+		fmt.Fprintf(h, "key=%s\n", spec.Key)
+		return hex.EncodeToString(h.Sum(nil))[:24], nil
+	}
 	for _, a := range spec.Argv {
 		fmt.Fprintf(h, "arg=%q\n", a)
 	}
@@ -348,7 +372,13 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	private := alias + "-" + l.p.token
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
 	pub = append(pub, l.meta()...)
-	pub = append(pub, stampedProp+"=1")
+	pub = append(pub, stampedProp+"=1", "pats.version="+version.Info.Version, "pats.inputs="+strings.TrimPrefix(alias, "pats-img-"))
+	if spec.Role != "" {
+		pub = append(pub, "pats.role="+spec.Role)
+	}
+	if spec.Sandbox != "" {
+		pub = append(pub, "pats.sandbox="+spec.Sandbox)
+	}
 	for _, name := range sortedKeys(stamps) {
 		pub = append(pub, componentProp+name+"="+stamps[name])
 	}
@@ -370,6 +400,17 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	if _, err := l.lxc(ctx, "image", "alias", "create", l.ref(alias), fp, "--project", lxdProject); err != nil {
 		if _, ferr := l.fingerprint(ctx, alias); ferr != nil {
 			return err
+		}
+		if spec.Force {
+			// a forced build replaces what the alias named, in one call: the
+			// alias is never missing. pins elsewhere keep the old image.
+			body, _ := json.Marshal(map[string]string{"target": fp, "description": ""})
+			if _, err := l.lxc(ctx, "query", "-X", "PUT", "-d", string(body),
+				l.o.Remote+":/1.0/images/aliases/"+alias+"?project="+lxdProject); err != nil {
+				return err
+			}
+			_, _ = l.lxc(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
+			return nil
 		}
 		// another run built it first: use theirs.
 		_, _ = l.lxc(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)

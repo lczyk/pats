@@ -194,7 +194,7 @@ func (a fakeArgs) flag(name string) string {
 
 func (f *fakeServer) parse(args []string) (fakeArgs, error) {
 	a := fakeArgs{flags: map[string][]string{}, bools: map[string]bool{}}
-	valued := map[string]bool{"--project": true, "--target-project": true, "--storage": true, "-c": true, "-d": true, "-p": true, "-n": true,
+	valued := map[string]bool{"--project": true, "--target-project": true, "-X": true, "--storage": true, "-c": true, "-d": true, "-p": true, "-n": true,
 		"--user": true, "--group": true, "--cwd": true, "--env": true, "--alias": true}
 	boolean := map[string]bool{"--vm": true, "--force": true, "--force-noninteractive": true}
 	for i := 0; i < len(args); i++ {
@@ -337,6 +337,8 @@ func (f *fakeServer) do(ctx context.Context, stdin io.Reader, stdout, stderr io.
 		f.killExecs(name, "")
 		delete(f.insts, name)
 		return nil
+	case at(0) == "query" && a.flag("-X") == "PUT":
+		return f.queryPut(stderr, at(1), a.flag("-d"))
 	case at(0) == "query":
 		return f.query(stdout, stderr, at(1))
 	case at(0) == "image":
@@ -746,6 +748,36 @@ func (f *fakeServer) publish(stderr io.Writer, a fakeArgs) error {
 	return nil
 }
 
+// queryPut re-points an image alias, the one PUT the driver makes.
+func (f *fakeServer) queryPut(stderr io.Writer, raw, data string) error {
+	_, rest := lxcRef(raw)
+	u, err := url.Parse(rest)
+	if err != nil {
+		return lxcFail(stderr, "%v", err)
+	}
+	name, ok := strings.CutPrefix(u.Path, "/1.0/images/aliases/")
+	if !ok || u.Query().Get("project") != lxdProject {
+		f.t.Errorf("fake lxd: query PUT %s", raw)
+		return lxcFail(stderr, "unsupported")
+	}
+	var body struct {
+		Target string `json:"target"`
+	}
+	if err := json.Unmarshal([]byte(data), &body); err != nil || f.images[body.Target] == nil {
+		return lxcFail(stderr, "Image not found")
+	}
+	for _, im := range f.images {
+		for i, al := range im.aliases {
+			if al == name {
+				im.aliases = append(im.aliases[:i], im.aliases[i+1:]...)
+				break
+			}
+		}
+	}
+	f.images[body.Target].aliases = append(f.images[body.Target].aliases, name)
+	return nil
+}
+
 func (f *fakeServer) query(stdout, stderr io.Writer, raw string) error {
 	r, rest := lxcRef(raw)
 	if !strings.HasPrefix(raw, "/") && r != f.remote {
@@ -827,6 +859,19 @@ func (f *fakeServer) query(stdout, stderr io.Writer, raw string) error {
 			list = append(list, map[string]any{"name": name, "config": f.acls[name].config})
 		}
 		return out(list)
+	case strings.HasPrefix(p, "/1.0/images/aliases/"):
+		if err := project(); err != nil {
+			return err
+		}
+		name := strings.TrimPrefix(p, "/1.0/images/aliases/")
+		fp := f.lookupImage(name)
+		if base, ok := f.bases[name]; ok && fp == "" {
+			fp = base // an image of the server's own, outside what pats made
+		}
+		if fp == "" {
+			return lxcFail(stderr, "Image alias not found")
+		}
+		return out(map[string]any{"name": strings.TrimPrefix(p, "/1.0/images/aliases/"), "target": fp})
 	case strings.HasPrefix(p, "/1.0/images/"):
 		if err := project(); err != nil {
 			return err
