@@ -151,7 +151,7 @@ type Backend interface {
 	Images(ctx context.Context) (map[string]bool, error)    // every image id held, tagged or not
 	Pull(ctx context.Context, ref string, force bool, log io.Writer) (fetched bool, err error)
 	Build(ctx context.Context, spec BuildSpec, log io.Writer) (img Image, base string, built bool, err error)
-	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (Image, error)
+	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (img Image, fetched bool, err error)
 	Stamps(ctx context.Context, id string) (map[string]string, error)
 	RemoveImage(ctx context.Context, id string) error
 	Upstream(ctx context.Context, ref string) (string, error) // the source's current id or digest, for staleness
@@ -177,20 +177,25 @@ type ImageUsage interface {
   environment), and the instance type (`vm`). the sandbox: image, the pinned proxy image, limits, profiles, config.
   `vm` is the place's because every lxd image method depends on it (the image key, the builder and stamp instances,
   the upstream image picked by type) as much as the sandbox does: a server serving both types is two backends,
-  sharing the process's per-server state. a container backend ignores it. today's `ForceImages`, `Progress` and
+  sharing the process's per-server state, which therefore stays independent of the instance type (the proxy image is
+  always a container). clean opens one backend per server, of either type: what it lists and removes does not depend
+  on it. a container backend ignores it. today's `ForceImages`, `Progress` and
   `Warn` become call parameters (`force`, `BuildSpec`'s, the `log` writer and its progress lines).
 - **one implementation per backend family.** `containerBackend` (docker, podman, nerdctl through the engine table),
-  `lxdBackend`, later `bwrapBackend`, whose image methods say there are none and whose `Runs` lists temp dirs. what
-  differs by engine stays in the engine table.
+  `lxdBackend`, later `bwrapBackend`, whose image methods say there are none and whose `Runs` lists nothing: its only
+  leftovers are the temp dirs and lease files the shared clean already sweeps. what differs by engine stays in the
+  engine table.
 - **what the image methods mean on each.**
   - `Pull` makes `ref` present: fetched when absent or forced, a no-op otherwise, `fetched` saying whether it
     brought something (what init records as pulled). docker pulls; lxd copies a remote image into the project.
   - `Build` builds one layer and returns the base it built on, as resolved for the key: an alias moving during a
     long provision cannot make the pin name a base the image never saw. eval composes lxd's two-layer chain and
-    container `base:` / `provision:` from it.
+    container `base:` / `provision:` from it. for a container `build:` dockerfile, `base` is the resolved
+    `PATS_SANDBOX` or empty: its `FROM` lines stay eval's to track, around the build, with `Resolve` and `Pull`.
   - `ProxyImage` makes the egress proxy image the backend's sandboxes use present: a container backend pulls `ref`
-    (the published image); lxd builds its own (the binary, the netplan, the key rules stay inside) and caches it per
-    process.
+    (the published image), `fetched` saying, as for `Pull`, whether the image is pats's or was there already (a
+    user's own build of it, which init must never remove); lxd builds its own (the binary, the netplan, the key rules
+    stay inside) and caches it per process.
   - `Upstream` is, for a container backend, `RegistryDigest` of the ref; for lxd, the image server's current
     fingerprint for the backend's instance type.
   - `Usage` is lxd's only (`ImageUsage`, above).
@@ -225,7 +230,8 @@ one cut, not a staged migration: 1.x is still moving and may break between commi
 are taken, not avoided: `-j auto` on podman asks podman for its cpus, where it asked docker. `Backend`, `Open` and the
 two option levels land together with docker and podman's argv moving into `containerBackend`, the lxd exports and
 `BuildContainerImage` / `ContainerStamps` going, and eval's `hostFor` and driver switches replaced. clean follows on
-`Runs` and `Remove`. `src/sandbox`'s exported surface is then `Open`, `Shutdown`, the types and the pure helpers.
+`Runs` and `Remove`, and with it the docker sweep's bar for a faulted removal (above, "tests") becomes the new clean's.
+`src/sandbox`'s exported surface is then `Open`, `Shutdown`, the types and the pure helpers.
 
 ## clean
 
@@ -254,7 +260,7 @@ exception below.
   skew (below).
 - **the verdict, per run.** a stale lease, or a gone pid on the record's host: dead. no record, and everything of the
   run older than `leaseStale`: dead (a run that died before its record, or a clean that died after removing it;
-  docker's networks have no creation time in `network ls`, so the driver inspects them). a fresh lease: alive. a
+  docker's networks have no creation time in `network ls`, so the backend inspects them). a fresh lease: alive. a
   record this clean cannot read: unknown.
 - **removal.** dead runs go in one order on every backend: sandboxes, then networks and acls, then images still held
   under the run's private alias (`pats-img-<key>-<token>`: a build that died between its publish and its alias claim),
