@@ -147,3 +147,13 @@ func TestUpstreamProxy(t *testing.T) {
 	upstreamInputs(context.Background(), config.Sandbox{Image: "my/image:1"}, t.TempDir(), newFakeHost(), e)
 	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:my/image:1": "sha256:i", "upstream:ghcr.io/example/proxy:latest": "sha256:p"})
 }
+
+// a base whose tag moved across the build gets no baseline rather than the
+// wrong one; pats's release tags get none either way.
+func TestStableBases(t *testing.T) {
+	held, moved := stableBases(
+		map[string]string{"python:3": "sha256:a", "ubuntu:26.04": "sha256:u", "ghcr.io/lczyk/pats/sandbox:v1.0.0": "sha256:p"},
+		map[string]string{"python:3": "sha256:b", "ubuntu:26.04": "sha256:u", "ghcr.io/lczyk/pats/sandbox:v1.0.0": "sha256:p"})
+	assert.EqualMaps(t, held, map[string]string{"ubuntu:26.04": "sha256:u"})
+	assert.EqualArrays(t, moved, []string{"python:3"})
+}

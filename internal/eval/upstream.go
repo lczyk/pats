@@ -83,6 +83,23 @@ func fromImages(sb config.Sandbox, configDir string) []string {
 	return nil
 }
 
+// stableBases is the bases whose digest was the same before and after a
+// build, pats's release tags aside, and those that moved in between.
+func stableBases(before, after map[string]string) (held map[string]string, moved []string) {
+	held = map[string]string{}
+	for ref, digest := range before {
+		switch {
+		case publishedRepo(ref):
+		case after[ref] == digest:
+			held[ref] = digest
+		default:
+			moved = append(moved, ref)
+		}
+	}
+	sort.Strings(moved)
+	return held, moved
+}
+
 // baseDigests pins the digests of a build's FROM images before it runs,
 // pulling an absent one as the build would: so the baseline is the base the
 // build used, and one buildkit would not keep locally is still recorded.

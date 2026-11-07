@@ -222,11 +222,18 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		}
 		return img
 	}
-	for ref, digest := range baseDigests(ctx, sb, ro.ConfigDir, h, logF) {
-		if !publishedRepo(ref) {
+	// the build resolves its FROM tags itself, somewhere between these two
+	// reads: a base the same on both is the one it used.
+	before := baseDigests(ctx, sb, ro.ConfigDir, h, logF)
+	defer func() {
+		held, moved := stableBases(before, baseDigests(ctx, sb, ro.ConfigDir, h, logF))
+		for ref, digest := range held {
 			e.Inputs[upstreamPrefix+ref] = digest
 		}
-	}
+		for _, ref := range moved {
+			lg.warn("sandbox %q: its base %s moved while init built on it; its upstream is not tracked until the next pats init", sb.ID, ref)
+		}
+	}()
 	switch {
 	case provisions(sb):
 		id, _, err := provisionedContainerImage(ctx, sb, ro, base, opts.Force, logF)
