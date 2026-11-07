@@ -42,15 +42,18 @@ lxd:
         memory: 8GiB
         disk: 20GiB
       profiles: [...]            # lxd passthrough
-      config:                    # lxd passthrough, e.g. for spread with nested lxd
-        security.nesting: true
+      config:                    # lxd passthrough, e.g. `security.nesting: true` for nested lxd in a container
+        limits.cpu.allowance: 50%
       egress: ...                # the 1.x egress schema, unchanged
 ```
 
 - `base` + `provision` (inline / `provision-cmd`, the same two-form rule as the task run fields) are the
   driver-neutral way to make an image. the script sees only itself and the host `bin/` on its `PATH`; anything bigger
-  it downloads. on docker it compiles to a generated dockerfile (`FROM <base>` + the script). `build:` (a real
-  dockerfile) stays as a docker / podman escape hatch. `image:` names a prebuilt image in the driver's own namespace.
+  it downloads. `bin/` crosses machines (a mac driving an x86_64 server), so under lxd it may hold scripts and linux
+  binaries for the server's arch only: pats checks each file's header before the push and refuses anything else
+  early, rather than letting it fail inside. on docker it compiles to a generated dockerfile (`FROM <base>` + the
+  script). `build:` (a real dockerfile) stays as a docker / podman escape hatch. `image:` names a prebuilt image in
+  the driver's own namespace.
 - no `base` means the pats sandbox image (ubuntu + the harness clis), and the sandbox's own `provision` runs on top:
   two cached images in a chain, the pats image's hash feeding the user's.
 - the published docker sandbox image keeps being published. its install steps move into
@@ -164,8 +167,10 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
   therefore triggers reprovisioning. container and vm images are separate image types, hence the instance type in the
   key.
 - a miss: launch the base as a builder, push the script and `bin/`, run it as root, stop, `lxc publish` under a
-  run-private alias `pats-img-<hash>-<token>`, delete the builder, then create the real alias. if another run made
-  it first (two laptops, one miss) its image is used and this one deleted: same key, same inputs. never
+  run-private alias `pats-img-<hash>-<token>`, delete the builder, then create the real alias. an alias carries no
+  config, so the image itself gets the run token and `user.pats.created` as properties. if another run made the real
+  alias first (two laptops, one miss) its image is used and this one deleted: same key, same inputs. cleanup removes
+  a stale run-private alias and then its image, unless the real alias points at that image. never
   `lxc publish --reuse`, which could swap an image out from under a running pair. output goes to
   `<run>/images/<hash>.log`, so the run dir is made before images are resolved (`internal/eval/run.go` builds first
   today); only a generous fixed time cap.
@@ -198,7 +203,12 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
     `agent.nic_config=true` (seen on the target server: without it the nic comes up as `enp5s0`), which pats sets on
     every vm it makes. the address is set with `ip` over exec after
     start, not netplan, so a custom base needs only iproute2; a restored vm keeps it in memory.
-  - the proxy's `uplink0`, on the nat'd bridge, is the only way out.
+  - the proxy's `uplink0` is the only way out. it joins `patsup`, a bridge pats makes in the `pats` project on first
+    use (projects with `features.networks` see no `lxdbr0`): lxd-managed addressing out of a range pats picks outside
+    `PATS_EGRESS_POOL`, dhcp and nat on, ipv6 off. it is shared by every slot of every run, so it carries no run
+    token and `pats clean` leaves it; `--force` takes it with the rest. the preflight checks the proxy reaches the
+    internet through it, and the docker coexistence rule covers it (`patsbr+` and `patsup`). `open` slots use it
+    too, with their acl.
   - a server that also runs docker drops bridged ipv4 between instances on any lxd bridge it was not told about
     (seen on the target server: a fresh bridge, addressed or not, carried v6 but no v4 between two containers, while
     `lxdbr0` worked; docker's `FORWARD` policy with `br_netfilter` is the usual cause). pats can't fix that from a
@@ -250,8 +260,10 @@ whether the agent had sudo.
   `dpkg --print-architecture`, `git config --system protocol.version 1`.
 - its host `prepare` scripts become `stage`; nothing else in the task directories changes.
 - one sandbox per driver in its `pats.yaml`; agents pick theirs.
-- a vm sandbox with `config: {security.nesting: true}` and `sudo: true` lets an agent run chisel-releases' spread
-  tests against nested lxd.
+- a container sandbox with `config: {security.nesting: true}` and `sudo: true` lets an agent run chisel-releases'
+  spread tests against nested lxd containers. `security.nesting` is container-only (a vm refuses the key, seen on the
+  target server). a vm runs nested lxd containers without any key, and nested vms only where the server's kvm allows
+  nesting, which the preflight checks when a task asks for it.
 
 ## phases
 
@@ -259,13 +271,13 @@ whether the agent had sudo.
    image building moved out of `internal/eval/build.go`; docker on sessions (idle container plus exec), otherwise
    behaviour-identical. the egress work has landed, so this is the only rewrite of `src/sandbox`. M-L.
 2. **lxd containers**: the project, `remote`, `base` / `provision` with the image cache (docker too), the shipped
-   sandbox script, the `pats` user and `sudo`, tar sync, slots, limits, `max-parallel`, none and open egress, cleanup
-   on cancel. L.
+   sandbox script, the `pats` user and `sudo`, tar sync, slots, limits, `max-parallel`, `egress: none`, cleanup on
+   cancel. a sandbox with `open` or proxy egress is refused under lxd until phase 4. L.
 3. **lxd vms**: `vm: true`, the stateful-snapshot pool with fixups and the fresh-boot fallback, `profiles` / `config`.
    first check stateful vm snapshots on the target server. M-L.
-4. **lxd egress**: the addressless bridge with its reject acl, named nics and static addressing, the proxy container
-   per slot, the `open` acl, the registry fetch of the proxy binary, `material` reuse, the canary and the hostile
-   probe, the docker coexistence check. L.
+4. **lxd egress**: `patsup`, `open` with its acl, the addressless bridge with its reject acl, named nics and static
+   addressing, the proxy container per slot, the registry fetch of the proxy binary, `material` reuse, the canary
+   and the hostile probe, the docker coexistence check. L.
 5. **cleanup and docs**: lease-based `pats clean` for the `pats` project; readme; mason migration notes; an lxd e2e
    job in ci (containers; vms if the runner exposes kvm). M.
 
