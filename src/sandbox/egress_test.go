@@ -285,7 +285,10 @@ func TestCreateNetworkMovesOnWhenTaken(t *testing.T) {
 		assert.Error(t, err, "the name sbx-egr-t is taken")
 		assert.Equal(t, len(fd.calls), 1)
 	}
-	assert.That(t, subnetTaken("Error: subnet 10.213.0.0/29 is already used on the host or by another config"), "podman's subnet clash")
+	for _, msg := range []string{"Error: subnet 10.213.0.0/29 is already used on the host or by another config",
+		"Error response from daemon: Pool overlaps with other one on this address space"} {
+		assert.That(t, subnetTaken(msg) && !nameTaken(msg), "a subnet clash read as a name clash: %s", msg)
+	}
 }
 
 func TestParsePool(t *testing.T) {
