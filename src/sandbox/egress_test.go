@@ -251,7 +251,8 @@ func TestStartEgressProxyFailureTearsDown(t *testing.T) {
 }
 
 // a subnet the daemon already has (another pats, a leftover) is skipped for
-// the next one; any other create failure is final.
+// the next one; any other create failure is final, and removes the network
+// in case the daemon made it after all.
 func TestCreateNetworkMovesOnWhenTaken(t *testing.T) {
 	fd := newFakeDocker(t)
 	fd.failOn, fd.failOut, fd.failN = "network create", "Error: Pool overlaps with other one on this address space", 2
@@ -271,7 +272,8 @@ func TestCreateNetworkMovesOnWhenTaken(t *testing.T) {
 	fd.failOn, fd.failOut = "network create", "Cannot connect to the Docker daemon"
 	_, err = fd.container().createNetwork(context.Background(), "sbx-egr-t", testPool)
 	assert.Error(t, err, "create network")
-	assert.Equal(t, len(fd.calls), 1)
+	assert.Equal(t, len(fd.calls), 2)
+	assert.Equal(t, strings.Join(fd.calls[1], " "), "network rm sbx-egr-t")
 }
 
 func TestParsePool(t *testing.T) {

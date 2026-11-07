@@ -456,6 +456,11 @@ func (c *container) createNetwork(ctx context.Context, name string, pool netip.P
 		}
 		last = out
 		if !subnetTaken(out) {
+			// a create the cli saw fail may still have made it; the name is
+			// this pair's alone.
+			rctx, cancel := context.WithTimeout(context.Background(), c.p.t.cliCleanup)
+			_, _ = c.docker(rctx, "network", "rm", name)
+			cancel()
 			return netip.Prefix{}, fmt.Errorf("egress: create network: %w (%s)", err, out)
 		}
 	}
