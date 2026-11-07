@@ -436,14 +436,14 @@ func (s *lxdSession) queryPath(p string) string {
 func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
 	c, t := s.l.p.clock, s.l.p.t
 	deadline := c.Now().Add(t.ready)
-	probe := probeReady
+	p := probeReady
 	if network {
-		probe = probeRoute
+		p = probeRoute
 	}
 	var last error
 	for c.Now().Before(deadline) {
 		var out bytes.Buffer
-		code, err := s.exec(ctx, Cmd{Argv: probe.argv(), Root: true, Dir: "/"}, &out, &out)
+		code, err := s.exec(ctx, Cmd{Argv: p.argv(), Root: true, Dir: "/"}, &out, &out)
 		if err == nil && code == 0 {
 			return nil
 		}
