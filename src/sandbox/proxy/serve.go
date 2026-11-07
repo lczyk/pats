@@ -21,15 +21,15 @@ import (
 // yaml tags are the config's; config.Egress embeds this type so there is one
 // field set.
 type Policy struct {
-	Default      string   `yaml:"default"`           // deny (the default) | allow
-	Methods      []string `yaml:"methods,omitempty"` // the methods posture; nil: every method, nothing extra inspected
-	AllowPrivate bool     `yaml:"allow-private"`     // let entries name private targets
-	Allow        []string `yaml:"allow"`
-	Deny         []string `yaml:"deny"`
-	DenyResponse string   `yaml:"deny-response"` // 403 (the default) | 404 | reset | timeout
+	Default      string   `yaml:"default" json:"default,omitempty"`             // deny (the default) | allow
+	Methods      []string `yaml:"methods,omitempty" json:"methods,omitempty"`   // the methods posture; nil: every method, nothing extra inspected
+	AllowPrivate bool     `yaml:"allow-private" json:"allow_private,omitempty"` // let entries name private targets
+	Allow        []string `yaml:"allow" json:"allow,omitempty"`
+	Deny         []string `yaml:"deny" json:"deny,omitempty"`
+	DenyResponse string   `yaml:"deny-response" json:"deny_response,omitempty"` // 403 (the default) | 404 | reset | timeout
 	// Harness lists the hosts pats merged in for the agent's harness. the
 	// methods posture never inspects them. pats sets it; pats.yaml cannot.
-	Harness []string `yaml:"harness,omitempty"`
+	Harness []string `yaml:"harness,omitempty" json:"harness,omitempty"`
 }
 
 // ParsePolicy reads a policy from yaml, refusing unknown keys: a typo in a
