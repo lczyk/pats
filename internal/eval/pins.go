@@ -305,15 +305,17 @@ func (f *pinFile) supersede(target string, old, next *pinEntry, now time.Time) {
 			kept[im.ID] = true
 		}
 	}
+	key := func(target, daemon, id string) string { return target + "\x00" + daemon + "\x00" + id }
 	listed := map[string]bool{}
 	for _, s := range f.Superseded {
-		listed[s.Target+"\x00"+s.ID] = true
+		listed[key(s.Target, s.Daemon, s.ID)] = true
 	}
 	for _, im := range old.images() {
-		if !im.owned() || im.ID == "" || kept[im.ID] || listed[target+"\x00"+im.ID] {
+		k := key(target, old.Daemon, im.ID)
+		if !im.owned() || im.ID == "" || kept[im.ID] || listed[k] {
 			continue
 		}
-		listed[target+"\x00"+im.ID] = true
+		listed[k] = true
 		f.Superseded = append(f.Superseded, superseded{Target: target, Daemon: old.Daemon, ID: im.ID, Name: im.Name,
 			Built: im.Built, Pulled: im.Pulled, Since: now.UTC()})
 	}

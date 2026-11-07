@@ -311,3 +311,14 @@ func TestRepinOnAnotherDaemon(t *testing.T) {
 	require.Equal(t, len(f.Superseded), 1)
 	assert.Equal(t, f.Superseded[0].Daemon, "A")
 }
+
+// the same image superseded on two daemons is two records.
+func TestSupersedePerDaemon(t *testing.T) {
+	now := time.Now()
+	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{},
+		Superseded: []superseded{{Target: "docker:a", Daemon: "A", ID: "x", Pulled: true}}}
+	f.setPin("docker:a", "s", &pinEntry{Daemon: "B", Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("docker:a", "s", &pinEntry{Daemon: "B", Image: pinImage{ID: "y", Pulled: true}}, now)
+	require.Equal(t, len(f.Superseded), 2)
+	assert.Equal(t, f.Superseded[1].Daemon, "B")
+}
