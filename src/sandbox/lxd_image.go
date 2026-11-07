@@ -197,8 +197,8 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	name := "pats-build-" + lxdRunToken + "-" + strings.TrimPrefix(alias, "pats-img-")[:8]
 	s := &lxdSession{l: l, name: name}
 	defer func() {
-		_, derr := l.lxc(context.Background(), "delete", s.inst(), "--project", lxdProject, "--force")
-		if derr == nil || strings.Contains(strings.ToLower(derr.Error()), "not found") {
+		derr := l.deleteInstance(name)
+		if derr == nil {
 			return
 		}
 		msg := fmt.Sprintf("builder %s was left behind (%v); pats clean removes it once this run has ended", name, derr)

@@ -291,7 +291,7 @@ func (s *lxdSession) closeEgress() {
 	if e.auditF != nil {
 		_ = e.auditF.Close()
 	}
-	_, _ = s.l.lxc(context.Background(), "delete", s.l.ref(e.proxy), "--project", lxdProject, "--force")
+	_ = s.l.deleteInstance(e.proxy)
 	if e.m != nil {
 		e.m.cleanup()
 	}

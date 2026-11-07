@@ -887,7 +887,7 @@ func (s *lxdSession) Close() error {
 		bg := context.Background()
 		s.closeEgress()
 		if s.created {
-			_, _ = s.l.lxc(bg, "delete", s.inst(), "--project", lxdProject, "--force")
+			_ = s.l.deleteInstance(s.name)
 		}
 		if s.bridge != "" {
 			_, _ = s.l.lxc(bg, "network", "delete", s.l.ref(s.bridge), "--project", "default")
@@ -895,6 +895,56 @@ func (s *lxdSession) Close() error {
 		}
 	})
 	return nil
+}
+
+// instanceGone bounds deleteInstance's wait for a server operation still
+// working on the instance.
+var instanceGone = 5 * time.Minute
+
+// deleteInstance removes an instance of the pats project for good. killing
+// lxc does not stop the server's half of an init, so an instance whose init
+// was cut short (a deadline, ctrl+c) can appear after a delete has already
+// said it is not there; while an operation on it still runs, the delete is
+// retried until the operation is over or instanceGone has passed.
+func (l *lxd) deleteInstance(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), instanceGone)
+	defer cancel()
+	for {
+		_, err := l.lxc(ctx, "delete", l.ref(name), "--project", lxdProject, "--force")
+		if !l.instanceBusy(ctx, name) {
+			if err != nil && strings.Contains(strings.ToLower(err.Error()), "not found") {
+				err = nil
+			}
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("instance %s: a server operation on it outlived %s; pats clean removes it once this run has ended", name, instanceGone)
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// instanceBusy says whether a running operation on the server names the
+// instance.
+func (l *lxd) instanceBusy(ctx context.Context, name string) bool {
+	var ops struct {
+		Running []struct {
+			Resources map[string][]string `json:"resources"`
+		} `json:"running"`
+	}
+	if l.query(ctx, "/1.0/operations?project="+lxdProject+"&recursion=1", &ops) != nil {
+		return false
+	}
+	want := "/1.0/instances/" + name
+	for _, op := range ops.Running {
+		for _, r := range op.Resources["instances"] {
+			if r == want || strings.HasPrefix(r, want+"?") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ServerCPUs is the lxd server's cpu count, 0 when it cannot be read: -j auto

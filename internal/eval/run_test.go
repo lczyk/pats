@@ -235,25 +235,27 @@ type fakeSandbox struct {
 	pushed   []string
 }
 
-// Run is only the credential preflight now (a pair starts a session), so it
-// always passes and the canned outcome lands on the pair's agent exec.
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
 	f.calls++
 	return 0, nil
 }
 
+// Start gives the credential preflight (its workdir says so) a session that
+// always passes, so the canned outcome lands on the pair's agent exec.
 func (f *fakeSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Session, error) {
-	if f.startErr != nil {
+	preflight := strings.HasPrefix(filepath.Base(spec.Workdir), "pats-preflight-")
+	if f.startErr != nil && !preflight {
 		return nil, f.startErr
 	}
-	return &fakeSession{f: f, spec: spec}, nil
+	return &fakeSession{f: f, spec: spec, preflight: preflight}, nil
 }
 
 // fakeSession runs root commands (prepare, its cleanup, the hand-over) as
 // recorded no-ops, and the agent with the fake's canned outcome.
 type fakeSession struct {
-	f    *fakeSandbox
-	spec sandbox.Spec
+	f         *fakeSandbox
+	spec      sandbox.Spec
+	preflight bool
 }
 
 func (s *fakeSession) Push(ctx context.Context, hostPath, path string) error {
@@ -279,6 +281,9 @@ func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr 
 		return 0, nil
 	}
 	f.calls++
+	if s.preflight {
+		return 0, nil
+	}
 	if f.onRun != nil {
 		spec := s.spec
 		spec.Argv, spec.Env = cmd.Argv, cmd.Env

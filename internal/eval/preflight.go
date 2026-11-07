@@ -15,7 +15,9 @@ import (
 // authenticate and reach its model -- the cheapest faithful credential check.
 const preflightPrompt = "Reply with the single word: OK. Do nothing else."
 
-// preflightTimeout bounds a single credential check.
+// preflightTimeout bounds a single credential check: the agent's reply. its
+// sandbox has setupTimeout to come up, as a pair's does -- on a cold lxd
+// server the first instance from a fresh image takes minutes.
 const preflightTimeout = 90 * time.Second
 
 // Preflight runs each distinct test-matrix agent once with a trivial prompt,
@@ -63,8 +65,18 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 
+	sctx, scancel := context.WithTimeout(ctx, setupTimeout)
+	sess, err := h.box.Start(sctx, h.spec)
+	if err == nil {
+		defer sess.Close()
+		err = sess.HandOver(sctx, sandbox.WorkMount, homeMount)
+	}
+	scancel()
+	if err != nil {
+		return fmt.Errorf("start: %w", err)
+	}
 	var buf bytes.Buffer
-	r := h.run(ctx, &buf, &buf, preflightTimeout)
+	r := h.exec(ctx, sess, &buf, &buf, preflightTimeout)
 	if r.err != nil {
 		return fmt.Errorf("%w\n%s", r.err, tail(buf.String(), 600))
 	}

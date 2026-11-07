@@ -76,17 +76,8 @@ type harnessRun struct {
 	dur      float64 // seconds
 }
 
-// run executes the harness in a sandbox of its own (start, agent, close),
-// bounded by timeout (0 = none) so a stuck agent gets killed rather than
-// hanging the caller. ctx cancel tears down the container (same path as
-// ctrl+C).
-func (h *harness) run(ctx context.Context, stdout, stderr io.Writer, timeout time.Duration) harnessRun {
-	return bounded(ctx, timeout, func(rctx context.Context) (int, error) {
-		return h.box.Run(rctx, h.spec, stdout, stderr)
-	})
-}
-
-// exec runs the agent in an already started session, bounded the same way.
+// exec runs the agent in an already started session, bounded by timeout (0 =
+// none) so a stuck agent is killed rather than hanging the caller.
 func (h *harness) exec(ctx context.Context, sess sandbox.Session, stdout, stderr io.Writer, timeout time.Duration) harnessRun {
 	return bounded(ctx, timeout, func(rctx context.Context) (int, error) {
 		return sess.Exec(rctx, sandbox.Cmd{Argv: h.spec.Argv, Env: h.spec.Env}, stdout, stderr)

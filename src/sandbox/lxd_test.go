@@ -480,3 +480,42 @@ func TestLogTail(t *testing.T) {
 	assert.That(t, !strings.Contains(got, "line 25\n"), "kept too much: %s", got)
 	assert.ContainsString(t, got, strings.Repeat("x", 240)+"...")
 }
+
+// a delete that lands while the server is still creating the instance says
+// "not found"; it is retried until the create is over, and then removes it.
+func TestLXDDeleteInstanceWaitsForCreate(t *testing.T) {
+	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv"})
+	busy := 2
+	inner := f.run
+	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "query srv:/1.0/operations"):
+			f.calls = append(f.calls, args)
+			if busy > 0 {
+				busy--
+				io.WriteString(stdout, `{"running":[{"resources":{"instances":["/1.0/instances/pats-x?project=pats"]}}]}`)
+			} else {
+				io.WriteString(stdout, `{"running":[]}`)
+			}
+			return nil
+		case strings.HasPrefix(joined, "delete srv:pats-x"):
+			f.calls = append(f.calls, args)
+			if busy > 0 {
+				io.WriteString(stderr, `Error: Failed to fetch instance "pats-x" in project "pats": Instance not found`)
+				return &fakeExit{}
+			}
+			return nil
+		}
+		return inner(ctx, stdin, stdout, stderr, args...)
+	}
+	require.NoError(t, l.deleteInstance("pats-x"))
+	deletes := 0
+	for _, c := range f.calls {
+		if c[0] == "delete" {
+			deletes++
+		}
+	}
+	assert.Equal(t, deletes, 3)
+	assert.Equal(t, busy, 0)
+}
