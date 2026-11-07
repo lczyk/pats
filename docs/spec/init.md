@@ -133,7 +133,8 @@ dockerfile's context).
   for people and for the cli.
 - **who writes it.** `pats init` only. writes take a lock on `.pats/images.lock`, re-read the file, change only
   their own entries, and replace it by rename. each init also drops entries for sandboxes no longer in the config,
-  so a removed sandbox stops protecting its images from `clean --images`.
+  so a removed sandbox's images become candidates for removal (below).
+- the file also holds the `superseded` list init retries (removing superseded images, below).
 - `proxy` only for a sandbox with an egress policy. a sandbox with `image:` is pinned too (its id at init), so
   `run` can tell missing from present, and the upstream check covers it.
 - `version` is the file's own format; a pats that does not know it says to rerun `pats init`.
@@ -207,27 +208,37 @@ entry and a ci job.
 `driver:` keeps naming the engine (`docker | podman | nerdctl | lxd | bwrap`); the family (container, lxd, bwrap)
 follows from it. a `driver: container` plus `engine:` would add a key without adding information.
 
-## removing images
+## removing superseded images
 
-`pats clean --images` removes images pats made that nothing pins and nothing used lately:
+`pats init` removes what it replaces. there is no sweep of a daemon or server and no `clean --images`: the only
+candidates are images this project's own pins pointed at until this init moved them (a new base, an edited provision,
+a pats upgrade) or dropped them (a sandbox gone from the config). plain `pats clean` stays as it is (runs' leftovers)
+and never touches images.
 
-- **container engines.** images pats builds carry the same owner label as its containers and networks
-  (`pats.owner=<host>/<uid>/<client id>`), and, like the rest of clean, `--images` leaves a foreign owner's images
-  alone without `--force`, and treats a pulled published image (`ghcr.io/lczyk/pats/*`, which carries no owner) as
-  foreign too: on a daemon several users share, one user's clean does not take another's. within the user's own
-  images, every project on the machine registers itself: `pats init` adds the project's path, one line, to
-  `~/.cache/pats/projects`. clean reads each listed project's own `.pats/images.json` (one writer, nothing duplicated
-  to drift), drops paths that no longer exist, and walks every target in every pin file, not only the current default
-  context or connection. it removes the user's images pats made (labelled `pats.*`), and with `--force` the pulled
-  published ones too, on that daemon that no pin names and that were created more than a day ago, so an image an
-  in-flight `pats init` built and has not pinned yet stays.
-- **lxd.** a server is shared across machines, so no registry can be complete. clean removes `pats-img-*` images
-  that this project does not pin, that are not run-private (`pats-img-<key>-<token>`, a build between publish and
-  claim), and that nothing used for 30 days: `last_used_at`, or `uploaded_at` for an image no instance was made
-  from, so one another project built yesterday is safe. a project dormant longer than that finds its images gone and
-  its next run tells it to `pats init`.
+a candidate goes only when no one else may still want it:
 
-plain `pats clean` stays as it is (runs' leftovers) and never touches images.
+- **container engines.** every project on the machine registers itself: `pats init` adds the project's path, one
+  line, to `~/.cache/pats/projects` (the pins stay in each project's `.pats/images.json`; the list only says where to
+  find them). a candidate is removed when no listed project's pins name it, on any target. the engine itself refuses
+  to remove an image a container (running or stopped) still uses, so a pair mid-run is safe.
+- **lxd.** a server is shared across machines, whose pins no list can reach. a candidate is removed when this project
+  no longer pins it, it is not run-private (`pats-img-<key>-<token>`), and nothing used it for 30 days:
+  `last_used_at`, or `uploaded_at` for an image no instance was made from. an image this project used until today
+  fails that test on the day it is replaced, so the pin file keeps a `superseded` list (target, id, since when) and
+  every later `pats init` tries those again; a candidate goes once 30 days pass without a use.
+
+init prints what it removed and what it kept and why (`kept pats-img-ab12...: used 3 days ago, may serve another
+machine`), so a missing image in another project can be traced to the init that took it.
+
+accepted failures, each costing a rebuild or a re-pull at someone's next run, which stops with "missing, run `pats
+init`":
+
+- docker: a project moved or renamed (its old path drops off the list) or its `.pats/` deleted has its pins unseen,
+  so another project's init may remove an image it shared.
+- docker, a daemon several users share: another user's projects are not on this user's list.
+- lxd: a colleague's project on another machine, dormant for over 30 days, finds its layers gone.
+- lxd, rare: an instance created from a candidate in the very second init deletes it fails to launch. it needs an
+  image unused for 30 days to be used at that moment.
 
 ## lxd specifics
 
@@ -259,12 +270,13 @@ plain `pats clean` stays as it is (runs' leftovers) and never touches images.
 
 ## tests
 
-pins, the run's checks and clean are local logic: pins written, read and merged by two processes, a missing pin
-stopping the run with the right command, each staleness source warning once, the proxy mismatch stopping the run,
-the upstream budget skipping a slow check, `--force` re-pointing an lxd alias, `clean --images` keeping the young,
-the pinned, the registered and the run-private. the lxd parts take the fake server and clock from
-`lxd-testing.md`; the container parts a fake engine cli. each e2e runs `pats init`, then `pats run` twice: the
-second run must build and pull nothing.
+pins, the run's checks and init's removal are local logic: pins written, read and merged by two processes, a missing
+pin stopping the run with the right command, each staleness source warning once, the proxy mismatch stopping the run,
+the upstream budget skipping a slow check, `--force` re-pointing an lxd alias, and init's removal taking only its own
+superseded images and keeping one another listed project pins, an lxd image used within 30 days (retried from
+`superseded` at a later init) and a run-private one. the lxd parts take the fake server and clock from
+`lxd-testing.md`; the container parts a fake engine cli. each e2e runs `pats init`, then `pats run` twice: the second
+run must build and pull nothing.
 
 ## migration
 
