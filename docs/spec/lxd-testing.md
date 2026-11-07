@@ -1,7 +1,8 @@
 # lxd driver: testing seams
 
-status: proposed. a plan for the seams that let the lxd path be tested without a server, written after a day of
-bugs that only a real server showed. `lxd.md` is the driver's design; this is how to test it.
+status: step 1 (seams 1, 2, 3 and 3a) implemented; the rest proposed. a plan for the seams that let the lxd path be
+tested without a server, written after a day of bugs that only a real server showed. `lxd.md` is the driver's design;
+this is how to test it. "what the tests have today" below describes the code before step 1.
 
 ## why
 
