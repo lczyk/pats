@@ -249,6 +249,15 @@ func TestComponentStamps(t *testing.T) {
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"claude": "`+pins["claude"]+`"`)
 
+	// a stamp that fails fails that sandbox's init and keeps its old pin.
+	h.stampErr = errNoImage
+	err = Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}})
+	assert.Error(t, err, "init failed for sandbox(es) own")
+	f, err = readPins(dir)
+	require.NoError(t, err)
+	assert.EqualMaps(t, f.entry("fake:host", "own").Components, map[string]string{"claude": pins["claude"]})
+	h.stampErr = nil
+
 	h.stamped = map[string]string{"claude": "0.0.1"}
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}}))
 	out.Reset()

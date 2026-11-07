@@ -23,7 +23,7 @@ type imageHost interface {
 	// present says whether the image ref is on the host.
 	present(ctx context.Context, ref string) bool
 	// stamps are the harness versions inside image id, those it has.
-	stamps(ctx context.Context, id string) map[string]string
+	stamps(ctx context.Context, id string) (map[string]string, error)
 }
 
 // puller is a container host init pulls into.
@@ -107,7 +107,7 @@ func (h containerHost) present(ctx context.Context, ref string) bool {
 	return err == nil
 }
 
-func (h containerHost) stamps(ctx context.Context, id string) map[string]string {
+func (h containerHost) stamps(ctx context.Context, id string) (map[string]string, error) {
 	return sandbox.ContainerStamps(ctx, h.driver, id)
 }
 
@@ -149,10 +149,6 @@ func (h lxdHost) present(ctx context.Context, ref string) bool {
 	return err == nil
 }
 
-func (h lxdHost) stamps(ctx context.Context, id string) map[string]string {
-	s, err := sandbox.LXDImageStamps(ctx, h.o, id)
-	if err != nil {
-		return map[string]string{}
-	}
-	return s
+func (h lxdHost) stamps(ctx context.Context, id string) (map[string]string, error) {
+	return sandbox.LXDImageStamps(ctx, h.o, id)
 }

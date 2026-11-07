@@ -153,7 +153,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 		err = fmt.Errorf("driver %q has no images to init", sb.Driver)
 	}
 	if err == nil {
-		e.Components = h.stamps(ctx, e.Image.ID)
+		e.Components, err = h.stamps(ctx, e.Image.ID)
 	}
 	return target, e, err
 }

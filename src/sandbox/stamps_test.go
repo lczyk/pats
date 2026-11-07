@@ -3,7 +3,9 @@ package sandbox
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -35,4 +37,38 @@ func TestLXDImageStampsOnServer(t *testing.T) {
 	stamps, err := l.imageStamps(context.Background(), fp)
 	require.NoError(t, err)
 	assert.EqualMaps(t, stamps, map[string]string{"claude": "2.1.319"})
+}
+
+// a stamp container that fails or hangs is removed by name; an image with no
+// shell has no stamps, any other failure is an error.
+func TestContainerStampsFailures(t *testing.T) {
+	type call = []string
+	run := func(t *testing.T, fail func(args []string) error) ([]call, map[string]string, error) {
+		var calls []call
+		r := runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+			calls = append(calls, args)
+			if args[0] == "run" {
+				return fail(args)
+			}
+			return nil
+		})
+		s, err := containerStamps(context.Background(), r, "img", time.Second)
+		return calls, s, err
+	}
+	t.Run("no shell", func(t *testing.T) {
+		calls, s, err := run(t, func([]string) error { return exitStatus(127) })
+		require.NoError(t, err)
+		assert.Len(t, s, 0)
+		assert.Equal(t, calls[1][0], "rm")
+	})
+	t.Run("a runtime failure", func(t *testing.T) {
+		calls, _, err := run(t, func([]string) error { return exitStatus(125) })
+		assert.Error(t, err, "stamping img")
+		assert.Equal(t, strings.Join(calls[1], " "), "rm -f "+calls[0][3])
+	})
+	t.Run("a hang", func(t *testing.T) {
+		calls, _, err := run(t, func([]string) error { time.Sleep(1500 * time.Millisecond); return exitStatus(127) })
+		assert.Error(t, err, "stamping img") // a timeout is never read as "no shell"
+		assert.Equal(t, strings.Join(calls[1], " "), "rm -f "+calls[0][3])
+	})
 }

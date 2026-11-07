@@ -21,6 +21,7 @@ type fakeHost struct {
 	refs               map[string]string // ref -> id
 	pulls              []string
 	stamped            map[string]string // the stamps every image carries
+	stampErr           error
 }
 
 func newFakeHost(refs ...string) *fakeHost {
@@ -47,12 +48,15 @@ func (h *fakeHost) present(_ context.Context, ref string) bool {
 	return false
 }
 
-func (h *fakeHost) stamps(context.Context, string) map[string]string {
+func (h *fakeHost) stamps(context.Context, string) (map[string]string, error) {
+	if h.stampErr != nil {
+		return nil, h.stampErr
+	}
 	out := map[string]string{}
 	for k, v := range h.stamped {
 		out[k] = v
 	}
-	return out
+	return out, nil
 }
 
 func (h *fakeHost) inspect(_ context.Context, ref string) (string, string, error) {
