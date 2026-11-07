@@ -57,7 +57,12 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	// every run after init builds and pulls nothing, here or in the driver.
+	calls := dockerSpy(t)
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	assertNoBuildOrPull(t, calls)
 	require.NoError(t, err)
 
 	outDir := filepath.Join(runDir, "a", "t")
@@ -886,7 +891,12 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	// every run after init builds and pulls nothing, here or in the driver.
+	calls := dockerSpy(t)
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	assertNoBuildOrPull(t, calls)
 	require.NoError(t, err)
 	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "got.txt"))
 	require.NoError(t, err, "%s", out.String())
@@ -896,4 +906,31 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	require.NoError(t, err)
 	assert.ContainsString(t, string(log), "load build definition from Dockerfile")
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", cfg.Sandboxes[0].Image).Run() })
+}
+
+// dockerSpy puts a docker on PATH that logs each call's arguments and runs
+// the real one; it returns the log's path.
+func dockerSpy(t *testing.T) string {
+	t.Helper()
+	real, err := exec.LookPath("docker")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\necho \"$*\" >> " + log + "\nexec " + real + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// assertNoBuildOrPull fails on any build or pull among the logged calls.
+func assertNoBuildOrPull(t *testing.T, log string) {
+	t.Helper()
+	b, _ := os.ReadFile(log)
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) > 0 && (f[0] == "build" || f[0] == "pull" || f[0] == "buildx" || (f[0] == "image" && len(f) > 1 && f[1] == "pull")) {
+			t.Errorf("a run after init called docker %s", line)
+		}
+	}
+	assert.That(t, len(b) > 0, "the spy saw no docker call: it is not on the path the run takes")
 }
