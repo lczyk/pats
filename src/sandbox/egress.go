@@ -23,6 +23,14 @@ import (
 // crashed run is easy to spot and sweep up.
 const namePrefix = "sbx-"
 
+// OwnerLabel is the label pats puts on every container and network it makes:
+// the host and uid that made it, so `pats clean` only judges its own. another
+// user's workdir owner files live in their cache, or on another machine.
+func OwnerLabel() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("pats.owner=%s/%d", host, os.Getuid())
+}
+
 // agentName names the agent container after its workdir, as the sidecar is,
 // so `pats clean` can find one that outlived a killed pats (a dead client
 // leaves it running). only a workdir MkTemp made is unique by its base name,
@@ -271,6 +279,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// the first), so the agent needs no resolver to find it.
 	proxyIP := subnet.Addr().Next().Next()
 	runArgs := []string{"run", "-d", "--rm", "--name", proxyName, "--network", net, "--ip", proxyIP.String(),
+		"--label", OwnerLabel(),
 		// the sidecar also sits on the default network, where a container
 		// could hand-craft frames at it to be routed out: it forwards nothing
 		// and needs no capability to listen on an unprivileged port.
@@ -359,7 +368,7 @@ func (c *container) createNetwork(ctx context.Context, name string) (netip.Prefi
 	var last string
 	for range subnetTries {
 		subnet := nextSubnet()
-		args := []string{"network", "create", "--internal"}
+		args := []string{"network", "create", "--internal", "--label", OwnerLabel()}
 		if c.driver == "docker" {
 			// docker gives the host an address on the bridge, which the agent
 			// could reach any host service through: --internal cuts only routes.

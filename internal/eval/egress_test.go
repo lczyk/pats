@@ -216,7 +216,8 @@ func TestCleanTempDirs(t *testing.T) {
 
 // an agent, sidecar and network belong to a live pair only while the pats
 // process that made the pair's workdir runs; a crashed run's go in the same
-// pass, the agent before the network it holds.
+// pass, the agent before the network it holds. what another owner made is
+// left unless forced: its workdir is not ours to look at.
 func TestCleanContainersByOwner(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
@@ -227,15 +228,17 @@ func TestCleanContainersByOwner(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(dead+".owner", []byte("999999999"), 0o600))
 
-	// a fake driver lists one agent, sidecar and network per workdir and logs
-	// rm calls.
+	// a fake driver lists, per prefix, our live and dead pair's names, plus a
+	// foreign one when not filtered by owner label; it logs every call.
 	bin := t.TempDir()
 	calls := filepath.Join(bin, "calls")
 	script := `#!/bin/sh
 echo "$@" >> ` + calls + `
 case "$1 $2" in
-  "ps -a") p=${4#name=^}; printf '%s%s\n%s%s\n' $p ` + filepath.Base(live) + ` $p ` + filepath.Base(dead) + ` ;;
-  "network ls") printf 'sbx-egr-%s\nsbx-egr-%s\n' ` + filepath.Base(live) + ` ` + filepath.Base(dead) + ` ;;
+  "ps -a"|"network ls")
+    p=${4#name=^}
+    printf '%s%s\n%s%s\n' $p ` + filepath.Base(live) + ` $p ` + filepath.Base(dead) + `
+    case "$*" in *label=pats.owner=*) ;; *) printf '%sforeign\n' $p ;; esac ;;
 esac
 `
 	drv := filepath.Join(bin, "fakedriver")
@@ -246,12 +249,25 @@ esac
 	b, err := os.ReadFile(calls)
 	require.NoError(t, err)
 	log := string(b)
+	assert.ContainsString(t, log, "label="+sandbox.OwnerLabel())
 	assert.ContainsString(t, log, "rm -f sbx-proxy-"+filepath.Base(dead))
 	assert.ContainsString(t, log, "network rm sbx-egr-"+filepath.Base(dead))
 	agentRm := strings.Index(log, "rm -f sbx-agent-"+filepath.Base(dead))
 	require.That(t, agentRm >= 0, "dead agent not removed:\n%s", log)
 	assert.That(t, agentRm < strings.Index(log, "network rm sbx-egr-"+filepath.Base(dead)))
-	assert.Equal(t, strings.Contains(log, "rm -f sbx-agent-"+filepath.Base(live)), false)
-	assert.Equal(t, strings.Contains(log, filepath.Base(live)+"\n") && strings.Contains(log, "rm -f sbx-proxy-"+filepath.Base(live)), false)
-	assert.Equal(t, strings.Contains(log, "network rm sbx-egr-"+filepath.Base(live)), false)
+	for _, n := range []string{"sbx-agent-", "sbx-proxy-", "sbx-egr-"} {
+		assert.Equal(t, strings.Contains(log, " "+n+filepath.Base(live)+"\n"), false, "live %s removed", n)
+		assert.Equal(t, strings.Contains(log, n+"foreign"), false, "foreign %s removed unforced", n)
+	}
+	assert.ContainsString(t, out.String(), "left 3 not made by")
+
+	require.NoError(t, os.Remove(calls))
+	out.Reset()
+	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{drv}, OlderThan: 24 * time.Hour, Force: true, Out: &out}))
+	b, err = os.ReadFile(calls)
+	require.NoError(t, err)
+	log = string(b)
+	assert.ContainsString(t, log, "rm -f sbx-proxy-foreign")
+	assert.ContainsString(t, log, "network rm sbx-egr-foreign")
+	assert.Equal(t, strings.Contains(log, " sbx-proxy-"+filepath.Base(live)+"\n"), false, "forced clean removed a live pair")
 }

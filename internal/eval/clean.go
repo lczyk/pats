@@ -19,22 +19,25 @@ type CleanOptions struct {
 	Drivers   []string      // container clis to sweep; nil: docker and podman, whichever are installed
 	OlderThan time.Duration // leftover temp dirs younger than this are kept
 	DryRun    bool
-	Out       io.Writer
+	// Force also removes containers and networks this user and host do not
+	// own: another user's on a shared daemon, or ones made before pats
+	// labelled its own.
+	Force bool
+	Out   io.Writer
 }
 
 // Clean removes what crashed runs left behind. every agent, sidecar and
 // network pats makes is named after its pair's workdir (sbx-agent-<dir>,
-// sbx-proxy-<dir>, sbx-egr-<dir>),
-// and that workdir's owner file names the pats process running the pair, so
-// one whose process is gone (or whose workdir is) is a leftover. a temp dir
-// is kept while its owner runs, and otherwise goes once older than OlderThan.
+// sbx-proxy-<dir>, sbx-egr-<dir>) and labelled with its owner (host and uid).
+// one of this owner's is a leftover once the pats process named in its
+// workdir's owner file is gone; another owner's cannot be judged from here
+// (its workdir is in someone else's cache, or on another machine) and is left
+// unless Force. a temp dir is kept while its owner runs, and otherwise goes
+// once older than OlderThan.
 func Clean(ctx context.Context, o CleanOptions) error {
 	tmp, err := sandbox.TempRoot()
 	if err != nil {
 		return err
-	}
-	live := func(name, prefix string) bool {
-		return sandbox.TempOwnerAlive(filepath.Join(tmp, strings.TrimPrefix(name, prefix)))
 	}
 	drivers := o.Drivers
 	if drivers == nil {
@@ -49,48 +52,67 @@ func Clean(ctx context.Context, o CleanOptions) error {
 	if o.DryRun {
 		act = "would remove"
 	}
+	owner := "label=" + sandbox.OwnerLabel()
 	for _, d := range drivers {
-		// agents first: one still attached keeps its network from going.
-		skipped := false
-		for _, prefix := range []string{"sbx-agent-", "sbx-proxy-"} {
-			out, err := exec.CommandContext(ctx, d, "ps", "-a", "--filter", "name=^"+prefix, "--format", "{{.Names}}").Output()
-			if err != nil {
-				fmt.Fprintf(o.Out, "%s: skipped (%v)\n", d, err)
-				skipped = true
-				break
+		// list returns every name with the prefix and the set this owner made.
+		list := func(kind, prefix string) (all []string, mine map[string]bool, err error) {
+			args := []string{"ps", "-a", "--filter", "name=^" + prefix, "--format", "{{.Names}}"}
+			if kind == "network" {
+				args = []string{"network", "ls", "--filter", "name=^" + prefix, "--format", "{{.Name}}"}
 			}
-			for _, name := range strings.Fields(string(out)) {
-				if live(name, prefix) {
+			out, err := exec.CommandContext(ctx, d, args...).Output()
+			if err != nil {
+				return nil, nil, err
+			}
+			own, err := exec.CommandContext(ctx, d, append(args[:len(args)-2:len(args)-2], "--filter", owner, "--format", args[len(args)-1])...).Output()
+			if err != nil {
+				return nil, nil, err
+			}
+			mine = map[string]bool{}
+			for _, n := range strings.Fields(string(own)) {
+				mine[n] = true
+			}
+			return strings.Fields(string(out)), mine, nil
+		}
+		foreign := 0
+		sweep := func(kind, prefix string, rm ...string) error {
+			all, mine, err := list(kind, prefix)
+			if err != nil {
+				return err
+			}
+			for _, name := range all {
+				if !mine[name] && !o.Force {
+					foreign++
+					continue
+				}
+				if mine[name] && sandbox.TempOwnerAlive(filepath.Join(tmp, strings.TrimPrefix(name, prefix))) {
 					continue
 				}
 				if !o.DryRun {
-					if out, err := exec.CommandContext(ctx, d, "rm", "-f", name).CombinedOutput(); err != nil {
-						errs = append(errs, fmt.Errorf("%s rm %s: %w (%s)", d, name, err, strings.TrimSpace(string(out))))
+					if out, err := exec.CommandContext(ctx, d, append(rm, name)...).CombinedOutput(); err != nil {
+						errs = append(errs, fmt.Errorf("%s %s %s: %w (%s)", d, strings.Join(rm, " "), name, err, strings.TrimSpace(string(out))))
 						continue
 					}
 				}
-				fmt.Fprintf(o.Out, "%s %s container %s\n", act, d, name)
+				fmt.Fprintf(o.Out, "%s %s %s %s\n", act, d, kind, name)
 			}
+			return nil
 		}
-		if skipped {
+		// agents first: one still attached keeps its network from going.
+		if err := sweep("container", "sbx-agent-", "rm", "-f"); err != nil {
+			fmt.Fprintf(o.Out, "%s: skipped (%v)\n", d, err)
 			continue
 		}
-		out, err := exec.CommandContext(ctx, d, "network", "ls", "--filter", "name=^sbx-egr-", "--format", "{{.Name}}").Output()
-		if err != nil {
+		if err := sweep("container", "sbx-proxy-", "rm", "-f"); err != nil {
+			errs = append(errs, fmt.Errorf("%s ps: %w", d, err))
+			continue
+		}
+		if err := sweep("network", "sbx-egr-", "network", "rm"); err != nil {
 			errs = append(errs, fmt.Errorf("%s network ls: %w", d, err))
 			continue
 		}
-		for _, name := range strings.Fields(string(out)) {
-			if live(name, "sbx-egr-") {
-				continue
-			}
-			if !o.DryRun {
-				if out, err := exec.CommandContext(ctx, d, "network", "rm", name).CombinedOutput(); err != nil {
-					errs = append(errs, fmt.Errorf("%s network rm %s: %w (%s)", d, name, err, strings.TrimSpace(string(out))))
-					continue
-				}
-			}
-			fmt.Fprintf(o.Out, "%s %s network %s\n", act, d, name)
+		if foreign > 0 {
+			fmt.Fprintf(o.Out, "%s: left %d not made by %s (another user, another machine, or an older pats); --force removes them\n", d, foreign, sandbox.OwnerLabel())
 		}
 	}
 
