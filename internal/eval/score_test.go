@@ -2,6 +2,7 @@ package eval
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,9 +194,12 @@ suites:
   items:
     all: {agents: ag, tasks: tasks, scorers: x}
     only-t2: {agents: ag, tasks: t2, scorers: y}
+    run-only: {agents: ag, tasks: t1}
 `)
+	// which cells a selection computes: no earlier scores.json to merge into.
 	cells := func(o ScoreOptions) []string {
 		t.Helper()
+		_ = os.Remove(filepath.Join(run, "scores.json"))
 		o.ConfigDir, o.RunDir, o.Out = dir, run, &bytes.Buffer{}
 		rep, err := Score(cfg, o)
 		require.NoError(t, err)
@@ -217,12 +221,99 @@ suites:
 	// each filter alone matches, together they leave nothing.
 	_, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{},
 		Tasks: []string{"t1"}, Scorers: []string{"y"}})
-	assert.Error(t, err, "no cells match the filters")
+	assert.Error(t, err, "nothing to score")
+
+	// filters that match the config but not this run's outputs, and a suite
+	// with no scorers, must not rewrite scores.json empty.
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Suites: []string{"run-only"}})
+	assert.Error(t, err, "nothing to score")
+	require.NoError(t, os.RemoveAll(filepath.Join(run, "b")))
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Agents: []string{"b"}})
+	assert.Error(t, err, "nothing to score")
+
+	// -r all skips a run that lacks the selection instead of failing on it, and
+	// fails only when no run has it.
+	run2 := filepath.Join(dir, ".pats", "runs", "20260622-1")
+	require.NoError(t, os.MkdirAll(filepath.Join(run2, "b", "t1"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(run2, "b", "t1", "stdout.log"), []byte("x"), 0o644))
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: "all", Out: &out, Agents: []string{"b"}})
+	require.NoError(t, err)
+	assert.Equal(t, rep.RunDir, run2)
+	assert.ContainsString(t, out.String(), "20260621-1: nothing to score")
+	require.NoError(t, os.RemoveAll(filepath.Join(run2, "b")))
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: "all", Out: &bytes.Buffer{}, Agents: []string{"b"}})
+	assert.Error(t, err, "nothing to score in any run")
 
 	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Scorers: []string{"nope"}})
 	assert.Error(t, err, `--scorer "nope"`)
 	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Agents: []string{"nope"}})
 	assert.Error(t, err, `--agent "nope"`)
+}
+
+// a narrowed score folds its cells into scores.json: what it recomputed is
+// replaced, the rest is kept, and a failed narrowed score leaves the file be.
+func TestScoreNarrowedMerges(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755))
+	}
+	write("x.sh", "echo 1.0")
+	write("y.sh", "echo 0.0")
+	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
+	for _, p := range []string{"a/t1", "b/t1"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(run, p), 0o755))
+	}
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: img}}}
+ag: {kind: agent, defaults: {harness: opencode-openrouter, model: m, sandbox: s}, items: {a: ~, b: ~}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1: ~}}
+scorers: {kind: scorer, items: {x: {score-cmd: ./x.sh}, y: {score-cmd: ./y.sh}}}
+suites: {kind: suite, items: {all: {agents: ag, tasks: tasks, scorers: scorers}}}
+`)
+	score := func(o ScoreOptions) (*ScoreReport, error) {
+		o.ConfigDir, o.RunDir, o.Out = dir, run, &bytes.Buffer{}
+		return Score(cfg, o)
+	}
+	cellMap := func(r *ScoreReport) map[string]float64 {
+		m := map[string]float64{}
+		for _, c := range r.Cells {
+			m[c.Agent+"/"+c.Task+"/"+c.Scorer] = c.Score
+		}
+		return m
+	}
+
+	rep, err := score(ScoreOptions{})
+	require.NoError(t, err)
+	assert.Len(t, rep.Cells, 4)
+
+	// y fixed: rescoring only y keeps x's cells and the means cover all four.
+	write("y.sh", "echo 1.0")
+	rep, err = score(ScoreOptions{Scorers: []string{"y"}})
+	require.NoError(t, err)
+	assert.EqualMaps(t, cellMap(rep), map[string]float64{"a/t1/x": 1, "a/t1/y": 1, "b/t1/x": 1, "b/t1/y": 1})
+	assert.Equal(t, rep.Overall, 1.0)
+
+	// a recomputed cell that now fails is dropped, not kept stale.
+	write("x.sh", "exit 1")
+	rep, err = score(ScoreOptions{Agents: []string{"a"}, Scorers: []string{"x"}})
+	require.NoError(t, err)
+	assert.EqualMaps(t, cellMap(rep), map[string]float64{"a/t1/y": 1, "b/t1/x": 1, "b/t1/y": 1})
+
+	// the file on disk is the merged report.
+	data, err := os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	var onDisk ScoreReport
+	require.NoError(t, json.Unmarshal(data, &onDisk))
+	assert.Len(t, onDisk.Cells, 3)
+
+	// a narrowed score that reaches nothing leaves scores.json as it was.
+	require.NoError(t, os.RemoveAll(filepath.Join(run, "b")))
+	_, err = score(ScoreOptions{Agents: []string{"b"}})
+	assert.Error(t, err, "nothing to score")
+	after, err := os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(after), string(data))
 }
 
 func TestParseScore(t *testing.T) {

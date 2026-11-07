@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -96,9 +97,6 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if scorePairs, err = cfg.FilterScorePairs(scorePairs, opts.Scorers); err != nil {
 		return nil, err
 	}
-	if (pairFilter || len(opts.Scorers) > 0) && !anyCell(testPairs, scorePairs) {
-		return nil, fmt.Errorf("no cells match the filters: the selected pairs' tasks have none of the selected scorers")
-	}
 	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.ID })
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
 	agents := map[string]agentInfo{}
@@ -119,6 +117,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		sc          config.Scorer
 	}
 	var jobs []scoreJob
+	gated := 0
 	for _, tp := range testPairs {
 		outDir := filepath.Join(runDir, tp.Agent, tp.Task)
 		if _, err := os.Stat(outDir); err != nil {
@@ -127,10 +126,20 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		for _, sp := range byTask[tp.Task] {
 			sc := scorers[sp.Scorer]
 			if sc.IsAgent() && !opts.Agentic {
+				gated++
 				continue // agentic scorers gated behind --agentic
 			}
 			jobs = append(jobs, scoreJob{tp.Agent, tp.Task, outDir, filepath.Join(opts.ConfigDir, tasks[tp.Task].Dir), sc})
 		}
+	}
+	// a narrowed score that reaches nothing must not rewrite scores.json empty.
+	narrowed := len(opts.Suites) > 0 || pairFilter || len(opts.Scorers) > 0
+	if len(jobs) == 0 && narrowed {
+		hint := ""
+		if gated > 0 {
+			hint = fmt.Sprintf(" (%d agent scorer cell(s) need --agentic)", gated)
+		}
+		return nil, fmt.Errorf("%w: no pair with output in this run has a selected scorer%s", errNothingToScore, hint)
 	}
 
 	njobs := resolveJobs(opts.Jobs, runtime.NumCPU)
@@ -206,7 +215,18 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	}
 	wg.Wait()
 
-	rep := aggregate(runDir, cells, testPairs)
+	var rep *ScoreReport
+	if narrowed {
+		scope := map[ScoreCell]bool{}
+		for _, j := range jobs {
+			scope[ScoreCell{Agent: j.agent, Task: j.task, Scorer: j.sc.ID}] = true
+		}
+		if rep, err = mergeScores(cfg, runDir, cells, scope, lg); err != nil {
+			return nil, err
+		}
+	} else {
+		rep = aggregate(runDir, cells, testPairs)
+	}
 	if !opts.noReport {
 		report(opts.Out, rep, opts.Color)
 		statsReport(opts.Out, runDir)
@@ -241,6 +261,9 @@ func Report(configDir, runArg string, out io.Writer) error {
 // errScorerNA is the silent-skip signal: a scorer printed "na", meaning it
 // doesn't apply to this cell. dropped from aggregation, not logged as an error.
 var errScorerNA = errors.New("scorer reported n/a")
+
+// errNothingToScore: a narrowed selection reaches no cell in a run.
+var errNothingToScore = errors.New("nothing to score")
 
 // agentInfo carries the per-agent fields a scorer's env needs, keyed by agent
 // id in Score's agents map -- one small struct beats a second parallel map
@@ -553,13 +576,25 @@ func scoreAll(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		return nil, fmt.Errorf("no runs found under %s", base)
 	}
 	var rep *ScoreReport
+	skipped := 0
 	for _, name := range names {
 		o := opts
 		o.RunDir = filepath.Join(base, name)
 		o.noReport = true
-		if rep, err = Score(cfg, o); err != nil {
+		r, err := Score(cfg, o)
+		switch {
+		case errors.Is(err, errNothingToScore):
+			// an older run may predate the agents, tasks or scorers selected.
+			logw{opts.Out, useColor(opts.Out)}.info("run %s: %v, skipped", name, err)
+			skipped++
+		case err != nil:
 			return nil, fmt.Errorf("run %s: %w", name, err)
+		default:
+			rep = r
 		}
+	}
+	if skipped == len(names) {
+		return nil, fmt.Errorf("%w in any run", errNothingToScore)
 	}
 	return rep, nil
 }
@@ -678,16 +713,49 @@ func splitRunName(name string) (date string, n int, ok bool) {
 	return date, n, true
 }
 
-// anyCell reports whether some test pair's task has a score pair.
-func anyCell(tps []config.TestPair, sps []config.ScorePair) bool {
-	scored := map[string]bool{}
-	for _, sp := range sps {
-		scored[sp.Task] = true
+// mergeScores folds a narrowed score's cells into the run's existing
+// scores.json: cells in scope (the cells this score set out to compute) are
+// replaced by what it computed, cells outside it are kept unless the config
+// no longer has their (agent, task, scorer), and the report is aggregated
+// over every suite's pairs.
+func mergeScores(cfg *config.Config, runDir string, cells []ScoreCell, scope map[ScoreCell]bool, lg logw) (*ScoreReport, error) {
+	allPairs, err := cfg.ExpandTestPairs()
+	if err != nil {
+		return nil, err
 	}
-	for _, tp := range tps {
-		if scored[tp.Task] {
-			return true
+	allScore, err := cfg.ExpandScorePairs()
+	if err != nil {
+		return nil, err
+	}
+	scorersOf := map[string][]string{}
+	for _, sp := range allScore {
+		scorersOf[sp.Task] = append(scorersOf[sp.Task], sp.Scorer)
+	}
+	valid := map[ScoreCell]bool{}
+	for _, tp := range allPairs {
+		for _, sc := range scorersOf[tp.Task] {
+			valid[ScoreCell{Agent: tp.Agent, Task: tp.Task, Scorer: sc}] = true
 		}
 	}
-	return false
+
+	merged := append([]ScoreCell(nil), cells...)
+	data, err := os.ReadFile(filepath.Join(runDir, "scores.json"))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return nil, err
+	default:
+		var prev ScoreReport
+		if err := json.Unmarshal(data, &prev); err != nil {
+			lg.warn("scores.json: %v -- replacing it with this score's cells only", err)
+			break
+		}
+		for _, c := range prev.Cells {
+			key := ScoreCell{Agent: c.Agent, Task: c.Task, Scorer: c.Scorer}
+			if !scope[key] && valid[key] {
+				merged = append(merged, c)
+			}
+		}
+	}
+	return aggregate(runDir, merged, allPairs), nil
 }
