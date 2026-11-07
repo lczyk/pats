@@ -455,6 +455,9 @@ func (c *container) createNetwork(ctx context.Context, name string, pool netip.P
 			return subnet, nil
 		}
 		last = out
+		if nameTaken(out) {
+			return netip.Prefix{}, fmt.Errorf("egress: create network: the name %s is taken (%s); `pats clean` removes a dead run's", name, out)
+		}
 		if !subnetTaken(out) {
 			// a create the cli saw fail may still have made it; the name is
 			// this pair's alone.
@@ -467,7 +470,16 @@ func (c *container) createNetwork(ctx context.Context, name string, pool netip.P
 	return netip.Prefix{}, fmt.Errorf("egress: no free subnet in %s after %d tries (%s); `pats clean` or set %s", pool, subnetTries, last, EgressPoolEnv)
 }
 
-// subnetTaken recognises the daemon saying the range is in use.
+// nameTaken recognises the daemon saying a network of that name exists:
+// docker's "network with name x already exists", podman's "network name x
+// already used".
+func nameTaken(out string) bool {
+	l := strings.ToLower(out)
+	return strings.Contains(l, "name") && (strings.Contains(l, "already exists") || strings.Contains(l, "already used"))
+}
+
+// subnetTaken recognises the daemon saying the range is in use: docker's
+// "pool overlaps", podman's "subnet x is already used".
 func subnetTaken(out string) bool {
 	l := strings.ToLower(out)
 	return strings.Contains(l, "overlap") || strings.Contains(l, "already") || strings.Contains(l, "in use")
