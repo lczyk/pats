@@ -39,11 +39,12 @@ type Options struct {
 type CleanCommand struct {
 	DryRun    bool          `long:"dry-run" short:"n" description:"print what would go, remove nothing"`
 	OlderThan time.Duration `long:"older-than" default:"24h" description:"keep temp dirs younger than this (a live run may own them)"`
-	Force     bool          `long:"force" description:"also remove containers and networks another user or host made"`
+	Force     bool          `long:"force" description:"also remove containers and networks another user or host made, and lxd runs whose lease is live"`
+	LXDRemote []string      `long:"lxd-remote" description:"lxd remote to sweep (repeatable); default: the lxc cli's default remote, when lxc is installed"`
 }
 
 func (c *CleanCommand) Execute(args []string) error {
-	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, Force: c.Force, Out: os.Stdout})
+	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, Force: c.Force, LXDRemotes: c.LXDRemote, Out: os.Stdout})
 }
 
 // RunCommand runs the suites.

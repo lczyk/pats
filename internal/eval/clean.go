@@ -23,7 +23,10 @@ type CleanOptions struct {
 	// own: another user's on a shared daemon, or ones made before pats
 	// labelled its own.
 	Force bool
-	Out   io.Writer
+	// LXDRemotes are the lxd servers to sweep; nil: the lxc cli's default
+	// remote, when lxc is installed and Drivers is nil.
+	LXDRemotes []string
+	Out        io.Writer
 }
 
 // Clean removes what crashed runs left behind. every agent, sidecar and
@@ -113,6 +116,18 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		}
 		if foreign > 0 {
 			fmt.Fprintf(o.Out, "%s: left %d not made by %s (another user, another machine, or an older pats); --force removes them\n", d, foreign, sandbox.OwnerLabel())
+		}
+	}
+
+	remotes := o.LXDRemotes
+	if remotes == nil && o.Drivers == nil {
+		if _, err := exec.LookPath("lxc"); err == nil {
+			remotes = []string{""}
+		}
+	}
+	for _, r := range remotes {
+		if err := sandbox.CleanLXD(ctx, r, o.Force, o.DryRun, o.Out); err != nil {
+			errs = append(errs, err)
 		}
 	}
 

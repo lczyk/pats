@@ -81,6 +81,8 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// an lxd run's marker goes when the run ends; its lease stops.
+	defer sandbox.ShutdownLXD()
 
 	// resolve images first -- everything after (preflight included) runs on
 	// them: the default pats sandbox for sandboxes naming neither image nor

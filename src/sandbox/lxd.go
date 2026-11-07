@@ -67,10 +67,9 @@ type lxd struct {
 	// run executes the cli; swappable in tests (nil -> real exec).
 	run func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error
 
-	setup     sync.Once
-	setupErr  error
-	pool      string // the storage pool the default project's default profile uses
-	agentOnce sync.Map
+	setup    sync.Once
+	setupErr error
+	pool     string // the storage pool the default project's default profile uses
 }
 
 func newLXD(o Options) *lxd { return &lxd{o: o, bin: "lxc"} }
@@ -110,39 +109,125 @@ func (l *lxd) ref(name string) string {
 	return l.o.Remote + ":" + name
 }
 
-// prepareServer makes the pats project on first use and finds the storage
-// pool new instances get their root disk from.
+// lxdServer is what a process learns and makes once per lxd server: the
+// pinned remote, the pool, and the run's marker.
+type lxdServer struct {
+	once   sync.Once
+	err    error
+	remote string
+	pool   string
+	stop   chan struct{} // ends the marker's lease renewal
+	l      *lxd
+}
+
+var (
+	lxdServersMu sync.Mutex
+	lxdServers   = map[string]*lxdServer{}
+)
+
+// leaseEvery is how often a live run renews its marker's lease; leaseStale
+// is how old a lease must be before `pats clean` takes the run as gone.
+const (
+	leaseEvery = 2 * time.Minute
+	leaseStale = 10 * time.Minute
+)
+
+// markerName is the run's marker acl: the first thing a run makes on a
+// server, holding its lease.
+func markerName() string { return "pats-run-" + lxdRunToken }
+
+// prepareServer readies the server once per process (per driver under
+// tests, whose fake cli is per driver): see setupServer.
 func (l *lxd) prepareServer(ctx context.Context) error {
-	l.setup.Do(func() {
-		// pin the remote: everything after names it, so a publish lands on
-		// the same server as the instance whatever the cli's default is.
-		if l.o.Remote == "" {
-			r, err := l.lxc(ctx, "remote", "get-default")
-			if err != nil {
-				l.setupErr = err
-				return
-			}
-			l.o.Remote = r
+	if l.run != nil {
+		l.setup.Do(func() {
+			l.o.Remote, l.pool, l.setupErr = l.setupServer(ctx, false)
+		})
+		return l.setupErr
+	}
+	lxdServersMu.Lock()
+	srv := lxdServers[l.o.Remote]
+	if srv == nil {
+		srv = &lxdServer{l: l}
+		lxdServers[l.o.Remote] = srv
+	}
+	lxdServersMu.Unlock()
+	srv.once.Do(func() {
+		srv.remote, srv.pool, srv.err = l.setupServer(ctx, true)
+		if srv.err == nil {
+			srv.stop = make(chan struct{})
+			go srv.renew()
 		}
-		remote := l.o.Remote + ":"
-		if _, err := l.lxc(ctx, "project", "show", remote+lxdProject); err != nil {
-			// networks stay in the default project: a bridge in another one
-			// needs ovn.
-			if _, err := l.lxc(ctx, "project", "create", remote+lxdProject,
-				"-c", "features.images=true", "-c", "features.profiles=true",
-				"-c", "features.networks=false", "-c", "features.storage.volumes=false"); err != nil {
-				l.setupErr = fmt.Errorf("%w\nif this client's certificate is restricted, an admin creates the project once:\n  lxc project create %s%s -c features.images=true -c features.profiles=true -c features.networks=false", err, remote, lxdProject)
-				return
-			}
-		}
-		pool, err := l.lxc(ctx, "profile", "device", "get", remote+"default", "root", "pool", "--project", "default")
-		if err != nil || pool == "" {
-			l.setupErr = fmt.Errorf("lxd: no root disk pool on the default profile: %w", err)
-			return
-		}
-		l.pool = pool
 	})
-	return l.setupErr
+	l.o.Remote, l.pool = srv.remote, srv.pool
+	return srv.err
+}
+
+// setupServer pins the remote (everything after names it, so a publish lands
+// on the same server as the instance whatever the cli's default is), makes
+// the run's marker before anything else of the run exists, makes the pats
+// project on first use and finds the storage pool new instances get their
+// root disk from.
+func (l *lxd) setupServer(ctx context.Context, real bool) (remote, pool string, err error) {
+	remote = l.o.Remote
+	if remote == "" {
+		if remote, err = l.lxc(ctx, "remote", "get-default"); err != nil {
+			return "", "", err
+		}
+	}
+	marker := append([]string{"network", "acl", "create", remote + ":" + markerName(), "--project", "default",
+		"user.pats.lease=" + strconv.FormatInt(time.Now().Unix(), 10)}, lxdMeta()...)
+	if _, err := l.lxc(ctx, marker...); err != nil {
+		// the same server reached under a second name already made it.
+		if _, serr := l.lxc(ctx, "network", "acl", "show", remote+":"+markerName(), "--project", "default"); serr != nil {
+			return "", "", fmt.Errorf("lxd: run marker: %w", err)
+		}
+	}
+	if _, err := l.lxc(ctx, "project", "show", remote+":"+lxdProject); err != nil {
+		// networks stay in the default project: a bridge in another one
+		// needs ovn.
+		if _, err := l.lxc(ctx, "project", "create", remote+":"+lxdProject,
+			"-c", "features.images=true", "-c", "features.profiles=true",
+			"-c", "features.networks=false", "-c", "features.storage.volumes=false"); err != nil {
+			return "", "", fmt.Errorf("%w\nif this client's certificate is restricted, an admin creates the project once:\n  lxc project create %s:%s -c features.images=true -c features.profiles=true -c features.networks=false", err, remote, lxdProject)
+		}
+	}
+	pool, err = l.lxc(ctx, "profile", "device", "get", remote+":default", "root", "pool", "--project", "default")
+	if err != nil || pool == "" {
+		return "", "", fmt.Errorf("lxd: no root disk pool on the default profile: %w", err)
+	}
+	return remote, pool, nil
+}
+
+// renew keeps the marker's lease fresh while the process lives.
+func (srv *lxdServer) renew() {
+	t := time.NewTicker(leaseEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-srv.stop:
+			return
+		case <-t.C:
+			_, _ = srv.l.lxc(context.Background(), "network", "acl", "set", srv.remote+":"+markerName(),
+				"user.pats.lease="+strconv.FormatInt(time.Now().Unix(), 10), "--project", "default")
+		}
+	}
+}
+
+// ShutdownLXD ends this process's runs on every lxd server it used: lease
+// renewal stops and the marker goes. what the run made is already gone (each
+// session closes its own); a crash skips this, and `pats clean` sees the
+// lease go stale.
+func ShutdownLXD() {
+	lxdServersMu.Lock()
+	defer lxdServersMu.Unlock()
+	for k, srv := range lxdServers {
+		if srv.stop != nil {
+			close(srv.stop)
+			_, _ = srv.l.lxc(context.Background(), "network", "acl", "delete", srv.remote+":"+markerName(), "--project", "default")
+		}
+		delete(lxdServers, k)
+	}
 }
 
 // lxdNameRe is what lxd allows in an instance name.

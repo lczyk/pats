@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -301,4 +303,77 @@ func TestLXDStartProxy(t *testing.T) {
 	}
 	assert.ContainsString(t, all, "delete srv:"+s.name+"-p")
 	assert.ContainsString(t, all, "network delete srv:"+s.bridge)
+}
+
+// clean groups by run token: a run whose marker's lease is stale goes,
+// instances before bridges before acls before the marker; a run with a fresh
+// lease stays unless forced; a run with no marker goes once all of it is old;
+// cached images stay always.
+func TestLXDClean(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	old, fresh := now.Add(-time.Hour).Unix(), now.Add(-time.Minute).Unix()
+	cfg := func(tok string, created int64) map[string]string {
+		return map[string]string{"user.pats.run": tok, "user.pats.created": strconv.FormatInt(created, 10)}
+	}
+	marker := func(tok string, lease int64) map[string]any {
+		c := cfg(tok, old)
+		c["user.pats.lease"] = strconv.FormatInt(lease, 10)
+		return map[string]any{"name": "pats-run-" + tok, "config": c}
+	}
+	answers := map[string]any{
+		"/1.0/instances": []map[string]any{
+			{"name": "pats-dead", "config": cfg("dead", old)},
+			{"name": "pats-live", "config": cfg("live", old)},
+			{"name": "pats-orphan", "config": cfg("orphan", old)},
+			{"name": "pats-young", "config": cfg("young", fresh)},
+			{"name": "user-thing", "config": map[string]string{}},
+		},
+		"/1.0/networks": []map[string]any{
+			{"name": "patsbrdead", "config": cfg("dead", old)},
+			{"name": "lxdbr0", "config": map[string]string{}},
+		},
+		"/1.0/network-acls": []map[string]any{
+			{"name": "patsbrdead", "config": cfg("dead", old)},
+			marker("dead", old),
+			marker("live", fresh),
+		},
+		"/1.0/images": []map[string]any{
+			{"fingerprint": "aaaaaaaaaaaaaaaa", "properties": cfg("dead", old), "aliases": []map[string]string{{"name": "pats-img-k"}}},
+			{"fingerprint": "bbbbbbbbbbbbbbbb", "properties": cfg("dead", old), "aliases": []map[string]string{{"name": "pats-img-k-dead"}}},
+		},
+	}
+	var calls []string
+	l := newLXD(Options{Remote: "srv"})
+	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "query" {
+			for k, v := range answers {
+				if strings.Contains(args[1], k+"?") {
+					b, _ := json.Marshal(v)
+					stdout.Write(b)
+				}
+			}
+		}
+		if args[0] == "network" && args[1] == "show" {
+			return &fakeExit{}
+		}
+		return nil
+	}
+	var out bytes.Buffer
+	require.NoError(t, l.clean(context.Background(), false, false, &out, now))
+	log := strings.Join(calls, "\n")
+	for _, want := range []string{"delete srv:pats-dead", "network delete srv:patsbrdead", "network acl delete srv:patsbrdead",
+		"image delete srv:bbbbbbbbbbbbbbbb", "network acl delete srv:pats-run-dead", "delete srv:pats-orphan"} {
+		assert.ContainsString(t, log, want)
+	}
+	for _, keep := range []string{"srv:pats-live", "srv:pats-young", "srv:user-thing", "srv:lxdbr0", "aaaaaaaaaaaaaaaa"} {
+		assert.Equal(t, strings.Contains(log, "delete "+keep), false, "%s removed", keep)
+	}
+	assert.That(t, strings.Index(log, "delete srv:pats-dead") < strings.Index(log, "network delete srv:patsbrdead"), "bridge before its instance")
+	assert.That(t, strings.Index(log, "network acl delete srv:patsbrdead") < strings.Index(log, "network acl delete srv:pats-run-dead"), "marker before the rest")
+	assert.ContainsString(t, out.String(), "left 2 live run(s)")
+
+	calls = nil
+	require.NoError(t, l.clean(context.Background(), true, false, &out, now))
+	assert.ContainsString(t, strings.Join(calls, "\n"), "delete srv:pats-live")
 }
