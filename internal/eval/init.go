@@ -156,6 +156,19 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 // --force).
 func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h puller, e *pinEntry) error {
 	lg := logw{ro.Out, ro.Color}
+	logPath := initLogPath(ro.ConfigDir, sb.ID)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	logF, err := os.Create(logPath)
+	if err != nil {
+		return err
+	}
+	defer logF.Close()
+	// a failure's error carries the log's tail; the whole log stays.
+	fail := func(err error) error {
+		return fmt.Errorf("%w\n(full log: %s)", err, relToCwd(logPath))
+	}
 	warned := false
 	base := func() string {
 		img, warn := sandbox.SandboxImage("")
@@ -167,9 +180,9 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 	}
 	switch {
 	case provisions(sb):
-		id, _, err := provisionedContainerImage(ctx, sb, ro, base, opts.Force)
+		id, _, err := provisionedContainerImage(ctx, sb, ro, base, opts.Force, logF)
 		if err != nil {
-			return err
+			return fail(err)
 		}
 		e.Image = pinImage{ID: id, Built: true}
 	case sb.Build != "":
@@ -177,19 +190,19 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if err != nil {
 			return err
 		}
-		id, _, err := sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile, Force: opts.Force}, base)
+		id, _, err := sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile, Force: opts.Force, Log: logF}, base)
 		if err != nil {
-			return err
+			return fail(err)
 		}
 		e.Image = pinImage{ID: id, Built: true}
 	case sb.Image != "":
-		im, err := ensurePulled(ctx, h, sb.Image, false, opts.Force, lg)
+		im, err := ensurePulled(ctx, h, sb.Image, false, opts.Force, lg, logF)
 		if err != nil {
 			return err
 		}
 		e.Image = im
 	default:
-		im, err := ensurePulled(ctx, h, base(), true, opts.Force, lg)
+		im, err := ensurePulled(ctx, h, base(), true, opts.Force, lg, logF)
 		if err != nil {
 			return err
 		}
@@ -200,7 +213,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if warn != "" {
 			lg.warn("%s", warn)
 		}
-		im, err := ensurePulled(ctx, h, ref, sb.Egress.Image == "", opts.Force, lg)
+		im, err := ensurePulled(ctx, h, ref, sb.Egress.Image == "", opts.Force, lg, logF)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)
 		}
@@ -212,11 +225,11 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 // ensurePulled pins ref, pulling it when absent or when forced. published
 // says it is one of pats's own images, which pats owns however it got here;
 // any other image is pats's only when this pull brought it.
-func ensurePulled(ctx context.Context, h puller, ref string, published, force bool, lg logw) (pinImage, error) {
+func ensurePulled(ctx context.Context, h puller, ref string, published, force bool, lg logw, log io.Writer) (pinImage, error) {
 	pulled := false
 	if force || !h.present(ctx, ref) {
 		lg.info("pulling %s", ref)
-		if err := h.pull(ctx, ref); err != nil {
+		if err := h.pull(ctx, ref, log); err != nil {
 			return pinImage{}, err
 		}
 		pulled = true
@@ -247,7 +260,7 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 		}
 		e.Image = pinImage{ID: fp, Name: sb.Image}
 	default:
-		logPath := filepath.Join(ro.ConfigDir, ".pats", "init", sb.ID+".log")
+		logPath := initLogPath(ro.ConfigDir, sb.ID)
 		alias, layers, _, err := lxdImage(ctx, sb, ro, logPath)
 		if err != nil {
 			return err
@@ -338,6 +351,11 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 	}
 	return fmt.Errorf("images missing for %d sandbox(es):\n%s\nrun `%s` first", len(missing), strings.Join(reasons, "\n"), cmd)
+}
+
+// initLogPath is where init logs a sandbox's builds and pulls.
+func initLogPath(configDir, sb string) string {
+	return filepath.Join(configDir, ".pats", "init", sb+".log")
 }
 
 // short is an image id or fingerprint cut to its first 12 hex digits.

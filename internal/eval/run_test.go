@@ -886,5 +886,9 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "got.txt"))
 	require.NoError(t, err, "%s", out.String())
 	assert.Equal(t, string(got), "provisioned once\n")
+	// init kept the build's whole output.
+	log, err := os.ReadFile(filepath.Join(dir, ".pats", "init", "s.log"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(log), "load build definition from Dockerfile")
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", cfg.Sandboxes[0].Image).Run() })
 }

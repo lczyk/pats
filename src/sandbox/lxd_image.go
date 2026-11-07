@@ -275,8 +275,8 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 		}
 	}()
 	args := []string{"launch", spec.Base, s.inst(), "--project", lxdProject, "--storage", l.pool, "-n", net}
-	if strings.HasPrefix(spec.Base, "pats-img-") {
-		args[1] = l.ref(spec.Base)
+	if !strings.Contains(spec.Base, ":") {
+		args[1] = l.ref(spec.Base) // an image of the server's own, as fingerprint resolves it
 	}
 	if l.o.VM {
 		args = append(args, "--vm")

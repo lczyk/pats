@@ -121,7 +121,7 @@ const lxdSandboxBase = "ubuntu:26.04"
 // provisionedContainerImage builds base / provision for docker or podman: a
 // generated dockerfile running the provision step on base (the pats sandbox
 // when empty), through the same cached build as build:.
-func provisionedContainerImage(ctx context.Context, sb config.Sandbox, opts Options, base func() string, force bool) (string, bool, error) {
+func provisionedContainerImage(ctx context.Context, sb config.Sandbox, opts Options, base func() string, force bool, log io.Writer) (string, bool, error) {
 	provision := sb.Provision != "" || sb.ProvisionCmd != ""
 	var material string
 	var argv []string
@@ -160,7 +160,7 @@ func provisionedContainerImage(ctx context.Context, sb config.Sandbox, opts Opti
 	if err := os.WriteFile(dockerfile, []byte(df.String()), 0o644); err != nil {
 		return "", false, err
 	}
-	return sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile, Force: force}, base)
+	return sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile, Force: force, Log: log}, base)
 }
 
 // resolveBuildSpec turns a sandbox `build:` value into (context dir,

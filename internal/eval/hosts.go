@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -28,7 +29,8 @@ type puller interface {
 	imageHost
 	// inspect is an image's id and, when it came from a registry, its digest.
 	inspect(ctx context.Context, ref string) (id, digest string, err error)
-	pull(ctx context.Context, ref string) error
+	// pull fetches ref, its progress to log.
+	pull(ctx context.Context, ref string, log io.Writer) error
 }
 
 // hostFor is the image host of a sandbox's driver; a var so tests fake it.
@@ -115,9 +117,14 @@ func (h containerHost) inspect(ctx context.Context, ref string) (id, digest stri
 	return id, digest, nil
 }
 
-func (h containerHost) pull(ctx context.Context, ref string) error {
-	_, err := h.cli(ctx, "pull", ref)
-	return err
+func (h containerHost) pull(ctx context.Context, ref string, log io.Writer) error {
+	var errb bytes.Buffer
+	cmd := exec.CommandContext(ctx, h.driver, "pull", ref)
+	cmd.Stdout, cmd.Stderr = log, io.MultiWriter(log, &errb)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s pull %s: %w (%s)", h.driver, ref, err, strings.TrimSpace(errb.String()))
+	}
+	return nil
 }
 
 // lxdHost is an lxd server, through the lxc cli.

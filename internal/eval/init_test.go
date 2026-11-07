@@ -63,6 +63,11 @@ func TestInitPinsContainers(t *testing.T) {
 	require.NotNil(t, prox.Proxy)
 	assert.Equal(t, *prox.Proxy, pinImage{ID: "sha256:pulled-" + proxy, Name: proxy, Pulled: true})
 
+	// each sandbox logs its pulls and builds under .pats/init.
+	log, err := os.ReadFile(filepath.Join(dir, ".pats", "init", "pub.log"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(log), "pulled "+pub)
+
 	// a second init pulls nothing; --force pulls again.
 	h.pulls = nil
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}))

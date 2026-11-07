@@ -2,6 +2,8 @@ package eval
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -49,7 +51,8 @@ func (h *fakeHost) inspect(_ context.Context, ref string) (string, string, error
 	return "", "", errNoImage
 }
 
-func (h *fakeHost) pull(_ context.Context, ref string) error {
+func (h *fakeHost) pull(_ context.Context, ref string, log io.Writer) error {
+	fmt.Fprintf(log, "pulled %s\n", ref)
 	h.pulls = append(h.pulls, ref)
 	h.refs[ref] = "sha256:pulled-" + ref
 	return nil

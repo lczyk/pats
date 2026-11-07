@@ -18,7 +18,8 @@ import (
 type ContainerBuild struct {
 	Dir        string // the context
 	Dockerfile string
-	Force      bool // build even when an image from identical inputs exists, with no layer cache
+	Force      bool      // build even when an image from identical inputs exists, with no layer cache
+	Log        io.Writer // the build's whole output; nil discards it
 }
 
 // BuildContainerImage resolves a build: sandbox to an image id for a
@@ -66,7 +67,7 @@ func buildContainerImage(ctx context.Context, r runner, driver string, b Contain
 			return id, false, nil
 		}
 	}
-	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force)
+	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, b.Log)
 	return id, err == nil, err
 }
 
@@ -116,8 +117,15 @@ const baseArg = "PATS_SANDBOX"
 // buildImage builds one resolved context and returns the image id. a non-empty
 // hash is stamped onto the image (see hashLabel) so the next run can find it;
 // a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
-func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool) (string, error) {
-	args := []string{"build", "-q", "-f", dockerfile}
+func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool, log io.Writer) (string, error) {
+	iid, err := MkTemp("pats-iid-")
+	if err != nil {
+		return "", err
+	}
+	defer RemoveTemp(iid)
+	iidFile := filepath.Join(iid, "id")
+	// the id comes from --iidfile, so the build's own output can go to the log.
+	args := []string{"build", "--iidfile", iidFile, "-f", dockerfile}
 	if noCache {
 		args = append(args, "--no-cache")
 	}
@@ -127,13 +135,17 @@ func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash,
 	if hash != "" {
 		args = append(args, "--label", hashLabel+"="+hash)
 	}
-	var out, errb bytes.Buffer
-	if err := r.Run(ctx, nil, &out, &errb, append(args, ctxDir)...); err != nil {
+	if log == nil {
+		log = io.Discard
+	}
+	var errb bytes.Buffer
+	if err := r.Run(ctx, nil, log, io.MultiWriter(log, &errb), append(args, ctxDir)...); err != nil {
 		return "", fmt.Errorf("%s build %s: %w%s", driver, ctxDir, err, stderrTail(&errb))
 	}
-	id := strings.TrimSpace(out.String())
+	b, _ := os.ReadFile(iidFile)
+	id := strings.TrimSpace(string(b))
 	if id == "" {
-		return "", fmt.Errorf("%s build %s: no image id on stdout", driver, ctxDir)
+		return "", fmt.Errorf("%s build %s: no image id written", driver, ctxDir)
 	}
 	return id, nil
 }

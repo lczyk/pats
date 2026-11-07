@@ -560,3 +560,13 @@ func TestLXDCopyImageOnServer(t *testing.T) {
 	assert.Equal(t, got, fakeFP("img"))
 	assert.ContainsString(t, strings.Join(f.call("image info"), " "), "image info srv:img --project pats")
 }
+
+// a base named without a remote is an image of the sandbox's own server: the
+// builder launches from it there, as its key's fingerprint was read there.
+func TestLXDImageOwnBaseOnServer(t *testing.T) {
+	f := newFakeServer(t)
+	l := lxdOn(t, f, Options{})
+	_, _, err := l.image(context.Background(), LXDImageSpec{Base: "img", Argv: []string{"true"}}, io.Discard)
+	require.NoError(t, err)
+	assert.ContainsString(t, strings.Join(f.call("launch"), " "), "launch srv:img ")
+}
