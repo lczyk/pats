@@ -10,14 +10,16 @@ import (
 
 func TestNormalizeRef(t *testing.T) {
 	for in, want := range map[string]string{
-		"ubuntu:26.04":                    "docker.io/library/ubuntu:26.04",
-		"docker.io/ubuntu:26.04":          "docker.io/library/ubuntu:26.04",
-		"index.docker.io/x/y":             "index.docker.io/x/y:latest",
-		"python":                          "docker.io/library/python:latest",
-		"user/img:1":                      "docker.io/user/img:1",
-		"ghcr.io/lczyk/pats/sandbox:v1":   "ghcr.io/lczyk/pats/sandbox:v1",
-		"localhost:5000/img":              "localhost:5000/img:latest",
-		"registry.example.com:5000/a/b:c": "registry.example.com:5000/a/b:c",
+		"ubuntu:26.04":                         "docker.io/library/ubuntu:26.04",
+		"docker.io/ubuntu:26.04":               "docker.io/library/ubuntu:26.04",
+		"index.docker.io/x/y":                  "docker.io/x/y:latest",
+		"index.docker.io/library/ubuntu:26.04": "docker.io/library/ubuntu:26.04",
+		"registry-1.docker.io/ubuntu":          "docker.io/library/ubuntu:latest",
+		"python":                               "docker.io/library/python:latest",
+		"user/img:1":                           "docker.io/user/img:1",
+		"ghcr.io/lczyk/pats/sandbox:v1":        "ghcr.io/lczyk/pats/sandbox:v1",
+		"localhost:5000/img":                   "localhost:5000/img:latest",
+		"registry.example.com:5000/a/b:c":      "registry.example.com:5000/a/b:c",
 	} {
 		assert.Equal(t, NormalizeRef(in), want, in)
 	}

@@ -20,6 +20,12 @@ func NormalizeRef(ref string) string {
 		}
 		ref = "docker.io/" + ref
 	}
+	// docker hub answers to several names; docker records them as docker.io.
+	for _, alias := range []string{"index.docker.io/", "registry-1.docker.io/"} {
+		if rest, ok := strings.CutPrefix(ref, alias); ok {
+			ref = "docker.io/" + rest
+		}
+	}
 	// docker hub's official images live under library/, however named.
 	if rest, ok := strings.CutPrefix(ref, "docker.io/"); ok && !strings.Contains(rest, "/") {
 		ref = "docker.io/library/" + rest
