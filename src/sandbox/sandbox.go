@@ -46,6 +46,7 @@ type Spec struct {
 	Env     map[string]string // environment seen by the command
 	Mounts  []Mount           // extra host->container binds (e.g. creds, home)
 	Egress  Egress            // outbound network policy (zero value = open)
+	Sudo    bool              // the agent may sudo (lxd only)
 }
 
 // Egress is the outbound network policy for one run. see the package doc for
@@ -87,9 +88,13 @@ type Session interface {
 	// sandbox is stopped, since stopping the driver's client does not stop
 	// the process inside.
 	Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error)
-	// HandOver gives what root left under paths to the agent user, after a
-	// root step and before the agent runs. a missing path is skipped.
+	// HandOver ends the root part of a session: what root left under paths
+	// goes to the agent user (a missing path is skipped), and the agent gets
+	// the sudo the spec allows. called once, before the agent runs.
 	HandOver(ctx context.Context, paths ...string) error
+	// Sync brings the agent's writes to the workdir and the writable mounts
+	// back to their host paths; a no-op where they are bound.
+	Sync(ctx context.Context) error
 	Close() error
 }
 
@@ -119,20 +124,44 @@ func run(ctx context.Context, sb Sandbox, spec Spec, stdout, stderr io.Writer) (
 // two apart.
 var ErrLaunch = errors.New("sandbox never launched")
 
-// New builds a Sandbox for the given driver. container drivers need an image.
-func New(driver, image string) (Sandbox, error) {
-	switch driver {
+// Options picks and configures a driver.
+type Options struct {
+	Driver string // docker | podman | lxd
+	Image  string // the image to start: a container image, or an lxd image alias
+	Limits Limits
+	// lxd only.
+	Remote   string            // an lxc remote; "" -> the cli's current one
+	VM       bool              // a virtual machine rather than a system container
+	Profiles []string          // in the pats project
+	Config   map[string]string // instance config, passed through
+}
+
+// Limits caps a sandbox's resources; zero values leave the driver's default.
+type Limits struct {
+	CPU    int
+	Memory string // e.g. 8GiB
+	Disk   string // lxd only
+}
+
+// New builds a Sandbox for o.Driver. every driver needs an image.
+func New(o Options) (Sandbox, error) {
+	switch o.Driver {
 	case "docker", "podman":
-		if image == "" {
-			return nil, fmt.Errorf("sandbox driver %q needs an image", driver)
+		if o.Image == "" {
+			return nil, fmt.Errorf("sandbox driver %q needs an image", o.Driver)
 		}
-		return &container{driver: driver, bin: driver, image: image}, nil
+		return &container{driver: o.Driver, bin: o.Driver, image: o.Image, limits: o.Limits}, nil
+	case "lxd":
+		if o.Image == "" {
+			return nil, errors.New("sandbox driver lxd needs an image")
+		}
+		return newLXD(o), nil
 	case "bwrap":
 		return nil, errors.New("sandbox driver bwrap not implemented yet")
 	case "":
 		return nil, errors.New("sandbox: empty driver")
 	default:
-		return nil, fmt.Errorf("sandbox: unknown driver %q", driver)
+		return nil, fmt.Errorf("sandbox: unknown driver %q", o.Driver)
 	}
 }
 
@@ -142,6 +171,7 @@ type container struct {
 	driver string
 	bin    string
 	image  string
+	limits Limits
 	// exec/execOut run the cli, swappable in tests (nil -> real exec). they
 	// cover the setup/teardown plumbing (egress etc.); the main agent `run`
 	// streams via exec.CommandContext directly and stays e2e-tested.
@@ -210,6 +240,12 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 		}
 		args = append(args, "-v", v)
 	}
+	if c.limits.CPU > 0 {
+		args = append(args, "--cpus", fmt.Sprint(c.limits.CPU))
+	}
+	if c.limits.Memory != "" {
+		args = append(args, "--memory", c.limits.Memory)
+	}
 	args = append(args, "--entrypoint", "sleep", c.image, "infinity")
 	out, err := c.dockerOut(ctx, args...)
 	if err != nil {
@@ -229,6 +265,7 @@ type containerSession struct {
 	id       string
 	teardown func() // the egress sidecar and network
 	once     sync.Once
+	rootRan  bool // a root exec happened, so HandOver has work to do
 }
 
 func (s *containerSession) Push(ctx context.Context, hostPath, path string) error {
@@ -249,6 +286,7 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	if cmd.Root {
 		user = "0:0"
+		s.rootRan = true
 	}
 	dir := cmd.Dir
 	if dir == "" {
@@ -286,7 +324,12 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	return -1, fmt.Errorf("%s exec failed: %w", s.c.bin, err)
 }
 
+func (s *containerSession) Sync(ctx context.Context) error { return nil }
+
 func (s *containerSession) HandOver(ctx context.Context, paths ...string) error {
+	if !s.rootRan {
+		return nil // nothing root could have left
+	}
 	script := fmt.Sprintf(`for p; do [ -e "$p" ] || continue; chown -R %d:%d "$p" || exit 1; done`, os.Getuid(), os.Getgid())
 	var out strings.Builder
 	code, err := s.Exec(ctx, Cmd{Argv: append([]string{"/bin/sh", "-c", script, "handover"}, paths...), Root: true}, &out, &out)

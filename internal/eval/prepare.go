@@ -43,69 +43,85 @@ func prepareEnv(t config.Task, a config.Agent, agentID, runID string) map[string
 	return env
 }
 
+// stageMaterial stages a step that runs inside a sandbox or a builder: the
+// pats root's bin/, and the inline script or the -cmd's file, in a fresh temp
+// dir; argv runs it once the dir is at mount. a -cmd's bare first word is
+// looked up on PATH in there, bin/ first. the caller removes dir.
+func stageMaterial(root, dir, inline, cmdline, mount string) (material string, argv []string, err error) {
+	material, err = sandbox.MkTemp("pats-material-")
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() {
+		if err != nil {
+			sandbox.RemoveTemp(material)
+		}
+	}()
+	if err := copyTree(filepath.Join(root, binDir), filepath.Join(material, "bin")); err != nil {
+		return "", nil, err
+	}
+	switch {
+	case inline != "":
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(inline, "#!") {
+			mode = 0o755
+		}
+		if err := os.WriteFile(filepath.Join(material, "script"), []byte(inline), mode); err != nil {
+			return "", nil, err
+		}
+		if mode == 0o755 {
+			argv = []string{mount + "/script"}
+		} else {
+			argv = []string{"/bin/sh", "-e", mount + "/script"}
+		}
+	default:
+		argv, err = splitArgs(cmdline)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(argv) == 0 {
+			return "", nil, fmt.Errorf("empty command")
+		}
+		if strings.Contains(argv[0], "/") {
+			p, err := resolveCommand(argv[0], dir, "")
+			if err != nil {
+				return "", nil, err
+			}
+			if err := os.MkdirAll(filepath.Join(material, "cmd"), 0o755); err != nil {
+				return "", nil, err
+			}
+			dst := filepath.Join(material, "cmd", filepath.Base(p))
+			if err := copyFile(p, dst); err != nil {
+				return "", nil, err
+			}
+			if err := os.Chmod(dst, 0o755); err != nil {
+				return "", nil, err
+			}
+			argv[0] = path.Join(mount, "cmd", filepath.Base(p))
+		}
+	}
+	return material, argv, nil
+}
+
+// inPath wraps argv so mount/bin is first on the sandbox's PATH, which is not
+// known from the host.
+func inPath(mount string, argv []string) []string {
+	return append([]string{"/bin/sh", "-c", `PATH="` + mount + `/bin:$PATH"; export PATH; exec "$@"`, "step"}, argv...)
+}
+
 // runPrepare runs the task's prepare inside the started sandbox as root: its
 // material is pushed to prepareMount, run with prepareMount/bin first on PATH
-// and the workdir as cwd, then removed, and what root left in the workdir and
-// home is handed to the agent user. output goes to log.
+// and the workdir as cwd, then removed. output goes to log.
 func runPrepare(ctx context.Context, sess sandbox.Session, root, taskDir string, t config.Task, env map[string]string, log io.Writer) error {
-	material, err := sandbox.MkTemp("pats-prepare-")
+	material, argv, err := stageMaterial(root, taskDir, t.Prepare, t.PrepareCmd, prepareMount)
 	if err != nil {
 		return err
 	}
 	defer sandbox.RemoveTemp(material)
-
-	if err := copyTree(filepath.Join(root, binDir), filepath.Join(material, "bin")); err != nil {
-		return err
-	}
-	var argv []string
-	switch {
-	case t.Prepare != "":
-		mode := os.FileMode(0o644)
-		if strings.HasPrefix(t.Prepare, "#!") {
-			mode = 0o755
-		}
-		if err := os.WriteFile(filepath.Join(material, "script"), []byte(t.Prepare), mode); err != nil {
-			return err
-		}
-		if mode == 0o755 {
-			argv = []string{prepareMount + "/script"}
-		} else {
-			argv = []string{"/bin/sh", "-e", prepareMount + "/script"}
-		}
-	default:
-		argv, err = splitArgs(t.PrepareCmd)
-		if err != nil {
-			return err
-		}
-		if len(argv) == 0 {
-			return fmt.Errorf("empty command")
-		}
-		// a file is pushed in; a bare name is looked up on the sandbox's PATH,
-		// bin/ first.
-		if strings.Contains(argv[0], "/") {
-			p, err := resolveCommand(argv[0], taskDir, "")
-			if err != nil {
-				return err
-			}
-			if err := os.MkdirAll(filepath.Join(material, "cmd"), 0o755); err != nil {
-				return err
-			}
-			dst := filepath.Join(material, "cmd", filepath.Base(p))
-			if err := copyFile(p, dst); err != nil {
-				return err
-			}
-			if err := os.Chmod(dst, 0o755); err != nil {
-				return err
-			}
-			argv[0] = path.Join(prepareMount, "cmd", filepath.Base(p))
-		}
-	}
 	if err := sess.Push(ctx, material, prepareMount); err != nil {
 		return err
 	}
-	// the sandbox's own PATH is not known from here; the shell extends it.
-	wrapped := append([]string{"/bin/sh", "-c", `PATH="` + prepareMount + `/bin:$PATH"; export PATH; exec "$@"`, "prepare"}, argv...)
-	code, err := sess.Exec(ctx, sandbox.Cmd{Argv: wrapped, Env: env, Root: true}, log, log)
+	code, err := sess.Exec(ctx, sandbox.Cmd{Argv: inPath(prepareMount, argv), Env: env, Root: true}, log, log)
 	cleanup := []string{"rm", "-rf", prepareMount}
 	if _, cerr := sess.Exec(context.WithoutCancel(ctx), sandbox.Cmd{Argv: cleanup, Root: true}, io.Discard, io.Discard); cerr != nil && err == nil {
 		err = fmt.Errorf("remove %s: %w", prepareMount, cerr)
@@ -116,7 +132,7 @@ func runPrepare(ctx context.Context, sess sandbox.Session, root, taskDir string,
 	if code != 0 {
 		return fmt.Errorf("exited %d (see prepare.log)", code)
 	}
-	return sess.HandOver(ctx, sandbox.WorkMount, homeMount)
+	return nil
 }
 
 // copyTree copies the regular files and dirs under src to dst, keeping their

@@ -35,7 +35,10 @@ const promptName = "prompt.txt"
 // turns on the egress self-test; auditPath "" turns the egress audit log off;
 // label prefixes the no-creds warning.
 func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskEgress, workDir, runID, auditPath, label string) (*harness, error) {
-	box, err := newSandbox(sb.Driver, sb.Image)
+	box, err := newSandbox(sandbox.Options{
+		Driver: sb.Driver, Image: sb.Image, Remote: sb.Remote, VM: sb.VM, Profiles: sb.Profiles, Config: sb.Config,
+		Limits: sandbox.Limits{CPU: sb.Limits.CPU, Memory: sb.Limits.Memory, Disk: sb.Limits.Disk},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +61,7 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskE
 	}
 	spec.Mounts = hs.mounts
 	spec.Egress = egressFor(sb, te, a.Harness, auditPath, runID == "")
+	spec.Sudo = sb.Sudo
 	return &harness{box: box, spec: spec, homeDir: hs.dir, cleanup: hs.cleanup}, nil
 }
 

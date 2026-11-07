@@ -265,6 +265,8 @@ func (s *fakeSession) Pull(ctx context.Context, path, hostDir string) error { re
 
 func (s *fakeSession) HandOver(ctx context.Context, paths ...string) error { return nil }
 
+func (s *fakeSession) Sync(ctx context.Context) error { return nil }
+
 func (s *fakeSession) Close() error { return nil }
 
 func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr io.Writer) (int, error) {
@@ -304,7 +306,7 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	old := newSandbox
 	// the image name doubles as the fake selector: each agent gets its own
 	// sandbox with image = fake key.
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fakes[image], nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fakes[o.Image], nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -346,7 +348,7 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 func TestRunPairTimeoutStatus(t *testing.T) {
 	fake := &fakeSandbox{blockUntilDone: true, code: 143} // SIGTERM exit, no error -- the coin-flip case
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -380,7 +382,7 @@ func TestRunPairCollectsOnTimeout(t *testing.T) {
 	fake := &fakeSandbox{blockUntilDone: true, err: errors.New("some docker hiccup"),
 		onRun: func(spec sandbox.Spec) { sbEnv = spec.Env }}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -426,7 +428,7 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 		err:            fmt.Errorf("%w: egress: create network: boom", sandbox.ErrLaunch),
 	}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -475,7 +477,7 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(home, "agent-wrote"), []byte("x"), 0o644)
 	}}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -509,8 +511,8 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 func TestRunDefaultSandboxImage(t *testing.T) {
 	var image string
 	old := newSandbox
-	newSandbox = func(driver, img string) (sandbox.Sandbox, error) {
-		image = img
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) {
+		image = o.Image
 		return &fakeSandbox{}, nil
 	}
 	defer func() { newSandbox = old }()
@@ -544,7 +546,7 @@ func TestRunPairPromptOutsideWorkdir(t *testing.T) {
 		inWorkdir = err == nil
 	}}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -568,7 +570,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 // a failing stage still tears down the HOME it was handed.
 func TestRunPairStageFailureCleansHome(t *testing.T) {
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return &fakeSandbox{}, nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return &fakeSandbox{}, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -737,7 +739,7 @@ func TestRunPairSetupFailureMetadata(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			old := newSandbox
-			newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return c.fake, nil }
+			newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return c.fake, nil }
 			defer func() { newSandbox = old }()
 			dir := t.TempDir()
 			cfg := parseCfg(t, `
@@ -772,7 +774,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 func TestRunPairPrepareInSandbox(t *testing.T) {
 	fake := &fakeSandbox{}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))

@@ -85,8 +85,14 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	// resolve images first -- everything after (preflight included) runs on
 	// them: the default pats sandbox for sandboxes naming neither image nor
 	// build, then build: contexts to image ids.
+	// the run dir comes first: image builds log into it.
+	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
+	if err != nil {
+		return "", err
+	}
+	lg.info("run dir: %s", relToCwd(runDir))
 	defaultImages(cfg, opts, pairs)
-	if err := buildImages(ctx, cfg, opts, pairs); err != nil {
+	if err := buildImages(ctx, cfg, opts, pairs, runDir); err != nil {
 		return "", err
 	}
 	// pre-pull the egress proxy image (if any) before preflight, which itself
@@ -104,13 +110,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 		return "", err
 	}
 
-	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
-	if err != nil {
-		return "", err
-	}
-	lg.info("run dir: %s", relToCwd(runDir))
-
-	jobs := resolveJobs(opts.Jobs, dockerNCPU)
+	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
 
 	// on a tty, draw a sticky progress region (total bar + a live line per
 	// in-flight pair); otherwise (pipe/ci/tee) print plain per-pair lines.
@@ -134,22 +134,38 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	// emitted atomically on completion so concurrent progress + host-script
 	// output don't interleave; serial non-tty writes straight to opts.Out.
 	sem := make(chan struct{}, jobs)
+	// a sandbox's max-parallel caps its pairs under the run-wide -j. a pair
+	// takes its sandbox's slot before a run-wide one, so pairs queued on a
+	// capped sandbox never hold a slot another sandbox could use.
+	sbSem := map[string]chan struct{}{}
+	for _, sb := range cfg.Sandboxes {
+		if sb.MaxParallel > 0 {
+			sbSem[sb.ID] = make(chan struct{}, sb.MaxParallel)
+		}
+	}
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
+	var interrupted sync.Once
 	for _, p := range pairs {
-		if ctx.Err() != nil {
-			if bar != nil {
-				bar.log(lg.line(lvWarn, "interrupted -- stopping"))
-			} else {
-				lg.warn("interrupted -- stopping")
-			}
-			break
-		}
-		sem <- struct{}{}
 		wg.Add(1)
 		go func(p config.TestPair) {
 			defer wg.Done()
+			if sbID, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil && sbSem[sbID] != nil {
+				sbSem[sbID] <- struct{}{}
+				defer func() { <-sbSem[sbID] }()
+			}
+			sem <- struct{}{}
 			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				interrupted.Do(func() {
+					if bar != nil {
+						bar.log(lg.line(lvWarn, "interrupted -- stopping"))
+					} else {
+						lg.warn("interrupted -- stopping")
+					}
+				})
+				return
+			}
 
 			label := p.Agent + " x " + p.Task
 			po := opts
@@ -204,6 +220,21 @@ func resolveJobs(j int, autoN func() int) int {
 	}
 	return min(max(n, 1), 8)
 }
+
+// autoCPUs sizes -j auto by the machine the pairs run on: an lxd server's
+// cpus when a sandbox the run uses is lxd, else the docker daemon's.
+func autoCPUs(ctx context.Context, cfg *config.Config, pairs []config.TestPair) int {
+	used := usedSandboxes(cfg, pairs)
+	for _, sb := range cfg.Sandboxes {
+		if used[sb.ID] && sb.Driver == "lxd" {
+			return lxdCPUs(ctx, sb.Remote)
+		}
+	}
+	return dockerNCPU()
+}
+
+// lxdCPUs is sandbox.ServerCPUs, a var like dockerNCPU.
+var lxdCPUs = sandbox.ServerCPUs
 
 // dockerNCPU returns the docker daemon's cpu count, or 0 if it can't be read.
 // a var, like newSandbox, so a test can assert the score phase never reaches
@@ -366,6 +397,9 @@ func runPair(
 		return err
 	}
 	defer h.cleanup()
+	if t.Sudo != nil {
+		h.spec.Sudo = *t.Sudo
+	}
 	hostEnv["PATS_AGENT_HOME"] = h.homeDir
 	for k, v := range t.Env {
 		hostEnv[k] = v
@@ -429,6 +463,12 @@ func runPair(
 					setupErr = fmt.Errorf("prepare: %w", err)
 				}
 			}
+			// root is done: the agent gets what it left, and its sudo.
+			if setupErr == nil {
+				if err := sess.HandOver(sctx, sandbox.WorkMount, homeMount); err != nil {
+					setupErr = fmt.Errorf("start: %w", err)
+				}
+			}
 		}
 		scancel()
 	}
@@ -436,6 +476,13 @@ func runPair(
 		r = harnessRun{code: -1, err: setupErr}
 	} else {
 		r = h.exec(ctx, sess, stdoutW, stderrF, t.TimeoutDuration())
+		// bring the agent's writes home for collect (a no-op where the
+		// workdir is bound). a timed-out agent left files too.
+		if r.err == nil || r.timedOut {
+			if err := sess.Sync(context.WithoutCancel(ctx)); err != nil && r.err == nil {
+				r.err = fmt.Errorf("sync: %w", err)
+			}
+		}
 	}
 	status, errStr := "ok", ""
 	switch {

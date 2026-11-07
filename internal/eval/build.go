@@ -2,12 +2,14 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/lczyk/pats/images"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
@@ -36,7 +38,7 @@ func defaultImages(cfg *config.Config, opts Options, pairs []config.TestPair) {
 	lg := logw{opts.Out, opts.Color}
 	warned := false
 	for i, sb := range cfg.Sandboxes {
-		if !used[sb.ID] || sb.Image != "" || sb.Build != "" {
+		if !used[sb.ID] || sb.Image != "" || sb.Build != "" || sb.Driver == "lxd" || provisions(sb) {
 			continue
 		}
 		img, warn := sandbox.SandboxImage("")
@@ -55,7 +57,7 @@ func defaultImages(cfg *config.Config, opts Options, pairs []config.TestPair) {
 // sandbox's image, so the rest of the run -- preflight included -- just sees
 // an image. the id also lands in each pair's metadata.json, recording exactly
 // what ran.
-func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
+func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair, runDir string) error {
 	used := usedSandboxes(cfg, pairs)
 	lg := logw{opts.Out, opts.Color}
 	warned := false
@@ -68,14 +70,25 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		return img
 	}
 	for i, sb := range cfg.Sandboxes {
-		if !used[sb.ID] || sb.Build == "" {
+		if !used[sb.ID] {
 			continue
 		}
-		ctxDir, dockerfile, err := resolveBuildSpec(opts.ConfigDir, sb.Build)
-		if err != nil {
-			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
+		var id string
+		var built bool
+		var err error
+		switch {
+		case sb.Driver == "lxd" && sb.Image == "":
+			id, built, err = lxdImage(ctx, sb, opts, runDir)
+		case sb.IsContainer() && provisions(sb):
+			id, built, err = provisionedContainerImage(ctx, sb, opts, base)
+		case sb.Build != "":
+			var ctxDir, dockerfile string
+			if ctxDir, dockerfile, err = resolveBuildSpec(opts.ConfigDir, sb.Build); err == nil {
+				id, built, err = sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile}, base)
+			}
+		default:
+			continue
 		}
-		id, built, err := sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile}, base)
 		if err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
@@ -87,6 +100,103 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		cfg.Sandboxes[i].Image = id
 	}
 	return nil
+}
+
+// provisions reports whether a sandbox makes its image from base / provision.
+func provisions(sb config.Sandbox) bool {
+	return sb.Base != "" || sb.Provision != "" || sb.ProvisionCmd != ""
+}
+
+// lxdImage provisions an lxd sandbox's image: with no base, the pats
+// sandbox's tools on ubuntu first, then the sandbox's own provision on top --
+// two cached images in a chain, the first's alias in the second's key. the
+// builds log to <run>/images/<sandbox>.log.
+func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir string) (string, bool, error) {
+	if err := os.MkdirAll(filepath.Join(runDir, "images"), 0o755); err != nil {
+		return "", false, err
+	}
+	logPath := filepath.Join(runDir, "images", sb.ID+".log")
+	logF, err := os.Create(logPath)
+	if err != nil {
+		return "", false, err
+	}
+	defer logF.Close()
+	o := sandbox.Options{Driver: "lxd", Remote: sb.Remote, VM: sb.VM}
+	base, anyBuilt := sb.Base, false
+	if base == "" {
+		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, images.ProvisionSandbox, "", sandbox.ProvisionMount)
+		if err != nil {
+			return "", false, err
+		}
+		defer sandbox.RemoveTemp(material)
+		base, anyBuilt, err = sandbox.LXDImage(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv}, logF)
+		if err != nil {
+			return "", false, fmt.Errorf("%w (see %s)", err, relToCwd(logPath))
+		}
+	}
+	spec := sandbox.LXDImageSpec{Base: base}
+	if sb.Provision != "" || sb.ProvisionCmd != "" {
+		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
+		if err != nil {
+			return "", false, err
+		}
+		defer sandbox.RemoveTemp(material)
+		spec.Material, spec.Argv = material, argv
+	}
+	alias, built, err := sandbox.LXDImage(ctx, o, spec, logF)
+	if err != nil {
+		return "", false, fmt.Errorf("%w (see %s)", err, relToCwd(logPath))
+	}
+	return alias, built || anyBuilt, nil
+}
+
+// lxdSandboxBase is what the pats sandbox is provisioned on under lxd: the
+// release the published docker sandbox image is built from.
+const lxdSandboxBase = "ubuntu:26.04"
+
+// provisionedContainerImage builds base / provision for docker or podman: a
+// generated dockerfile running the provision step on base (the pats sandbox
+// when empty), through the same cached build as build:.
+func provisionedContainerImage(ctx context.Context, sb config.Sandbox, opts Options, base func() string) (string, bool, error) {
+	provision := sb.Provision != "" || sb.ProvisionCmd != ""
+	var material string
+	var argv []string
+	if provision {
+		var err error
+		if material, argv, err = stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount); err != nil {
+			return "", false, err
+		}
+		defer sandbox.RemoveTemp(material)
+	}
+	from := sb.Base
+	if from == "" {
+		from = "${PATS_SANDBOX}"
+	}
+	var df strings.Builder
+	df.WriteString("ARG PATS_SANDBOX\n")
+	fmt.Fprintf(&df, "FROM %s\n", from)
+	df.WriteString("USER root\n")
+	if provision {
+		fmt.Fprintf(&df, "COPY material %s\n", sandbox.ProvisionMount)
+		run, _ := json.Marshal(inPath(sandbox.ProvisionMount, argv))
+		fmt.Fprintf(&df, "RUN %s\n", run)
+		fmt.Fprintf(&df, "RUN rm -rf %s\n", sandbox.ProvisionMount)
+	}
+	ctxDir, err := sandbox.MkTemp("pats-build-")
+	if err != nil {
+		return "", false, err
+	}
+	defer sandbox.RemoveTemp(ctxDir)
+	if provision {
+		if err := os.Rename(material, filepath.Join(ctxDir, "material")); err != nil {
+			return "", false, err
+		}
+	}
+	dockerfile := filepath.Join(ctxDir, "Dockerfile")
+	if err := os.WriteFile(dockerfile, []byte(df.String()), 0o644); err != nil {
+		return "", false, err
+	}
+	return sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile}, base)
 }
 
 // pullEgressImages pre-pulls the egress proxy image for any proxy-mode sandbox

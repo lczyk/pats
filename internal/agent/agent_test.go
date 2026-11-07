@@ -40,7 +40,7 @@ func TestHarnessThroughSandbox(t *testing.T) {
 	spec, err := Spec(a, dir, env)
 	require.NoError(t, err)
 
-	sb, err := sandbox.New("docker", "ubuntu:26.04")
+	sb, err := sandbox.New(sandbox.Options{Driver: "docker", Image: "ubuntu:26.04"})
 	require.NoError(t, err)
 
 	var out, errb bytes.Buffer

@@ -32,7 +32,7 @@ func TestContainerRunMountsAndEnv(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("hi"), 0o644))
 
-	sb, err := New("docker", testImage)
+	sb, err := New(Options{Driver: "docker", Image: testImage})
 	require.NoError(t, err)
 
 	var out, errb bytes.Buffer
@@ -51,7 +51,7 @@ func TestContainerRunMountsAndEnv(t *testing.T) {
 
 func TestContainerExitCode(t *testing.T) {
 	dockerOrSkip(t)
-	sb, err := New("docker", testImage)
+	sb, err := New(Options{Driver: "docker", Image: testImage})
 	require.NoError(t, err)
 
 	var out, errb bytes.Buffer
@@ -84,13 +84,13 @@ func TestAsExitErrorUnwrapsWrapped(t *testing.T) {
 }
 
 func TestNewErrors(t *testing.T) {
-	_, err := New("bwrap", "")
+	_, err := New(Options{Driver: "bwrap", Image: ""})
 	assert.Error(t, err, "not implemented")
 
-	_, err = New("docker", "")
+	_, err = New(Options{Driver: "docker", Image: ""})
 	assert.Error(t, err, "needs an image")
 
-	_, err = New("nonsense", "x")
+	_, err = New(Options{Driver: "nonsense", Image: "x"})
 	assert.Error(t, err, "unknown driver")
 }
 
@@ -104,7 +104,7 @@ func TestSortedEnvStable(t *testing.T) {
 // rather than leaving the process running.
 func TestContainerSession(t *testing.T) {
 	dockerOrSkip(t)
-	sb, err := New("docker", testImage)
+	sb, err := New(Options{Driver: "docker", Image: testImage})
 	require.NoError(t, err)
 	work := t.TempDir()
 	sess, err := sb.Start(context.Background(), Spec{Workdir: work})
