@@ -57,8 +57,10 @@ type clock interface {
 on `lxd` (and through it `lxdServer.renew`, `clean`, `waitReady`, `online`, `deleteInstance`). production gets the
 wall clock. tests get a fake whose time moves only when the test says, so a retry loop of three rounds is three
 `Advance` calls, not six seconds, and a lease trace from the fizz model can be replayed step by step. the timing
-constants (`leaseEvery`, `leaseStale`, `instanceGone`, the probe and ready deadlines) move into one struct the fake can
-shrink.
+constants (`leaseEvery`, `leaseStale`, `instanceGone`, the probe deadlines, the instance ready deadline, and
+`readyWait`, the 15s the egress proxy's listening line is waited for in `egress.go`'s package-level `waitReady`) move
+into one struct the fake can shrink. that last wait takes its timeout as an argument, so it needs the shrunk value,
+not the clock.
 
 ### 3. process state in one place
 
@@ -84,8 +86,11 @@ type proc interface {
 ```
 
 production wraps `os/exec`; the fake answers `Start` with an in-process proc (the proxy's listening line on its
-stderr, an agent that runs until signalled). `Exec`'s cancel (pkill or stop, then SIGTERM) and `runProxy`'s
-readiness wait then run in tests. a test helper binary as `l.bin` would do it too, but costs a build per test run
+stderr, an agent that runs until signalled). today `exec.CommandContext` gives `Exec` its context watch and
+`WaitDelay` its 10s grace; with `Start` taking no context, `Exec` owns both: a goroutine that, when the context ends,
+runs the cancel steps (pkill or stop), sends SIGTERM, and SIGKILL after the grace. the fake proc keeps an ordered log
+of the signals it got, so a cancel test asserts the sequence, not only that something was killed. `Exec`'s cancel
+and `runProxy`'s readiness wait then run in tests. a test helper binary as `l.bin` would do it too, but costs a build per test run
 and puts the fake's state in another process. with 3 and 3a the four branches go.
 
 ### 4. a fake lxd server
