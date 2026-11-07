@@ -20,6 +20,8 @@ deadlock_detection: true
 # R2: WHEN the server's create finishes within the retry budget, THE SYSTEM
 #     SHALL report success.
 # R3: Close SHALL return.
+# R2 is checked as coverage (KilledThenOk: success after a retried round is
+# reachable), not as a property; at this size that is the whole of it.
 #
 # CHECK_FIRST picks the order inside one retry round:
 #   False -- delete, then ask whether an operation still names the instance
