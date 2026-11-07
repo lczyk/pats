@@ -59,6 +59,7 @@ a pin is per (remote, sandbox), in `.pats/lxd-images.json` in the project, next 
       "layers": ["<fingerprint of the pats sandbox layer>", "<fingerprint of the project layer>"],
       "proxy": {"fingerprint": "<fp>", "alias": "pats-img-<key>"},
       "pats_version": "1.0.0-beta.4",
+      "pats_build": "release",
       "built": "2026-11-07T11:00:00Z",
       "inputs": {"base": "<fingerprint of ubuntu:26.04 when built>", "provision": "<sha256 of material and argv>"}
     }
@@ -75,6 +76,10 @@ a pin is per (remote, sandbox), in `.pats/lxd-images.json` in the project, next 
   particular a run never rewrites a pin to record a check. writes take a lock on `.pats/lxd-images.lock`, re-read
   the file, change only their own (remote, sandbox) entries, and replace the file by rename.
 
+`proxy` is there only for a sandbox with an egress policy; `pats_build` is `release` or the commit of a dev build
+(the same test as the proxy key, below). a sandbox with `image:` names a prebuilt image: `pats lxd-init` skips it
+and nothing pins it.
+
 `pats run` resolves a sandbox's image through its pin, not through the key:
 
 - pinned and the fingerprint is on the server: use it. compare the inputs that cost nothing to read: the provision
@@ -82,6 +87,11 @@ a pin is per (remote, sandbox), in `.pats/lxd-images.json` in the project, next 
   `sandbox "mason": its lxd image was built from <older provision | pats 1.0.0-beta.3>; pats lxd-init rebuilds it`
   -- and the run goes on with the pinned image. a refreshed `ubuntu:26.04` is not checked on a run (one more round
   trip to the image server, for a weekly event); `pats lxd-init` picks it up whenever it runs.
+- the proxy is the exception to warning and going on: it is pats's own code on the other end of the env protocol
+  (`PATS_EGRESS_*`), and a proxy from another build may not speak this one's. so a pinned proxy is used only when
+  the run's `pats_build` matches the pin's. otherwise the run resolves the proxy by its own key, as today (a cached
+  image, or a build of about a minute: `ubuntu-minimal` plus one binary), and says so. a dev build therefore gets a
+  fresh proxy per commit, as it does today; a release run, one per release.
 - not pinned, or the pinned fingerprint is gone from the server: build it as today (want 3), pin it, and say so:
   `sandbox "mason": no lxd image on armstrong, building it (pats lxd-init does this ahead of a run)`.
 
@@ -97,15 +107,17 @@ the alias stays the content key, so identical inputs share across projects and f
 human alias was considered (`pats-1.0.0-beta.4-sandbox`) and left out: one alias per image keeps the claim protocol
 (run-private alias, then `alias create`) as it is, and the properties carry the same information.
 
-the pats version goes into the key of the two shared layers, not only into a property, so only the same pats version
-shares them (want 4): a new release gets fresh base layers even when `provision-sandbox.sh` did not change, which is
-the conservative choice since the release may change what pats expects inside. the proxy key becomes the pats
-version plus the target arch, not the binary's bytes: a release's proxy is shared by every project on that release.
-a dev build keeps the binary-bytes key, since its proxy code may differ from the release's under the same version
-string: the `VERSION` file names the last release on every commit after it. telling them apart: a module install of
-a tagged version (the documented way to get pats) carries no vcs stamp, so `version.Info.CommitSHA == ""` with a
-release-shaped version is a release; a clone build (`make install`) carries `vcs.revision` and takes the bytes key
-even at the tag. when unsure, the bytes key, never the version key.
+the pats version goes into the key of the two shared layers and of every project layer, not only into a property, so
+only the same pats version shares them (want 4): a new release gets fresh base layers even when `provision-sandbox.sh`
+did not change, which is the conservative choice since the release may change what pats expects inside. a project
+layer on the pats sandbox layer would inherit the version through that layer's fingerprint anyway; one on a custom
+`base:` would not, so the version goes into its key directly, and every layer pats builds follows the same rule. the
+proxy key becomes the pats version plus the target arch, not the binary's bytes: a release's proxy is shared by every
+project on that release. a dev build keeps the binary-bytes key, since its proxy code may differ from the release's
+under the same version string: the `VERSION` file names the last release on every commit after it. telling them apart:
+a module install of a tagged version (the documented way to get pats) carries no vcs stamp, so `version.Info.CommitSHA
+== ""` with a release-shaped version is a release; a clone build (`make install`) carries `vcs.revision` and takes the
+bytes key even at the tag. when unsure, the bytes key, never the version key.
 
 the gain is narrower than it looks: a released user whose proxy binary comes from ghcr (the registry fetch) already
 gets the same bytes as everyone on that release. the version key helps a released user on linux whose own binary
@@ -160,8 +172,9 @@ and becomes the next lts in 2026. what pats relies on, and the risk on 6.x:
 
 no lxd 6 server is at hand. the plan: the ci lxd e2e job becomes a matrix over `5.21/stable` and `6/stable`
 (`canonical/setup-lxd` takes the channel), and the contract tests of `lxd-testing.md` run in both. whatever 6.x
-changes in the cli shows there first, including how `ubuntu:26.04` resolves on a fresh 6.x client. where the two differ, the driver asks the server's version (`/1.0`,
-`environment.server_version`) once at setup and branches there, not throughout.
+changes in the cli shows there first, including how `ubuntu:26.04` resolves on a fresh 6.x client. where the two
+differ, the driver asks the server's version (`/1.0`, `environment.server_version`) once at setup and branches there,
+not throughout.
 
 ## oci images and pebble
 
