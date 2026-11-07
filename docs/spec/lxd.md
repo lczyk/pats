@@ -130,8 +130,9 @@ type Session interface {
   `features.networks=true` (the default leaves bridges in the default project) and, where the admin restricts the
   project, `restricted.snapshots=allow` for the vm pool and `restricted.containers.nesting=allow` for nested lxd. a
   restricted client certificate cannot create projects: it gets a clear error with the admin commands to run once.
-  everything pats makes (workers, builders, proxies, bridges, acls) carries `user.pats.run=<token>`, a random token
-  rather than the run dir since laptops and config dirs collide, and `user.pats.owner=<hostname>`. see cleanup.
+  everything a run makes (workers, builders, proxies, slot bridges, acls) carries `user.pats.run=<token>`, a random
+  token rather than the run dir since laptops and config dirs collide, and `user.pats.owner=<hostname>`; the shared
+  `patsup` and the cached images belong to no run. see cleanup.
 - the agent runs as a `pats` user at the next free uid (ubuntu images already have `ubuntu` at 1000), never as plain
   root: harnesses refuse their permission-bypass flags as root (claude code unless `IS_SANDBOX=1`, to verify).
 - files: tar over exec, one stream per dir (`tar c -C <host> . | lxc exec <inst> -- tar x -C <path>`), pulled back
