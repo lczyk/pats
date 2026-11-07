@@ -233,8 +233,8 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
     remote client, so pair bridges are named `patsbr<n>` for one admin rule to cover them and `patsup`, and the
     preflight checks agent-to-proxy reachability (`open`: agent-to-internet) and names the fix (lxd's docker
     coexistence how-to, scoped to `patsbr+` and `patsup`) when it fails.
-  - the pair's proxy container (`ubuntu-minimal:26.04` plus the pats binary, published once per pats version as
-    `pats-proxy-<version>`) sits on the bridge at a fixed ip with a second nic out; ip forwarding stays off in it.
+  - the pair's proxy container (`ubuntu-minimal:26.04` plus the pats binary, published once per binary as
+    `pats-img-<key>`, the key covering the binary's bytes) sits on the bridge at a fixed ip with a second nic out; ip forwarding stays off in it.
     each pair starts a fresh `pats egress run` process in it with that pair's policy and
     `--listen <bridge ip>:8080` -- never `:8080`, which would serve the outbound bridge too -- and stops it after.
     its stdout is the audit stream, written to the pair's `egress.log`. the proxy is always a container, even when

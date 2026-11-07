@@ -23,8 +23,9 @@ a layer only by accident of identical inputs.
 ## what we want
 
 1. the slow build runs when the user says so, once, and runs reuse its result.
-2. a run never rebuilds an image that exists. when an input has changed since it was built, the run says so and
-   names the command that rebuilds; the user decides when.
+2. a run never rebuilds an image that exists. when a local input (the provision material, the pats version) has
+   changed since it was built, the run says so and names the command that rebuilds; the user decides when. a
+   refreshed base is picked up by the next build, not checked on runs.
 3. a run whose image is missing (a fresh server, a purge, a clean) builds it, as today: there is nothing to reuse.
 4. projects on the same pats version share what does not depend on the project: the pats sandbox layer and the proxy
    image. a project's own layer is its own.
@@ -35,42 +36,57 @@ a layer only by accident of identical inputs.
 ### the command
 
 `pats lxd-init [--sandbox <id>]... [--remote <r>]` builds every lxd image the config's sandboxes need (or the named
-ones), from the current inputs, and records what it built. it is today's build path, run on purpose: same progress
-lines, same logs (to `.pats/lxd-init/<sandbox>.log`), same key. it rebuilds a layer only if its current key has no
-image; `--force` rebuilds regardless (a refreshed base under the same key cannot happen, since the key carries the
-base fingerprint, so `--force` is for a suspect image).
+ones), from the current inputs, and pins what it built. it is today's build path, run on purpose: same progress
+lines, same logs (to `.pats/lxd-init/<sandbox>.log`), same key. a layer whose current key already has an image is
+reused and pinned, not rebuilt.
+
+`--force` rebuilds regardless (a suspect image). the alias claim as it is (`alias create`, and a failure read as
+"another run built it first") would keep the old image, so a forced build re-points the shared alias at the new
+fingerprint instead: `PUT /1.0/images/aliases/<name>` through `lxc query`, one api call, no window where the alias is
+missing. runs already pinned to the old fingerprint keep it (pins are by fingerprint, below) until their own
+`lxd-init`.
 
 ### pins
 
-`pats lxd-init` writes a pin per (remote, sandbox): `.pats/lxd-images.json` in the project, next to `.pats/runs/`.
+a pin is per (remote, sandbox), in `.pats/lxd-images.json` in the project, next to `.pats/runs/`:
 
 ```json
 {
   "armstrong": {
     "mason": {
-      "image": "pats-img-<key>",
-      "layers": ["pats-img-<sandbox key>", "pats-img-<project key>"],
-      "proxy": "pats-img-<proxy key>",
+      "fingerprint": "<the image's fingerprint>",
+      "alias": "pats-img-<key>",
+      "layers": ["<fingerprint of the pats sandbox layer>", "<fingerprint of the project layer>"],
+      "proxy": {"fingerprint": "<fp>", "alias": "pats-img-<key>"},
       "pats_version": "1.0.0-beta.4",
       "built": "2026-11-07T11:00:00Z",
-      "inputs": {"base": "<fingerprint>", "provision": "<sha256 of the material tree and argv>"}
+      "inputs": {"base": "<fingerprint of ubuntu:26.04 when built>", "provision": "<sha256 of material and argv>"}
     }
   }
 }
 ```
 
+- **by fingerprint.** an alias is mutable (another checkout's `--force` re-points it); a fingerprint is the image.
+  the alias is kept for people reading the file and for `lxc` commands.
+- **under the resolved remote.** a config with no `remote:` pins under the cli's default as resolved at setup (the
+  driver already pins it there), not under "", so a later change of default does not silently move the pin. remote
+  names are client-local: two names for one server give two pins and, if their inputs differ, two images. harmless.
+- **who writes it.** `pats lxd-init`, and a run that had to build a missing image (want 3). nothing else; in
+  particular a run never rewrites a pin to record a check. writes take a lock on `.pats/lxd-images.lock`, re-read
+  the file, change only their own (remote, sandbox) entries, and replace the file by rename.
+
 `pats run` resolves a sandbox's image through its pin, not through the key:
 
-- pinned and the image is on the server: use it. then check the inputs cheaply (the provision material is hashed
-  locally; the pats version is known; the base fingerprint costs one `lxc image info` against the image server, so
-  it is checked at most once a day, its last check recorded in the pin). if any differ, one warning per sandbox:
-  `sandbox "mason": its lxd image predates <what changed>; pats lxd-init rebuilds it` -- and the run goes on with
-  the pinned image.
-- not pinned, or the pinned image is gone from the server: build it as today (want 3) and pin it, as if
-  `pats lxd-init` had run for that sandbox, with a line saying so.
+- pinned and the fingerprint is on the server: use it. compare the inputs that cost nothing to read: the provision
+  material (hashed locally, as the key is today) and the pats version. if either differs, one warning per sandbox:
+  `sandbox "mason": its lxd image was built from <older provision | pats 1.0.0-beta.3>; pats lxd-init rebuilds it`
+  -- and the run goes on with the pinned image. a refreshed `ubuntu:26.04` is not checked on a run (one more round
+  trip to the image server, for a weekly event); `pats lxd-init` picks it up whenever it runs.
+- not pinned, or the pinned fingerprint is gone from the server: build it as today (want 3), pin it, and say so:
+  `sandbox "mason": no lxd image on armstrong, building it (pats lxd-init does this ahead of a run)`.
 
 a pin is local state, like the run history: gitignored with `.pats/`. two checkouts of one project each pin; they
-share the images when their inputs match, since the alias is still the content key.
+share images when their inputs match, since the alias is still the content key.
 
 ### names
 
@@ -86,16 +102,43 @@ shares them (want 4): a new release gets fresh base layers even when `provision-
 the conservative choice since the release may change what pats expects inside. the proxy key becomes the pats
 version plus the target arch, not the binary's bytes: a release's proxy is shared by every project on that release.
 a dev build keeps the binary-bytes key, since its proxy code may differ from the release's under the same version
-string: the `VERSION` file names the last release on every commit after it. telling the two apart needs the build's
-vcs stamp (commit, dirty) against the release tag; `internal/version` reads the stamp, and whether it can say "this
-is the tagged release" is to be checked.
+string: the `VERSION` file names the last release on every commit after it. telling them apart: a module install of
+a tagged version (the documented way to get pats) carries no vcs stamp, so `version.Info.CommitSHA == ""` with a
+release-shaped version is a release; a clone build (`make install`) carries `vcs.revision` and takes the bytes key
+even at the tag. when unsure, the bytes key, never the version key.
+
+the gain is narrower than it looks: a released user whose proxy binary comes from ghcr (the registry fetch) already
+gets the same bytes as everyone on that release. the version key helps a released user on linux whose own binary
+goes in, whose bytes differ by go toolchain. small, but the rule above is a few lines.
+
+dev builds share the pats sandbox layer across commits (the key has the version, not the commit). what pats bakes
+into every image (the provision epilogue, the `ProvisionMount` protocol) is covered by `provisionerVersion`, bumped
+by hand when it changes, as today. accepted: mixing the commit into dev keys would make every dev commit's
+`lxd-init` rebuild the slowest layer.
 
 ### removing what is superseded
 
-`pats clean --images [--older <dur>]` removes `pats-img-*` images on the server that are not pinned by this project
-and whose `last_used_at` (lxd records it per image, set on every instance created from it) is older than `--older`
-(default 30 days). another project's pinned image is used at least whenever that project runs, so a month without a
-use means no one ran it. plain `pats clean` stays as it is: it never touches cached images.
+`pats clean --images` removes `pats-img-*` images on the server that are:
+
+- not pinned by this project (its pins, by fingerprint);
+- not run-private (`pats-img-<key>-<token>`: a build between publish and claim, which the run-scoped clean already
+  owns);
+- unused for 30 days: `last_used_at` (lxd sets it on every instance created from the image) or, for an image no
+  instance was ever made from, `uploaded_at`. an image another project built yesterday and has not run yet is
+  therefore safe.
+
+another project's pinned image is used whenever that project runs, so a month without a use means it did not run. a
+project dormant longer than that loses its images and builds them at its next run, with the line above naming
+`pats lxd-init`. 30 days is fixed until someone asks for a flag. plain `pats clean` stays as it is and never touches
+cached images.
+
+## tests
+
+the pin logic is local and testable without a server once `lxd-testing.md` lands: pins written, read, merged by two
+processes (seam 3 gives two process values on one fake server), a missing fingerprint rebuilt and re-pinned, the
+warning on a changed provision or version, `--force` re-pointing the alias, and `clean --images` keeping the young,
+the pinned and the run-private. the e2e starts from an empty `.pats/`, so it covers want 3; it runs twice (the second
+run must build nothing) to cover want 1 and 2.
 
 ## lxd 6
 
@@ -105,7 +148,8 @@ and becomes the next lts in 2026. what pats relies on, and the risk on 6.x:
 - the rest api through `lxc query` (instances, networks, network-acls, images, operations, storage-pools resources,
   `/1.0`): versioned, additive. low risk.
 - `lxc image info` text (`Fingerprint:`): the one place pats reads output meant for people. medium; reading the
-  alias over `lxc query /1.0/images/aliases/<a>` as json removes it, and should be done regardless.
+  alias over `lxc query <remote>:/1.0/images/aliases/<a>` as json removes it (the `ubuntu:` remotes serve the same
+  api), and should be done regardless.
 - image remotes: `ubuntu:26.04` and `ubuntu-minimal:26.04` resolve through the client's remotes. the 6.x docs
   describe image sources as "image registries" (simplestreams, or another lxd server over a cluster link), which may
   change how a fresh client names them. medium, unknown until tried.
@@ -116,7 +160,7 @@ and becomes the next lts in 2026. what pats relies on, and the risk on 6.x:
 
 no lxd 6 server is at hand. the plan: the ci lxd e2e job becomes a matrix over `5.21/stable` and `6/stable`
 (`canonical/setup-lxd` takes the channel), and the contract tests of `lxd-testing.md` run in both. whatever 6.x
-changes in the cli shows there first. where the two differ, the driver asks the server's version (`/1.0`,
+changes in the cli shows there first, including how `ubuntu:26.04` resolves on a fresh 6.x client. where the two differ, the driver asks the server's version (`/1.0`,
 `environment.server_version`) once at setup and branches there, not throughout.
 
 ## oci images and pebble
@@ -144,6 +188,4 @@ provisioning time per release becomes the bottleneck.
 
 - the command's name, and whether it is its own command or `pats init --lxd`.
 - whether a run with a missing image should build it (as proposed, want 3) or stop and point at the command.
-- whether the daily base-fingerprint check is wanted at all, or the warning should cover only what is local
-  (provision material, pats version).
 - where pins live when one project drives several servers: per remote in one file (proposed) or a file per remote.
