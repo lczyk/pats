@@ -61,8 +61,9 @@ lxd:
 - `profiles` and `config` pass through, but a profile can attach a nic and undo the egress topology, and a nic that
   is up at boot is already in use before anything could check it. so every instance is made with `lxc init`, its
   expanded config (`lxc config show --expanded`) checked while stopped, and only then started: a nic other than the
-  slot's refuses the run, under `egress: none` any nic does, and so does `raw.lxc` / `raw.qemu*` under `none` and
-  proxy, since those can add devices the expanded list does not show.
+  slot's refuses the run, and under `egress: none` any nic does. `raw.lxc` and `raw.qemu*` are refused outright,
+  under every egress mode `open` included: they can add devices the expanded list does not show, which would void
+  `open`'s acl as much as the proxy topology.
 
 ## task steps, aligned with spread
 
@@ -193,7 +194,9 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
     and both default actions `reject`: it fences exactly the bridge-host boundary, which is all that is left.
   - both instances get static addresses out of the egress work's pats-managed pool. the lxd nic devices carry
     explicit names (`name=pats0` on the slot bridge for both, `name=uplink0` for the proxy's way out), so the address
-    goes on the right nic whatever order a vm enumerates them in. the address is set with `ip` over exec after
+    goes on the right nic whatever order a vm enumerates them in. a vm honours the name only with
+    `agent.nic_config=true` (seen on the target server: without it the nic comes up as `enp5s0`), which pats sets on
+    every vm it makes. the address is set with `ip` over exec after
     start, not netplan, so a custom base needs only iproute2; a restored vm keeps it in memory.
   - the proxy's `uplink0`, on the nat'd bridge, is the only way out.
   - a server that also runs docker drops bridged ipv4 between instances on any lxd bridge it was not told about
@@ -224,16 +227,17 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
 ## cleanup
 
 the owner-pid liveness `pats clean` uses for docker cannot be asked of a remote server. instead the first thing a
-run creates is a marker, an empty acl `pats-run-<token>`, and pats renews `user.pats.lease=<unix time>` on it every two
-minutes while the run lives. everything else the run makes (builders, workers, proxies, bridges, acls, run-private
-image aliases) carries the token. a container slot has no worker between pairs while its proxy and bridge stay up, so
-the lease can't live on a worker.
+run creates is a marker, an empty acl `pats-run-<token>` -- nothing of the run's exists before it -- and pats renews
+`user.pats.lease=<unix time>` on it every two minutes while the run lives. everything else the run makes (builders,
+workers, proxies, bridges, acls, run-private image aliases) carries the token and `user.pats.created=<unix time>`,
+since lxd records no creation time for networks or acls. a container slot has no worker between pairs while its
+proxy and bridge stay up, so the lease can't live on a worker.
 
 `pats clean` groups what it finds by token. a group whose marker's lease is more than ten minutes old goes, agents
-before proxies before networks before the marker, as for docker. a group with no marker yet (a run that died between
-creating something and its marker, or the instant before) is judged by its resources' creation time against the same
-ten minutes. a fresh lease is left alone whoever owns it; `--force` takes everything in the project, for a laptop
-that is gone. a run that ends, or is interrupted, removes its own.
+before proxies before networks before the marker, as for docker. a group whose marker is gone (a clean that died
+halfway, a hand deletion) is judged by its resources' `user.pats.created` against the same ten minutes. a fresh lease
+is left alone whoever owns it; `--force` takes everything in the project, for a laptop that is gone. a run that ends,
+or is interrupted, removes its own.
 
 ## metadata
 
