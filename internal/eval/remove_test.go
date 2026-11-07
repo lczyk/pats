@@ -299,3 +299,15 @@ func TestRemoveAcrossTargetsAndDaemons(t *testing.T) {
 	assert.Len(t, g.Superseded, 1)
 	assert.That(t, !g.entry("docker:a", "s").Image.Pulled, "another daemon's image took the ownership")
 }
+
+// a pin re-made against another daemon inherits nothing from the old one,
+// whose images go on the list under the old daemon.
+func TestRepinOnAnotherDaemon(t *testing.T) {
+	now := time.Now()
+	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
+	f.setPin("docker:a", "s", &pinEntry{Daemon: "A", Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("docker:a", "s", &pinEntry{Daemon: "B", Image: pinImage{ID: "x"}}, now)
+	assert.That(t, !f.entry("docker:a", "s").Image.Pulled, "B's image inherited A's ownership")
+	require.Equal(t, len(f.Superseded), 1)
+	assert.Equal(t, f.Superseded[0].Daemon, "A")
+}

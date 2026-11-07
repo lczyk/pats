@@ -198,7 +198,9 @@ func (f *pinFile) setPin(target, sb string, e *pinEntry, now time.Time) {
 		f.Targets[target] = map[string]*pinEntry{}
 	}
 	if old := f.Targets[target][sb]; old != nil {
-		e.inheritOwnership(old)
+		if old.Daemon == e.Daemon {
+			e.inheritOwnership(old)
+		}
 		f.supersede(target, old, e, now)
 	}
 	f.reclaim(target, e)
@@ -298,7 +300,7 @@ func (f *pinFile) dropMissing(keep map[string]bool, now time.Time) {
 // those pats made, once each.
 func (f *pinFile) supersede(target string, old, next *pinEntry, now time.Time) {
 	kept := map[string]bool{}
-	if next != nil {
+	if next != nil && next.Daemon == old.Daemon {
 		for _, im := range next.images() {
 			kept[im.ID] = true
 		}
