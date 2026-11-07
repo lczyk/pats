@@ -340,3 +340,25 @@ func TestPublishedImagePresentIsNotOwned(t *testing.T) {
 	require.NoError(t, err)
 	assert.That(t, !f.entry("fake:host", "pub").Image.owned(), "a present published image was taken as pats's")
 }
+
+// init removes nothing until the new pins are written: a pin file that
+// cannot be written leaves the old pins and their images.
+func TestInitRemovesOnlyAfterPinsAreWritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes everywhere")
+	}
+	dir := t.TempDir()
+	cfg := parseCfg(t, initCfg)
+	h := &removingHost{fakeHost: newFakeHost()}
+	useHost(t, h)
+	useTargets(t, map[string]imageHost{"fake:host": h})
+	var out bytes.Buffer
+	opts := InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}}
+	require.NoError(t, Init(cfg, opts))
+	cfg.Sandboxes[1].Image = "my/image:2"
+	pats := filepath.Join(dir, ".pats")
+	require.NoError(t, os.Chmod(pats, 0o555))
+	t.Cleanup(func() { os.Chmod(pats, 0o755) })
+	assert.That(t, Init(cfg, opts) != nil, "init succeeded with an unwritable pin file")
+	assert.Len(t, h.removed, 0)
+}

@@ -103,13 +103,23 @@ func Init(cfg *config.Config, opts InitOptions) error {
 			f.setPin(p.target, p.sb.ID, p.e, opts.Now)
 		}
 		f.dropMissing(keep, opts.Now)
-		if lerr == nil {
-			removeSuperseded(ctx, f, opts.ConfigDir, projects, opts.Now, lg)
-		}
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	// removal only once the pins that stop needing those images are on
+	// disk: a failed write leaves the old pins and their images both there.
+	// a failed write after a removal leaves listed an image that is gone,
+	// which the next init drops.
+	if lerr == nil {
+		err = updatePins(opts.ConfigDir, func(f *pinFile) error {
+			removeSuperseded(ctx, f, opts.ConfigDir, projects, opts.Now, lg)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("init failed for sandbox(es) %s", strings.Join(failed, ", "))
