@@ -227,13 +227,13 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		}
 		e.Image = pinImage{ID: id, Built: true}
 	case sb.Image != "":
-		im, err := ensurePulled(ctx, h, sb.Image, false, opts.Force, lg, logF)
+		im, err := ensurePulled(ctx, h, sb.Image, opts.Force, lg, logF)
 		if err != nil {
 			return err
 		}
 		e.Image = im
 	default:
-		im, err := ensurePulled(ctx, h, base(), true, opts.Force, lg, logF)
+		im, err := ensurePulled(ctx, h, base(), opts.Force, lg, logF)
 		if err != nil {
 			return err
 		}
@@ -244,7 +244,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if warn != "" {
 			lg.warn("%s", warn)
 		}
-		im, err := ensurePulled(ctx, h, ref, sb.Egress.Image == "", opts.Force, lg, logF)
+		im, err := ensurePulled(ctx, h, ref, opts.Force, lg, logF)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)
 		}
@@ -253,10 +253,10 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 	return nil
 }
 
-// ensurePulled pins ref, pulling it when absent or when forced. published
-// says it is one of pats's own images, which pats owns however it got here;
-// any other image is pats's only when this pull brought it.
-func ensurePulled(ctx context.Context, h puller, ref string, published, force bool, lg logw, log io.Writer) (pinImage, error) {
+// ensurePulled pins ref, pulling it when absent or when forced. the image is
+// pats's own only when this pull brought it: one already there, even a
+// published pats image, may be the user's (a local `make images` build).
+func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw, log io.Writer) (pinImage, error) {
 	pulled := false
 	if force || !h.present(ctx, ref) {
 		lg.info("pulling %s", ref)
@@ -269,7 +269,7 @@ func ensurePulled(ctx context.Context, h puller, ref string, published, force bo
 	if err != nil {
 		return pinImage{}, err
 	}
-	return pinImage{ID: id, Name: ref, Digest: digest, Pulled: published || pulled}, nil
+	return pinImage{ID: id, Name: ref, Digest: digest, Pulled: pulled}, nil
 }
 
 // initLXD makes an lxd sandbox's layers and proxy on its server, logging to

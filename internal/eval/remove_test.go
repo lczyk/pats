@@ -325,3 +325,18 @@ func TestSupersedePerDaemon(t *testing.T) {
 	require.Equal(t, len(f.Superseded), 2)
 	assert.Equal(t, f.Superseded[1].Daemon, "B")
 }
+
+// a published pats image already on the daemon (a local `make images`
+// build) is not pats's to remove; one init pulled is.
+func TestPublishedImagePresentIsNotOwned(t *testing.T) {
+	dir := t.TempDir()
+	cfg := parseCfg(t, initCfg)
+	pub, _ := sandbox.SandboxImage("")
+	h := newFakeHost(pub)
+	useHost(t, h)
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"pub"}, Agents: []string{"a-pub"}}))
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	assert.That(t, !f.entry("fake:host", "pub").Image.owned(), "a present published image was taken as pats's")
+}
