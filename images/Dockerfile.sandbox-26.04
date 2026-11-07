@@ -12,9 +12,11 @@ FROM docker.io/library/ubuntu:26.04
 
 ARG CLAUDE_CLI_VERSION=latest
 ARG CODEX_CLI_VERSION=latest
+ARG COPILOT_CLI_VERSION=latest
 ARG OPENCODE_VERSION=latest
 COPY images/provision-sandbox.sh /tmp/provision-sandbox.sh
 RUN CLAUDE_CLI_VERSION="$CLAUDE_CLI_VERSION" CODEX_CLI_VERSION="$CODEX_CLI_VERSION" \
+    COPILOT_CLI_VERSION="$COPILOT_CLI_VERSION" \
     OPENCODE_VERSION="$OPENCODE_VERSION" sh /tmp/provision-sandbox.sh && \
     rm /tmp/provision-sandbox.sh
 

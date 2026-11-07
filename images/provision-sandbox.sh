@@ -25,6 +25,7 @@ rm -rf /var/lib/apt/lists/*
 
 npm install -g \
     "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION:-latest}" \
+    "@github/copilot@${COPILOT_CLI_VERSION:-latest}" \
     "@openai/codex@${CODEX_CLI_VERSION:-latest}" \
     "opencode-ai@${OPENCODE_VERSION:-latest}"
 npm cache clean --force
