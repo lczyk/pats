@@ -25,10 +25,16 @@ var (
 	lxdRemoteFingerprint = sandbox.LXDRemoteFingerprint
 )
 
-// publishedRepo says whether ref is one of pats's own published images,
-// versioned tags that never change upstream.
+// publishedRepo says whether ref is one of pats's own published images at
+// a release's tag (v1.0.0-beta.5), which never changes upstream. its
+// :latest or ubuntu tags do, and are checked like any image.
 func publishedRepo(ref string) bool {
-	return strings.HasPrefix(ref, "ghcr.io/lczyk/pats/")
+	rest, ok := strings.CutPrefix(ref, "ghcr.io/lczyk/pats/")
+	if !ok {
+		return false
+	}
+	_, tag, ok := strings.Cut(rest, ":")
+	return ok && strings.HasPrefix(tag, "v") && sandbox.IsRelease(tag)
 }
 
 // upstreamInputs records, at init, what a sandbox's image came from

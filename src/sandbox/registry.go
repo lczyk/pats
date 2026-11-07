@@ -145,7 +145,7 @@ const (
 // splitRef splits host/repo:tag; a ref without a tag is :latest.
 func splitRef(ref string) (host, repo, tag string, err error) {
 	host, rest, ok := strings.Cut(ref, "/")
-	if !ok || !strings.Contains(host, ".") {
+	if !ok || !(strings.ContainsAny(host, ".:") || host == "localhost") {
 		return "", "", "", fmt.Errorf("image ref %q names no registry host", ref)
 	}
 	repo, tag = rest, "latest"

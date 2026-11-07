@@ -47,3 +47,12 @@ func TestLXDRemoteFingerprint(t *testing.T) {
 	_, err = l.remoteFingerprint(context.Background(), "ubuntu:30.04")
 	assert.Error(t, err, "not listed")
 }
+
+func TestSplitRefHosts(t *testing.T) {
+	for _, ref := range []string{"localhost/a/b:c", "localhost:5000/team/image:latest", "registry:5000/team/image:latest", "reg.example/a:b"} {
+		_, _, _, err := splitRef(ref)
+		assert.That(t, err == nil, "%s: %v", ref, err)
+	}
+	_, _, _, err := splitRef("team/image:latest")
+	assert.Error(t, err, "names no registry host")
+}

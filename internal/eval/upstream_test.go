@@ -110,3 +110,10 @@ func TestRunUpstreamWarnsAndOffline(t *testing.T) {
 	assert.Equal(t, calls.Load(), int32(0))
 	assert.That(t, !bytes.Contains(out.Bytes(), []byte("upstream")), "--offline still checked: %s", out.String())
 }
+
+func TestPublishedRepo(t *testing.T) {
+	assert.That(t, publishedRepo("ghcr.io/lczyk/pats/sandbox:v1.0.0-beta.5"), "a release tag is checked")
+	assert.That(t, !publishedRepo("ghcr.io/lczyk/pats/sandbox:latest"), ":latest moves, and is not skipped")
+	assert.That(t, !publishedRepo("ghcr.io/lczyk/pats/sandbox:26.04"), "the ubuntu tag moves, and is not skipped")
+	assert.That(t, !publishedRepo("ubuntu:26.04"), "another image is not pats's")
+}
