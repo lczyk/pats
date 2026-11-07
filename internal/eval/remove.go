@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lczyk/pats/src/sandbox"
@@ -46,11 +47,18 @@ var hostForTarget = func(ctx context.Context, target, daemon string) (h imageHos
 }
 
 func (h containerHost) remove(ctx context.Context, id string) error {
-	if !h.present(ctx, id) {
+	_, err := h.cli(ctx, "rmi", id) // no -f: an image a container uses stays
+	if err != nil && goneMsg(err) {
 		return nil
 	}
-	_, err := h.cli(ctx, "rmi", id) // no -f: an image a container uses stays
 	return err
+}
+
+// goneMsg says whether an engine's or lxd's error says the image is not
+// there, as opposed to a failure to ask.
+func goneMsg(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "no such image") || strings.Contains(m, "image not known") || strings.Contains(m, "not found")
 }
 
 func (h lxdHost) remove(ctx context.Context, id string) error {
@@ -72,8 +80,30 @@ func projectsFile() string {
 	return filepath.Join(dir, "pats", "projects")
 }
 
+// machineLock serialises what inits on this machine do with each other's
+// pins: the projects file, a commit of new pins, and the removal that reads
+// every project's pins. it does not cover building, which can take minutes.
+func machineLock() (func(), error) {
+	path := projectsFile() + ".lock"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
+}
+
 // registerProject adds configDir to the projects file, drops listed paths
-// that are gone, and returns the list.
+// that are gone, and returns the list. the caller holds machineLock.
 func registerProject(configDir string) ([]string, error) {
 	path := projectsFile()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -183,7 +213,7 @@ func removeOne(ctx context.Context, h imageHost, s superseded, others map[string
 	if l, ok := h.(lxdRemover); ok {
 		u, err := l.usage(ctx, s.ID)
 		if err != nil {
-			if !h.present(ctx, s.ID) {
+			if goneMsg(err) {
 				return "" // gone already
 			}
 			return err.Error()

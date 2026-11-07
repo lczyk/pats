@@ -162,3 +162,79 @@ func TestInitRemovesWhatItReplaces(t *testing.T) {
 	assert.Len(t, f.Superseded, 0)
 	assert.ContainsString(t, out.String(), "removed superseded image")
 }
+
+// an image pats pulled for one sandbox and another sandbox pins as found
+// stays pats's: the second pin takes it off the list, owned.
+func TestPinsReclaimOwnership(t *testing.T) {
+	now := time.Now()
+	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
+	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "y", Pulled: true}}, now)
+	assert.Len(t, f.Superseded, 1)
+	f.setPin("t", "b", &pinEntry{Image: pinImage{ID: "x"}}, now)
+	assert.Len(t, f.Superseded, 0)
+	assert.That(t, f.entry("t", "b").Image.Pulled, "the re-pinned image lost its ownership")
+	f.dropMissing(map[string]bool{"a": true}, now)
+	assert.Len(t, f.Superseded, 1) // and goes back on the list when b drops it
+}
+
+// vanishingHost loses an image right after init inspects it: another
+// project's init removed it before this one's pin was written.
+type vanishingHost struct{ *fakeHost }
+
+func (h vanishingHost) inspect(ctx context.Context, ref string) (string, string, error) {
+	id, digest, err := h.fakeHost.inspect(ctx, ref)
+	delete(h.refs, ref)
+	return id, digest, err
+}
+
+// an image gone between being made and being pinned is a failed init, not
+// a pin to an image that is not there.
+func TestInitImageRemovedBeforePin(t *testing.T) {
+	dir := t.TempDir()
+	cfg := parseCfg(t, initCfg)
+	useHost(t, vanishingHost{newFakeHost("my/image:1")})
+	var out bytes.Buffer
+	err := Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}})
+	assert.Error(t, err, "init failed for sandbox(es) own")
+	assert.ContainsString(t, out.String(), "was removed since this init made it")
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	assert.That(t, f.entry("fake:host", "own") == nil, "a vanished image was pinned")
+}
+
+// a lookup that fails is not an image that is gone: it stays listed.
+func TestRemoveKeepsOnLookupFailure(t *testing.T) {
+	now := time.Now()
+	h := &lxdErrHost{fakeHost: newFakeHost()}
+	useTargets(t, map[string]imageHost{"lxd:srv": h})
+	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{},
+		Superseded: []superseded{{Target: "lxd:srv", ID: "x"}}}
+	var out bytes.Buffer
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	assert.Len(t, f.Superseded, 1)
+	assert.ContainsString(t, out.String(), "kept superseded image x (lxd:srv): dial: connection refused")
+
+	h.gone = true
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	assert.Len(t, f.Superseded, 0)
+}
+
+type lxdErrHost struct {
+	*fakeHost
+	gone bool
+}
+
+func (h *lxdErrHost) remove(context.Context, string) error { return nil }
+func (h *lxdErrHost) usage(context.Context, string) (sandbox.LXDImageUse, error) {
+	if h.gone {
+		return sandbox.LXDImageUse{}, errors.New("Image not found")
+	}
+	return sandbox.LXDImageUse{}, errors.New("dial: connection refused")
+}
+
+func TestGoneMsg(t *testing.T) {
+	assert.That(t, goneMsg(errors.New("Error response from daemon: No such image: x")), "docker's gone")
+	assert.That(t, goneMsg(errors.New("x: image not known")), "podman's gone")
+	assert.That(t, !goneMsg(errors.New("Cannot connect to the Docker daemon")), "an unreachable daemon read as gone")
+}

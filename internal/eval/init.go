@@ -53,8 +53,9 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	defer sandbox.ShutdownLXD()
 
 	type pinned struct {
-		target, sb string
-		e          *pinEntry
+		target string
+		sb     config.Sandbox
+		e      *pinEntry
 	}
 	var done []pinned
 	var failed []string
@@ -70,23 +71,39 @@ func Init(cfg *config.Config, opts InitOptions) error {
 			continue
 		}
 		lg.info("sandbox %q: pinned %s under %s", sb.ID, short(e.Image.ID), target)
-		done = append(done, pinned{target, sb.ID, e})
+		done = append(done, pinned{target, sb, e})
 	}
 
 	keep := map[string]bool{}
 	for _, sb := range cfg.Sandboxes {
 		keep[sb.ID] = true
 	}
-	projects, perr := registerProject(opts.ConfigDir)
-	if perr != nil {
-		lg.warn("cannot register this project in %s: %v; keeping superseded container images", projectsFile(), perr)
+	// another project's init may remove an image this one found or made
+	// before it is pinned; under the lock, what is still there is pinned
+	// and what is gone is a failure to rerun.
+	unlock, lerr := machineLock()
+	if lerr != nil {
+		lg.warn("cannot take %s.lock: %v; removing nothing", projectsFile(), lerr)
+		unlock = func() {}
+	}
+	defer unlock()
+	var projects []string
+	if lerr == nil {
+		if projects, lerr = registerProject(opts.ConfigDir); lerr != nil {
+			lg.warn("cannot register this project in %s: %v; removing nothing", projectsFile(), lerr)
+		}
 	}
 	err = updatePins(opts.ConfigDir, func(f *pinFile) error {
 		for _, p := range done {
-			f.setPin(p.target, p.sb, p.e, opts.Now)
+			if gone := missingImage(ctx, hostFor(p.sb), p.e); gone != "" {
+				lg.error("sandbox %q: %s was removed since this init made it, by another project's init; run pats init again", p.sb.ID, short(gone))
+				failed = append(failed, p.sb.ID)
+				continue
+			}
+			f.setPin(p.target, p.sb.ID, p.e, opts.Now)
 		}
 		f.dropMissing(keep, opts.Now)
-		if perr == nil {
+		if lerr == nil {
 			removeSuperseded(ctx, f, opts.ConfigDir, projects, opts.Now, lg)
 		}
 		return nil
@@ -379,6 +396,17 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 	}
 	return fmt.Errorf("images missing for %d sandbox(es):\n%s\nrun `%s` first", len(missing), strings.Join(reasons, "\n"), cmd)
+}
+
+// missingImage is an image e pins that its host no longer has, "" when
+// it has them all.
+func missingImage(ctx context.Context, h imageHost, e *pinEntry) string {
+	for _, im := range e.images() {
+		if !h.present(ctx, im.ID) {
+			return im.ID
+		}
+	}
+	return ""
 }
 
 // initLogPath is where init logs a sandbox's builds and pulls.

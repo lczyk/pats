@@ -68,6 +68,8 @@ type superseded struct {
 	Daemon string    `json:"daemon,omitempty"`
 	ID     string    `json:"id"`
 	Name   string    `json:"name,omitempty"`
+	Built  bool      `json:"built,omitempty"`
+	Pulled bool      `json:"pulled,omitempty"`
 	Since  time.Time `json:"since"`
 }
 
@@ -199,7 +201,37 @@ func (f *pinFile) setPin(target, sb string, e *pinEntry, now time.Time) {
 		e.inheritOwnership(old)
 		f.supersede(target, old, e, now)
 	}
+	f.reclaim(target, e)
 	f.Targets[target][sb] = e
+}
+
+// reclaim takes off the superseded list the images a new pin pins again,
+// keeping them pats's own: an image pats pulled for one sandbox and another
+// sandbox now pins as found is still pats's to remove later.
+func (f *pinFile) reclaim(target string, e *pinEntry) {
+	var keep []superseded
+	for _, s := range f.Superseded {
+		claimed := false
+		take := func(im *pinImage) {
+			if s.Target == target && im.ID == s.ID {
+				im.Built, im.Pulled = im.Built || s.Built, im.Pulled || s.Pulled
+				claimed = true
+			}
+		}
+		take(&e.Image)
+		if e.Proxy != nil {
+			take(e.Proxy)
+		}
+		for _, l := range e.Layers {
+			if s.Target == target && l == s.ID {
+				claimed = true
+			}
+		}
+		if !claimed {
+			keep = append(keep, s)
+		}
+	}
+	f.Superseded = keep
 }
 
 // inheritOwnership keeps what pats made as pats's when a new pin keeps the
@@ -255,7 +287,8 @@ func (f *pinFile) supersede(target string, old, next *pinEntry, now time.Time) {
 			continue
 		}
 		listed[target+"\x00"+im.ID] = true
-		f.Superseded = append(f.Superseded, superseded{Target: target, Daemon: old.Daemon, ID: im.ID, Name: im.Name, Since: now.UTC()})
+		f.Superseded = append(f.Superseded, superseded{Target: target, Daemon: old.Daemon, ID: im.ID, Name: im.Name,
+			Built: im.Built, Pulled: im.Pulled, Since: now.UTC()})
 	}
 }
 
