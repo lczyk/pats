@@ -551,6 +551,11 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 	assert.Equal(t, image, "sha256:pulled-"+want)
+
+	// runs after init build and pull nothing.
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	assert.EqualArrays(t, h.pulls, []string{want})
 }
 
 // the prompt is staged in the harness HOME, never in the workdir the agent
