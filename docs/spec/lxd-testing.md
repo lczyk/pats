@@ -1,8 +1,9 @@
 # lxd driver: testing seams
 
-status: step 1 (seams 1, 2, 3 and 3a) implemented; the rest proposed. a plan for the seams that let the lxd path be
-tested without a server, written after a day of bugs that only a real server showed. `lxd.md` is the driver's design;
-this is how to test it. "what the tests have today" below describes the code before step 1.
+status: implemented, all three steps. a plan for the seams that let the lxd path be tested without a server, written
+after a day of bugs that only a real server showed. `lxd.md` is the driver's design; this is how to test it. the plan
+below is as it was proposed, and "what the tests have today" describes the code before step 1; where each seam
+landed, what the sweep found, and where the code differs from the plan are in "as built" at the end.
 
 ## why
 
@@ -110,9 +111,8 @@ a test-only type that answers the runner by parsing the argv the driver uses, fl
   `/1.0/storage-pools/<pool>/resources`.
 
 a subcommand or path it does not know fails the test, so the fake's coverage is never assumed. `exec` goes to a small
-per-instance file tree for the tar push and pull, to named probes once seam 6 lands (substring matching until then),
-and otherwise succeeds with no output. errors use lxd's real wording where
-the driver reads it ("not found", "already exists").
+per-instance file tree for the tar push and pull, to named probes (seam 6), and otherwise succeeds with no output.
+errors use lxd's real wording where the driver reads it ("not found", "already exists").
 
 ### 5. fault sweep
 
@@ -195,3 +195,38 @@ progress, warnings and log-tail errors are tested without a server.
   server behind it.
 - the fake lives in `src/sandbox` test files unless `internal/eval` needs it; then an internal package
   (`src/sandbox/lxdfake`).
+
+## as built
+
+- seams 1, 2, 3, 3a: `process.go` (the process, its timings and clock, the runner), shared with the docker driver
+  (`sandbox-seams.md`).
+- seam 4: `fakeServer` in `lxdfake_test.go`. seam 5: the sweeps in `lxd_server_test.go`, over `Start` under each egress
+  mode (container and vm, and a proxied one whose agent may sudo), `Close`, an image build and `clean`.
+- seam 6: `probes.go`. a probe runs as `<shell> -c <script> <name> <args>`, so its name is `$0` and the fakes answer by
+  it; its verdict is a function with a table test.
+- seam 7: `registry` on the process; `registry_test.go` serves the fetch from an `httptest` registry.
+- seam 8: `lxd_contract_test.go`, against the fake in unit tests and the runner's lxd in the ci job.
+- seam 9: `lxdImageFn` in `internal/eval/build.go`.
+- the lease: `manualClock` in `fake_test.go`, and the requirements of `fizz/lxd_lease.fizz` with its accepted gap
+  pinned.
+
+what the fake and the sweep found, each fixed with a test:
+
+- two runs on a fresh server both created the pats project, and the loser's run failed.
+- a setup that failed after making the run's marker (or whose killed create made it) left the marker.
+- a build that failed after publishing, or whose publish failed only on the client, left the image under the run's
+  private alias; one that claimed the cache alias and then failed to drop the private one left that alias on the
+  cached image, where clean never looked.
+- one server reached under two remote names in one process shares one marker: a setup that failed removed the marker
+  the other renews. the renewal now makes a missing marker again.
+
+where the code differs from the plan:
+
+- the sweep's bar: nothing of the run is left, except where the faulted call was itself a removal. a removal that
+  fails leaves what it removes, and then the next clean, once the run is dead, must take it. faults come in four kinds:
+  the server refuses the call, or does it and the client fails anyway, or the context ends before or after the
+  server acts (a create then finishing on the server).
+- the fake clock drives the lease tests only. the retry loops elsewhere still wait on the wall clock, shrunk to
+  milliseconds by the test timings: `src/sandbox` takes about 10s under `-race`, most of it in the sweeps.
+- the older tests on `fakeLXC` stay, as planned: they pin the argv the driver sends, which the fake server takes as
+  given.
