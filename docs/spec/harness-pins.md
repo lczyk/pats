@@ -7,8 +7,8 @@ running pats release pins.
 ## problem
 
 the sandbox installs its harness clis at `@latest`: `images/provision-sandbox.sh` runs `npm install -g
-@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION:-latest}` and the same for codex and opencode, and
-`images/Dockerfile.sandbox-26.04` defaults the three build args to `latest`. so what an image holds depends on when it
+@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION:-latest}` and the same for copilot, codex and opencode, and
+`images/Dockerfile.sandbox-26.04` defaults the four build args to `latest`. so what an image holds depends on when it
 was built:
 
 - the published docker sandbox image of a release and an lxd image provisioned from the same script a week later carry

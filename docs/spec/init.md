@@ -36,8 +36,8 @@ projects share a layer only by accident of identical inputs.
 
 ### `pats init`
 
-`pats init [-s <suite>]... [-a <agent>]... [-t <task>]... [--sandbox <id>]... [--driver <d>] [--force]` makes what
-the selected pairs' sandboxes need -- by default every sandbox the config's suites use -- and pins it. `-s`, `-a`
+`pats init [-S <suite>]... [-a <agent>]... [-t <task>]... [--sandbox <id>]... [--driver <d>] [--force]` makes what
+the selected pairs' sandboxes need -- by default every sandbox the config's suites use -- and pins it. `-S`, `-a`
 and `-t` are `run`'s selectors, so `pats init` and `pats run` with the same flags agree on what is needed;
 `--sandbox` and `--driver` narrow further. the driver comes from each sandbox, so a project mixing docker and lxd
 agents comes up with one command.
@@ -185,8 +185,9 @@ for all of them together; a check that does not answer in time is skipped silent
 ## component versions
 
 `pats init` stamps what is inside each image: each harness cli's version (`claude --version`, `codex --version`,
-`opencode --version`), and later anything else worth knowing. they go into the pin, onto the image (docker labels,
-lxd properties), and into each pair's `metadata.json`, so a score can be read against the harness that produced it.
+`copilot --version`, `opencode --version`), and later anything else worth knowing. they go into the pin, onto the
+image (docker labels, lxd properties), and into each pair's `metadata.json`, so a score can be read against the
+harness that produced it.
 
 today the harnesses install at `@latest` unless `CLAUDE_CLI_VERSION` and friends are set, so two images of one pats
 version built a week apart carry different harnesses, and the published docker image and an lxd image provisioned from
