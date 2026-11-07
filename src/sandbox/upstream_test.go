@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -102,4 +104,39 @@ func TestLXDFingerprintPrefixOnServer(t *testing.T) {
 	assert.Equal(t, got, fp)
 	_, err = l.fingerprint(context.Background(), "ffffffffffff")
 	assert.Error(t, err, "not found")
+}
+
+// an image remote lists every architecture and both instance types: the
+// one for the server's arch and the type asked for is picked, by its short
+// alias or the one with the arch's suffix.
+func TestLXDRemoteFingerprintArchAndType(t *testing.T) {
+	list := `[` +
+		`{"fingerprint":"amd64c","architecture":"x86_64","type":"container","aliases":[{"name":"26.04"},{"name":"26.04/amd64"}]},` +
+		`{"fingerprint":"amd64v","architecture":"x86_64","type":"virtual-machine","aliases":[{"name":"26.04"},{"name":"26.04/amd64"}]},` +
+		`{"fingerprint":"arm64c","architecture":"aarch64","type":"container","aliases":[{"name":"26.04/arm64"}]},` +
+		`{"fingerprint":"arm64v","architecture":"aarch64","type":"virtual-machine","aliases":[{"name":"26.04/arm64"}]}]`
+	lookup := func(t *testing.T, arch string, vm bool) (string, error) {
+		l, _ := fakeLXD(t, Options{Driver: "lxd", Remote: "srv", VM: vm})
+		l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+			switch strings.Join(args, " ") {
+			case "query srv:/1.0":
+				io.WriteString(stdout, `{"environment":{"architectures":["`+arch+`"]}}`)
+			case "image list ubuntu: 26.04 --format=json":
+				io.WriteString(stdout, list)
+			}
+			return nil
+		})
+		return l.remoteFingerprint(context.Background(), "ubuntu:26.04")
+	}
+	for _, c := range []struct {
+		arch string
+		vm   bool
+		want string
+	}{{"x86_64", false, "amd64c"}, {"x86_64", true, "amd64v"}, {"aarch64", false, "arm64c"}, {"aarch64", true, "arm64v"}} {
+		got, err := lookup(t, c.arch, c.vm)
+		require.NoError(t, err)
+		assert.Equal(t, got, c.want, c.arch)
+	}
+	_, err := lookup(t, "s390x", false)
+	assert.Error(t, err, "not listed for s390x container")
 }

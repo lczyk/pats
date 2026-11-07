@@ -17,7 +17,7 @@ import (
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-func fakeLookups(t *testing.T, registry, lxd func(ctx context.Context, ref string) (string, error)) {
+func fakeLookups(t *testing.T, registry func(ctx context.Context, ref string) (string, error), lxd func(ctx context.Context, o sandbox.Options, ref string) (string, error)) {
 	t.Helper()
 	oldR, oldL := registryDigest, lxdRemoteFingerprint
 	registryDigest, lxdRemoteFingerprint = registry, lxd
@@ -40,7 +40,7 @@ func TestCheckUpstream(t *testing.T) {
 			}
 			return "sha256:same", nil
 		},
-		func(ctx context.Context, ref string) (string, error) { return "fp-new", nil })
+		func(ctx context.Context, o sandbox.Options, ref string) (string, error) { return "fp-new", nil })
 	checks := []upstreamCheck{
 		{sb: "c", inputs: map[string]string{
 			"upstream:moved:1": "sha256:old", "upstream:same:1": "sha256:same",
@@ -62,7 +62,7 @@ func TestUpstreamInputs(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "ctx"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ctx", "Dockerfile"),
 		[]byte("ARG PATS_SANDBOX\nFROM python:3 AS b\nFROM ${PATS_SANDBOX}\nCOPY --from=b / /\n"), 0o644))
-	fakeLookups(t, nil, func(ctx context.Context, ref string) (string, error) { return "fp-" + ref, nil })
+	fakeLookups(t, nil, func(ctx context.Context, o sandbox.Options, ref string) (string, error) { return "fp-" + ref, nil })
 	h := newFakeHost()
 	h.refs["python:3"] = "sha256:py"
 	h.digests = map[string]string{"python:3": "sha256:pydigest"}

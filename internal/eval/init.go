@@ -417,7 +417,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 		cfg.Sandboxes[i].Image = e.Image.ID
 		cfg.Sandboxes[i].Components = e.Components
-		checks = append(checks, upstreamCheck{sb: sb.ID, lxd: sb.Driver == "lxd", inputs: e.Inputs})
+		checks = append(checks, upstreamCheck{sb: sb.ID, lxd: sb.Driver == "lxd", o: lxdOptions(sb), inputs: e.Inputs})
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
 		}

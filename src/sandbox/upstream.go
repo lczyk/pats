@@ -145,10 +145,18 @@ func (reg registry) challengeToken(ctx context.Context, challenge string) (strin
 }
 
 // LXDRemoteFingerprint is the fingerprint an image remote's alias names now
-// (ubuntu:26.04), read with `lxc image list`, which reaches simplestreams
-// remotes as well as lxd ones.
-func LXDRemoteFingerprint(ctx context.Context, ref string) (string, error) {
-	return newLXD(defaultProcess, lxcCLI, Options{}).remoteFingerprint(ctx, ref)
+// (ubuntu:26.04) for o's server: its architecture, and a container or a vm
+// as o says. read with image list, which reaches simplestreams remotes as
+// well as lxd ones.
+func LXDRemoteFingerprint(ctx context.Context, o Options, ref string) (string, error) {
+	return newLXD(defaultProcess, lxcCLI, o).remoteFingerprint(ctx, ref)
+}
+
+// debianArch is the suffix image remotes put on an alias for each kernel
+// architecture (26.04/arm64).
+var debianArch = map[string]string{
+	"x86_64": "amd64", "aarch64": "arm64", "armv7l": "armhf", "ppc64le": "ppc64el",
+	"s390x": "s390x", "riscv64": "riscv64",
 }
 
 func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error) {
@@ -156,31 +164,50 @@ func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error)
 	if !ok {
 		return "", fmt.Errorf("lxd image %q names no remote", ref)
 	}
+	arch, err := l.kernelArch(ctx)
+	if err != nil {
+		return "", err
+	}
+	kind := "container"
+	if l.o.VM {
+		kind = "virtual-machine"
+	}
 	out, err := l.lxc(ctx, "image", "list", remote+":", alias, "--format=json")
 	if err != nil {
 		return "", err
 	}
 	var ims []struct {
-		Fingerprint string `json:"fingerprint"`
-		Aliases     []struct {
+		Fingerprint  string `json:"fingerprint"`
+		Architecture string `json:"architecture"`
+		Type         string `json:"type"`
+		Aliases      []struct {
 			Name string `json:"name"`
 		} `json:"aliases"`
 	}
 	if err := json.Unmarshal([]byte(out), &ims); err != nil {
 		return "", err
 	}
+	// only what the server can run as asked: a short alias belongs to one
+	// architecture, the others carry it with their own suffix.
+	fit := ims[:0]
+	for _, im := range ims {
+		if (im.Architecture == "" || im.Architecture == arch) && (im.Type == "" || im.Type == kind) {
+			fit = append(fit, im)
+		}
+	}
 	// the filter matches on prefixes too: the alias itself decides, or a
 	// fingerprint (or a unique prefix of one) the ref names.
-	for _, im := range ims {
+	names := map[string]bool{alias: true, alias + "/" + debianArch[arch]: true}
+	for _, im := range fit {
 		for _, a := range im.Aliases {
-			if a.Name == alias {
+			if names[a.Name] {
 				return im.Fingerprint, nil
 			}
 		}
 	}
 	if isHex(alias) {
 		var hits []string
-		for _, im := range ims {
+		for _, im := range fit {
 			if strings.HasPrefix(im.Fingerprint, alias) {
 				hits = append(hits, im.Fingerprint)
 			}
@@ -189,5 +216,28 @@ func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error)
 			return hits[0], nil
 		}
 	}
-	return "", fmt.Errorf("lxd image %s: not listed", ref)
+	return "", fmt.Errorf("lxd image %s: not listed for %s %s", ref, arch, kind)
+}
+
+// kernelArch is the server's architecture as lxd names it (x86_64).
+func (l *lxd) kernelArch(ctx context.Context) (string, error) {
+	if l.o.Remote == "" {
+		remote, err := l.lxc(ctx, "remote", "get-default")
+		if err != nil {
+			return "", err
+		}
+		l.o.Remote = remote
+	}
+	var srv struct {
+		Environment struct {
+			Architectures []string `json:"architectures"`
+		} `json:"environment"`
+	}
+	if err := l.query(ctx, "/1.0", &srv); err != nil {
+		return "", err
+	}
+	if len(srv.Environment.Architectures) == 0 {
+		return "", fmt.Errorf("lxd: server %s names no architecture", l.o.Remote)
+	}
+	return srv.Environment.Architectures[0], nil
 }

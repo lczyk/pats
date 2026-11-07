@@ -123,6 +123,7 @@ func baseDigests(ctx context.Context, sb config.Sandbox, configDir string, h pul
 type upstreamCheck struct {
 	sb     string
 	lxd    bool
+	o      sandbox.Options // the lxd server whose arch and instance type pick the image
 	inputs map[string]string
 }
 
@@ -149,7 +150,7 @@ func checkUpstream(ctx context.Context, checks []upstreamCheck, budget time.Dura
 				var now string
 				var err error
 				if c.lxd {
-					now, err = lxd(ctx, ref)
+					now, err = lxd(ctx, c.o, ref)
 				} else {
 					now, err = registry(ctx, ref)
 				}

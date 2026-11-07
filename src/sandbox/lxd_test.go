@@ -435,6 +435,10 @@ func TestLXDImageBuild(t *testing.T) {
 		l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 			joined := strings.Join(args, " ")
 			switch {
+			case joined == "query srv:/1.0":
+				f.record(args)
+				io.WriteString(stdout, `{"environment":{"architectures":["x86_64"]}}`)
+				return nil
 			case strings.HasPrefix(joined, "image list ubuntu: 26.04"):
 				f.record(args)
 				io.WriteString(stdout, `[{"fingerprint":"abc","aliases":[{"name":"26.04"}]}]`)
