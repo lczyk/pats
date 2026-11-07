@@ -133,12 +133,16 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 	if err != nil {
 		return "", nil, err
 	}
+	inputs, err := localInputs(sb, ro.ConfigDir)
+	if err != nil {
+		return "", nil, err
+	}
 	e := &pinEntry{
 		Daemon:      daemon,
 		PatsVersion: version.Info.Version,
 		PatsBuild:   patsBuild(),
 		Built:       opts.Now.UTC().Format(time.RFC3339),
-		Inputs:      map[string]string{},
+		Inputs:      inputs,
 	}
 	switch p, ok := h.(puller); {
 	case sb.Driver == "lxd":
@@ -305,6 +309,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		return err
 	}
 	used := usedSandboxes(cfg, pairs)
+	lg := logw{opts.Out, opts.Color}
 	var missing []string
 	var reasons []string
 	for i, sb := range cfg.Sandboxes {
@@ -329,11 +334,19 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reason = "no egress proxy pinned"
 		case sb.Egress.Set && !h.present(ctx, e.Proxy.ID):
 			reason = "its pinned egress proxy " + short(e.Proxy.ID) + " is gone"
+		case sb.Egress.Set:
+			reason = proxyMismatch(e)
 		}
 		if reason != "" {
 			missing = append(missing, sb.ID)
 			reasons = append(reasons, fmt.Sprintf("  %s: %s", sb.ID, reason))
 			continue
+		}
+		if now, err := localInputs(sb, opts.ConfigDir); err != nil {
+			lg.warn("sandbox %q: cannot tell whether its image is current: %v", sb.ID, err)
+		} else if changed := staleLocal(e, now); len(changed) > 0 {
+			lg.warn("sandbox %q: changed since its pats init: %s; running the pinned image (pats init --sandbox %s to rebuild)",
+				sb.ID, strings.Join(changed, ", "), sb.ID)
 		}
 		cfg.Sandboxes[i].Image = e.Image.ID
 		if e.Proxy != nil {

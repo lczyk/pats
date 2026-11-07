@@ -272,6 +272,13 @@ func rehash(hash, extra string) string {
 // "" when the dockerfile doesn't mention it; it joins the hash only when it
 // does, so a new pats version rebuilds contexts that derive from the pats
 // sandbox and leaves the rest cached.
+// ContextHash digests a build: context the way the build cache keys it, the
+// FROM images aside: what `pats run` compares with the hash `pats init` saw.
+func ContextHash(ctxDir, dockerfile string) (string, error) {
+	data, err := os.ReadFile(dockerfile)
+	return buildContextHash(ctxDir, dockerfile, data, err, "")
+}
+
 func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error, base string) (string, error) {
 	if dfErr != nil {
 		return "", dfErr

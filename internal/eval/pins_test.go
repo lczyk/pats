@@ -10,6 +10,8 @@ import (
 	"github.com/lczyk/assert/require"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/version"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // fakeHost is an image host in memory: what it holds by ref, each with an
@@ -87,7 +89,10 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 				id = "img-" + sb.ID
 			}
 			h.refs[id] = id
-			e := &pinEntry{Daemon: h.daemon, Image: pinImage{ID: id}, Inputs: map[string]string{}}
+			in, err := localInputs(sb, dir)
+			require.NoError(t, err)
+			e := &pinEntry{Daemon: h.daemon, Image: pinImage{ID: id}, Inputs: in,
+				PatsVersion: version.Info.Version, PatsBuild: patsBuild()}
 			if sb.Egress.Set {
 				h.refs["proxy-"+sb.ID] = "proxy-" + sb.ID
 				e.Proxy = &pinImage{ID: "proxy-" + sb.ID}
@@ -97,4 +102,12 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 		return nil
 	}))
 	return h
+}
+
+// useFakeSandbox makes every run's sandbox fake for the test.
+func useFakeSandbox(t *testing.T, fake sandbox.Sandbox) {
+	t.Helper()
+	old := newSandbox
+	newSandbox = func(sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
+	t.Cleanup(func() { newSandbox = old })
 }
