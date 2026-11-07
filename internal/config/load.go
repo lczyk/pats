@@ -273,6 +273,9 @@ var slots = map[string][][]string{
 		{"prepare", "prepare-cmd"},
 		{"collect", "collect-cmd"},
 	},
+	"sandbox": {
+		{"provision", "provision-cmd"},
+	},
 	"scorer": {
 		{"score", "score-cmd"},
 		{"prompt", "prompt-file", "prompt-cmd"},

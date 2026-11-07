@@ -37,10 +37,25 @@ type Config struct {
 type Sandbox struct {
 	ID     string `yaml:"-"`
 	Vector string `yaml:"-"`
-	Driver string `yaml:"driver"` // docker (default) | podman | bwrap
-	Image  string `yaml:"image"`  // existing image to run; "" with no build -> the published pats sandbox
+	Driver string `yaml:"driver"` // docker (default) | podman | lxd | bwrap
+	Image  string `yaml:"image"`  // existing image to run, in the driver's own namespace; "" -> built or the pats sandbox
 	Build  string `yaml:"build"`  // build context -- a dir (with a Dockerfile) or a Dockerfile path, relative to the config dir
-	Egress Egress `yaml:"egress"` // outbound network policy (absent: open)
+	// Base and Provision are the driver-neutral way to make an image: the
+	// provision script runs once per image, as root, on top of base (the pats
+	// sandbox when base is empty). docker compiles them to a dockerfile, lxd
+	// provisions a builder instance.
+	Base         string `yaml:"base"`
+	Provision    string `yaml:"provision" tmpl:"-"`
+	ProvisionCmd string `yaml:"provision-cmd"`
+	Sudo         bool   `yaml:"sudo"`         // may the agent sudo; a task can override (lxd only)
+	MaxParallel  int    `yaml:"max-parallel"` // cap on this sandbox's concurrent pairs, whatever -j says
+	Limits       Limits `yaml:"limits"`
+	// lxd only.
+	Remote   string            `yaml:"remote"` // an lxc remote; "" -> the cli's current one
+	VM       bool              `yaml:"vm"`     // a virtual machine rather than a system container
+	Profiles []string          `yaml:"profiles"`
+	Config   map[string]string `yaml:"config"`
+	Egress   Egress            `yaml:"egress"` // outbound network policy (absent: open)
 	// Env goes into the sandboxed agent's environment, under what pats sets
 	// itself. the escape hatch for a tool the egress tls contract misses
 	// (e.g. DENO_CERT=/sbx-ca/bundle.pem).
@@ -112,7 +127,16 @@ func (e *Egress) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // IsContainer reports whether the sandbox runs under a container driver.
-func (s Sandbox) IsContainer() bool { return s.Driver != "bwrap" }
+func (s Sandbox) IsContainer() bool { return s.Driver == "docker" || s.Driver == "podman" }
+
+// Limits caps a sandbox's resources. docker maps cpu and memory to --cpus and
+// --memory; lxd maps all three to limits.cpu, limits.memory and the root
+// disk's size.
+type Limits struct {
+	CPU    int    `yaml:"cpu"`
+	Memory string `yaml:"memory"` // e.g. 8GiB
+	Disk   string `yaml:"disk"`   // e.g. 20GiB
+}
 
 // Agent is a harness (an agent cli) under test, run in a sandbox. four
 // harnesses:
@@ -144,6 +168,7 @@ type Task struct {
 	PromptCmd  string            `yaml:"prompt-cmd"`       // a command printing the instruction; runs after stage
 	Stage      string            `yaml:"stage" tmpl:"-"`   // inline host script seeding the sandbox before it starts
 	StageCmd   string            `yaml:"stage-cmd"`        // host command seeding the sandbox before it starts
+	Sudo       *bool             `yaml:"sudo"`             // overrides the sandbox's sudo for this task's pairs
 	Prepare    string            `yaml:"prepare" tmpl:"-"` // inline script run inside the sandbox, as root, before the agent
 	PrepareCmd string            `yaml:"prepare-cmd"`      // command run inside the sandbox, as root, before the agent
 	Collect    string            `yaml:"collect" tmpl:"-"` // inline script gathering outputs

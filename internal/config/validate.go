@@ -110,17 +110,66 @@ func (c *Config) members(kind string) []member {
 
 func (c *Config) validateSandboxes(add func(string, ...any)) {
 	for _, s := range c.Sandboxes {
+		// at most one way to name the image. none is fine: the run resolves
+		// it to the published sandbox (docker) or provisions it (lxd).
+		var ways []string
+		if s.Image != "" {
+			ways = append(ways, "image")
+		}
+		if s.Build != "" {
+			ways = append(ways, "build")
+		}
+		if s.Base != "" || s.Provision != "" || s.ProvisionCmd != "" {
+			ways = append(ways, "base / provision")
+		}
+		if len(ways) > 1 {
+			add("sandbox %q: %s are mutually exclusive", s.ID, strings.Join(ways, " and "))
+		}
+		lxdOnly := map[string]bool{"remote": s.Remote != "", "vm": s.VM, "profiles": len(s.Profiles) > 0, "config": len(s.Config) > 0}
 		switch s.Driver {
 		case "docker", "podman":
-			// neither image nor build is fine: the run resolves it to the
-			// published sandbox image pinned to this pats version.
-			if s.Image != "" && s.Build != "" {
-				add("sandbox %q: image and build are mutually exclusive", s.ID)
+			for _, k := range []string{"remote", "vm", "profiles", "config"} {
+				if lxdOnly[k] {
+					add("sandbox %q: %s is lxd-only (driver %q)", s.ID, k, s.Driver)
+				}
+			}
+			// the docker agent runs as the host uid, with no passwd entry
+			// for sudo to work from.
+			if s.Sudo {
+				add("sandbox %q: sudo is lxd-only for now (driver %q runs the agent as the host uid)", s.ID, s.Driver)
+			}
+			if s.Limits.Disk != "" {
+				add("sandbox %q: limits.disk is lxd-only (driver %q)", s.ID, s.Driver)
+			}
+		case "lxd":
+			if s.Build != "" {
+				add("sandbox %q: build is a dockerfile, docker / podman only; lxd takes base and provision", s.ID)
+			}
+			for _, k := range sortedKeys(s.Config) {
+				// these add devices the expanded config does not show, which
+				// would void the egress topology.
+				if strings.HasPrefix(k, "raw.") {
+					add("sandbox %q: config %s is refused: raw config can add devices pats cannot check", s.ID, k)
+				}
+			}
+			if s.Egress.Set {
+				add("sandbox %q: an egress proxy is not implemented under lxd yet (use open or none)", s.ID)
 			}
 		case "bwrap":
 			add("sandbox %q: bwrap driver not implemented yet", s.ID)
 		default:
-			add("sandbox %q: unknown driver %q (docker|podman|bwrap)", s.ID, s.Driver)
+			add("sandbox %q: unknown driver %q (docker|podman|lxd|bwrap)", s.ID, s.Driver)
+		}
+		if s.MaxParallel < 0 {
+			add("sandbox %q: max-parallel must be positive", s.ID)
+		}
+		if s.Limits.CPU < 0 {
+			add("sandbox %q: limits.cpu must be positive", s.ID)
+		}
+		for _, f := range [][2]string{{"memory", s.Limits.Memory}, {"disk", s.Limits.Disk}} {
+			if f[1] != "" && !sizeRe.MatchString(f[1]) {
+				add("sandbox %q: limits.%s %q is not a size (e.g. 8GiB)", s.ID, f[0], f[1])
+			}
 		}
 		validateEgress(add, s)
 		for _, k := range sortedKeys(s.Env) {
@@ -204,6 +253,11 @@ func (c *Config) validateTaskEgress(add func(string, ...any)) {
 	seen := map[[2]string]bool{}
 	for _, p := range pairs {
 		t := tasks[p.Task]
+		if t.Sudo != nil && *t.Sudo {
+			if sbID, err := c.ResolveSandbox(agents[p.Agent]); err == nil && sandboxes[sbID].Driver != "lxd" {
+				add("task %q sets sudo, but agent %q runs it in sandbox %q (driver %q); sudo is lxd-only for now", p.Task, p.Agent, sbID, sandboxes[sbID].Driver)
+			}
+		}
 		if !t.Egress.Set {
 			continue
 		}
@@ -311,6 +365,10 @@ func (c *Config) validateTasks(add func(string, ...any)) {
 }
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// sizeRe is a size as lxd and docker both read it: a number and a binary or
+// decimal unit.
+var sizeRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(B|kB|MB|GB|TB|KiB|MiB|GiB|TiB)$`)
 
 func (c *Config) validateScorers(add func(string, ...any)) {
 	for _, s := range c.Scorers {
