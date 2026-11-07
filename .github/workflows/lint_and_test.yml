@@ -26,6 +26,35 @@ jobs:
     - name: Test
       run: make test
 
+  # the lxd driver end to end on the runner's own lxd. the runner also runs
+  # docker, whose FORWARD policy drops traffic on bridges it was not told
+  # about, so pats's bridges are let through first -- the same rule an admin
+  # adds on any lxd server that runs docker.
+  lxd-e2e:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.26'
+
+    - name: Set up LXD
+      uses: canonical/setup-lxd@8c6a87bfb56aa48f3fb9b830baa18562d8bfd4ee # v1
+      with:
+        channel: 5.21/stable
+
+    - name: Let pats's bridges past docker
+      run: |
+        for br in patsbr+ patsup; do
+          sudo iptables -I DOCKER-USER -i "$br" -j ACCEPT
+          sudo iptables -I DOCKER-USER -o "$br" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+        done
+
+    - name: LXD e2e
+      run: sg lxd -c "PATS_LXD_E2E=1 go test ./src/sandbox/ -run TestLXDE2E -v -timeout 30m"
+
   # the workflows themselves only run on a push or a tag, so lint them here.
   actionlint:
     runs-on: ubuntu-latest
