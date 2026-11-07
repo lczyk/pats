@@ -4,12 +4,15 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -40,7 +43,7 @@ func fetchImageFile(ctx context.Context, ref, arch, name, dst string) error {
 				} `json:"platform"`
 			} `json:"manifests"`
 		}
-		if err := c.getJSON("/manifests/"+digest, indexAccept, &idx); err != nil {
+		if err := c.getVerified("/manifests/"+digest, indexAccept, digest, &idx); err != nil {
 			return err
 		}
 		digest = ""
@@ -58,18 +61,38 @@ func fetchImageFile(ctx context.Context, ref, arch, name, dst string) error {
 			Digest string `json:"digest"`
 		} `json:"layers"`
 	}
-	if err := c.getJSON("/manifests/"+digest, manifestAccept, &man); err != nil {
+	if err := c.getVerified("/manifests/"+digest, manifestAccept, digest, &man); err != nil {
 		return err
 	}
 	if len(man.Layers) == 0 {
 		return fmt.Errorf("%s: no layers", ref)
 	}
-	body, err := c.get("/blobs/"+man.Layers[len(man.Layers)-1].Digest, "")
+	// the layer is downloaded whole and checked against its digest before
+	// anything in it is trusted; the binary goes in place only after.
+	layer := man.Layers[len(man.Layers)-1].Digest
+	blob, err := os.CreateTemp(filepath.Dir(dst), ".pats-layer-")
 	if err != nil {
 		return err
 	}
-	defer body.Close()
-	gz, err := gzip.NewReader(body)
+	defer os.Remove(blob.Name())
+	defer blob.Close()
+	body, err := c.get("/blobs/"+layer, "")
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(blob, h), body)
+	body.Close()
+	if err != nil {
+		return err
+	}
+	if got := "sha256:" + hex.EncodeToString(h.Sum(nil)); got != layer {
+		return fmt.Errorf("%s: layer digest %s, want %s", ref, got, layer)
+	}
+	if _, err := blob.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	gz, err := gzip.NewReader(blob)
 	if err != nil {
 		return err
 	}
@@ -85,15 +108,22 @@ func fetchImageFile(ctx context.Context, ref, arch, name, dst string) error {
 		if strings.TrimPrefix(h.Name, "./") != strings.TrimPrefix(name, "/") || h.Typeflag != tar.TypeReg {
 			continue
 		}
-		f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		f, err := os.CreateTemp(filepath.Dir(dst), ".pats-bin-")
 		if err != nil {
 			return err
 		}
+		defer os.Remove(f.Name())
 		_, err = io.Copy(f, tr)
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
-		return err
+		if err == nil {
+			err = os.Chmod(f.Name(), 0o755)
+		}
+		if err != nil {
+			return err
+		}
+		return os.Rename(f.Name(), dst)
 	}
 }
 
@@ -168,13 +198,23 @@ func (c *registryClient) get(path, accept string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
-func (c *registryClient) getJSON(path, accept string, v any) error {
+// getVerified fetches a manifest by digest and checks its bytes hash to it
+// before decoding.
+func (c *registryClient) getVerified(path, accept, digest string, v any) error {
 	body, err := c.get(path, accept)
 	if err != nil {
 		return err
 	}
 	defer body.Close()
-	return json.NewDecoder(body).Decode(v)
+	b, err := io.ReadAll(io.LimitReader(body, 4<<20))
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(b)
+	if got := "sha256:" + hex.EncodeToString(sum[:]); got != digest {
+		return fmt.Errorf("registry %s: digest %s, want %s", path, got, digest)
+	}
+	return json.Unmarshal(b, v)
 }
 
 // manifest resolves tag to a digest and says whether it is an index.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -219,4 +220,44 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	}
 	_, _ = l.lxc(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
 	return nil
+}
+
+// LXDProvenance is what a pair's metadata records of the lxd server and
+// image it ran on.
+type LXDProvenance struct {
+	Remote           string `json:"remote"`
+	InstanceType     string `json:"instance_type"` // container | virtual-machine
+	ImageFingerprint string `json:"image_fingerprint"`
+	ServerVersion    string `json:"server_version"`
+}
+
+// LXDInfo resolves o's remote, image fingerprint and server version.
+func LXDInfo(ctx context.Context, o Options) (LXDProvenance, error) {
+	l := newLXD(o)
+	if err := l.prepareServer(ctx); err != nil {
+		return LXDProvenance{}, err
+	}
+	p := LXDProvenance{Remote: l.o.Remote, InstanceType: "container"}
+	if o.VM {
+		p.InstanceType = "virtual-machine"
+	}
+	fp, err := l.fingerprint(ctx, o.Image)
+	if err != nil {
+		return p, err
+	}
+	p.ImageFingerprint = fp
+	out, err := l.lxc(ctx, "query", l.o.Remote+":/1.0")
+	if err != nil {
+		return p, err
+	}
+	var srv struct {
+		Environment struct {
+			ServerVersion string `json:"server_version"`
+		} `json:"environment"`
+	}
+	if err := json.Unmarshal([]byte(out), &srv); err != nil {
+		return p, err
+	}
+	p.ServerVersion = srv.Environment.ServerVersion
+	return p, nil
 }

@@ -267,6 +267,8 @@ type pairMeta struct {
 	Sandbox     string  `json:"sandbox"`
 	Image       string  `json:"image"`
 	Sudo        bool    `json:"sudo,omitempty"` // the agent could sudo (lxd)
+	// the lxd server and image the pair ran on.
+	LXD *sandbox.LXDProvenance `json:"lxd,omitempty"`
 	ExitCode    int     `json:"exit_code"`
 	DurationS   float64 `json:"duration_s"`
 	Status      string  `json:"status"` // ok | nonzero | error
@@ -536,6 +538,9 @@ func runPair(
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
 		Summary: summarize(a.Harness, filepath.Join(outDir, "stdout.log")),
 	}
+	if sb.Driver == "lxd" {
+		meta.LXD = lxdProvenance(ctx, sb)
+	}
 	if h.spec.Egress.Set {
 		meta.Egress = &egressRecord{
 			Policy:   h.spec.Egress.Policy,
@@ -575,6 +580,22 @@ func runPair(
 	}
 	lg.info("[%s x %s] %s", p.Agent, p.Task, stats)
 	return nil
+}
+
+// lxdProvenances caches each lxd sandbox's provenance for the run: one
+// server round trip per sandbox, not per pair.
+var lxdProvenances sync.Map
+
+func lxdProvenance(ctx context.Context, sb config.Sandbox) *sandbox.LXDProvenance {
+	if v, ok := lxdProvenances.Load(sb.ID + "\x00" + sb.Image); ok {
+		return v.(*sandbox.LXDProvenance)
+	}
+	p, err := sandbox.LXDInfo(ctx, sandbox.Options{Driver: "lxd", Image: sb.Image, Remote: sb.Remote, VM: sb.VM})
+	if err != nil && p.Remote == "" {
+		return nil
+	}
+	lxdProvenances.Store(sb.ID+"\x00"+sb.Image, &p)
+	return &p
 }
 
 // runLogged runs f with its output written to logPath and, when tee is set,

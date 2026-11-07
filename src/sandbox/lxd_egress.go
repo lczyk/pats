@@ -285,7 +285,9 @@ func (s *lxdSession) closeEgress() {
 		_ = e.auditF.Close()
 	}
 	_, _ = s.l.lxc(context.Background(), "delete", s.l.ref(e.proxy), "--project", lxdProject, "--force")
-	e.m.cleanup()
+	if e.m != nil {
+		e.m.cleanup()
+	}
 }
 
 // proxyImages caches the proxy image per server for the process: every

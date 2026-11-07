@@ -313,10 +313,12 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 			args = append(args, "-p", p)
 		}
 	}
+	// marked first: a cancelled or ambiguous init may still have made it,
+	// and deleting a name that does not exist is harmless.
+	s.created = true
 	if _, err := l.lxc(ctx, args...); err != nil {
 		return fail(err)
 	}
-	s.created = true
 
 	allowed := map[string]bool{}
 	switch {

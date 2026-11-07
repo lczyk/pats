@@ -18,9 +18,20 @@ import (
 // it, since its owner may be another machine. force takes every run's leftovers
 // and the shared uplink, live or not; cached images stay either way, being a
 // cache, not a leftover.
+//
+// liveness never rests on two clocks agreeing: a run whose lease looks stale
+// by this machine's clock is only removed if the lease is still the same
+// after waiting longer than a live run takes to renew it.
 func CleanLXD(ctx context.Context, remote string, force, dryRun bool, out io.Writer) error {
 	l := newLXD(Options{Remote: remote})
-	return l.clean(ctx, force, dryRun, out, time.Now())
+	wait := func() {
+		fmt.Fprintf(out, "lxd %s: waiting %s to see whether stale-looking runs renew their lease\n", remote, leaseEvery+30*time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(leaseEvery + 30*time.Second):
+		}
+	}
+	return l.clean(ctx, force, dryRun, out, time.Now(), wait)
 }
 
 // lxdResource is one run-owned thing on the server.
@@ -34,7 +45,7 @@ type lxdResource struct {
 	marker  bool
 }
 
-func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now time.Time) error {
+func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now time.Time, wait func()) error {
 	if l.o.Remote == "" {
 		r, err := l.lxc(ctx, "remote", "get-default")
 		if err != nil {
@@ -61,12 +72,43 @@ func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now 
 	}
 	var errs []string
 	live := 0
+	var dead []string
 	for _, tok := range tokens {
-		group := runs[tok]
-		if !force && !runDead(group, now) {
+		if force || runDead(runs[tok], now) {
+			dead = append(dead, tok)
+		} else {
 			live++
-			continue
 		}
+	}
+	// a stale-looking lease must also hold still: a live run renews it
+	// within leaseEvery whatever either clock says.
+	if !force && !dryRun && len(dead) > 0 && hasMarker(runs, dead) {
+		wait()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		again, err := l.runResources(ctx)
+		if err != nil {
+			return err
+		}
+		leases := map[string]int64{}
+		for _, r := range again {
+			if r.marker {
+				leases[r.token] = r.lease
+			}
+		}
+		kept := dead[:0]
+		for _, tok := range dead {
+			if m := marker(runs[tok]); m != nil && leases[tok] != m.lease {
+				live++ // renewed while we waited: alive, whatever the clocks say
+				continue
+			}
+			kept = append(kept, tok)
+		}
+		dead = kept
+	}
+	for _, tok := range dead {
+		group := runs[tok]
 		// instances first (an attached nic holds its bridge), then
 		// bridges, acls, images, and the marker last: a clean that dies
 		// halfway leaves the run still marked or judged by creation time.
@@ -98,6 +140,24 @@ func (l *lxd) clean(ctx context.Context, force, dryRun bool, out io.Writer, now 
 		return fmt.Errorf("lxd clean: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func marker(group []lxdResource) *lxdResource {
+	for i := range group {
+		if group[i].marker {
+			return &group[i]
+		}
+	}
+	return nil
+}
+
+func hasMarker(runs map[string][]lxdResource, toks []string) bool {
+	for _, t := range toks {
+		if marker(runs[t]) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // runDead says whether a run's group may go: its marker's lease is stale, or

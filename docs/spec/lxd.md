@@ -202,7 +202,9 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
   sets `security.acls.default.egress.action=allow` and drops the private, local and multicast ranges, v4 and v6
   (rfc1918, loopback, link-local, `224.0.0.0/4`, `fc00::/7`, `fe80::/10`, `ff00::/8`). bridge acls apply only at
   the bridge-host boundary, which is exactly this case. that keeps the agent off a lan numbered out of those ranges
-  and off other instances; a lan on global addresses is not covered, and `open` does not claim it is.
+  and off other instances; a lan on global addresses is not covered, and `open` does not claim it is. nor is lxd's own
+  dnsmasq on the bridge: dhcp and dns to the host come before any acl, so an open agent resolves names through the
+  host. that is the one host service `open` reaches, and it is what open needs; the proxy topology has none.
 - proxy: fail-closed by topology first, acl second. a bridge acl cannot filter between instances on the same bridge
   or per nic (that needs ovn), and lxd's own dhcp and dns on a bridge come before any acl -- the way docker's internal
   bridge handed the agent the host (checked on the target server: an addressed bridge with `ipv4.dhcp=false`,

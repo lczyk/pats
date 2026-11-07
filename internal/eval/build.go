@@ -209,7 +209,8 @@ func pullEgressImages(ctx context.Context, cfg *config.Config, opts Options, pai
 	lg := logw{opts.Out, opts.Color}
 	seen := map[string]bool{}
 	for _, sb := range cfg.Sandboxes {
-		if !used[sb.ID] || !sb.Egress.Set {
+		// lxd provisions its proxy image itself, on the server.
+		if !used[sb.ID] || !sb.Egress.Set || !sb.IsContainer() {
 			continue
 		}
 		driver := sb.Driver
@@ -255,6 +256,9 @@ func resolveBuildSpec(configDir, spec string) (ctxDir, dockerfile string, err er
 // digest (repo@sha256:...) when it was pulled, else the local image id (a
 // locally built image has no registry digest). "" when neither can be read.
 func proxyImageID(ctx context.Context, sb config.Sandbox) string {
+	if !sb.IsContainer() {
+		return ""
+	}
 	img, _ := sandbox.ProxyImage(sb.Egress.Image)
 	// docker and podman both expose RepoDigests and Id on `image inspect`.
 	out, err := exec.CommandContext(ctx, sb.Driver, "image", "inspect", "--format",

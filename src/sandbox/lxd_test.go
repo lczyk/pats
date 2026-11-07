@@ -360,7 +360,9 @@ func TestLXDClean(t *testing.T) {
 		return nil
 	}
 	var out bytes.Buffer
-	require.NoError(t, l.clean(context.Background(), false, false, &out, now))
+	waited := false
+	require.NoError(t, l.clean(context.Background(), false, false, &out, now, func() { waited = true }))
+	assert.That(t, waited, "a stale-looking lease was not watched before removal")
 	log := strings.Join(calls, "\n")
 	for _, want := range []string{"delete srv:pats-dead", "network delete srv:patsbrdead", "network acl delete srv:patsbrdead",
 		"image delete srv:bbbbbbbbbbbbbbbb", "network acl delete srv:pats-run-dead", "delete srv:pats-orphan"} {
@@ -374,6 +376,14 @@ func TestLXDClean(t *testing.T) {
 	assert.ContainsString(t, out.String(), "left 2 live run(s)")
 
 	calls = nil
-	require.NoError(t, l.clean(context.Background(), true, false, &out, now))
+	require.NoError(t, l.clean(context.Background(), true, false, &out, now, func() { t.Fatal("force waited") }))
 	assert.ContainsString(t, strings.Join(calls, "\n"), "delete srv:pats-live")
+
+	// a run whose clock lags looks stale here, but renews while clean waits:
+	// it stays.
+	calls = nil
+	require.NoError(t, l.clean(context.Background(), false, false, &out, now, func() {
+		answers["/1.0/network-acls"] = []map[string]any{marker("dead", old+1)}
+	}))
+	assert.Equal(t, strings.Contains(strings.Join(calls, "\n"), "delete srv:pats-dead"), false)
 }
