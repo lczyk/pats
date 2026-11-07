@@ -92,6 +92,7 @@ type lxdServer struct {
 	remote string
 	pool   string
 	stop   chan struct{} // ends the marker's lease renewal
+	done   chan struct{} // closed once the renewal has ended
 	l      *lxd
 }
 
@@ -112,7 +113,7 @@ func (l *lxd) prepareServer(ctx context.Context) error {
 	srv.once.Do(func() {
 		srv.remote, srv.pool, srv.err = l.setupServer(ctx)
 		if srv.err == nil {
-			srv.stop = make(chan struct{})
+			srv.stop, srv.done = make(chan struct{}), make(chan struct{})
 			go srv.renew()
 		}
 	})
@@ -175,6 +176,7 @@ func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) 
 // the marker again when it is gone: a setup of the same server under
 // another remote name that failed removed it, or an admin did.
 func (srv *lxdServer) renew() {
+	defer close(srv.done)
 	p := srv.l.p
 	t := p.clock.NewTicker(p.t.leaseEvery)
 	defer t.Stop()
@@ -205,7 +207,10 @@ func (p *process) shutdown() {
 	defer x.mu.Unlock()
 	for k, srv := range x.servers {
 		if srv.stop != nil {
+			// a renewal in flight would make the marker again after the
+			// delete: it ends first.
 			close(srv.stop)
+			<-srv.done
 			_, _ = srv.l.lxc(context.Background(), "network", "acl", "delete", srv.remote+":"+srv.l.marker(), "--project", "default")
 		}
 		delete(x.servers, k)
