@@ -14,6 +14,7 @@ import (
 	"github.com/lczyk/assert/require"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 func fakeLookups(t *testing.T, registry, lxd func(ctx context.Context, ref string) (string, error)) {
@@ -77,9 +78,17 @@ t: {kind: task, items: {t: {prompt: p}}}
 suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
 `)
 	ctx := context.Background()
+	var log bytes.Buffer
+	// a build's bases, before it runs: present, or pulled first.
+	assert.EqualMaps(t, baseDigests(ctx, cfg.Sandboxes[0], dir, h, &log), map[string]string{"python:3": "sha256:pydigest"})
+	delete(h.refs, "python:3")
+	h.digests["python:3"] = "sha256:pulled"
+	assert.EqualMaps(t, baseDigests(ctx, cfg.Sandboxes[0], dir, h, &log), map[string]string{"python:3": "sha256:pulled"})
+	published, _ := sandbox.SandboxImage("")
+	assert.EqualArraysUnordered(t, h.pulls, []string{published, "python:3"}) // FROM ${PATS_SANDBOX} too
 	e := &pinEntry{Inputs: map[string]string{}}
 	upstreamInputs(ctx, cfg.Sandboxes[0], dir, h, e)
-	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:python:3": "sha256:pydigest"})
+	assert.Len(t, e.Inputs, 0) // a built image's bases come from baseDigests
 	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Name: "my/image:1", Digest: "sha256:mine"}}
 	upstreamInputs(ctx, cfg.Sandboxes[1], dir, h, e)
 	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:my/image:1": "sha256:mine"})

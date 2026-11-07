@@ -222,6 +222,11 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		}
 		return img
 	}
+	for ref, digest := range baseDigests(ctx, sb, ro.ConfigDir, h, logF) {
+		if !publishedRepo(ref) {
+			e.Inputs[upstreamPrefix+ref] = digest
+		}
+	}
 	switch {
 	case provisions(sb):
 		id, _, err := provisionedContainerImage(ctx, sb, ro, base, opts.Force, logF)

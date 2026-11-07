@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -54,30 +55,48 @@ func upstreamInputs(ctx context.Context, sb config.Sandbox, configDir string, h 
 		}
 		return
 	}
-	p, ok := h.(puller)
-	if !ok {
-		return
+	// a built image's FROM images were recorded before its build (see
+	// baseDigests); an image: sandbox's, or the pats sandbox's (:latest on a
+	// dev build), is the pinned image itself.
+	if !provisions(sb) && sb.Build == "" {
+		add(e.Image.Name, e.Image.Digest)
 	}
-	var refs []string
+}
+
+// fromImages are the images a container sandbox's build starts FROM.
+func fromImages(sb config.Sandbox, configDir string) []string {
 	published, _ := sandbox.SandboxImage("")
 	switch {
 	case provisions(sb) && sb.Base != "":
-		refs = append(refs, sb.Base)
+		return []string{sb.Base}
 	case provisions(sb):
-		refs = append(refs, published) // a layer on the pats sandbox
+		return []string{published} // a layer on the pats sandbox
 	case sb.Build != "":
 		if _, dockerfile, err := resolveBuildSpec(configDir, sb.Build); err == nil {
-			refs, _ = sandbox.DockerfileFroms(dockerfile, published)
-		}
-	default:
-		// an image: sandbox's, or the pats sandbox's (:latest on a dev build).
-		add(e.Image.Name, e.Image.Digest)
-	}
-	for _, ref := range refs {
-		if _, digest, err := p.inspect(ctx, ref); err == nil {
-			add(ref, digest)
+			refs, _ := sandbox.DockerfileFroms(dockerfile, published)
+			return refs
 		}
 	}
+	return nil
+}
+
+// baseDigests pins the digests of a build's FROM images before it runs,
+// pulling an absent one as the build would: so the baseline is the base the
+// build used, and one buildkit would not keep locally is still recorded.
+// a base that cannot be pulled or has no registry digest is left out.
+func baseDigests(ctx context.Context, sb config.Sandbox, configDir string, h puller, log io.Writer) map[string]string {
+	out := map[string]string{}
+	for _, ref := range fromImages(sb, configDir) {
+		if !h.present(ctx, ref) {
+			if err := h.pull(ctx, ref, log); err != nil {
+				continue
+			}
+		}
+		if _, digest, err := h.inspect(ctx, ref); err == nil && digest != "" {
+			out[ref] = digest
+		}
+	}
+	return out
 }
 
 // upstreamCheck is one sandbox's upstream refs, for a run to compare.
