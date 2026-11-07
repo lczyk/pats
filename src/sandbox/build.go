@@ -46,11 +46,16 @@ func BuildContainerImage(ctx context.Context, driver string, b ContainerBuild, b
 		hash = "" // fs hiccup -> just build; the build will surface the real error
 	}
 	if hash != "" {
-		ids, err := baseImageIDs(ctx, driver, fromRefs(dfData, baseImg))
-		if err != nil {
-			return "", false, err
+		refs, exact := fromRefs(dfData, baseImg)
+		if !exact {
+			hash = "" // the key could not name the base the build uses: build, the layer cache decides
+		} else {
+			ids, err := baseImageIDs(ctx, driver, refs)
+			if err != nil {
+				return "", false, err
+			}
+			hash = rehash(hash, ids)
 		}
-		hash = rehash(hash, ids)
 	}
 	if id := cachedImageID(ctx, driver, hash); id != "" {
 		return id, false, nil
@@ -131,23 +136,47 @@ func cachedImageID(ctx context.Context, driver, hash string) string {
 }
 
 // fromRefs lists the images a dockerfile builds FROM, the pats sandbox arg
-// substituted and earlier stages, scratch and refs naming other args skipped.
-func fromRefs(dfData []byte, base string) []string {
-	var refs []string
+// and the defaults of ARGs declared before the first FROM substituted, earlier
+// stages and scratch skipped. exact is false when a ref still names an arg it
+// cannot resolve, or a FROM picks a --platform: the key could then name a
+// different image than the build uses, and the caller skips the dry cache.
+func fromRefs(dfData []byte, base string) (refs []string, exact bool) {
+	exact = true
+	args := map[string]string{baseArg: base}
 	stages := map[string]bool{}
+	seenFrom := false
 	for _, line := range strings.Split(string(dfData), "\n") {
 		f := strings.Fields(line)
-		if len(f) < 2 || !strings.EqualFold(f[0], "FROM") {
+		if len(f) < 2 {
 			continue
 		}
+		if strings.EqualFold(f[0], "ARG") && !seenFrom {
+			if name, def, ok := strings.Cut(f[1], "="); ok && name != baseArg {
+				args[name] = strings.Trim(def, `"'`)
+			}
+			continue
+		}
+		if !strings.EqualFold(f[0], "FROM") {
+			continue
+		}
+		seenFrom = true
 		f = f[1:]
 		for len(f) > 0 && strings.HasPrefix(f[0], "--") {
+			if strings.HasPrefix(f[0], "--platform") {
+				exact = false
+			}
 			f = f[1:]
 		}
 		if len(f) == 0 {
 			continue
 		}
-		ref := strings.NewReplacer("${"+baseArg+"}", base, "$"+baseArg, base).Replace(f[0])
+		ref := os.Expand(f[0], func(k string) string {
+			if v, ok := args[k]; ok {
+				return v
+			}
+			exact = false
+			return "$" + k
+		})
 		if ref != "" && ref != "scratch" && !strings.Contains(ref, "$") && !stages[strings.ToLower(ref)] {
 			refs = append(refs, ref)
 		}
@@ -155,7 +184,7 @@ func fromRefs(dfData []byte, base string) []string {
 			stages[strings.ToLower(f[2])] = true
 		}
 	}
-	return refs
+	return refs, exact
 }
 
 // baseImageIDs resolves each base to the image id the build would use: the

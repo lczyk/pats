@@ -220,18 +220,25 @@ func TestBuildImage(t *testing.T) {
 }
 
 // the bases a dockerfile builds on, as the build resolves them: the pats arg
-// substituted, stages, scratch and other args left out.
+// and earlier ARG defaults substituted, stages and scratch left out. an arg it
+// cannot resolve, or a platform pick, makes the list inexact.
 func TestFromRefs(t *testing.T) {
 	df := []byte(`ARG PATS_SANDBOX
-FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+ARG BASE=ubuntu:24.04
+FROM golang:1.26 AS build
 FROM ${PATS_SANDBOX}
-from ubuntu:26.04 as tools
+from $BASE as tools
 FROM build
 FROM tools
 FROM scratch
-FROM $OTHER
 `)
-	assert.Equal(t, strings.Join(fromRefs(df, "ghcr.io/x/sandbox:v1"), " "), "golang:1.26 ghcr.io/x/sandbox:v1 ubuntu:26.04")
+	refs, exact := fromRefs(df, "ghcr.io/x/sandbox:v1")
+	assert.Equal(t, strings.Join(refs, " "), "golang:1.26 ghcr.io/x/sandbox:v1 ubuntu:24.04")
+	assert.Equal(t, exact, true)
+	_, exact = fromRefs([]byte("FROM $UNSET\n"), "")
+	assert.Equal(t, exact, false)
+	_, exact = fromRefs([]byte("FROM --platform=linux/amd64 ubuntu:24.04\n"), "")
+	assert.Equal(t, exact, false)
 }
 
 // a base refreshed locally changes the key; an absent one is pulled first, as
