@@ -29,8 +29,8 @@ func CleanLXD(ctx context.Context, remote string, force, dryRun bool, out io.Wri
 
 // lxdResource is one run-owned thing on the server.
 type lxdResource struct {
-	kind    string // instance | network | acl | image
-	name    string // the instance, network or acl name, or an image's fingerprint
+	kind    string // instance | network | acl | image | alias
+	name    string // the instance, network, acl or alias name, or an image's fingerprint
 	label   string // what to print
 	token   string
 	created int64
@@ -152,6 +152,8 @@ func (l *lxd) remove(ctx context.Context, r lxdResource) error {
 		_, err = l.lxc(ctx, "network", "acl", "delete", l.ref(r.name), "--project", "default")
 	case "image":
 		_, err = l.lxc(ctx, "image", "delete", l.ref(r.name), "--project", lxdProject)
+	case "alias":
+		_, err = l.lxc(ctx, "image", "alias", "delete", l.ref(r.name), "--project", lxdProject)
 	}
 	return err
 }
@@ -239,6 +241,13 @@ func (l *lxd) runResources(ctx context.Context) ([]lxdResource, error) {
 			}
 		}
 		if cached {
+			// a build that claimed the cache alias and then failed to drop
+			// its run-private one left that alias on the cached image.
+			for _, a := range im.Aliases {
+				if strings.HasSuffix(a.Name, "-"+tok) {
+					res = append(res, lxdResource{kind: "alias", name: a.Name, label: a.Name, token: tok, created: created})
+				}
+			}
 			continue
 		}
 		label := im.Fingerprint[:12]
