@@ -143,10 +143,14 @@ func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) 
 	if _, err := l.lxc(ctx, "project", "show", remote+":"+lxdProject); err != nil {
 		// networks stay in the default project: a bridge in another one
 		// needs ovn.
-		if _, err := l.lxc(ctx, "project", "create", remote+":"+lxdProject,
+		_, err := l.lxc(ctx, "project", "create", remote+":"+lxdProject,
 			"-c", "features.images=true", "-c", "features.profiles=true",
-			"-c", "features.networks=false", "-c", "features.storage.volumes=false"); err != nil {
-			return "", "", fmt.Errorf("%w\nif this client's certificate is restricted, an admin creates the project once:\n  lxc project create %s:%s -c features.images=true -c features.profiles=true -c features.networks=false", err, remote, lxdProject)
+			"-c", "features.networks=false", "-c", "features.storage.volumes=false")
+		if err != nil {
+			// another pats may have made it meanwhile.
+			if _, serr := l.lxc(ctx, "project", "show", remote+":"+lxdProject); serr != nil {
+				return "", "", fmt.Errorf("%w\nif this client's certificate is restricted, an admin creates the project once:\n  lxc project create %s:%s -c features.images=true -c features.profiles=true -c features.networks=false", err, remote, lxdProject)
+			}
 		}
 	}
 	pool, err = l.lxc(ctx, "profile", "device", "get", remote+":default", "root", "pool", "--project", "default")
