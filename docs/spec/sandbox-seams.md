@@ -117,6 +117,92 @@ shutdown; a docker network a failed create made after all, and a taken name read
 container without the owner label; and docker's Push and Pull nesting a directory one level deeper than the
 contract.
 
+## backends
+
+status: proposed. sessions have one shape (the rule above); everything else pats does with a daemon or a server has
+none, and it grew two ways:
+
+- lxd-specific exports in `src/sandbox`, which `internal/eval` picks by driver name: `LXDImage`, `LXDFingerprint`,
+  `LXDCopyImage`, `LXDRemote`, `LXDProxyImage`, `LXDRemoteFingerprint`, `LXDImageStamps`, `LXDImageUsage`,
+  `LXDDeleteImage`, `LXDInfo`, `ServerCPUs`, `CleanLXD`, `ShutdownLXD`. each builds a driver on `defaultProcess`
+  inside, so a caller cannot hand it a process of its own.
+- docker and podman argv in `internal/eval`, through `exec.Command`: `hosts.go`'s `containerHost` (`context show`,
+  `system connection list`, `info`, `image inspect` in two formats, `images -a`, `pull`, `rmi` from `remove.go`),
+  `clean.go`'s sweep, `build.go`'s `proxyImageID`, `run.go`'s `docker info` for `-j auto`; plus the exported
+  `BuildContainerImage` and `ContainerStamps`, which take a driver name.
+
+so eval knows docker's cli and which lxd functions exist, the docker half of image handling and clean has no argv
+test, and a new driver means another set of exports and another switch in eval.
+
+### the shape
+
+a backend is one place sandboxes run: a docker or podman daemon, an lxd server, later a bwrap host. it is built like a
+driver, from a process, a runner and its options (`newBackend(p, r, o)` in tests, `sandbox.Open(o)` in production on
+`defaultProcess`), and it carries every concern pats has of that place:
+
+```go
+type Backend interface {
+	// where
+	Target(ctx context.Context) (Target, error) // the pin key (docker:<context>, lxd:<remote>) and daemon identity
+	CPUs(ctx context.Context) int               // for -j auto; 0 when unknown
+
+	// images
+	Resolve(ctx context.Context, ref string) (Image, error) // id, digest; ErrNoImage when absent
+	Images(ctx context.Context) (map[string]bool, error)    // every image id held, tagged or not
+	Pull(ctx context.Context, ref string, log io.Writer) error
+	Build(ctx context.Context, spec BuildSpec, log io.Writer) (img Image, built bool, err error)
+	Stamps(ctx context.Context, id string) (map[string]string, error)
+	Usage(ctx context.Context, id string) (ImageUse, error) // what init's removal judges by
+	RemoveImage(ctx context.Context, id string) error
+	Upstream(ctx context.Context, ref string) (string, error) // the source's current id or digest, for staleness
+
+	// sandboxes
+	Sandbox(o SandboxOptions) (Sandbox, error) // today's Sandbox and Session, unchanged
+
+	// leftovers (see clean)
+	Runs(ctx context.Context) ([]Run, error) // token, owner, resources, verdict
+	Remove(ctx context.Context, r Resource) error
+}
+```
+
+- **two levels of options.** today's `Options` mixes the place (driver, remote, uplink, proxy binary, egress pool)
+  with one sandbox (image, limits, vm, profiles, config). `Open` takes the first, `Sandbox` the second, so one
+  backend serves every sandbox on its daemon and init and run share it.
+- **one implementation per backend family.** `containerBackend` (docker, podman, nerdctl through the engine table),
+  `lxdBackend`, later `bwrapBackend`, whose image methods say there are none and whose `Runs` lists temp dirs. what
+  differs by engine stays in the engine table.
+- **`BuildSpec`** carries what init builds on any backend: a base, provision material and argv, or a dockerfile and
+  its context (container backends only; lxd refuses it), the role and sandbox for lxd's properties, and force. the
+  per-backend keys, the claim protocol and the re-pointing stay inside each backend.
+- **eval holds policy only:** pins, staleness, what to build, pull or remove and when, the order of a run, what clean
+  reports. it declares the narrow interfaces it uses, as `imageHost` does today, and a backend satisfies them; init's
+  `fakeHost` keeps testing init's logic. eval runs no cli and names no driver beyond picking the backend.
+- **the process stays one per pats.** a backend holds the process it was built on; leases, the subnet counter and
+  per-server setup stay on the process, shared by every backend it opened. `ShutdownLXD` becomes `sandbox.Shutdown`,
+  ending every lease the process holds, on any backend.
+- **pure helpers stay functions:** `SandboxImage`, `ProxyImage`, `NormalizeRef`, `Repository`, `RegistryDigest`,
+  `ContextHash`, `DockerfileFroms`, `MkTemp` and friends touch no daemon.
+
+### tests
+
+each backend's argv is tested on its fake, like its sessions: `fakeDaemon` learns images (inspect, the image list,
+pull, rmi, the target commands), and `fakeServer` already holds what lxd's image methods use. a backend conformance
+table, beside the session one, runs what every backend promises against each fake: resolve after pull and after
+build, a missing ref as `ErrNoImage`, an image in use refused removal, `Images` after a removal, `Target` stable
+across calls. eval's tests keep their method-level fakes.
+
+### the move
+
+in steps, each behaviour-preserving and committed on its own:
+
+1. `Backend`, `Open` and the two option levels, wrapping today's functions; eval's `hostFor` and the driver switches
+   go through it.
+2. docker and podman's argv moves from `internal/eval` into `containerBackend`, with `fakeDaemon`'s images and the
+   backend conformance table.
+3. clean on `Runs` and `Remove` (the next section).
+4. the lxd-specific exports and `BuildContainerImage` / `ContainerStamps` go; `src/sandbox`'s exported surface is
+   `Open`, `Shutdown`, the types and the pure helpers.
+
 ## clean
 
 status: proposed. `pats clean` removes what dead runs left, on every backend, by one rule: a run is alive while its
@@ -159,10 +245,11 @@ exception below.
   its lease, for a wedged process whose renewal still ticks or an admin clearing a shared server. force still removes
   shared resources no run uses (lxd's `patsup`), which the daemon refuses while an instance is on it, and an init
   build holds a live marker while it uses one.
-- **where it lives.** each driver lists its runs (token, owner, resources, verdict) and removes a resource, behind the
-  runner, in `src/sandbox`; the order, the verdict and `--force` are shared. `internal/eval`'s clean loops over the
-  drivers and the temp dirs, with no docker calls of its own. it takes `pats init`'s machine lock while it removes,
-  so the two never act on one daemon at once. the docker clean gets the fake-daemon sweep lxd's has.
+- **where it lives.** each backend lists its runs (token, owner, resources, verdict) and removes a resource
+  (`Backend.Runs`, `Backend.Remove`, above); the order, the verdict and `--force` are shared in `src/sandbox`.
+  `internal/eval`'s clean loops over the backends and the temp dirs, with no cli calls of its own. it takes `pats
+  init`'s machine lock while it removes, so the two never act on one daemon at once. the docker clean gets the
+  fake-daemon sweep lxd's has.
 - **the clock.** docker's lease and its cleaner share one clock where they share one cache dir (above). lxd's are two
   machines' clocks, the run's writing the lease and the cleaner's reading it: a cleaner about 7.5m fast takes a live
   run. accepted (`fizz/lxd_lease.fizz`): ntp keeps real machines far closer, and the server's clock cannot be read
@@ -178,10 +265,6 @@ exception below.
 
 ## not in this
 
-- `internal/eval` still runs docker itself in three places: `pats clean`'s sweep of `sbx-*` containers and networks
-  (which moves with "clean" above), the pre-pull of the sandbox and proxy images, and `docker info` for `-j auto`. the
-  last two move into `src/sandbox` behind the runner when `pats init` (`init.md`) takes over pulls and builds; until
-  then they stay e2e-only.
 - bwrap: only the exec path is known to fit. its runner runs `bwrap` itself and `execCancellable`'s cancel step is a
   no-op, since ending bwrap ends its children. it has no daemon, no networks, no log follower and no cidfile, and
   Push and Pull are host copies; how egress works under it (the proxy, the self-test) is open.
