@@ -1,10 +1,10 @@
 # sandbox drivers: one way to put them together
 
-status: the rule, the shared pieces and the timings implemented for docker, podman and lxd; the tests section's
-three next steps proposed. the shape every sandbox driver (docker, podman, lxd; bwrap and nerdctl to come)
-is built in, so each one is tested the same way and without its daemon. `lxd-testing.md` is the lxd plan this grew
-out of; its seams 1 to 3a are this design applied to lxd, and its fake server and fault sweep (seams 4 and 5) sit on
-top of it.
+status: implemented for docker, podman and lxd: the rule, the shared pieces, the timings, and the tests (shared
+fakes, a state-tracking fake per daemon, the cross-driver tables, the sweeps). the shape every sandbox driver
+(docker, podman, lxd; bwrap and nerdctl to come) is built in, so each one is tested the same way and without its
+daemon. `lxd-testing.md` is the lxd plan this grew out of; its seams 1 to 3a are this design applied to lxd, and its
+fake server and fault sweep (seams 4 and 5) sit on top of it.
 
 ## the rule
 
@@ -77,35 +77,41 @@ plumbing, not a driver's wait.
 
 ## tests
 
-one set of fakes in `src/sandbox`, shared by every driver's tests:
+one set of test pieces in `src/sandbox`, shared by every driver's tests (`fake_test.go`):
 
 - `runFunc`: a runner from a function; `Start` runs it in a goroutine whose context a signal ends.
 - `procRunner`: the same, keeping the procs it started, each with an ordered log of the signals it got; one can be
   told to ignore a signal (a client that outlives sigterm).
 - `callLog`: the calls a fake saw, under a lock: `record`, `all`, `reset`, `call(prefix)`, `find(substring)`.
 - `testProcess(t)`: a process with short timings, shut down when the test ends.
+- `manualClock`: a clock that moves only when the test advances it.
+- `faults`: at most one fault in a fake cli's calls, of four kinds: the daemon refuses the call, or does it and the
+  client fails anyway, or the context ends before or after the daemon acts.
 
-per driver, a fake cli on top: `fakeLXC` (and the fake lxd server of `lxd-testing.md` seam 4), `fakeDocker`. each
-answers argv the way its daemon would and records into a `callLog`.
+per daemon, a fake that tracks state and answers argv as the daemon does, flags parsed by name, refusing what the
+daemon refuses, failing the test on argv it does not know, and answering probes by name (`probes.go`):
+`fakeServer` (`lxdfake_test.go`, `lxd-testing.md` seam 4) and `fakeDaemon` (`dockerfake_test.go`: containers,
+networks and their addresses, labels, the cidfile, docker cp's rules, `logs -f`). each records into a `callLog`.
+the older argv-pinning fakes (`fakeLXC`, `fakeDocker`) stay for the tests that assert the argv itself.
 
-behaviour every driver must share gets one table test run against each driver's fake. a new driver joins each table
-and passes before it ships. today there is one, `TestExecCancel`: the cancel step, then sigterm, then sigkill after
-the grace; the killed client's status as the result; a clean exit after the cancel as the cancel; a context already
-done; a clean finish not signalled. it builds
-sessions by hand, so it covers Exec alone.
+behaviour every driver must share gets one table run against each driver's fake. a new driver joins each table and
+passes before it ships:
 
-what "test any backend the same way" needs on top, in order:
+- `TestExecCancel`: the cancel step, then sigterm, then sigkill after the grace; the killed client's status as the
+  result; a clean exit after the cancel as the cancel; a context already done; a clean finish not signalled.
+- `TestSessionConformance`: what `Session` promises of Push, Pull and Exec (a directory's contents to a new or an
+  existing path, a file to a path, a directory's contents out into hostDir, a non-zero exit as the command's), and a
+  second Close with nothing left. the copy rules are also checked on a real docker where one runs.
 
-1. a state-tracking fake per daemon: the fake lxd server (`lxd-testing.md` seam 4), and its docker equivalent
-   (containers, networks, images, labels, the cidfile), answering argv rather than matching substrings. the probes
-   whose output a driver reads become named values both fakes answer by name (`lxd-testing.md` seam 6; the canary and
-   the reachability probe are shared already).
-2. a conformance table over the whole session, run against each fake: Start, Push, Exec as root and as the agent,
-   HandOver, Sync, Pull, Close, under each egress mode the driver has, asserting what the agent sees and what the
-   daemon holds after Close.
-3. the fault sweep (`lxd-testing.md` seam 5) over every driver: fail or cancel the n-th cli call of Start, Close and
-   the image builds, and assert nothing of the run is left. docker's Start has its own leftover paths (the cidfile
-   cleanup, the proxy and network teardown order).
+per driver, on its fake: a whole session under each egress mode (`TestLXDSessionOnServer`,
+`TestContainerSessionOnDaemon`), and the sweep: every cli call of Start under each egress mode, of Close, and for lxd
+of the image builds and clean, faulted each way, after which nothing of the run is left. where the faulted call was
+itself a removal, what it failed to remove must be what `pats clean` takes: for lxd the next clean once the run is
+dead, for docker a name and the owner label `pats clean` finds.
+
+the sweeps found, and the code now handles: two runs creating the lxd project at once; an lxd marker, a published
+image or a run's alias left by a setup or build that failed; a marker removed under a live run; a docker network a
+failed create made after all; and docker's Push and Pull nesting a directory one level deeper than the contract.
 
 ## not in this
 
@@ -122,8 +128,11 @@ what "test any backend the same way" needs on top, in order:
 
 ## risks
 
-- the fakes answer by argv and can drift from the clis. the e2e jobs (`TestLXDE2E`, the docker session tests that
-  skip without a daemon) are the check, and lxd gets contract tests (`lxd-testing.md` seam 8).
+- the fakes answer by argv and can drift from the clis. the checks: the e2e jobs (`TestLXDE2E`, the docker session
+  tests that skip without a daemon), lxd's contract scenarios (`TestLXDContract`, run against the fake and the ci
+  job's lxd), and docker's copy rules on a real docker (`TestContainerCopyRules`). docker has no contract scenarios
+  beyond those; the daemon behaviours `fakeDaemon` encodes (a taken name or subnet, a network with endpoints, `--rm`
+  on kill) are checked only by the e2e paths that happen to hit them.
 - `combined` and `output` trim and split output differently from the helpers they replace; each call site keeps the
   shape it had (`docker()` combined and trimmed, `dockerOut()` stdout with stderr in the error, `lxc()` combined with
   the args in the error).
