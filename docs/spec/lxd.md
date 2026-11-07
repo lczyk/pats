@@ -58,9 +58,11 @@ lxd:
 - `provision` (once per image, inside, as root) is deliberately not named after a task step (once per pair).
 - validation per driver: `vm`, `remote`, `profiles`, `config` only under `lxd`; `build` only under docker / podman;
   `sudo: true` under docker is an error for now, since the docker agent runs as the host uid with no passwd entry.
-- `profiles` and `config` pass through, but a profile can attach a nic and undo the egress topology. after start,
-  the expanded instance (`lxc config show --expanded`) is checked: a nic other than the slot's refuses the run, and
-  under `egress: none` any nic does.
+- `profiles` and `config` pass through, but a profile can attach a nic and undo the egress topology, and a nic that
+  is up at boot is already in use before anything could check it. so every instance is made with `lxc init`, its
+  expanded config (`lxc config show --expanded`) checked while stopped, and only then started: a nic other than the
+  slot's refuses the run, under `egress: none` any nic does, and so does `raw.lxc` / `raw.qemu*` under `none` and
+  proxy, since those can add devices the expanded list does not show.
 
 ## task steps, aligned with spread
 
@@ -136,8 +138,8 @@ type Session interface {
 
 ## slots and the vm pool
 
-a slot is one worker instance plus its own bridge (and under `open` an acl) and proxy container, created once per
-run. pool size per
+a slot is one worker instance plus its own bridge, that bridge's acl and (under a proxy policy) a proxy container,
+created once per run. pool size per
 sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for containers and vms; only vms snapshot.
 
 - containers: a fresh ephemeral instance per pair, launched from the cached image (a zfs clone, about a second).
@@ -145,8 +147,8 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
   `migration.stateful=true`, `lxc snapshot <worker> ready --stateful`). a disk-only snapshot wouldn't help, since
   restoring one restarts the vm. per pair: `lxc restore <worker> ready --stateful` (without the flag the restore is
   disk-only and the vm reboots), wait for `lxd-agent` to answer (exec and the tar sync both go through it), then
-  fixups so pairs share nothing from the snapshot moment (mix host randomness into `/dev/urandom`, step the clock,
-  rewrite the static address if the slot's changed), then push, prepare, agent, pull. credentials and home are pushed
+  fixups so pairs share nothing from the snapshot moment (mix host randomness into `/dev/urandom`, step the clock),
+  then push, prepare, agent, pull. credentials and home are pushed
   after the resume, so no login state is baked in.
 - preflight runs once per agent in the first slot, then the slot is restored.
 - the pool lives for one run. snapshots cost about one ram size of disk each, which `-j` multiplies.
@@ -157,11 +159,15 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
 ## images
 
 - cache key: `sha256(base image fingerprint, provision script, the host bin/ contents, instance type)`, published as
-  `pats-img-<hash>` in the `pats` project. `bin/` is in the key because provisioning runs it. a refreshed base image therefore triggers reprovisioning. container and vm images are separate
-  image types, hence the instance type in the key.
-- a miss: launch the base as a builder, push the script and `bin/`, run it as root, stop, `lxc publish` with the
-  alias, delete the builder. output goes to `<run>/images/<hash>.log`, so the run dir is made before images are resolved (`internal/eval/run.go`
-  builds first today); only a generous fixed time cap.
+  `pats-img-<hash>` in the `pats` project. `bin/` is in the key because provisioning runs it. a refreshed base image
+  therefore triggers reprovisioning. container and vm images are separate image types, hence the instance type in the
+  key.
+- a miss: launch the base as a builder, push the script and `bin/`, run it as root, stop, `lxc publish` under a
+  run-private alias `pats-img-<hash>-<token>`, delete the builder, then create the real alias. if another run made
+  it first (two laptops, one miss) its image is used and this one deleted: same key, same inputs. never
+  `lxc publish --reuse`, which could swap an image out from under a running pair. output goes to
+  `<run>/images/<hash>.log`, so the run dir is made before images are resolved (`internal/eval/run.go` builds first
+  today); only a generous fixed time cap.
 - cached images keep their harness cli versions until the base refreshes, the same staleness docker has; whatever
   pins them for docker applies here too.
 - a custom `base` for a vm must run `lxd-agent`: exec and file transfer need it.
@@ -172,15 +178,30 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
 - `none`: no nic. the instance uses a pats profile with a root disk and nothing else. `lxc exec` still works on a
   vm, since the guest agent uses vsock.
 - `open`: the slot's bridge with nat and an acl. assigning an acl makes lxd reject what no rule matches, so the acl
-  sets `security.acls.default.egress.action=allow` and drops the private ranges, v4 and v6 (rfc1918, loopback,
-  link-local, `fc00::/7`, `fe80::/10`): the agent reaches the internet but not the server's lan or other instances.
-  bridge acls apply only at the bridge-host boundary, which is exactly this case.
-- proxy: fail-closed by topology, not by acl. a bridge acl cannot filter between instances on the same bridge or per
-  nic (that needs ovn), and lxd's own dhcp and dns on a bridge come before any acl -- the way docker's internal
-  bridge handed the agent the host. so the slot's bridge gets `ipv4.address=none` and `ipv6.address=none`: the host
-  has no address on it, there is no dhcp, dns or routing, and nothing is on it but the agent and the proxy. both get
-  static addresses out of the egress work's pats-managed pool, written into the instance after start (netplan over
-  exec, since cloud-init is off). the proxy's second nic, on the nat'd bridge, is the only way out.
+  sets `security.acls.default.egress.action=allow` and drops the private, local and multicast ranges, v4 and v6
+  (rfc1918, loopback, link-local, `224.0.0.0/4`, `fc00::/7`, `fe80::/10`, `ff00::/8`). bridge acls apply only at
+  the bridge-host boundary, which is exactly this case. that keeps the agent off a lan numbered out of those ranges
+  and off other instances; a lan on global addresses is not covered, and `open` does not claim it is.
+- proxy: fail-closed by topology first, acl second. a bridge acl cannot filter between instances on the same bridge
+  or per nic (that needs ovn), and lxd's own dhcp and dns on a bridge come before any acl -- the way docker's internal
+  bridge handed the agent the host (checked on the target server: an addressed bridge with `ipv4.dhcp=false`,
+  `dns.mode=none` and a default-reject acl still answers on the host's port 53). so the slot's bridge gets
+  `ipv4.address=none` and `ipv6.address=none` (lxd then starts no dnsmasq on it and adds no address, nat or
+  forwarding rules), and nothing is on it but the agent and the proxy.
+  - the bridge interface still exists on the host, and a root agent could aim a route at its mac; if anything else
+    on the server turned `ip_forward` on, the host would route that. so the bridge also carries an acl with no rules
+    and both default actions `reject`: it fences exactly the bridge-host boundary, which is all that is left.
+  - both instances get static addresses out of the egress work's pats-managed pool. the lxd nic devices carry
+    explicit names (`name=pats0` on the slot bridge for both, `name=uplink0` for the proxy's way out), so the address
+    goes on the right nic whatever order a vm enumerates them in. the address is set with `ip` over exec after
+    start, not netplan, so a custom base needs only iproute2; a restored vm keeps it in memory.
+  - the proxy's `uplink0`, on the nat'd bridge, is the only way out.
+  - a server that also runs docker drops bridged ipv4 between instances on any lxd bridge it was not told about
+    (seen on the target server: a fresh bridge, addressed or not, carried v6 but no v4 between two containers, while
+    `lxdbr0` worked; docker's `FORWARD` policy with `br_netfilter` is the usual cause). pats can't fix that from a
+    remote client, so slot bridges are named `patsbr<n>` for one admin rule to cover all, and the preflight checks
+    agent-to-proxy reachability and names the fix (lxd's docker coexistence how-to, scoped to `patsbr+`) when it
+    fails.
   - the slot's proxy container (`ubuntu-minimal:26.04` plus the pats binary, published once per pats version as
     `pats-proxy-<version>`) sits on the bridge at a fixed ip with a second nic out; ip forwarding stays off in it.
     each pair starts a fresh `pats egress run` process in it with that pair's policy and
@@ -196,17 +217,23 @@ sandbox is `min(max-parallel, -j, pairs)`. the slot model is the same for contai
     (token, index, per-arch manifest, top layer, untar in go), with no docker involved. an env var names a local file
     for unreleased dev builds.
   - the preflight canary is the egress work's: tcp4, tcp6, a udp dns query and a name lookup from inside must all
-    fail before the proxy exists. it proves the topology per driver.
+    fail before the proxy exists. it proves the topology per driver. lxd adds a hostile probe for `sudo: true`: as
+    root, point a default route at the bridge's mac through a static neighbour entry and try again.
 - egress is enforced outside the instance, so `sudo` can't undo it. a nic a profile adds is refused (see schema).
 
 ## cleanup
 
-the owner-pid liveness `pats clean` uses for docker cannot be asked of a remote server. instead pats renews
-`user.pats.lease=<unix time>` on each worker every two minutes while a run lives. `pats clean` removes a run's
-instances, proxy, bridge and acl once its lease is more than ten minutes old, agents before proxies before networks,
-as for docker. a run with a fresh lease is left alone whoever owns it; `--force` takes everything in the project, for
-a laptop that is gone. a run that ends, or is interrupted, removes its own; a builder that crashed mid-provision is a
-leftover like any other, since it carries the token too.
+the owner-pid liveness `pats clean` uses for docker cannot be asked of a remote server. instead the first thing a
+run creates is a marker, an empty acl `pats-run-<token>`, and pats renews `user.pats.lease=<unix time>` on it every two
+minutes while the run lives. everything else the run makes (builders, workers, proxies, bridges, acls, run-private
+image aliases) carries the token. a container slot has no worker between pairs while its proxy and bridge stay up, so
+the lease can't live on a worker.
+
+`pats clean` groups what it finds by token. a group whose marker's lease is more than ten minutes old goes, agents
+before proxies before networks before the marker, as for docker. a group with no marker yet (a run that died between
+creating something and its marker, or the instant before) is judged by its resources' creation time against the same
+ten minutes. a fresh lease is left alone whoever owns it; `--force` takes everything in the project, for a laptop
+that is gone. a run that ends, or is interrupted, removes its own.
 
 ## metadata
 
@@ -232,8 +259,9 @@ whether the agent had sudo.
    on cancel. L.
 3. **lxd vms**: `vm: true`, the stateful-snapshot pool with fixups and the fresh-boot fallback, `profiles` / `config`.
    first check stateful vm snapshots on the target server. M-L.
-4. **lxd egress**: the addressless bridge and static addressing, the proxy container per slot, the `open` acl, the
-   registry fetch of the proxy binary, `material` reuse, the canary. L.
+4. **lxd egress**: the addressless bridge with its reject acl, named nics and static addressing, the proxy container
+   per slot, the `open` acl, the registry fetch of the proxy binary, `material` reuse, the canary and the hostile
+   probe, the docker coexistence check. L.
 5. **cleanup and docs**: lease-based `pats clean` for the `pats` project; readme; mason migration notes; an lxd e2e
    job in ci (containers; vms if the runner exposes kvm). M.
 
@@ -261,5 +289,6 @@ whether the agent had sudo.
   server's lan, another slot's bridge and the proxy's outbound address are all unreachable; from the outbound bridge
   the proxy's port is closed.
 - cleanup: `kill -9` of pats mid-run, then `pats clean` after the lease lapses, leaves the project empty; two runs
-  from two laptops on one server do not sweep each other.
+  from two laptops on one server do not sweep each other, including a container run between pairs; two runs
+  missing the same image build it once or reuse each other's.
 - checked on the target server before the vm phase: stateful vm snapshots, `lxc publish` of a vm.
