@@ -279,6 +279,10 @@ func (f *fakeServer) do(ctx context.Context, stdin io.Reader, stdout, stderr io.
 		f.projects[name] = true
 		return nil
 	case at(0) == "profile" && at(1) == "device" && at(2) == "get":
+		if at(3) != f.remote+":default" || at(4) != "root" || at(5) != "pool" || a.flag("--project") != "default" {
+			f.t.Errorf("fake lxd: lxc %s: the driver reads the default profile's root pool", strings.Join(args, " "))
+			return lxcFail(stderr, "Device doesn't exist")
+		}
 		fmt.Fprintln(stdout, f.pool)
 		return nil
 	case at(0) == "network" && at(1) == "acl":
@@ -299,12 +303,18 @@ func (f *fakeServer) do(ctx context.Context, stdin io.Reader, stdout, stderr io.
 				return lxcFail(stderr, "Failed to start device %q: network %q not found", dn, d["network"])
 			}
 		}
+		if inst.running {
+			return lxcFail(stderr, "The instance is already running")
+		}
 		inst.running = true
 		return nil
 	case at(0) == "stop":
 		inst, err := f.inst(stderr, a, at(1))
 		if err != nil {
 			return err
+		}
+		if !inst.running {
+			return lxcFail(stderr, "The instance is already stopped")
 		}
 		_, name := lxcRef(at(1))
 		inst.running = false
@@ -372,6 +382,10 @@ func (f *fakeServer) acl(stdout, stderr io.Writer, a fakeArgs) error {
 			return lxcFail(stderr, "Network ACL not found")
 		}
 		rule := kv(p[6:])
+		if err := aclRuleErr(p[5], rule); err != "" {
+			f.t.Errorf("fake lxd: lxc %s: %s", strings.Join(p, " "), err)
+			return lxcFail(stderr, "%s", err)
+		}
 		rule["direction"] = p[5]
 		acl.rules = append(acl.rules, rule)
 		return nil
@@ -415,6 +429,34 @@ func (f *fakeServer) acl(stdout, stderr io.Writer, a fakeArgs) error {
 	}
 	f.t.Errorf("fake lxd: unknown command lxc %s", strings.Join(p, " "))
 	return lxcFail(stderr, "unknown command")
+}
+
+// aclRuleErr is what lxd says of a rule it refuses, "" for one it takes.
+func aclRuleErr(direction string, rule map[string]string) string {
+	if direction != "ingress" && direction != "egress" {
+		return "Invalid direction " + direction
+	}
+	keys := map[string]bool{"action": true, "source": true, "destination": true, "protocol": true, "source_port": true,
+		"destination_port": true, "icmp_type": true, "icmp_code": true, "state": true, "description": true}
+	for k := range rule {
+		if !keys[k] {
+			return "Unknown key " + k
+		}
+	}
+	switch rule["action"] {
+	case "allow", "reject", "drop":
+	default:
+		return "Invalid action " + rule["action"]
+	}
+	switch rule["protocol"] {
+	case "", "tcp", "udp", "icmp4", "icmp6":
+	default:
+		return "Invalid protocol " + rule["protocol"]
+	}
+	if rule["destination_port"] != "" && rule["protocol"] != "tcp" && rule["protocol"] != "udp" {
+		return "Ports need a tcp or udp protocol"
+	}
+	return ""
 }
 
 func (f *fakeServer) network(stdout, stderr io.Writer, a fakeArgs) error {
@@ -924,17 +966,13 @@ func (f *fakeServer) probe(ctx context.Context, inst *fakeInst, name, probeName 
 			return exitStatus(2)
 		}
 		return nil
-	case "handover", "provision":
-		if probeName == "provision" {
-			f.mu.Unlock()
-			err := f.runAgent(ctx, name, argv, stdout, stderr)
-			f.mu.Lock()
-			return err
-		}
+	case "handover":
 		return nil
 	}
 	// a script whose output nobody reads: sysctl, ip addr, sudoers, the
-	// build epilogue, cloud-init.
+	// build epilogue, cloud-init. a probe whose output a driver reads must
+	// be answered above: its verdict errors on this empty output, which is
+	// what keeps a probe missing here from passing silently.
 	if stdin != nil {
 		_, _ = io.Copy(io.Discard, stdin)
 	}

@@ -295,6 +295,56 @@ func TestLXDSweepStart(t *testing.T) {
 	}
 }
 
+// a proxied sandbox whose agent may sudo also runs the hostile probe and
+// writes the sudoers rule: every call of that Start and its hand over.
+func TestLXDSweepStartSudo(t *testing.T) {
+	bin := proxyBin(t)
+	sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
+		l := lxdOn(t, f, Options{ProxyBin: bin})
+		sess, err := l.Start(ctx, Spec{Workdir: t.TempDir(), Sudo: true, Egress: lxdEgressModes[2].egress})
+		if err == nil {
+			_ = sess.HandOver(ctx, WorkMount)
+		}
+		f.faults.off()
+		if err == nil {
+			sess.Close()
+		}
+		return l.p
+	})
+}
+
+// clean deletes a dead run's instance once, without the wait Close does
+// for a create the server is still running, since clean is not to wait:
+// such an instance survives that clean and goes in the next one
+// (docs/spec/lxd-testing.md, seam 5).
+func TestLXDCleanCreateInFlight(t *testing.T) {
+	f := newFakeServer(t)
+	dead := lxdOn(t, f, Options{})
+	dead.p.t.instanceGone = 50 * time.Millisecond
+	work := t.TempDir()
+	f.slow[lxdName(work)] = 1 << 20 // still running when clean comes
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for !f.has("acl", dead.marker()) || f.find("init ") == nil {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	_, err := dead.Start(ctx, Spec{Workdir: work, Egress: Egress{None: true}})
+	require.Error(t, err, "")
+	// Start's Close gave up on the create (instanceGone), and the run ended.
+	crash(dead.p)
+	f.mu.Lock()
+	for _, op := range f.ops {
+		op.left = 3 // the create ends during the clean
+	}
+	f.mu.Unlock()
+	cleanLater(t, f)
+	assert.That(t, f.has("instance", lxdName(work)), "the create in flight finished before the clean read the server")
+	cleanLater(t, f)
+	assert.Equal(t, strings.Join(f.leftovers(dead.p.token), "\n"), "")
+}
+
 // every call of an image build: the builder and anything published under
 // the run's private alias are gone; the cached image may stay.
 func TestLXDSweepImage(t *testing.T) {
