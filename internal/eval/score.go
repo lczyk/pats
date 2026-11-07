@@ -221,7 +221,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		for _, j := range jobs {
 			scope[ScoreCell{Agent: j.agent, Task: j.task, Scorer: j.sc.ID}] = true
 		}
-		if rep, err = mergeScores(cfg, runDir, cells, scope, lg); err != nil {
+		if rep, err = mergeScores(cfg, runDir, cells, scope); err != nil {
 			return nil, err
 		}
 	} else {
@@ -718,7 +718,7 @@ func splitRunName(name string) (date string, n int, ok bool) {
 // replaced by what it computed, cells outside it are kept unless the config
 // no longer has their (agent, task, scorer), and the report is aggregated
 // over every suite's pairs.
-func mergeScores(cfg *config.Config, runDir string, cells []ScoreCell, scope map[ScoreCell]bool, lg logw) (*ScoreReport, error) {
+func mergeScores(cfg *config.Config, runDir string, cells []ScoreCell, scope map[ScoreCell]bool) (*ScoreReport, error) {
 	allPairs, err := cfg.ExpandTestPairs()
 	if err != nil {
 		return nil, err
@@ -747,8 +747,7 @@ func mergeScores(cfg *config.Config, runDir string, cells []ScoreCell, scope map
 	default:
 		var prev ScoreReport
 		if err := json.Unmarshal(data, &prev); err != nil {
-			lg.warn("scores.json: %v -- replacing it with this score's cells only", err)
-			break
+			return nil, fmt.Errorf("scores.json: %w (a narrowed score merges into it; score without filters to rebuild it)", err)
 		}
 		for _, c := range prev.Cells {
 			key := ScoreCell{Agent: c.Agent, Task: c.Task, Scorer: c.Scorer}

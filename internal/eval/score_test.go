@@ -307,6 +307,15 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: tasks, scorers: scorers}}
 	require.NoError(t, json.Unmarshal(data, &onDisk))
 	assert.Len(t, onDisk.Cells, 3)
 
+	// a corrupt scores.json stops a narrowed score instead of being replaced.
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), []byte(`{"cells": [`), 0o644))
+	_, err = score(ScoreOptions{Scorers: []string{"y"}})
+	assert.Error(t, err, "scores.json")
+	got, err := os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), `{"cells": [`)
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), data, 0o644))
+
 	// a narrowed score that reaches nothing leaves scores.json as it was.
 	require.NoError(t, os.RemoveAll(filepath.Join(run, "b")))
 	_, err = score(ScoreOptions{Agents: []string{"b"}})
