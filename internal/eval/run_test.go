@@ -799,3 +799,30 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	assert.Equal(t, strings.Join(fake.rootCmds[1].Argv, " "), "rm -rf "+prepareMount)
 	assert.Equal(t, fake.calls, 2) // preflight, then the agent
 }
+
+// e2e of the in-sandbox prepare on real docker: it runs as root with the
+// pats root's bin/ on PATH, what it leaves in the workdir is the agent's to
+// write, and its material is gone before the agent starts.
+func TestRunE2EPrepare(t *testing.T) {
+	dockerOrSkip(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "seed"), []byte("#!/bin/sh\necho \"seeded by $(id -u) for $PATS_TASK_ID\" > \"$PATS_WORKDIR/prepared.txt\"\n"), 0o755))
+
+	old := agent.HarnessCmds["opencode-openrouter"]
+	agent.HarnessCmds["opencode-openrouter"] = `echo agent >> prepared.txt && test ! -e /pats-prepare && echo material-gone >> prepared.txt`
+	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
+
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: p, prepare-cmd: seed, collect: "cp $PATS_WORKDIR/prepared.txt $PATS_OUTPUT_DIR/"}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "prepared.txt"))
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, string(got), "seeded by 0 for t\nagent\nmaterial-gone\n")
+}
