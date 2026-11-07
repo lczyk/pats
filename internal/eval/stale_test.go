@@ -45,6 +45,9 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
 	prov = inputs(0)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("#!/bin/sh\nfalse\n"), 0o755))
 	assert.That(t, inputs(0)["provision"] != prov["provision"], "a script edit left the provision inputs as they were")
+	prov = inputs(0)
+	cfg.Sandboxes[0].ProvisionCmd = "./provision.sh v2"
+	assert.That(t, inputs(0)["provision"] != prov["provision"], "an argument change left the provision inputs as they were")
 	cfg.Sandboxes[0].Base = "ubuntu:24.04"
 	assert.Equal(t, inputs(0)["base_ref"], "ubuntu:24.04")
 

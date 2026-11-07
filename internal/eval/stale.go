@@ -21,7 +21,7 @@ func localInputs(sb config.Sandbox, configDir string) (map[string]string, error)
 	in := map[string]string{}
 	switch {
 	case sb.Provision != "" || sb.ProvisionCmd != "":
-		material, _, err := stageMaterial(configDir, configDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
+		material, argv, err := stageMaterial(configDir, configDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
 		if err != nil {
 			return nil, err
 		}
@@ -30,7 +30,9 @@ func localInputs(sb config.Sandbox, configDir string) (map[string]string, error)
 		if err != nil {
 			return nil, err
 		}
-		in["provision"] = h
+		// the command's arguments are part of what it does, not in the files.
+		sum := sha256.Sum256(fmt.Appendf(nil, "%s\n%q", h, argv))
+		in["provision"] = hex.EncodeToString(sum[:])
 		in["base_ref"] = sb.Base
 	case sb.Base != "":
 		in["base_ref"] = sb.Base
