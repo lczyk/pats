@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,4 +136,29 @@ func TestContainerSession(t *testing.T) {
 	code, _ = sess.Exec(ctx, Cmd{Argv: []string{"sleep", "60"}}, &out, &out)
 	assert.That(t, time.Since(t0) < 20*time.Second, "deadline did not stop the exec")
 	assert.NotEqual(t, code, 0)
+}
+
+// the copy rules the fake daemon models, on a real docker: a directory's
+// contents go into an existing path, and come out into hostDir.
+func TestContainerCopyRules(t *testing.T) {
+	dockerOrSkip(t)
+	sb, err := New(Options{Driver: "docker", Image: testImage})
+	require.NoError(t, err)
+	sess, err := sb.Start(context.Background(), Spec{Workdir: t.TempDir()})
+	require.NoError(t, err)
+	defer sess.Close()
+	var out strings.Builder
+	code, err := sess.Exec(context.Background(), Cmd{Argv: []string{"sh", "-c", "mkdir -p /opt/x && echo kept > /opt/x/keep"}, Root: true}, &out, &out)
+	require.NoError(t, err)
+	require.Equal(t, code, 0, "%s", out.String())
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "new"), []byte("new\n"), 0o644))
+	require.NoError(t, sess.Push(context.Background(), src, "/opt/x"))
+	dst := t.TempDir()
+	require.NoError(t, sess.Pull(context.Background(), "/opt/x", dst))
+	for name, want := range map[string]string{"new": "new\n", "keep": "kept\n"} {
+		b, err := os.ReadFile(filepath.Join(dst, name))
+		require.NoError(t, err, "what landed: %v", tree(dst))
+		assert.Equal(t, string(b), want)
+	}
 }
