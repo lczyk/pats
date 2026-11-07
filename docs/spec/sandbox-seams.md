@@ -193,15 +193,10 @@ across calls. eval's tests keep their method-level fakes.
 
 ### the move
 
-in steps, each behaviour-preserving and committed on its own:
-
-1. `Backend`, `Open` and the two option levels, wrapping today's functions; eval's `hostFor` and the driver switches
-   go through it.
-2. docker and podman's argv moves from `internal/eval` into `containerBackend`, with `fakeDaemon`'s images and the
-   backend conformance table.
-3. clean on `Runs` and `Remove` (the next section).
-4. the lxd-specific exports and `BuildContainerImage` / `ContainerStamps` go; `src/sandbox`'s exported surface is
-   `Open`, `Shutdown`, the types and the pure helpers.
+one cut, not a staged migration: 1.x is still moving and may break between commits. `Backend`, `Open` and the two
+option levels land together with docker and podman's argv moving into `containerBackend`, the lxd exports and
+`BuildContainerImage` / `ContainerStamps` going, and eval's `hostFor` and driver switches replaced. clean follows on
+`Runs` and `Remove`. `src/sandbox`'s exported surface is then `Open`, `Shutdown`, the types and the pure helpers.
 
 ## clean
 
@@ -256,10 +251,8 @@ exception below.
   cheaply (acls carry no server timestamp, `lxc query` does not show the `Date` header, and a server-stamped
   `created_at` needs a write per read). a machine asleep longer than `leaseStale` looks dead to a clean run before its
   first renewal after waking: with the 30s wake renewal that is a window of seconds, accepted and not modelled.
-- **older runs.** a pats before this stamps no `pats.run`. containers and networks named `sbx-*` without it are
-  listed for good, not for a release: judged for one release by today's rule (the owner label and the workdir owner
-  file's pid), and after that unknown, so `--force` still takes them. temp dirs whose owner file predates the token
-  are judged by pid, as today, for the same release.
+- **older runs.** no fallback: leftovers of a pats before this carry no `pats.run` and are not listed. the release
+  notes say to remove `sbx-*` containers and networks by hand once, after upgrading.
 - **a gap closed.** a docker agent whose workdir is outside the temp root has no `sbx-` name; it carries the token and
   the owner label, so this clean finds it by label, which today's clean, filtering by name, does not.
 
