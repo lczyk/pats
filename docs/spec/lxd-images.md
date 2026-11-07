@@ -76,9 +76,9 @@ a pin is per (remote, sandbox), in `.pats/lxd-images.json` in the project, next 
   particular a run never rewrites a pin to record a check. writes take a lock on `.pats/lxd-images.lock`, re-read
   the file, change only their own (remote, sandbox) entries, and replace the file by rename.
 
-`proxy` is there only for a sandbox with an egress policy; `pats_build` is `release` or the commit of a dev build
-(the same test as the proxy key, below). a sandbox with `image:` names a prebuilt image: `pats lxd-init` skips it
-and nothing pins it.
+`proxy` is there only for a sandbox with an egress policy; `pats_build` is `release`, or a dev build's commit with
+`-dirty` when its tree was (the same test as the proxy key, below). a sandbox with `image:` names a prebuilt image:
+`pats lxd-init` skips it and nothing pins it.
 
 `pats run` resolves a sandbox's image through its pin, not through the key:
 
@@ -90,9 +90,11 @@ and nothing pins it.
 - the proxy is the exception to warning and going on: it is pats's own code on the other end of the env protocol
   (`PATS_EGRESS_*`), and a proxy from another build may not speak this one's. so a pinned proxy is used only when
   the run's `pats_build` matches the pin's. otherwise the run resolves the proxy by its own key, as today (a cached
-  image, or a build of about a minute: `ubuntu-minimal` plus one binary), and says so. a dev build therefore gets a
-  fresh proxy per commit, as it does today; a release run, one per release.
-- not pinned, or the pinned fingerprint is gone from the server: build it as today (want 3), pin it, and say so:
+  image, or a build of about a minute: `ubuntu-minimal` plus one binary), and says so. the pin is left as it is: the
+  next run of the pin's own build still finds its proxy, and resolution by key is a cache hit after the first build.
+  a dev build therefore gets a fresh proxy per commit, as it does today; a release run, one per release.
+- not pinned, or the pinned fingerprint is gone from the server: build it as today (want 3), pin it, and say so
+  (an `image:` sandbox is neither: it runs its named image, as today):
   `sandbox "mason": no lxd image on armstrong, building it (pats lxd-init does this ahead of a run)`.
 
 a pin is local state, like the run history: gitignored with `.pats/`. two checkouts of one project each pin; they
