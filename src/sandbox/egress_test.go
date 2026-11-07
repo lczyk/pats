@@ -474,3 +474,12 @@ func TestLoadClientID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, id, "00000000000000ff")
 }
+
+// every engine says what its networks need; the table is the one place.
+func TestEngineTable(t *testing.T) {
+	assert.EqualArrays(t, Engines(), []string{"docker", "podman"})
+	for _, name := range Engines() {
+		assert.That(t, engines[name].defaultNetwork != "", "%s: no default network", name)
+	}
+	assert.That(t, IsEngine("docker") && IsEngine("podman") && !IsEngine("lxd"), "IsEngine")
+}

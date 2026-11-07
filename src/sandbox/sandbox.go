@@ -185,20 +185,20 @@ type Limits struct {
 // New builds a Sandbox for o.Driver. every driver needs an image. the drivers
 // read no environment: a caller that honours it passes o.WithEnv().
 func New(o Options) (Sandbox, error) {
-	switch o.Driver {
-	case "docker", "podman":
+	switch {
+	case IsEngine(o.Driver):
 		if o.Image == "" {
 			return nil, fmt.Errorf("sandbox driver %q needs an image", o.Driver)
 		}
 		return newContainer(defaultProcess, cliRunner(o.Driver), o), nil
-	case "lxd":
+	case o.Driver == "lxd":
 		if o.Image == "" {
 			return nil, errors.New("sandbox driver lxd needs an image")
 		}
 		return newLXD(defaultProcess, lxcCLI, o), nil
-	case "bwrap":
+	case o.Driver == "bwrap":
 		return nil, errors.New("sandbox driver bwrap not implemented yet")
-	case "":
+	case o.Driver == "":
 		return nil, errors.New("sandbox: empty driver")
 	default:
 		return nil, fmt.Errorf("sandbox: unknown driver %q", o.Driver)

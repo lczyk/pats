@@ -40,7 +40,7 @@ var hostForTarget = func(ctx context.Context, target, daemon string) (h imageHos
 	switch kind {
 	case "lxd":
 		return lxdHost{o: sandbox.Options{Driver: "lxd", Remote: rest}.WithEnv()}, true
-	case "docker", "podman":
+	case "docker", "podman": // sandbox.Engines()
 		h := containerHost{driver: kind}
 		now, d, err := h.target(ctx)
 		return h, err == nil && now == target && d == daemon

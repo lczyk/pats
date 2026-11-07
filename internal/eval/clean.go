@@ -44,7 +44,7 @@ func Clean(ctx context.Context, o CleanOptions) error {
 	}
 	drivers := o.Drivers
 	if drivers == nil {
-		for _, d := range []string{"docker", "podman"} {
+		for _, d := range sandbox.Engines() {
 			if _, err := exec.LookPath(d); err == nil {
 				drivers = append(drivers, d)
 			}

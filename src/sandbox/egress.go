@@ -411,13 +411,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		}
 	}
 
-	netArgs := []string{"--network", net}
-	if c.driver == "docker" {
-		// docker's embedded resolver on an internal network may still forward
-		// external names to the host; with no upstream it cannot. peer names
-		// (none needed, the proxy is an ip) keep resolving.
-		netArgs = append(netArgs, "--dns", "0.0.0.0")
-	}
+	netArgs := append([]string{"--network", net}, engines[c.driver].agentNet...)
 	if m.caCert != "" {
 		netArgs = append(netArgs,
 			"-v", m.bundlePath+":"+agentBundlePath+":ro",
@@ -438,18 +432,8 @@ func (c *container) createNetwork(ctx context.Context, name string, pool netip.P
 	for range subnetTries {
 		subnet := c.p.nextSubnet(pool)
 		args := []string{"network", "create", "--internal", "--label", c.p.ownerLabel()}
-		if c.driver == "docker" {
-			// docker gives the host an address on the bridge, which the agent
-			// could reach any host service through: --internal cuts only routes.
-			args = append(args, "-o", "com.docker.network.bridge.inhibit_ipv4=true")
-		}
+		args = append(args, engines[c.driver].internalNet...)
 		args = append(args, "--subnet", subnet.String())
-		if c.driver == "podman" {
-			// podman's resolver on an internal network answers only for peers,
-			// and the sidecar would inherit it as its only nameserver: it could
-			// then resolve nothing upstream. nothing here needs peer names.
-			args = append(args, "--disable-dns")
-		}
 		out, err := c.docker(ctx, append(args, name)...)
 		if err == nil {
 			return subnet, nil
@@ -487,12 +471,7 @@ func subnetTaken(out string) bool {
 }
 
 // defaultNetwork is the driver's network with a way out.
-func (c *container) defaultNetwork() string {
-	if c.driver == "podman" {
-		return "podman"
-	}
-	return "bridge"
-}
+func (c *container) defaultNetwork() string { return engines[c.driver].defaultNetwork }
 
 // waitReady reads the proxy's stderr until its listening line, then keeps
 // draining it so the follower never blocks on a full pipe.
@@ -542,10 +521,7 @@ func (c *container) proxyReachable(ctx context.Context, net, addr string) error 
 
 // probeArgs runs p in a throwaway container of the sandbox image on net.
 func (c *container) probeArgs(net string, p probe, args ...string) []string {
-	run := []string{"run", "--rm", "--network", net}
-	if c.driver == "docker" {
-		run = append(run, "--dns", "0.0.0.0")
-	}
+	run := append([]string{"run", "--rm", "--network", net}, engines[c.driver].agentNet...)
 	argv := p.argv(args...)
 	return append(append(run, "--entrypoint", argv[0], c.image), argv[1:]...)
 }
