@@ -149,7 +149,7 @@ type Backend interface {
 	// images
 	Resolve(ctx context.Context, ref string) (Image, error) // id, digest; ErrNoImage when absent
 	Images(ctx context.Context) (map[string]bool, error)    // every image id held, tagged or not
-	Pull(ctx context.Context, ref string, force bool, log io.Writer) (fetched bool, err error)
+	Pull(ctx context.Context, ref string, force bool, log io.Writer) (img Image, fetched bool, err error)
 	Build(ctx context.Context, spec BuildSpec, log io.Writer) (img Image, base string, built bool, err error)
 	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (img Image, fetched bool, err error)
 	Stamps(ctx context.Context, id string) (map[string]string, error)
@@ -187,7 +187,9 @@ type ImageUsage interface {
   engine table.
 - **what the image methods mean on each.**
   - `Pull` makes `ref` present: fetched when absent or forced, a no-op otherwise, `fetched` saying whether it
-    brought something (what init records as pulled). docker pulls; lxd copies a remote image into the project.
+    brought something (what init records as pulled), `img` what is now present. docker pulls; lxd copies a remote
+    image into the project, and `img` is the fingerprint it copied: a later `Resolve` of the ref asks the image
+    remote, whose alias may have moved since.
   - `Build` builds one layer and returns the base it built on, as resolved for the key: an alias moving during a
     long provision cannot make the pin name a base the image never saw. eval composes lxd's two-layer chain and
     container `base:` / `provision:` from it. for a container `build:` dockerfile, `base` is the resolved
@@ -262,10 +264,13 @@ exception below.
   run older than `leaseStale`: dead (a run that died before its record, or a clean that died after removing it;
   docker's networks have no creation time in `network ls`, so the backend inspects them). a fresh lease: alive. a
   record this clean cannot read: unknown.
-- **removal.** dead runs go in one order on every backend: sandboxes, then networks and acls, then images still held
-  under the run's private alias (`pats-img-<key>-<token>`: a build that died between its publish and its alias claim),
-  then the record last, so a clean that dies halfway leaves a run still judged. no other image: one a run built and
-  published still carries its token after a re-pointed alias left it, and `pats init` keeps it while pins elsewhere
+- **removal.** dead runs go in one order on every backend: sandboxes, then networks and acls, then the run's private
+  image aliases (`pats-img-<key>-<token>`), then the record last, so a clean that dies halfway leaves a run still
+  judged. a private alias goes always; the image under it goes only when it carries no other alias and no instance
+  was ever made from it (`last_used_at` unset): a build that died between its publish and its alias claim. an alias
+  alone does not say the image is unpublished: a claim can succeed and the private alias's removal fail, and a later
+  forced init can re-point the public alias away, leaving a pinned image under the private one. no other image: one a
+  run built still carries its token after a re-pointed alias left it, and `pats init` keeps it while pins elsewhere
   may name it. a removal that fails is left for the next clean (the bar the sweeps test). orphan lease files (stale,
   naming no run any driver lists and no temp dir) go with the temp dirs, matched as `run-*.lease` exactly: the client
   id and init's project registry sit beside them.
