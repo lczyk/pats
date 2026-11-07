@@ -21,6 +21,7 @@ COPY VERSION *.go ./
 COPY cmd ./cmd
 COPY internal ./internal
 COPY src ./src
+COPY images ./images
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /pats ./cmd/pats
 
 FROM gcr.io/distroless/static-debian12:nonroot
