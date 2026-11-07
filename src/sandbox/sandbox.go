@@ -78,9 +78,11 @@ type Sandbox interface {
 // Session is one started sandbox. Close tears it down and is safe to call
 // more than once.
 type Session interface {
-	// Push copies a host file or directory to path inside the sandbox.
+	// Push copies a host file to path, or a host directory's contents into
+	// path, inside the sandbox.
 	Push(ctx context.Context, hostPath, path string) error
-	// Pull copies path inside the sandbox into hostDir.
+	// Pull copies the contents of the directory path inside the sandbox
+	// into hostDir.
 	Pull(ctx context.Context, path, hostDir string) error
 	// Exec runs cmd to completion, streaming its output. on ctx cancel the
 	// sandbox is stopped, since stopping the driver's client does not stop
@@ -316,15 +318,22 @@ type containerSession struct {
 	rootRan  bool // a root exec happened, so HandOver has work to do
 }
 
+// Push and Pull copy a directory's contents, the /. form of docker cp: a
+// plain directory would land inside an existing destination under its own
+// name.
 func (s *containerSession) Push(ctx context.Context, hostPath, path string) error {
-	if out, err := s.c.docker(ctx, "cp", hostPath, s.id+":"+path); err != nil {
+	src := hostPath
+	if fi, err := os.Stat(hostPath); err == nil && fi.IsDir() {
+		src = strings.TrimSuffix(hostPath, "/") + "/."
+	}
+	if out, err := s.c.docker(ctx, "cp", src, s.id+":"+path); err != nil {
 		return fmt.Errorf("%s cp %s: %w (%s)", s.c.driver, hostPath, err, out)
 	}
 	return nil
 }
 
 func (s *containerSession) Pull(ctx context.Context, path, hostDir string) error {
-	if out, err := s.c.docker(ctx, "cp", s.id+":"+path, hostDir); err != nil {
+	if out, err := s.c.docker(ctx, "cp", s.id+":"+strings.TrimSuffix(path, "/")+"/.", hostDir); err != nil {
 		return fmt.Errorf("%s cp %s: %w (%s)", s.c.driver, path, err, out)
 	}
 	return nil
