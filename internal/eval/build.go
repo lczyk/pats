@@ -97,6 +97,13 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 		if err != nil {
 			hash = "" // fs hiccup -> just build; the build will surface the real error
 		}
+		if hash != "" {
+			ids, err := baseImageIDs(ctx, driver, fromRefs(dfData, base))
+			if err != nil {
+				return fmt.Errorf("sandbox %q: %w", sb.ID, err)
+			}
+			hash = rehash(hash, ids)
+		}
 		if id := cachedImageID(ctx, driver, hash); id != "" {
 			lg.info("sandbox %q image unchanged -- reusing %s", sb.ID, id)
 			cfg.Sandboxes[i].Image = id
@@ -220,6 +227,63 @@ func cachedImageID(ctx context.Context, driver, hash string) string {
 		return ""
 	}
 	return ids[0]
+}
+
+// fromRefs lists the images a dockerfile builds FROM, the pats sandbox arg
+// substituted and earlier stages, scratch and refs naming other args skipped.
+func fromRefs(dfData []byte, base string) []string {
+	var refs []string
+	stages := map[string]bool{}
+	for _, line := range strings.Split(string(dfData), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || !strings.EqualFold(f[0], "FROM") {
+			continue
+		}
+		f = f[1:]
+		for len(f) > 0 && strings.HasPrefix(f[0], "--") {
+			f = f[1:]
+		}
+		if len(f) == 0 {
+			continue
+		}
+		ref := strings.NewReplacer("${"+baseArg+"}", base, "$"+baseArg, base).Replace(f[0])
+		if ref != "" && ref != "scratch" && !strings.Contains(ref, "$") && !stages[strings.ToLower(ref)] {
+			refs = append(refs, ref)
+		}
+		if len(f) >= 3 && strings.EqualFold(f[1], "AS") {
+			stages[strings.ToLower(f[2])] = true
+		}
+	}
+	return refs
+}
+
+// baseImageIDs resolves each base to the image id the build would use: the
+// local one, pulled first when absent, as the build itself would. a base the
+// user refreshes with a pull then changes the cache key and forces a
+// rebuild, where hashing the tag alone would keep the stale image forever.
+func baseImageIDs(ctx context.Context, driver string, refs []string) (string, error) {
+	var b strings.Builder
+	for _, ref := range refs {
+		id, err := exec.CommandContext(ctx, driver, "image", "inspect", "--format", "{{.Id}}", ref).Output()
+		if err != nil {
+			if out, err := exec.CommandContext(ctx, driver, "pull", "-q", ref).CombinedOutput(); err != nil {
+				return "", fmt.Errorf("pull base %s: %w (%s)", ref, err, strings.TrimSpace(string(out)))
+			}
+			if id, err = exec.CommandContext(ctx, driver, "image", "inspect", "--format", "{{.Id}}", ref).Output(); err != nil {
+				return "", fmt.Errorf("inspect base %s: %w", ref, err)
+			}
+		}
+		fmt.Fprintf(&b, "%s=%s\n", ref, strings.TrimSpace(string(id)))
+	}
+	return b.String(), nil
+}
+
+func rehash(hash, extra string) string {
+	if extra == "" {
+		return hash
+	}
+	h := sha256.Sum256([]byte(hash + "\n" + extra))
+	return hex.EncodeToString(h[:])
 }
 
 // buildContextHash digests everything that determines a build's outcome from

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -238,4 +239,42 @@ func TestBuildImage(t *testing.T) {
 
 	// empty hash (hashing failed upstream) never matches anything.
 	assert.Equal(t, cachedImageID(context.Background(), "docker", ""), "")
+}
+
+// the bases a dockerfile builds on, as the build resolves them: the pats arg
+// substituted, stages, scratch and other args left out.
+func TestFromRefs(t *testing.T) {
+	df := []byte(`ARG PATS_SANDBOX
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+FROM ${PATS_SANDBOX}
+from ubuntu:26.04 as tools
+FROM build
+FROM tools
+FROM scratch
+FROM $OTHER
+`)
+	assert.Equal(t, strings.Join(fromRefs(df, "ghcr.io/x/sandbox:v1"), " "), "golang:1.26 ghcr.io/x/sandbox:v1 ubuntu:26.04")
+}
+
+// a base refreshed locally changes the key; an absent one is pulled first, as
+// the build would, so the key does not move again on the next run.
+func TestBaseImageIDs(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "pulled")
+	drv := filepath.Join(dir, "drv")
+	script := `#!/bin/sh
+case "$1" in
+  image) [ -f ` + state + ` ] && echo sha256:new || { [ "$5" = present:1 ] && echo sha256:old || exit 1; } ;;
+  pull) touch ` + state + ` ;;
+esac
+`
+	require.NoError(t, os.WriteFile(drv, []byte(script), 0o755))
+	ids, err := baseImageIDs(context.Background(), drv, []string{"present:1"})
+	require.NoError(t, err)
+	assert.Equal(t, ids, "present:1=sha256:old\n")
+	ids, err = baseImageIDs(context.Background(), drv, []string{"absent:1"})
+	require.NoError(t, err)
+	assert.Equal(t, ids, "absent:1=sha256:new\n")
+	assert.NotEqual(t, rehash("h", "a=1\n"), rehash("h", "a=2\n"))
+	assert.Equal(t, rehash("h", ""), "h")
 }
