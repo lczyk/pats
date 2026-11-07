@@ -133,8 +133,10 @@ func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) 
 		}
 	}
 	// a setup that fails leaves no server for shutdown to end, so it removes
-	// the marker itself: one a killed create may have made too, but not one
-	// the same server, reached under a second name, already had.
+	// the marker it made, or a killed create may have made. one the create
+	// found already there is left: the same server set up under another
+	// remote name may own it (a create that failed only on the client looks
+	// the same, and goes with its lease).
 	ours := true
 	defer func() {
 		if err != nil && ours {
@@ -169,7 +171,9 @@ func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) 
 	return remote, pool, nil
 }
 
-// renew keeps the marker's lease fresh while the process lives.
+// renew keeps the marker's lease fresh while the process lives, and makes
+// the marker again when it is gone: a setup of the same server under
+// another remote name that failed removed it, or an admin did.
 func (srv *lxdServer) renew() {
 	p := srv.l.p
 	t := p.clock.NewTicker(p.t.leaseEvery)
@@ -179,8 +183,12 @@ func (srv *lxdServer) renew() {
 		case <-srv.stop:
 			return
 		case <-t.C():
-			_, _ = srv.l.lxc(context.Background(), "network", "acl", "set", srv.remote+":"+srv.l.marker(),
-				"user.pats.lease="+strconv.FormatInt(p.clock.Now().Unix(), 10), "--project", "default")
+			lease := "user.pats.lease=" + strconv.FormatInt(p.clock.Now().Unix(), 10)
+			ref := srv.remote + ":" + srv.l.marker()
+			if out, err := srv.l.lxc(context.Background(), "network", "acl", "set", ref, lease, "--project", "default"); err != nil &&
+				strings.Contains(strings.ToLower(out+err.Error()), "not found") {
+				_, _ = srv.l.lxc(context.Background(), append([]string{"network", "acl", "create", ref, "--project", "default", lease}, srv.l.meta()...)...)
+			}
 		}
 	}
 }
