@@ -212,8 +212,13 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
   `ipv4.address=none` and `ipv6.address=none` (lxd then starts no dnsmasq on it and adds no address, nat or
   forwarding rules), and nothing is on it but the agent and the proxy.
   - the bridge interface still exists on the host, and a root agent could aim a route at its mac; if anything else
-    on the server turned `ip_forward` on, the host would route that. so the bridge also carries an acl with no rules
-    and both default actions `reject`: it fences exactly the bridge-host boundary, which is all that is left.
+    on the server turned `ip_forward` on, the host would route that. so the bridge also carries an acl with both
+    default actions `reject`: it fences exactly the bridge-host boundary, which is all that is left.
+  - the acl has one rule, an egress allow for tcp from the agent's /32 to the proxy's /32 on the proxy port. with
+    `br_netfilter` loaded (docker loads it), frames between two nics on one bridge pass the host's ip forward hook,
+    where the acl's reject defaults sit, so without the rule the agent never reaches its proxy (seen on the target
+    server). without `br_netfilter` the rule is never consulted. other ports, the reverse direction and anything
+    bound for the host stay rejected.
   - both instances get static addresses out of the egress work's pats-managed pool. the lxd nic devices carry
     explicit names (`name=pats0` on the pair's bridge for both, `name=uplink0` for the proxy's way out), so the address
     goes on the right nic whatever order a vm enumerates them in. a vm honours the name only with
