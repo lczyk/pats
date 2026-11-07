@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -231,6 +233,58 @@ func TestTarRoundTrip(t *testing.T) {
 	target, err := os.Readlink(filepath.Join(dst, "ln"))
 	require.NoError(t, err)
 	assert.Equal(t, target, "d/x.sh")
+}
+
+// a socket or a fifo in a pushed dir (an agent's home collects them) is left
+// out rather than failing the push.
+func TestWriteTarSkipsSpecialFiles(t *testing.T) {
+	src, err := os.MkdirTemp("", "pt") // short: a socket path has a length cap
+	require.NoError(t, err)
+	defer os.RemoveAll(src)
+	require.NoError(t, os.WriteFile(filepath.Join(src, "keep"), []byte("x"), 0o644))
+	ln, err := net.Listen("unix", filepath.Join(src, "sock"))
+	require.NoError(t, err)
+	defer ln.Close()
+	require.NoError(t, syscall.Mkfifo(filepath.Join(src, "fifo"), 0o644))
+	fi, err := os.Stat(src)
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	require.NoError(t, writeTar(&buf, src, fi))
+	var names []string
+	tr := tar.NewReader(&buf)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		names = append(names, h.Name)
+	}
+	assert.Equal(t, strings.Join(names, ","), "keep")
+}
+
+// when the local tar fails, the instance's tar sees a cut stream and
+// complains; the push error leads with the local cause.
+func TestLXDPushReportsLocalError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a mode 000 file")
+	}
+	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv"})
+	inner := f.run
+	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		if strings.Contains(strings.Join(args, " "), "tar -x") {
+			_, _ = io.Copy(io.Discard, stdin)
+			io.WriteString(stdout, "tar: Unexpected EOF in archive")
+			return &fakeExit{}
+		}
+		return inner(ctx, stdin, stdout, stderr, args...)
+	}
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "secret"), []byte("x"), 0o000))
+	s := &lxdSession{l: l, name: "pats-x"}
+	err := s.Push(context.Background(), src, "/home/pats")
+	require.Error(t, err, "permission denied")
+	assert.ContainsString(t, err.Error(), "in the instance: tar: Unexpected EOF")
 }
 
 func TestLXDName(t *testing.T) {

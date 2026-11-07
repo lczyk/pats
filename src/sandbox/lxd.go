@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -677,8 +678,11 @@ func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
 		return err
 	}
 	pr, pw := io.Pipe()
+	local := make(chan error, 1)
 	go func() {
-		pw.CloseWithError(writeTar(pw, hostPath, fi))
+		err := writeTar(pw, hostPath, fi)
+		pw.CloseWithError(err)
+		local <- err
 	}()
 	dest := path
 	if !fi.IsDir() {
@@ -691,6 +695,11 @@ func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
 	var out bytes.Buffer
 	code, err := s.execIn(ctx, pr, Cmd{Argv: []string{"sh", "-c", script, "push", dest, path}, Root: true, Dir: "/"}, &out, &out)
 	pr.Close()
+	// the local side failing is what made the remote tar complain, so it
+	// leads the error.
+	if lerr := <-local; lerr != nil && !errors.Is(lerr, io.ErrClosedPipe) {
+		return fmt.Errorf("push %s: %w (in the instance: %s)", hostPath, lerr, strings.TrimSpace(out.String()))
+	}
 	if err == nil && code != 0 {
 		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(out.String()))
 	}
@@ -701,12 +710,18 @@ func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
 }
 
 // writeTar writes hostPath (a dir's contents, or one file) as a tar stream.
+// only directories, regular files and symlinks travel: a socket an agent or
+// its tools left in the home (which archive/tar refuses), a fifo or a device
+// node has no meaning on the other side.
 func writeTar(w io.Writer, hostPath string, fi fs.FileInfo) error {
 	tw := tar.NewWriter(w)
 	add := func(p, name string) error {
 		info, err := os.Lstat(p)
 		if err != nil {
 			return err
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() && info.Mode()&fs.ModeSymlink == 0 {
+			return nil
 		}
 		link := ""
 		if info.Mode()&fs.ModeSymlink != 0 {
