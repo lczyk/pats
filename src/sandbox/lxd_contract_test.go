@@ -130,7 +130,7 @@ var lxdContracts = []struct {
 		}
 		assert.That(t, found, "the published image is not listed")
 	}},
-	{"a create names its instance in a running operation, and a delete meanwhile says not found", func(t *testing.T, c *contractEnv) {
+	{"a create names its instance in a running operation, and a delete meanwhile fails", func(t *testing.T, c *contractEnv) {
 		// a create from a cached image can finish between two reads; each
 		// such attempt is retried under a new name, and running out of
 		// attempts fails rather than skips: deleteInstance rests on this.
@@ -173,7 +173,12 @@ func contractCreateRace(t *testing.T, c *contractEnv, inst string) bool {
 				t.Logf("%s: the create finished between the operation read and the delete", inst)
 				return false
 			}
-			assert.ContainsString(t, strings.ToLower(dout), "not found")
+			// lxd 5 says the instance is not found, lxd 6 that it is busy
+			// with the create: either way the delete did nothing, which is
+			// what deleteInstance's retry while the operation runs rests on.
+			l := strings.ToLower(dout)
+			assert.That(t, strings.Contains(l, "not found") || strings.Contains(l, `busy running a "create" operation`),
+				"a delete during the create: %s", dout)
 			return true
 		}
 		if out, err := c.lxc("query", c.remote+":/1.0/instances/"+inst+"?project="+lxdProject); err == nil {
