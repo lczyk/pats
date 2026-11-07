@@ -1,16 +1,10 @@
 package eval
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -65,56 +59,31 @@ func buildImages(ctx context.Context, cfg *config.Config, opts Options, pairs []
 	used := usedSandboxes(cfg, pairs)
 	lg := logw{opts.Out, opts.Color}
 	warned := false
+	base := func() string {
+		img, warn := sandbox.SandboxImage("")
+		if warn != "" && !warned {
+			lg.warn("%s", warn)
+			warned = true
+		}
+		return img
+	}
 	for i, sb := range cfg.Sandboxes {
 		if !used[sb.ID] || sb.Build == "" {
 			continue
 		}
-		driver := sb.Driver
 		ctxDir, dockerfile, err := resolveBuildSpec(opts.ConfigDir, sb.Build)
 		if err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
-		// read once, shared by checkPatsIgnored (via usesContext) and
-		// buildContextHash below -- otherwise each reads (part of) the
-		// dockerfile independently, up to three reads per build.
-		dfData, dfErr := os.ReadFile(dockerfile)
-		if err := checkPatsIgnored(ctxDir, dockerfile, dfData, dfErr); err != nil {
+		id, built, err := sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile}, base)
+		if err != nil {
 			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
-		// the dry cache check: hash the build inputs and look for an image
-		// already labelled with that hash -- a hit skips `docker build`
-		// entirely instead of rebuilding and hoping the layer cache holds.
-		base := ""
-		if bytes.Contains(dfData, []byte(baseArg)) {
-			var warn string
-			base, warn = sandbox.SandboxImage("")
-			if warn != "" && !warned {
-				lg.warn("%s", warn)
-				warned = true
-			}
-		}
-		hash, err := buildContextHash(ctxDir, dockerfile, dfData, dfErr, base)
-		if err != nil {
-			hash = "" // fs hiccup -> just build; the build will surface the real error
-		}
-		if hash != "" {
-			ids, err := baseImageIDs(ctx, driver, fromRefs(dfData, base))
-			if err != nil {
-				return fmt.Errorf("sandbox %q: %w", sb.ID, err)
-			}
-			hash = rehash(hash, ids)
-		}
-		if id := cachedImageID(ctx, driver, hash); id != "" {
+		if built {
+			lg.info("built sandbox %q image: %s", sb.ID, id)
+		} else {
 			lg.info("sandbox %q image unchanged -- reusing %s", sb.ID, id)
-			cfg.Sandboxes[i].Image = id
-			continue
 		}
-		lg.info("building sandbox %q image (%s)... (first build or context changed)", sb.ID, sb.Build)
-		id, err := buildImage(ctx, driver, ctxDir, dockerfile, hash, base)
-		if err != nil {
-			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
-		}
-		lg.info("built sandbox %q image: %s", sb.ID, id)
 		cfg.Sandboxes[i].Image = id
 	}
 	return nil
@@ -170,374 +139,6 @@ func resolveBuildSpec(configDir, spec string) (ctxDir, dockerfile string, err er
 		return p, filepath.Join(p, "Dockerfile"), nil
 	}
 	return filepath.Dir(p), p, nil
-}
-
-// hashLabel is the image label carrying the build-input hash; cachedImageID
-// filters on it to answer "would this build be a full cache hit?" without
-// running the build.
-const hashLabel = "pats.context-hash"
-
-// baseArg is the build arg carrying the pats sandbox image pinned to this
-// version, so a context can `ARG PATS_SANDBOX` / `FROM ${PATS_SANDBOX}` and
-// track the pats it runs under.
-const baseArg = "PATS_SANDBOX"
-
-// buildImage builds one resolved context and returns the image id. a non-empty
-// hash is stamped onto the image (see hashLabel) so the next run can find it;
-// a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
-func buildImage(ctx context.Context, driver, ctxDir, dockerfile, hash, base string) (string, error) {
-	args := []string{"build", "-q", "-f", dockerfile}
-	if base != "" {
-		args = append(args, "--build-arg", baseArg+"="+base)
-	}
-	if hash != "" {
-		args = append(args, "--label", hashLabel+"="+hash)
-	}
-	cmd := exec.CommandContext(ctx, driver, append(args, ctxDir)...)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s build %s: %w%s", driver, ctxDir, err, stderrTail(&errb))
-	}
-	id := strings.TrimSpace(out.String())
-	if id == "" {
-		return "", fmt.Errorf("%s build %s: no image id on stdout", driver, ctxDir)
-	}
-	return id, nil
-}
-
-// cachedImageID looks up an image already built from identical inputs (same
-// hashLabel value); "" means none and the caller must build. reuse carries the
-// same staleness the layer cache always had: a mutable FROM tag or a RUN that
-// fetches "latest" won't refresh until the dockerfile or context changes (or
-// the image is removed -- `docker rmi` is the force-rebuild escape hatch).
-func cachedImageID(ctx context.Context, driver, hash string) string {
-	if hash == "" {
-		return ""
-	}
-	// -a: `build -q` leaves the image untagged, which plain `images` hides.
-	out, err := exec.CommandContext(ctx, driver, "images", "-a", "--no-trunc", "-q",
-		"--filter", "label="+hashLabel+"="+hash).Output()
-	if err != nil {
-		return ""
-	}
-	ids := strings.Fields(string(out)) // newest first; older builds may share the label
-	if len(ids) == 0 {
-		return ""
-	}
-	return ids[0]
-}
-
-// fromRefs lists the images a dockerfile builds FROM, the pats sandbox arg
-// substituted and earlier stages, scratch and refs naming other args skipped.
-func fromRefs(dfData []byte, base string) []string {
-	var refs []string
-	stages := map[string]bool{}
-	for _, line := range strings.Split(string(dfData), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 2 || !strings.EqualFold(f[0], "FROM") {
-			continue
-		}
-		f = f[1:]
-		for len(f) > 0 && strings.HasPrefix(f[0], "--") {
-			f = f[1:]
-		}
-		if len(f) == 0 {
-			continue
-		}
-		ref := strings.NewReplacer("${"+baseArg+"}", base, "$"+baseArg, base).Replace(f[0])
-		if ref != "" && ref != "scratch" && !strings.Contains(ref, "$") && !stages[strings.ToLower(ref)] {
-			refs = append(refs, ref)
-		}
-		if len(f) >= 3 && strings.EqualFold(f[1], "AS") {
-			stages[strings.ToLower(f[2])] = true
-		}
-	}
-	return refs
-}
-
-// baseImageIDs resolves each base to the image id the build would use: the
-// local one, pulled first when absent, as the build itself would. a base the
-// user refreshes with a pull then changes the cache key and forces a
-// rebuild, where hashing the tag alone would keep the stale image forever.
-func baseImageIDs(ctx context.Context, driver string, refs []string) (string, error) {
-	var b strings.Builder
-	for _, ref := range refs {
-		id, err := exec.CommandContext(ctx, driver, "image", "inspect", "--format", "{{.Id}}", ref).Output()
-		if err != nil {
-			if out, err := exec.CommandContext(ctx, driver, "pull", "-q", ref).CombinedOutput(); err != nil {
-				return "", fmt.Errorf("pull base %s: %w (%s)", ref, err, strings.TrimSpace(string(out)))
-			}
-			if id, err = exec.CommandContext(ctx, driver, "image", "inspect", "--format", "{{.Id}}", ref).Output(); err != nil {
-				return "", fmt.Errorf("inspect base %s: %w", ref, err)
-			}
-		}
-		fmt.Fprintf(&b, "%s=%s\n", ref, strings.TrimSpace(string(id)))
-	}
-	return b.String(), nil
-}
-
-func rehash(hash, extra string) string {
-	if extra == "" {
-		return hash
-	}
-	h := sha256.Sum256([]byte(hash + "\n" + extra))
-	return hex.EncodeToString(h[:])
-}
-
-// buildContextHash digests everything that determines a build's outcome from
-// the host side: the dockerfile, the effective dockerignore, and -- only when
-// the dockerfile actually reads its context -- every non-ignored file in it
-// (path, mode, symlink target, content). two equal hashes mean docker would
-// hit its layer cache the whole way down, so the build can be skipped without
-// running it. a context-less dockerfile (no COPY/ADD) hashes the dockerfile
-// alone -- context churn (e.g. a growing .pats/) can't invalidate anything.
-//
-// the dockerignore matcher is approximate (see matchIgnore); it errs toward
-// hashing too much, which at worst degrades to today's behaviour: an
-// unnecessary `docker build` that the layer cache absorbs.
-//
-// dfData/dfErr are the dockerfile's contents, already read by the caller (see
-// buildImages) -- shared with checkPatsIgnored/usesContext so the dockerfile
-// isn't read more than once per build. base is the PATS_SANDBOX build arg,
-// "" when the dockerfile doesn't mention it; it joins the hash only when it
-// does, so a new pats version rebuilds contexts that derive from the pats
-// sandbox and leaves the rest cached.
-func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error, base string) (string, error) {
-	if dfErr != nil {
-		return "", dfErr
-	}
-	h := sha256.New()
-	h.Write(dfData)
-	if bytes.Contains(dfData, []byte(baseArg)) {
-		fmt.Fprintf(h, "%s=%s\n", baseArg, base)
-	}
-
-	var patterns []ignorePattern
-	if data, err := os.ReadFile(effectiveIgnoreFile(ctxDir, dockerfile)); err == nil {
-		h.Write(data)
-		patterns = parseIgnore(string(data))
-	}
-
-	if usesContext(dfData, dfErr) {
-		if err := hashContextDir(h, ctxDir, patterns); err != nil {
-			return "", err
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// hashContextDir feeds every non-ignored entry under ctxDir into h in walk
-// (lexical, deterministic) order.
-func hashContextDir(h io.Writer, ctxDir string, patterns []ignorePattern) error {
-	// with negations present a pruned dir could hide re-included children, so
-	// only prune when there are none.
-	canPrune := true
-	for _, p := range patterns {
-		if p.negate {
-			canPrune = false
-		}
-	}
-	return filepath.WalkDir(ctxDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(ctxDir, path)
-		if err != nil || rel == "." {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if ignored(patterns, rel) {
-			if d.IsDir() && canPrune {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		switch {
-		case d.IsDir():
-			fmt.Fprintf(h, "D %s\n", rel)
-		case d.Type()&fs.ModeSymlink != 0:
-			target, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(h, "L %s -> %s\n", rel, target)
-		case d.Type().IsRegular():
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(h, "F %s %o %d\n", rel, info.Mode().Perm(), info.Size())
-			f, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(h, f)
-			f.Close()
-			if err != nil {
-				return err
-			}
-		default:
-			// sockets/fifos/devices: docker refuses or skips these anyway;
-			// record their presence and move on.
-			fmt.Fprintf(h, "S %s\n", rel)
-		}
-		return nil
-	})
-}
-
-// effectiveIgnoreFile returns the ignore file docker would consult: buildkit's
-// <Dockerfile-name>.dockerignore fully replaces .dockerignore when present.
-func effectiveIgnoreFile(ctxDir, dockerfile string) string {
-	perDF := filepath.Join(ctxDir, filepath.Base(dockerfile)+".dockerignore")
-	if _, err := os.Stat(perDF); err == nil {
-		return perDF
-	}
-	return filepath.Join(ctxDir, ".dockerignore")
-}
-
-// ignorePattern is one parsed dockerignore line.
-type ignorePattern struct {
-	pattern string // cleaned, slash-separated, no leading "/" or "./"
-	negate  bool
-}
-
-// parseIgnore parses a dockerignore body: comments and blanks dropped,
-// leading "!" marks a negation, paths normalised to the matcher's shape.
-func parseIgnore(body string) []ignorePattern {
-	var out []ignorePattern
-	for _, line := range strings.Split(body, "\n") {
-		l := strings.TrimSpace(line)
-		if l == "" || strings.HasPrefix(l, "#") {
-			continue
-		}
-		neg := strings.HasPrefix(l, "!")
-		l = strings.TrimPrefix(l, "!")
-		l = strings.TrimPrefix(l, "./")
-		l = strings.TrimPrefix(l, "/")
-		l = strings.TrimSuffix(l, "/")
-		if l == "" {
-			continue
-		}
-		out = append(out, ignorePattern{pattern: path.Clean(l), negate: neg})
-	}
-	return out
-}
-
-// ignored applies dockerignore semantics to one slash-separated relative
-// path: the last matching pattern wins; a pattern matching a parent directory
-// covers everything beneath it.
-//
-// matching is a deliberate approximation of docker's (per-segment globs plus
-// "**" spanning any depth). exotic patterns a fancier matcher would catch fall
-// through to "not ignored" -- the safe direction: the file gets hashed, and a
-// spurious mismatch just means an unnecessary (cheap, layer-cached) build.
-func ignored(patterns []ignorePattern, rel string) bool {
-	ig := false
-	for _, p := range patterns {
-		if matchIgnore(p.pattern, rel) {
-			ig = !p.negate
-		}
-	}
-	return ig
-}
-
-// matchIgnore reports whether pattern covers rel or one of rel's ancestors.
-func matchIgnore(pattern, rel string) bool {
-	for r := rel; r != "."; r = path.Dir(r) {
-		if segmentsMatch(strings.Split(pattern, "/"), strings.Split(r, "/")) {
-			return true
-		}
-	}
-	return false
-}
-
-// segmentsMatch matches pattern segments against path segments; "**" spans
-// zero or more segments, everything else is a per-segment glob (path.Match).
-func segmentsMatch(pat, segs []string) bool {
-	if len(pat) == 0 {
-		return len(segs) == 0
-	}
-	if pat[0] == "**" {
-		for i := 0; i <= len(segs); i++ {
-			if segmentsMatch(pat[1:], segs[i:]) {
-				return true
-			}
-		}
-		return false
-	}
-	if len(segs) == 0 {
-		return false
-	}
-	if ok, err := path.Match(pat[0], segs[0]); err != nil || !ok {
-		return false
-	}
-	return segmentsMatch(pat[1:], segs[1:])
-}
-
-// checkPatsIgnored refuses to build a context containing a .pats dir (run
-// artifacts -- can be huge, would leak past run outputs into the image, and
-// invalidate the layer cache every run) unless the effective dockerignore
-// excludes it. only enforced when the dockerfile actually reads the context
-// (a COPY/ADD not sourced --from another stage) -- a context-less build has
-// nothing to leak. pats deliberately does not write or patch ignore files in
-// the user's tree -- the fix is one versioned line in their repo.
-//
-// dfData/dfErr are the dockerfile's contents, already read by the caller (see
-// buildImages) -- forwarded to usesContext so the dockerfile isn't read again.
-func checkPatsIgnored(ctxDir, dockerfile string, dfData []byte, dfErr error) error {
-	if _, err := os.Stat(filepath.Join(ctxDir, ".pats")); err != nil {
-		return nil // no .pats in the context -- nothing to leak
-	}
-	if !usesContext(dfData, dfErr) {
-		return nil
-	}
-	ignore := effectiveIgnoreFile(ctxDir, dockerfile)
-	if data, err := os.ReadFile(ignore); err == nil && ignoresPats(string(data)) {
-		return nil
-	}
-	return fmt.Errorf("build context %s contains .pats/ (run artifacts) and %s does not exclude it -- add a `.pats/` line", ctxDir, filepath.Base(ignore))
-}
-
-// usesContext reports whether a dockerfile reads its build context: any
-// COPY/ADD instruction not sourced from another stage (--from=). data/err are
-// the dockerfile's contents as already read by the caller (buildImages reads
-// it once and shares the result across checkPatsIgnored, buildContextHash,
-// and this function). the scan is line-based and errs on the safe side -- a
-// read error (err != nil), or a dockerfile with e.g. a heredoc body whose
-// lines look like instructions, counts as using the context (worst case the
-// .pats guard fires unnecessarily).
-func usesContext(data []byte, err error) bool {
-	if err != nil {
-		return true
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		l := strings.ToLower(strings.TrimSpace(line))
-		if (strings.HasPrefix(l, "copy ") || strings.HasPrefix(l, "add ")) &&
-			!strings.Contains(l, "--from=") {
-			return true
-		}
-	}
-	return false
-}
-
-// ignoresPats reports whether a dockerignore body has a line covering .pats.
-// matching is deliberately dumb: a line that normalises to ".pats" (optional
-// leading "./" or "/", optional trailing "/" or "/**"). a fancier glob that
-// happens to cover .pats is not recognised -- write the literal line.
-func ignoresPats(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		l := strings.TrimSpace(line)
-		l = strings.TrimPrefix(l, "./")
-		l = strings.TrimPrefix(l, "/")
-		l = strings.TrimSuffix(l, "/**")
-		l = strings.TrimSuffix(l, "/")
-		if l == ".pats" {
-			return true
-		}
-	}
-	return false
 }
 
 // proxyImageID names the sidecar image a proxy-mode sandbox ran: its registry
