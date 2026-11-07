@@ -55,6 +55,16 @@ var lxdContracts = []struct {
 	name string
 	run  func(t *testing.T, c *contractEnv)
 }{
+	{"image list of an image remote names an alias's fingerprint, as image info does", func(t *testing.T, c *contractEnv) {
+		// an upstream check reads the base's current fingerprint this way;
+		// image info is what the build keyed it on.
+		const ref = "ubuntu:26.04"
+		l := newLXD(testProcess(t), c.r, Options{})
+		fp, err := l.remoteFingerprint(context.Background(), ref)
+		require.NoError(t, err)
+		info := c.must(t, "image", "info", ref)
+		assert.ContainsString(t, info, "Fingerprint: "+fp)
+	}},
 	{"a missing instance says not found", func(t *testing.T, c *contractEnv) {
 		out, err := c.lxc("delete", c.ref("pats-ct-"+c.tag+"-none"), "--project", lxdProject, "--force")
 		require.Error(t, err, "")

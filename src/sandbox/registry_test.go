@@ -27,6 +27,7 @@ type fakeRegistry struct {
 	types       map[string]string // digest -> media type
 	blobs       map[string][]byte // digest -> content, manifests and layers
 	tamper      map[string]bool   // digests served with altered bytes
+	challenge   bool              // a 401 says where to get a token, docker hub's way
 }
 
 func newFakeRegistry() *fakeRegistry {
@@ -88,6 +89,9 @@ func (r *fakeRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if req.Header.Get("Authorization") != "Bearer tok" {
+		if r.challenge {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="http://`+req.Host+`/token",service="reg",scope="repository:org/pats:pull"`)
+		}
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

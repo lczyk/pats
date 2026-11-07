@@ -211,6 +211,8 @@ func (f *fakeServer) parse(args []string) (fakeArgs, error) {
 			i++
 		case boolean[s]:
 			a.bools[s] = true
+		case strings.HasPrefix(s, "--format="):
+			a.flags["--format"] = append(a.flags["--format"], strings.TrimPrefix(s, "--format="))
 		case strings.HasPrefix(s, "-"):
 			f.t.Errorf("fake lxd: unknown flag %s in lxc %s", s, strings.Join(args, " "))
 			return a, fmt.Errorf("unknown flag %s", s)
@@ -644,6 +646,18 @@ func (f *fakeServer) image(stdout, stderr io.Writer, a fakeArgs) error {
 			return lxcFail(stderr, "Image not found")
 		}
 		fmt.Fprintf(stdout, "Fingerprint: %s\nSize: 100.00MiB\n", fp)
+		return nil
+	case p[1] == "list":
+		remote := strings.TrimSuffix(p[2], ":")
+		var list []map[string]any
+		for ref, fp := range f.bases {
+			r, alias := lxcRef(ref)
+			if r == remote && strings.HasPrefix(alias, p[3]) {
+				list = append(list, map[string]any{"fingerprint": fp, "aliases": []map[string]string{{"name": alias}}})
+			}
+		}
+		b, _ := json.Marshal(list)
+		stdout.Write(b)
 		return nil
 	case p[1] == "copy":
 		fp, ok := f.bases[p[2]]

@@ -41,6 +41,7 @@ type Options struct {
 	Agents    []string  // filter the pairs to these agents (empty -> all)
 	Tasks     []string  // filter the pairs to these tasks (empty -> all)
 	Suites    []string  // only expand these suites (empty -> all)
+	Offline   bool      // skip the upstream checks, for a machine without a network
 }
 
 // newSandbox is sandbox.New, swappable in tests to run the orchestration
@@ -86,7 +87,8 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 
 	// the images `pats init` pinned, first: everything after (preflight
 	// included) starts from them, and a run never builds or pulls.
-	if err := usePins(ctx, cfg, opts, pairs); err != nil {
+	checks, err := usePins(ctx, cfg, opts, pairs)
+	if err != nil {
 		return "", err
 	}
 	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
@@ -98,10 +100,22 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
 
+	// newer upstream images, looked up while preflight runs: a warning
+	// each, never a stop.
+	upstream := make(chan []string, 1)
+	if opts.Offline {
+		upstream <- nil
+	} else {
+		go func() { upstream <- checkUpstream(ctx, checks, upstreamBudget) }()
+	}
+
 	// fail fast on bad/expired creds before spinning per-pair containers.
 	lg.info("preflight: checking agent credentials")
 	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
 		return "", err
+	}
+	for _, w := range <-upstream {
+		lg.warn("%s", w)
 	}
 
 	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })

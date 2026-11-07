@@ -22,9 +22,10 @@ type fakeHost struct {
 	pulls              []string
 	stamped            map[string]string // the stamps every image carries
 	stampErr           error
-	samePull           bool            // a pull finds the image it already has
-	untagged           map[string]bool // ids held with no ref
-	pullTo             string          // the id a pull lands on, when set
+	samePull           bool              // a pull finds the image it already has
+	untagged           map[string]bool   // ids held with no ref
+	pullTo             string            // the id a pull lands on, when set
+	digests            map[string]string // ref -> registry digest
 }
 
 func newFakeHost(refs ...string) *fakeHost {
@@ -64,7 +65,7 @@ func (h *fakeHost) stamps(context.Context, string) (map[string]string, error) {
 
 func (h *fakeHost) inspect(_ context.Context, ref string) (string, string, error) {
 	if id, ok := h.refs[ref]; ok {
-		return id, "", nil
+		return id, h.digests[ref], nil
 	}
 	return "", "", errNoImage
 }

@@ -176,6 +176,17 @@ func cachedImageID(ctx context.Context, r runner, hash string) string {
 // stages and scratch skipped. exact is false when a ref still names an arg it
 // cannot resolve, or a FROM picks a --platform: the key could then name a
 // different image than the build uses, and the caller skips the dry cache.
+// DockerfileFroms are the images a dockerfile builds FROM, base standing
+// for PATS_SANDBOX: what `pats init` checks upstream for newer versions.
+func DockerfileFroms(dockerfile, base string) ([]string, error) {
+	data, err := os.ReadFile(dockerfile)
+	if err != nil {
+		return nil, err
+	}
+	refs, _ := fromRefs(data, base)
+	return refs, nil
+}
+
 func fromRefs(dfData []byte, base string) (refs []string, exact bool) {
 	exact = true
 	args := map[string]string{baseArg: base}

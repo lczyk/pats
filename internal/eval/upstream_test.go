@@ -1,0 +1,112 @@
+package eval
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/lczyk/assert"
+	"github.com/lczyk/assert/require"
+)
+
+func fakeLookups(t *testing.T, registry, lxd func(ctx context.Context, ref string) (string, error)) {
+	t.Helper()
+	oldR, oldL := registryDigest, lxdRemoteFingerprint
+	registryDigest, lxdRemoteFingerprint = registry, lxd
+	t.Cleanup(func() { registryDigest, lxdRemoteFingerprint = oldR, oldL })
+}
+
+// a moved upstream ref warns; an unmoved one, a failed lookup and one past
+// the budget say nothing; the whole check ends at the budget.
+func TestCheckUpstream(t *testing.T) {
+	fakeLookups(t,
+		func(ctx context.Context, ref string) (string, error) {
+			switch ref {
+			case "moved:1":
+				return "sha256:new", nil
+			case "broken:1":
+				return "", errors.New("401")
+			case "slow:1":
+				<-ctx.Done()
+				return "sha256:late", nil
+			}
+			return "sha256:same", nil
+		},
+		func(ctx context.Context, ref string) (string, error) { return "fp-new", nil })
+	checks := []upstreamCheck{
+		{sb: "c", inputs: map[string]string{
+			"upstream:moved:1": "sha256:old", "upstream:same:1": "sha256:same",
+			"upstream:broken:1": "sha256:x", "upstream:slow:1": "sha256:x", "provision": "h"}},
+		{sb: "l", lxd: true, inputs: map[string]string{"upstream:ubuntu:26.04": "fp-old"}},
+	}
+	start := time.Now()
+	warns := checkUpstream(context.Background(), checks, 200*time.Millisecond)
+	assert.That(t, time.Since(start) < 2*time.Second, "the check outran its budget")
+	require.Equal(t, len(warns), 2)
+	assert.ContainsString(t, warns[0], `sandbox "c": a newer moved:1 is upstream`)
+	assert.ContainsString(t, warns[1], `sandbox "l": a newer ubuntu:26.04 is upstream`)
+}
+
+// init records what each sandbox came from upstream: an image: sandbox's
+// digest, a build's FROM images (not pats's own), an lxd base's fingerprint.
+func TestUpstreamInputs(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "ctx"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ctx", "Dockerfile"),
+		[]byte("ARG PATS_SANDBOX\nFROM python:3 AS b\nFROM ${PATS_SANDBOX}\nCOPY --from=b / /\n"), 0o644))
+	fakeLookups(t, nil, func(ctx context.Context, ref string) (string, error) { return "fp-" + ref, nil })
+	h := newFakeHost()
+	h.refs["python:3"] = "sha256:py"
+	h.digests = map[string]string{"python:3": "sha256:pydigest"}
+	cfg := parseCfg(t, `
+sb:
+  kind: sandbox
+  items:
+    built: {build: ctx}
+    img: {image: my/image:1}
+    box: {driver: lxd}
+ag: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {a: {sandbox: built}, b: {sandbox: img}, c: {sandbox: box}}}
+t: {kind: task, items: {t: {prompt: p}}}
+suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
+`)
+	ctx := context.Background()
+	e := &pinEntry{Inputs: map[string]string{}}
+	upstreamInputs(ctx, cfg.Sandboxes[0], dir, h, e)
+	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:python:3": "sha256:pydigest"})
+	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Digest: "sha256:mine"}}
+	upstreamInputs(ctx, cfg.Sandboxes[1], dir, h, e)
+	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:my/image:1": "sha256:mine"})
+	e = &pinEntry{Inputs: map[string]string{}}
+	upstreamInputs(ctx, cfg.Sandboxes[2], dir, h, e)
+	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:" + lxdSandboxBase: "fp-" + lxdSandboxBase})
+}
+
+// a run checks upstream while preflight runs and warns; --offline skips it.
+func TestRunUpstreamWarnsAndOffline(t *testing.T) {
+	dir := t.TempDir()
+	cfg := parseCfg(t, initCfg)
+	pinAll(t, dir, cfg)
+	require.NoError(t, updatePins(dir, func(f *pinFile) error {
+		f.Targets["fake:host"]["own"].Inputs["upstream:my/image:1"] = "sha256:old"
+		return nil
+	}))
+	var calls atomic.Int32
+	fakeLookups(t, func(context.Context, string) (string, error) { calls.Add(1); return "sha256:new", nil }, nil)
+	useFakeSandbox(t, &fakeSandbox{})
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})
+	require.NoError(t, err)
+	assert.ContainsString(t, out.String(), `sandbox "own": a newer my/image:1 is upstream`)
+
+	calls.Store(0)
+	out.Reset()
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}, Offline: true})
+	require.NoError(t, err)
+	assert.Equal(t, calls.Load(), int32(0))
+	assert.That(t, !bytes.Contains(out.Bytes(), []byte("upstream")), "--offline still checked: %s", out.String())
+}

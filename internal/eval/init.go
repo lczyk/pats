@@ -189,6 +189,9 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 	if err == nil {
 		e.Components, err = h.stamps(ctx, e.Image.ID)
 	}
+	if err == nil {
+		upstreamInputs(ctx, sb, ro.ConfigDir, h, e)
+	}
 	return target, e, err
 }
 
@@ -346,11 +349,12 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 // usePins points each sandbox the pairs use at its pinned images, and stops
 // the run, naming the init that fixes it, when one is not pinned for where
 // the run would start it, or its image is gone.
-func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
+func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) ([]upstreamCheck, error) {
 	pins, err := readPins(opts.ConfigDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var checks []upstreamCheck
 	used := usedSandboxes(cfg, pairs)
 	lg := logw{opts.Out, opts.Color}
 	var missing []string
@@ -362,7 +366,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		h := hostFor(sb)
 		target, daemon, err := h.target(ctx)
 		if err != nil {
-			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
+			return nil, fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
 		e := pins.entry(target, sb.ID)
 		reason := ""
@@ -397,12 +401,13 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 		cfg.Sandboxes[i].Image = e.Image.ID
 		cfg.Sandboxes[i].Components = e.Components
+		checks = append(checks, upstreamCheck{sb: sb.ID, lxd: sb.Driver == "lxd", inputs: e.Inputs})
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
 		}
 	}
 	if len(missing) == 0 {
-		return nil
+		return checks, nil
 	}
 	cmd := "pats init"
 	if len(missing) < len(used) {
@@ -411,7 +416,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			cmd += " --sandbox " + id
 		}
 	}
-	return fmt.Errorf("images missing for %d sandbox(es):\n%s\nrun `%s` first", len(missing), strings.Join(reasons, "\n"), cmd)
+	return nil, fmt.Errorf("images missing for %d sandbox(es):\n%s\nrun `%s` first", len(missing), strings.Join(reasons, "\n"), cmd)
 }
 
 // missingImage is an image e pins that its host no longer has, "" when
