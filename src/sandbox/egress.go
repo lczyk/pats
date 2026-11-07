@@ -40,39 +40,70 @@ func OwnerLabel() string {
 // would then judge another machine's live run by an owner file it cannot
 // see.
 var clientID = sync.OnceValue(func() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	fresh := hex.EncodeToString(b)
 	root, err := TempRoot()
 	if err != nil {
-		return "noid"
+		// unpersisted: unique to this process, so never another's; a later
+		// clean sees what it made as foreign and leaves it to --force.
+		return fresh
 	}
 	p := filepath.Join(filepath.Dir(root), "client-id")
-	read := func() string {
-		b, err := os.ReadFile(p)
-		if id := strings.TrimSpace(string(b)); err == nil && clientIDRe.MatchString(id) {
-			return id
-		}
-		return ""
-	}
-	if id := read(); id != "" {
+	if id, err := loadClientID(p, fresh); err == nil {
 		return id
 	}
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "noid"
-	}
-	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	// exclusive: of two first runs racing, one writes and both read its id.
-	if f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err == nil {
-		_, _ = f.WriteString(hex.EncodeToString(b) + "\n")
-		_ = f.Close()
-	}
-	for range 50 {
-		if id := read(); id != "" {
-			return id
-		}
-		time.Sleep(10 * time.Millisecond) // the winner may not have written yet
-	}
-	return "noid"
+	return fresh
 })
+
+// loadClientID returns the id stored at p, publishing fresh there first when
+// there is none: written to a temp file and hard-linked into place, so the
+// file is whole whenever it exists and, of two first runs, both read the one
+// that linked first. a malformed file (from before this) is replaced.
+func loadClientID(p, fresh string) (string, error) {
+	read := func() (string, error) {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return "", err
+		}
+		if id := strings.TrimSpace(string(b)); clientIDRe.MatchString(id) {
+			return id, nil
+		}
+		return "", errMalformedID
+	}
+	id, err := read()
+	if err == nil {
+		return id, nil
+	}
+	if errors.Is(err, errMalformedID) {
+		if err := os.Remove(p); err != nil {
+			return "", err
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(p), "client-id-")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(fresh + "\n"); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Link(tmp.Name(), p); err != nil && !os.IsExist(err) {
+		return "", err
+	}
+	return read()
+}
+
+var errMalformedID = errors.New("malformed client id")
 
 var clientIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 

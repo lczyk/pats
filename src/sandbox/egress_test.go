@@ -432,3 +432,27 @@ func TestAgentName(t *testing.T) {
 	assert.Equal(t, agentName(work), "sbx-agent-"+filepath.Base(work))
 	assert.Equal(t, agentName(t.TempDir()), "")
 }
+
+// the client id is published whole: concurrent first runs agree on one, and a
+// malformed file is replaced rather than poisoning every later run.
+func TestLoadClientID(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "client-id")
+	ids := make(chan string, 8)
+	for i := range 8 {
+		go func(i int) {
+			id, err := loadClientID(p, fmt.Sprintf("%016x", i+1))
+			if err != nil {
+				id = "err: " + err.Error()
+			}
+			ids <- id
+		}(i)
+	}
+	first := <-ids
+	for range 7 {
+		assert.Equal(t, <-ids, first)
+	}
+	require.NoError(t, os.WriteFile(p, []byte("half"), 0o600))
+	id, err := loadClientID(p, "00000000000000ff")
+	require.NoError(t, err)
+	assert.Equal(t, id, "00000000000000ff")
+}
