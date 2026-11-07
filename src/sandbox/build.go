@@ -64,8 +64,6 @@ func BuildContainerImage(ctx context.Context, driver string, b ContainerBuild, b
 	return id, err == nil, err
 }
 
-// stderrTail renders a failed command's captured stderr for embedding in an
-// error: the last few lines, enough to see the crash.
 // LogTail is a build log's last lines, for an error: what failed is usually
 // at the end, and the whole log can run to megabytes.
 func LogTail(log string) string {
@@ -85,6 +83,8 @@ func LogTail(log string) string {
 	return "\nlog tail:\n  " + strings.Join(lines, "\n  ")
 }
 
+// stderrTail renders a failed command's captured stderr for embedding in an
+// error: the last few lines, enough to see the crash.
 func stderrTail(b *bytes.Buffer) string {
 	s := strings.TrimSpace(b.String())
 	if s == "" {

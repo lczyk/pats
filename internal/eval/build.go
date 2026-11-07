@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,8 +127,7 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 	progress := func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
 	warn := func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
 	fail := func(err error) error {
-		b, _ := os.ReadFile(logPath)
-		return fmt.Errorf("%w%s\n(full log: %s)", err, sandbox.LogTail(string(b)), relToCwd(logPath))
+		return fmt.Errorf("%w%s\n(full log: %s)", err, sandbox.LogTail(fileTail(logPath, 64<<10)), relToCwd(logPath))
 	}
 	base, anyBuilt := sb.Base, false
 	if base == "" {
@@ -155,6 +155,22 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 		return "", false, fail(err)
 	}
 	return alias, built || anyBuilt, nil
+}
+
+// fileTail is up to n bytes off the end of a file, "" when it can't be read.
+func fileTail(path string, n int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() > n {
+		if _, err := f.Seek(-n, io.SeekEnd); err != nil {
+			return ""
+		}
+	}
+	b, _ := io.ReadAll(io.LimitReader(f, n))
+	return string(b)
 }
 
 // lxdSandboxBase is what the pats sandbox is provisioned on under lxd: the
