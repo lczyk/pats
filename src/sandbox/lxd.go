@@ -58,7 +58,7 @@ var lxdRunToken = func() string {
 // lxdOwner is the host and uid that made a resource.
 func lxdOwner() string {
 	host, _ := os.Hostname()
-	return fmt.Sprintf("%s/%d", host, os.Getuid())
+	return fmt.Sprintf("%s/%d/%s", host, os.Getuid(), clientID())
 }
 
 type lxd struct {

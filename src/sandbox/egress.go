@@ -3,6 +3,8 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,8 +31,29 @@ const namePrefix = "sbx-"
 // user's workdir owner files live in their cache, or on another machine.
 func OwnerLabel() string {
 	host, _ := os.Hostname()
-	return fmt.Sprintf("pats.owner=%s/%d", host, os.Getuid())
+	return fmt.Sprintf("pats.owner=%s/%d/%s", host, os.Getuid(), clientID())
 }
+
+// clientID is a random id made once per user and kept beside the temp root:
+// host and uid alone collide across machines sharing a daemon, and clean
+// would then judge another machine's live run by an owner file it cannot
+// see.
+var clientID = sync.OnceValue(func() string {
+	root, err := TempRoot()
+	if err != nil {
+		return "noid"
+	}
+	p := filepath.Join(filepath.Dir(root), "client-id")
+	if b, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(b))) > 0 {
+		return strings.TrimSpace(string(b))
+	}
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	_ = os.WriteFile(p, []byte(id+"\n"), 0o600)
+	return id
+})
 
 // agentName names the agent container after its workdir, as the sidecar is,
 // so `pats clean` can find one that outlived a killed pats (a dead client
