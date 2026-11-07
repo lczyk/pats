@@ -132,13 +132,22 @@ func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) 
 			return "", "", err
 		}
 	}
+	// a setup that fails leaves no server for shutdown to end, so it removes
+	// the marker itself: one a killed create may have made too, but not one
+	// the same server, reached under a second name, already had.
+	ours := true
+	defer func() {
+		if err != nil && ours {
+			_, _ = l.lxc(context.Background(), "network", "acl", "delete", remote+":"+l.marker(), "--project", "default")
+		}
+	}()
 	marker := append([]string{"network", "acl", "create", remote + ":" + l.marker(), "--project", "default",
 		"user.pats.lease=" + strconv.FormatInt(l.p.clock.Now().Unix(), 10)}, l.meta()...)
 	if _, err := l.lxc(ctx, marker...); err != nil {
-		// the same server reached under a second name already made it.
 		if _, serr := l.lxc(ctx, "network", "acl", "show", remote+":"+l.marker(), "--project", "default"); serr != nil {
 			return "", "", fmt.Errorf("lxd: run marker: %w", err)
 		}
+		ours = false
 	}
 	if _, err := l.lxc(ctx, "project", "show", remote+":"+lxdProject); err != nil {
 		// networks stay in the default project: a bridge in another one
