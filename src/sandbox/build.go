@@ -145,7 +145,9 @@ func fromRefs(dfData []byte, base string) (refs []string, exact bool) {
 	args := map[string]string{baseArg: base}
 	stages := map[string]bool{}
 	seenFrom := false
-	for _, line := range strings.Split(string(dfData), "\n") {
+	// a backslash ends a line that continues on the next.
+	joined := strings.ReplaceAll(strings.ReplaceAll(string(dfData), "\\\r\n", " "), "\\\n", " ")
+	for _, line := range strings.Split(joined, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 2 {
 			continue

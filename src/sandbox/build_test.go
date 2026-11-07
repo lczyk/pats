@@ -239,6 +239,9 @@ FROM scratch
 	assert.Equal(t, exact, false)
 	_, exact = fromRefs([]byte("FROM --platform=linux/amd64 ubuntu:24.04\n"), "")
 	assert.Equal(t, exact, false)
+	refs, exact = fromRefs([]byte("FROM \\\n  ubuntu:26.04 \\\n  AS x\nFROM x\n"), "")
+	assert.Equal(t, strings.Join(refs, " "), "ubuntu:26.04")
+	assert.Equal(t, exact, true)
 }
 
 // a base refreshed locally changes the key; an absent one is pulled first, as
