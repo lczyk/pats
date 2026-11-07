@@ -269,7 +269,7 @@ func (c *Config) append(kind, id, vector, dir string, item any) {
 var slots = map[string][][]string{
 	"task": {
 		{"prompt", "prompt-file", "prompt-cmd"},
-		{"prepare", "prepare-cmd"},
+		{"stage", "stage-cmd"},
 		{"collect", "collect-cmd"},
 	},
 	"scorer": {

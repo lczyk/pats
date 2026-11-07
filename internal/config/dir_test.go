@@ -23,7 +23,7 @@ func tree(t *testing.T, files map[string]string) string {
 
 func TestParseDirVector(t *testing.T) {
 	root := tree(t, map[string]string{
-		"cases/knockout/curl/task.yaml":      "prompt: curl\nprepare: prepare-knockout\nenv:\n  BRANCH: ubuntu-26.04\n",
+		"cases/knockout/curl/task.yaml":      "prompt: curl\nstage: prepare-knockout\nenv:\n  BRANCH: ubuntu-26.04\n",
 		"cases/knockout/zlib/task.yaml":      "prompt-file: prompt.md\n",
 		"cases/denovo/i2c-tools/task.yaml":   "prompt: i2c\n",
 		"cases/denovo/i2c-tools/a.silver":    "x",
@@ -55,7 +55,7 @@ func TestParseDirVector(t *testing.T) {
 
 	curl := c.Tasks[2]
 	assert.Equal(t, curl.Prompt, "curl")
-	assert.Equal(t, curl.Prepare, "prepare-knockout")
+	assert.Equal(t, curl.Stage, "prepare-knockout")
 	assert.Equal(t, curl.Env["BRANCH"], "ubuntu-26.04")
 	assert.Equal(t, c.Tasks[3].PromptFile, "prompt.md")
 }

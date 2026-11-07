@@ -141,9 +141,9 @@ type Task struct {
 	Dir        string            `yaml:"-"`
 	Prompt     string            `yaml:"prompt" tmpl:"-"`  // the instruction, literal
 	PromptFile string            `yaml:"prompt-file"`      // a file holding the instruction
-	PromptCmd  string            `yaml:"prompt-cmd"`       // a command printing the instruction; runs after prepare
-	Prepare    string            `yaml:"prepare" tmpl:"-"` // inline script seeding the sandbox
-	PrepareCmd string            `yaml:"prepare-cmd"`      // command seeding the sandbox
+	PromptCmd  string            `yaml:"prompt-cmd"`       // a command printing the instruction; runs after stage
+	Stage      string            `yaml:"stage" tmpl:"-"`   // inline host script seeding the sandbox before it starts
+	StageCmd   string            `yaml:"stage-cmd"`        // host command seeding the sandbox before it starts
 	Collect    string            `yaml:"collect" tmpl:"-"` // inline script gathering outputs
 	CollectCmd string            `yaml:"collect-cmd"`      // command gathering outputs
 	Timeout    string            `yaml:"timeout"`          // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none

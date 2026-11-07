@@ -51,16 +51,17 @@ haiku:
 #       harness: claude-cli-keyless
 #       model: claude-sonnet-4-6
 
-# the prompt is `prompt` (literal text), `prompt-file` or `prompt-cmd` (its stdout). prepare and collect are an inline script
-# (`prepare`, `collect`) or a command line (`prepare-cmd`, `collect-cmd`), run on the host with PATS_* env set and this dir's
-# bin/ on PATH. `env:` adds variables for the task's scripts. timeout is per pair, 10m by default.
+# the prompt is `prompt` (literal text), `prompt-file` or `prompt-cmd` (its stdout). stage and collect are an inline script
+# (`stage`, `collect`) or a command line (`stage-cmd`, `collect-cmd`), run on the host with PATS_* env set and this dir's
+# bin/ on PATH: stage before the sandbox starts, collect after the agent. `env:` adds variables for the task's scripts.
+# timeout is per pair, 10m by default.
 # a task vector can instead take `dir: <path>`: every directory under it holding a task.yaml is one task, configured by that
 # file alone, with its scripts run and its paths resolved in its own directory.
 write-readme:
   kind: task
   defaults:
     prompt-file: prompts/${vector}-${task}.txt
-    prepare-cmd: scripts/prepare.sh --${task}
+    stage-cmd: scripts/stage.sh --${task}
     collect-cmd: scripts/collect.sh --${task}
   items:
     simple:

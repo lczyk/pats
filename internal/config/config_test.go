@@ -49,7 +49,7 @@ slicer:
   kind: task
   defaults:
     prompt-file: prompts/${task}.txt
-    prepare-cmd: tasks/${vector}/prepare_${task}.sh
+    stage-cmd: tasks/${vector}/prepare_${task}.sh
     collect-cmd: tasks/collect.sh
   items:
     base-passwd:
@@ -69,7 +69,7 @@ misc:
 
 	// defaults inherited and interpolated per item.
 	assert.Equal(t, bp.PromptFile, "prompts/base-passwd.txt")
-	assert.Equal(t, bp.PrepareCmd, "tasks/slicer/prepare_base-passwd.sh")
+	assert.Equal(t, bp.StageCmd, "tasks/slicer/prepare_base-passwd.sh")
 	assert.Equal(t, bp.CollectCmd, "tasks/collect.sh")
 	assert.Equal(t, bp.Timeout, "")
 	assert.Equal(t, bp.Dir, "")
@@ -83,7 +83,7 @@ misc:
 	assert.Equal(t, help.Prompt, "write the ${task} readme")
 }
 
-// a slot (prompt / prompt-file / prompt-cmd, prepare / prepare-cmd, ...)
+// a slot (prompt / prompt-file / prompt-cmd, stage / stage-cmd, ...)
 // merges as a unit: an item setting one key replaces whatever form the
 // defaults used, and a null on any key clears the slot.
 func TestParseSlotsMergeAsUnits(t *testing.T) {
@@ -92,27 +92,27 @@ v:
   kind: task
   defaults:
     prompt-file: p.txt
-    prepare-cmd: prep.sh
+    stage-cmd: prep.sh
     collect: |
       echo collect
   items:
     inherits:
     inline:
       prompt: literal
-      prepare: |
+      stage: |
         echo hi ${task}
     cleared:
       collect-cmd: ~
 `)
 	inherits, inline, cleared := c.Tasks[0], c.Tasks[1], c.Tasks[2]
 	assert.Equal(t, inherits.PromptFile, "p.txt")
-	assert.Equal(t, inherits.PrepareCmd, "prep.sh")
+	assert.Equal(t, inherits.StageCmd, "prep.sh")
 	assert.Equal(t, inherits.Collect, "echo collect\n")
 
 	assert.Equal(t, inline.Prompt, "literal")
 	assert.Equal(t, inline.PromptFile, "")
-	assert.Equal(t, inline.Prepare, "echo hi ${task}\n") // script bodies aren't templated
-	assert.Equal(t, inline.PrepareCmd, "")
+	assert.Equal(t, inline.Stage, "echo hi ${task}\n") // script bodies aren't templated
+	assert.Equal(t, inline.StageCmd, "")
 
 	assert.Equal(t, cleared.Collect, "")
 	assert.Equal(t, cleared.CollectCmd, "")
@@ -224,7 +224,7 @@ func TestParseErrors(t *testing.T) {
 		{"unknown template variable", "x: {kind: task, items: {a: {prompt-file: \"p/${id}.txt\"}}}\n", "unknown variable ${id} (${task}, ${vector})"},
 		{"wrong kind variable", "x: {kind: scorer, items: {a: {score-cmd: \"p/${task}.py\"}}}\n", "unknown variable ${task}"},
 		{"two keys of one slot", "x: {kind: task, items: {a: {prompt: p, prompt-file: f}}}\n", "prompt, prompt-file are mutually exclusive"},
-		{"two keys of one slot in defaults", "x: {kind: task, defaults: {prepare: a, prepare-cmd: b}, items: {a: ~}}\n", "prepare, prepare-cmd are mutually exclusive"},
+		{"two keys of one slot in defaults", "x: {kind: task, defaults: {stage: a, stage-cmd: b}, items: {a: ~}}\n", "stage, stage-cmd are mutually exclusive"},
 		{"agent-id is renamed agent", "x: {kind: scorer, items: {a: {agent-id: j}}}\n", "unknown field \"agent-id\""},
 		{"dir on a scorer vector", "x: {kind: scorer, dir: scorers}\n", "dir is only supported on task vectors"},
 	}

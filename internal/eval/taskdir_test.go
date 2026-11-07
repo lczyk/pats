@@ -31,7 +31,7 @@ func TestRunTaskDir(t *testing.T) {
   slice ${task} please
 env:
   BRANCH: ubuntu-26.04
-prepare: |
+stage: |
   stage-truth
 collect-cmd: ./collect.sh
 `,

@@ -444,7 +444,7 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, prepare-cmd: ./prepare.sh, collect-cmd: ./collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, stage-cmd: ./prepare.sh, collect-cmd: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -535,7 +535,7 @@ func TestRunPairPrepareFailureCleansHome(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, prepare-cmd: ./prepare.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, stage-cmd: ./prepare.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 

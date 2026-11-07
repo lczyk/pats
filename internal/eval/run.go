@@ -50,7 +50,7 @@ var newSandbox = sandbox.New
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
 // a single pair failing is logged and skipped -- it does not abort the run.
 func Run(cfg *config.Config, opts Options) (string, error) {
-	// absolute config dir: prepare/collect run with cwd=ConfigDir, and the
+	// absolute config dir: stage/collect run with cwd=ConfigDir, and the
 	// PATS_*_DIR paths must resolve regardless of that cwd.
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
 		opts.ConfigDir = abs
@@ -343,7 +343,7 @@ func runPair(
 	}
 	sb := sandboxes[sbID]
 
-	// host-side env for the task's scripts (prepare, prompt-cmd, collect). they
+	// host-side env for the task's scripts (stage, prompt-cmd, collect). they
 	// run in the task's directory and seed/gather the sandbox via these paths;
 	// the task's own env goes on top (Validate keeps it off PATS_*).
 	taskDir := filepath.Join(opts.ConfigDir, t.Dir)
@@ -360,7 +360,7 @@ func runPair(
 	}
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
-	// precedes prepare so prepare can seed harness config into it.
+	// precedes stage so stage can seed harness config into it.
 	h, err := newHarness(opts, a, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
 	if err != nil {
 		return err
@@ -371,9 +371,9 @@ func runPair(
 		hostEnv[k] = v
 	}
 
-	if prepare := (step{t.Prepare, t.PrepareCmd, taskDir}); prepare.set() {
-		if err := prepare.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
-			return fmt.Errorf("prepare: %w", err)
+	if stage := (step{t.Stage, t.StageCmd, taskDir}); stage.set() {
+		if err := stage.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
+			return fmt.Errorf("stage: %w", err)
 		}
 	}
 
@@ -598,7 +598,7 @@ func relToCwd(p string) string {
 
 // taskPrompt is the prompt handed to the agent: the literal prompt, the
 // contents of prompt-file (resolved against the task's dir), or the stdout of
-// prompt-cmd, run after prepare with the task's env.
+// prompt-cmd, run after stage with the task's env.
 func taskPrompt(root, dir string, t config.Task, env map[string]string) ([]byte, error) {
 	switch {
 	case t.PromptFile != "":

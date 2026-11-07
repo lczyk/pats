@@ -25,7 +25,7 @@ type harness struct {
 }
 
 // promptName is the prompt file's name inside the harness HOME. it lives there,
-// not in the workdir, so the agent's cwd holds only what prepare put in it: a
+// not in the workdir, so the agent's cwd holds only what stage put in it: a
 // stray prompt.txt next to the fixture gets noticed and commented on.
 const promptName = "prompt.txt"
 
