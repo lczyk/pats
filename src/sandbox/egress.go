@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/lczyk/pats/src/sandbox/proxy"
@@ -58,9 +59,22 @@ var clientID = sync.OnceValue(func() string {
 
 // loadClientID returns the id stored at p, publishing fresh there first when
 // there is none: written to a temp file and hard-linked into place, so the
-// file is whole whenever it exists and, of two first runs, both read the one
-// that linked first. a malformed file (from before this) is replaced.
+// file is whole whenever it exists. a malformed file (from before this) is
+// replaced. a lock beside it serialises the whole read-repair-publish, so
+// concurrent first runs, and concurrent repairs, all end on one id.
 func loadClientID(p, fresh string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return "", err
+	}
+	lock, err := os.OpenFile(p+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return "", err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	read := func() (string, error) {
 		b, err := os.ReadFile(p)
 		if err != nil {
@@ -80,9 +94,6 @@ func loadClientID(p, fresh string) (string, error) {
 			return "", err
 		}
 	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return "", err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(p), "client-id-")
