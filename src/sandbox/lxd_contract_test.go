@@ -180,8 +180,13 @@ func contractCreateRace(t *testing.T, c *contractEnv, inst string) bool {
 				return true
 			}
 		}
-		if _, err := c.lxc("query", c.remote+":/1.0/instances/"+inst+"?project="+lxdProject); err == nil {
-			t.Logf("%s: the create finished before its operation was seen", inst)
+		if out, err := c.lxc("query", c.remote+":/1.0/instances/"+inst+"?project="+lxdProject); err == nil {
+			var st struct {
+				Status string `json:"status"`
+			}
+			_ = json.Unmarshal([]byte(out), &st)
+			ops, _ := c.lxc("query", c.remote+":/1.0/operations?project="+lxdProject+"&recursion=1")
+			t.Logf("%s: the create finished before its operation was seen (instance %s; operations %s)", inst, st.Status, ops)
 			return false
 		}
 		time.Sleep(10 * time.Millisecond)
