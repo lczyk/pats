@@ -21,6 +21,10 @@ func TestProbeArgv(t *testing.T) {
 		names[p.name] = true
 		assert.That(t, p.shell == "sh" || p.shell == "bash", "probe %s shell %s", p.name, p.shell)
 	}
+	// /dev/tcp and /dev/udp are bash's: under dash these probes would never
+	// connect, and a canary that cannot connect reads as fail-closed.
+	assert.Equal(t, probeCanary.shell, "bash")
+	assert.Equal(t, probeReach.shell, "bash")
 }
 
 func TestCanaryVerdict(t *testing.T) {
