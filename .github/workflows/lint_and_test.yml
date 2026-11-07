@@ -55,7 +55,7 @@ jobs:
     # setup-lxd hands the socket to the adm group, which the runner user is
     # already in: no sg, which wants a password in a non-interactive shell.
     - name: LXD e2e
-      run: PATS_LXD_E2E=1 go test ./src/sandbox/ -run TestLXDE2E -v -timeout 30m
+      run: PATS_LXD_E2E=1 go test ./src/sandbox/ -run 'TestLXDE2E|TestLXDContract$' -v -timeout 30m
 
   # the workflows themselves only run on a push or a tag, so lint them here.
   actionlint:
