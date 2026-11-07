@@ -905,13 +905,16 @@ var instanceGone = 5 * time.Minute
 // lxc does not stop the server's half of an init, so an instance whose init
 // was cut short (a deadline, ctrl+c) can appear after a delete has already
 // said it is not there; while an operation on it still runs, the delete is
-// retried until the operation is over or instanceGone has passed.
+// retried until the operation is over or instanceGone has passed. the
+// operations are read before each delete, not after: a create that was over
+// before the delete cannot finish after it (docs/spec/fizz/lxd_delete.fizz).
 func (l *lxd) deleteInstance(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), instanceGone)
 	defer cancel()
 	for {
+		busy := l.instanceBusy(ctx, name)
 		_, err := l.lxc(ctx, "delete", l.ref(name), "--project", lxdProject, "--force")
-		if !l.instanceBusy(ctx, name) {
+		if !busy {
 			if err != nil && strings.Contains(strings.ToLower(err.Error()), "not found") {
 				err = nil
 			}

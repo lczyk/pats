@@ -519,3 +519,37 @@ func TestLXDDeleteInstanceWaitsForCreate(t *testing.T) {
 	assert.Equal(t, deletes, 3)
 	assert.Equal(t, busy, 0)
 }
+
+// the create finishes right after a delete said not found: the operations
+// were read before that delete, so the round is retried and the instance,
+// now there, goes (docs/spec/fizz/lxd_delete.fizz).
+func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
+	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv"})
+	creating, present := true, false
+	inner := f.run
+	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "query srv:/1.0/operations"):
+			if creating {
+				io.WriteString(stdout, `{"running":[{"resources":{"instances":["/1.0/instances/pats-x?project=pats"]}}]}`)
+			} else {
+				io.WriteString(stdout, `{"running":[]}`)
+			}
+			return nil
+		case strings.HasPrefix(joined, "delete srv:pats-x"):
+			if present {
+				present = false
+				return nil
+			}
+			if creating { // the server finishes the create just after this
+				creating, present = false, true
+			}
+			io.WriteString(stderr, `Error: Instance not found`)
+			return &fakeExit{}
+		}
+		return inner(ctx, stdin, stdout, stderr, args...)
+	}
+	require.NoError(t, l.deleteInstance("pats-x"))
+	assert.That(t, !present, "instance left behind")
+}
