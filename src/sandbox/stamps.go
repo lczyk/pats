@@ -25,8 +25,13 @@ done`
 // stampTimeout bounds a stamp: a hung --version must not hang the init.
 var stampTimeout = 2 * time.Minute
 
-// componentProp prefixes the lxd image properties holding the stamps.
-const componentProp = "pats.component."
+// componentProp prefixes the lxd image properties holding the stamps;
+// stampedProp marks an image pats stamped, so one with no harness is not
+// stamped again.
+const (
+	componentProp = "pats.component."
+	stampedProp   = "pats.stamped"
+)
 
 var versionRe = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]*[0-9A-Za-z])?`)
 
@@ -77,8 +82,9 @@ func containerStamps(ctx context.Context, r runner, id string, timeout time.Dura
 	return nil, fmt.Errorf("stamping %s: %w%s", id, err, stderrTail(&errb))
 }
 
-// LXDImageStamps reads the component stamps an lxd image was published
-// with, in the pats project.
+// LXDImageStamps is the component stamps of an lxd image in the pats
+// project: the properties a pats build published it with, or, for an image
+// pats did not build, what stampScript says in a throwaway instance of it.
 func LXDImageStamps(ctx context.Context, o Options, fp string) (map[string]string, error) {
 	l := newLXD(defaultProcess, lxcCLI, o)
 	if err := l.prepareServer(ctx); err != nil {
@@ -94,6 +100,9 @@ func (l *lxd) imageStamps(ctx context.Context, fp string) (map[string]string, er
 	if err := l.query(ctx, "/1.0/images/"+fp+"?project="+lxdProject, &im); err != nil {
 		return nil, err
 	}
+	if im.Properties[stampedProp] == "" {
+		return l.runStamp(ctx, fp)
+	}
 	stamps := map[string]string{}
 	for k, v := range im.Properties {
 		if name, ok := strings.CutPrefix(k, componentProp); ok {
@@ -101,4 +110,42 @@ func (l *lxd) imageStamps(ctx context.Context, fp string) (map[string]string, er
 		}
 	}
 	return stamps, nil
+}
+
+// runStamp runs stampScript in a throwaway instance of image fp, with no
+// network, and removes the instance.
+func (l *lxd) runStamp(ctx context.Context, fp string) (stamps map[string]string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, stampTimeout)
+	defer cancel()
+	s := &lxdSession{l: l, name: "pats-stamp-" + l.p.token + "-" + fp[:min(12, len(fp))]}
+	defer func() {
+		if derr := l.deleteInstance(s.name); derr != nil && err == nil {
+			err = fmt.Errorf("stamp instance %s was left behind: %w", s.name, derr)
+		}
+	}()
+	// made, then started: no nic, as an `egress: none` sandbox is.
+	args := []string{"init", l.ref(fp), s.inst(), "--project", lxdProject, "--storage", l.pool}
+	if l.o.VM {
+		args = append(args, "--vm")
+	}
+	if _, err := l.lxc(ctx, append(args, l.metaFlags()...)...); err != nil {
+		return nil, err
+	}
+	if _, err := l.lxc(ctx, "start", s.inst(), "--project", lxdProject); err != nil {
+		return nil, err
+	}
+	if err := s.waitReady(ctx, false); err != nil {
+		return nil, err
+	}
+	var out, errb bytes.Buffer
+	code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &out, &errb)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("stamping %s: %w", fp, err)
+	case code == 126 || code == 127:
+		return map[string]string{}, nil // no shell to run the stamp with
+	case code != 0:
+		return nil, fmt.Errorf("stamping %s exited %d: %s", fp, code, strings.TrimSpace(errb.String()))
+	}
+	return parseStamps(out.String())
 }

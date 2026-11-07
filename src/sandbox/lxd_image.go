@@ -342,6 +342,7 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	private := alias + "-" + l.p.token
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
 	pub = append(pub, l.meta()...)
+	pub = append(pub, stampedProp+"=1")
 	for _, name := range sortedKeys(stamps) {
 		pub = append(pub, componentProp+name+"="+stamps[name])
 	}

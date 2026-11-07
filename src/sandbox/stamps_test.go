@@ -133,3 +133,23 @@ func TestLXDStampTimeoutOnServer(t *testing.T) {
 	assert.Error(t, err, "stamping the harness versions took over")
 	assert.Len(t, f.insts, 0) // the builder went with the failed build
 }
+
+// an image pats did not build has no stamp properties: its stamps come from
+// a throwaway instance of it, which goes after.
+func TestLXDStampsOfAForeignImageOnServer(t *testing.T) {
+	f := newFakeServer(t)
+	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
+		if len(argv) == 3 && argv[2] == stampScript {
+			io.WriteString(stdout, "codex=codex-cli 0.100.0\n")
+		}
+		return nil
+	}
+	l := lxdOn(t, f, Options{})
+	require.NoError(t, l.prepareServer(context.Background()))
+	fp, _, err := l.copyImage(context.Background(), "ubuntu:26.04", false)
+	require.NoError(t, err)
+	stamps, err := l.imageStamps(context.Background(), fp)
+	require.NoError(t, err)
+	assert.EqualMaps(t, stamps, map[string]string{"codex": "0.100.0"})
+	assert.Len(t, f.insts, 0)
+}
