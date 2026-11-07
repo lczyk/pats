@@ -161,24 +161,20 @@ func contractCreateRace(t *testing.T, c *contractEnv, inst string) bool {
 	deadline := time.Now().Add(2 * time.Minute) // a first pull of the image
 	for time.Now().Before(deadline) {
 		var ops struct {
-			Running []struct {
-				Resources map[string][]string `json:"resources"`
-			} `json:"running"`
+			Running []lxdOperation `json:"running"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(c.must(t, "query", c.remote+":/1.0/operations?project="+lxdProject+"&recursion=1")), &ops))
 		for _, op := range ops.Running {
-			for _, r := range op.Resources["instances"] {
-				if r != want && !strings.HasPrefix(r, want+"?") {
-					continue
-				}
-				dout, derr := c.lxc("delete", c.ref(inst), "--project", lxdProject, "--force")
-				if derr == nil {
-					t.Logf("%s: the create finished between the operation read and the delete", inst)
-					return false
-				}
-				assert.ContainsString(t, strings.ToLower(dout), "not found")
-				return true
+			if !op.names(want) {
+				continue
 			}
+			dout, derr := c.lxc("delete", c.ref(inst), "--project", lxdProject, "--force")
+			if derr == nil {
+				t.Logf("%s: the create finished between the operation read and the delete", inst)
+				return false
+			}
+			assert.ContainsString(t, strings.ToLower(dout), "not found")
+			return true
 		}
 		if out, err := c.lxc("query", c.remote+":/1.0/instances/"+inst+"?project="+lxdProject); err == nil {
 			var st struct {

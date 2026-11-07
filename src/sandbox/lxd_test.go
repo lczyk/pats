@@ -629,3 +629,14 @@ func TestDefaultRemoteAfterBanner(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, got, "local")
 }
+
+// an operation names its instance under resources (lxd 5) or, for a create
+// on lxd 6, only in metadata.entity_url.
+func TestLXDOperationNames(t *testing.T) {
+	five := lxdOperation{Resources: map[string][]string{"instances": {"/1.0/instances/a?project=pats"}}}
+	six := lxdOperation{Resources: map[string][]string{}, Metadata: map[string]any{"entity_url": "/1.0/instances/a?project=pats"}}
+	for _, op := range []lxdOperation{five, six} {
+		assert.That(t, op.names("/1.0/instances/a"), "%+v did not name a", op)
+		assert.That(t, !op.names("/1.0/instances/ab"), "%+v named ab", op)
+	}
+}

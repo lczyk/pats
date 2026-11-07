@@ -931,22 +931,40 @@ func (l *lxd) deleteInstance(name string) error {
 // instance.
 func (l *lxd) instanceBusy(ctx context.Context, name string) bool {
 	var ops struct {
-		Running []struct {
-			Resources map[string][]string `json:"resources"`
-		} `json:"running"`
+		Running []lxdOperation `json:"running"`
 	}
 	if l.query(ctx, "/1.0/operations?project="+lxdProject+"&recursion=1", &ops) != nil {
 		return false
 	}
-	want := "/1.0/instances/" + name
 	for _, op := range ops.Running {
-		for _, r := range op.Resources["instances"] {
-			if r == want || strings.HasPrefix(r, want+"?") {
+		if op.names("/1.0/instances/" + name) {
+			return true
+		}
+	}
+	return false
+}
+
+// lxdOperation is what an operation says of what it works on: lxd 5 lists
+// it under resources, lxd 6 leaves those empty for a create and names the
+// instance in metadata.entity_url.
+type lxdOperation struct {
+	Resources map[string][]string `json:"resources"`
+	Metadata  map[string]any      `json:"metadata"`
+}
+
+// names says whether the operation works on the entity at url (with or
+// without its project query).
+func (op lxdOperation) names(url string) bool {
+	match := func(r string) bool { return r == url || strings.HasPrefix(r, url+"?") }
+	for _, rs := range op.Resources {
+		for _, r := range rs {
+			if match(r) {
 				return true
 			}
 		}
 	}
-	return false
+	e, _ := op.Metadata["entity_url"].(string)
+	return match(e)
 }
 
 // ServerCPUs is the lxd server's cpu count, 0 when it cannot be read: -j auto
