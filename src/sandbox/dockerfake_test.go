@@ -144,6 +144,13 @@ func (f *fakeDaemon) do(ctx context.Context, stdin io.Reader, stdout, stderr io.
 		}
 		if c.rm {
 			f.remove(c)
+			return nil
+		}
+		for x := range f.execs { // stopped: what ran in it ends
+			if x.inst == c.id {
+				x.kill()
+				delete(f.execs, x)
+			}
 		}
 		return nil
 	case args[0] == "cp" && len(args) == 3:
@@ -331,6 +338,10 @@ func (f *fakeDaemon) netCreate(stderr io.Writer, args []string) error {
 	if f.nets[name] != nil {
 		return dockerFail(stderr, "network with name %s already exists", name)
 	}
+	if len(flags["--subnet"]) == 0 {
+		f.t.Errorf("fake %s: network create without --subnet: the driver places every network", f.driver)
+		return dockerFail(stderr, "no subnet")
+	}
 	subnet, err := netip.ParsePrefix(flags["--subnet"][0])
 	if err != nil {
 		return dockerFail(stderr, "invalid subnet")
@@ -481,6 +492,9 @@ func (f *fakeDaemon) cp(stderr io.Writer, src, dst string) error {
 		if err != nil {
 			return dockerFail(stderr, "%v", err)
 		}
+		if contents && !st.IsDir() {
+			return dockerFail(stderr, "%s: not a directory", src)
+		}
 		if !st.IsDir() {
 			if c.isDir(p) {
 				p = path.Join(p, filepath.Base(src))
@@ -516,6 +530,12 @@ func (f *fakeDaemon) cp(stderr io.Writer, src, dst string) error {
 	files := c.tree(p)
 	if len(files) == 0 && !c.isDir(p) {
 		return dockerFail(stderr, "Could not find the file %s in container %s", p, ref)
+	}
+	if contents && !c.isDir(p) {
+		return dockerFail(stderr, "%s: not a directory", p)
+	}
+	if st, err := os.Stat(dst); err == nil && !st.IsDir() && (contents || c.isDir(p)) {
+		return dockerFail(stderr, "cannot copy a directory over the file %s", dst)
 	}
 	base := dst
 	if st, err := os.Stat(dst); err == nil && st.IsDir() && !contents {

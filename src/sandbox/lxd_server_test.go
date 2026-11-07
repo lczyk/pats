@@ -19,11 +19,14 @@ import (
 // the tests in this file run the lxd driver against fakeServer: what the
 // server holds is the assertion, not which calls were made.
 
-// lxdEgressModes are the egress setups a session can start under.
-var lxdEgressModes = []struct {
+// egressMode is an egress setup a session can start under.
+type egressMode struct {
 	name   string
 	egress Egress
-}{
+}
+
+// lxdEgressModes are the egress setups a session can start under.
+var lxdEgressModes = []egressMode{
 	{"none", Egress{None: true}},
 	{"open", Egress{SelfTest: true}},
 	{"proxy", Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}},

@@ -24,10 +24,7 @@ func workdir(t *testing.T) string {
 	return dir
 }
 
-var containerModes = []struct {
-	name   string
-	egress Egress
-}{lxdEgressModes[0], lxdEgressModes[1], lxdEgressModes[2], lxdEgressModes[3]}
+var containerModes = lxdEgressModes
 
 // a whole session under each egress mode, docker and podman: the agent's
 // writes reach the host through the bound workdir, and nothing is left
@@ -104,10 +101,10 @@ func (f *fakeDaemon) findable() []string {
 // containerSweep is sweep for the container driver: one entry run per call
 // it reaches, each fault kind. nothing may be left, or, where the faulted
 // call was itself a removal, only what pats clean finds.
-func containerSweep(t *testing.T, entry func(t *testing.T, f *fakeDaemon, ctx context.Context)) {
+func containerSweep(t *testing.T, driver string, entry func(t *testing.T, f *fakeDaemon, ctx context.Context)) {
 	for _, kind := range faultKinds {
 		for k := 0; ; k++ {
-			f := newFakeDaemon(t, "docker")
+			f := newFakeDaemon(t, driver)
 			ctx, cancel := context.WithCancel(context.Background())
 			var stop context.CancelFunc
 			if kind.cancel {
@@ -133,12 +130,29 @@ func containerSweep(t *testing.T, entry func(t *testing.T, f *fakeDaemon, ctx co
 	}
 }
 
+// containerRun is a driver and egress mode a container sweep covers.
+type containerRun struct {
+	driver string
+	mode   egressMode
+}
+
+func containerRuns() []containerRun {
+	var out []containerRun
+	for _, d := range []string{"docker", "podman"} {
+		for _, m := range containerModes {
+			out = append(out, containerRun{d, m})
+		}
+	}
+	return out
+}
+
 // every call of Start under every egress mode: what a failed or cancelled
 // Start made is gone once it returns.
 func TestContainerSweepStart(t *testing.T) {
-	for _, mode := range containerModes {
-		t.Run(mode.name, func(t *testing.T) {
-			containerSweep(t, func(t *testing.T, f *fakeDaemon, ctx context.Context) {
+	for _, run := range containerRuns() {
+		mode, driver := run.mode, run.driver
+		t.Run(driver+"/"+mode.name, func(t *testing.T) {
+			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) {
 				sess, err := containerOn(t, f).Start(ctx, Spec{Workdir: workdir(t), Egress: mode.egress})
 				f.faults.off()
 				if err == nil {
@@ -151,9 +165,10 @@ func TestContainerSweepStart(t *testing.T) {
 
 // every call of Close: what a failed call left, pats clean finds.
 func TestContainerSweepClose(t *testing.T) {
-	for _, mode := range containerModes {
-		t.Run(mode.name, func(t *testing.T) {
-			containerSweep(t, func(t *testing.T, f *fakeDaemon, ctx context.Context) {
+	for _, run := range containerRuns() {
+		mode, driver := run.mode, run.driver
+		t.Run(driver+"/"+mode.name, func(t *testing.T) {
+			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) {
 				plan := f.faults.plan
 				f.faults.off()
 				sess, err := containerOn(t, f).Start(context.Background(), Spec{Workdir: workdir(t), Egress: mode.egress})

@@ -545,6 +545,7 @@ func (f *fakeServer) create(ctx context.Context, stderr io.Writer, a fakeArgs, k
 	r, name := lxcRef(p[2])
 	if r != f.remote {
 		f.t.Errorf("fake lxd: instance %s not on the pinned remote", p[2])
+		return lxcFail(stderr, "The remote %q does not exist", r)
 	}
 	if f.insts[name] != nil {
 		return lxcFail(stderr, "Failed creating instance record: Instance %q already exists", name)

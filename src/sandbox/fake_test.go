@@ -232,7 +232,7 @@ func (c *manualClock) Advance(d time.Duration) {
 	var left []manualWaiter
 	for _, w := range c.waiters {
 		if !w.at.After(c.now) {
-			w.ch <- c.now
+			w.ch <- w.at
 		} else {
 			left = append(left, w)
 		}

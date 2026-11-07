@@ -138,27 +138,36 @@ func TestContainerSession(t *testing.T) {
 	assert.NotEqual(t, code, 0)
 }
 
-// the copy rules the fake daemon models, on a real docker: a directory's
-// contents go into an existing path, and come out into hostDir.
+// the copy rules the fake daemon models, on a real docker and podman: a
+// directory's contents go into an existing path, and come out into hostDir.
 func TestContainerCopyRules(t *testing.T) {
-	dockerOrSkip(t)
-	sb, err := New(Options{Driver: "docker", Image: testImage})
-	require.NoError(t, err)
-	sess, err := sb.Start(context.Background(), Spec{Workdir: t.TempDir()})
-	require.NoError(t, err)
-	defer sess.Close()
-	var out strings.Builder
-	code, err := sess.Exec(context.Background(), Cmd{Argv: []string{"sh", "-c", "mkdir -p /opt/x && echo kept > /opt/x/keep"}, Root: true}, &out, &out)
-	require.NoError(t, err)
-	require.Equal(t, code, 0, "%s", out.String())
-	src := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(src, "new"), []byte("new\n"), 0o644))
-	require.NoError(t, sess.Push(context.Background(), src, "/opt/x"))
-	dst := t.TempDir()
-	require.NoError(t, sess.Pull(context.Background(), "/opt/x", dst))
-	for name, want := range map[string]string{"new": "new\n", "keep": "kept\n"} {
-		b, err := os.ReadFile(filepath.Join(dst, name))
-		require.NoError(t, err, "what landed: %v", tree(dst))
-		assert.Equal(t, string(b), want)
+	for _, driver := range []string{"docker", "podman"} {
+		t.Run(driver, func(t *testing.T) {
+			if _, err := exec.LookPath(driver); err != nil {
+				t.Skip(driver + " not on PATH")
+			}
+			if err := exec.Command(driver, "info").Run(); err != nil {
+				t.Skip(driver + " not responding")
+			}
+			sb, err := New(Options{Driver: driver, Image: testImage})
+			require.NoError(t, err)
+			sess, err := sb.Start(context.Background(), Spec{Workdir: t.TempDir()})
+			require.NoError(t, err)
+			defer sess.Close()
+			var out strings.Builder
+			code, err := sess.Exec(context.Background(), Cmd{Argv: []string{"sh", "-c", "mkdir -p /opt/x && echo kept > /opt/x/keep"}, Root: true}, &out, &out)
+			require.NoError(t, err)
+			require.Equal(t, code, 0, "%s", out.String())
+			src := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(src, "new"), []byte("new\n"), 0o644))
+			require.NoError(t, sess.Push(context.Background(), src, "/opt/x"))
+			dst := t.TempDir()
+			require.NoError(t, sess.Pull(context.Background(), "/opt/x", dst))
+			for name, want := range map[string]string{"new": "new\n", "keep": "kept\n"} {
+				b, err := os.ReadFile(filepath.Join(dst, name))
+				require.NoError(t, err, "what landed: %v", tree(dst))
+				assert.Equal(t, string(b), want)
+			}
+		})
 	}
 }

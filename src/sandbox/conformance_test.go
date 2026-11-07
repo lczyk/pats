@@ -49,8 +49,13 @@ var conformDrivers = []conformDriver{
 			left:  func() []string { l.p.shutdown(); return f.leftovers(l.p.token) },
 		}
 	}},
-	{"docker", func(t *testing.T, spec Spec) (Session, *conformFake) {
-		f := newFakeDaemon(t, "docker")
+	containerConform("docker"),
+	containerConform("podman"),
+}
+
+func containerConform(driver string) conformDriver {
+	return conformDriver{driver, func(t *testing.T, spec Spec) (Session, *conformFake) {
+		f := newFakeDaemon(t, driver)
 		spec.Workdir = workdir(t)
 		sess, err := containerOn(t, f).Start(context.Background(), spec)
 		require.NoError(t, err)
@@ -65,7 +70,7 @@ var conformDrivers = []conformDriver{
 			read:  func(p string) (string, bool) { return f.read(id, p) },
 			left:  f.leftovers,
 		}
-	}},
+	}}
 }
 
 func TestSessionConformance(t *testing.T) {
