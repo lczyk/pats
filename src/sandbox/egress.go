@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,16 +45,36 @@ var clientID = sync.OnceValue(func() string {
 		return "noid"
 	}
 	p := filepath.Join(filepath.Dir(root), "client-id")
-	if b, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(b))) > 0 {
-		return strings.TrimSpace(string(b))
+	read := func() string {
+		b, err := os.ReadFile(p)
+		if id := strings.TrimSpace(string(b)); err == nil && clientIDRe.MatchString(id) {
+			return id
+		}
+		return ""
+	}
+	if id := read(); id != "" {
+		return id
 	}
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	id := hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "noid"
+	}
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	_ = os.WriteFile(p, []byte(id+"\n"), 0o600)
-	return id
+	// exclusive: of two first runs racing, one writes and both read its id.
+	if f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err == nil {
+		_, _ = f.WriteString(hex.EncodeToString(b) + "\n")
+		_ = f.Close()
+	}
+	for range 50 {
+		if id := read(); id != "" {
+			return id
+		}
+		time.Sleep(10 * time.Millisecond) // the winner may not have written yet
+	}
+	return "noid"
 })
+
+var clientIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // agentName names the agent container after its workdir, as the sidecar is,
 // so `pats clean` can find one that outlived a killed pats (a dead client
