@@ -146,10 +146,11 @@ module install of a tagged version (the documented way to get pats) carries no v
 counts as dev even at the tag. when unsure, dev. the version string alone cannot tell them apart: the `VERSION` file
 names the last release on every commit after it.
 
-`sandbox/images.go` decides today by the version string alone, so a clone build of 1.0.0-beta.3 pulls the published
-`egress-proxy:v1.0.0-beta.3`, whose proxy code may not be this build's. that moves onto the same test: a dev build's
-proxy is built from its own binary (docker: a local image `pats/egress-proxy:dev-<commit>`; lxd: the binary-bytes
-key), a release's is the published one.
+`sandbox/images.go` picks the published images by the version string alone, so a clone build at the tip of
+1.0.0-beta.3 pulls the published `egress-proxy:v1.0.0-beta.3`, whose proxy code may differ from the build's. that
+stays: an install of a beta pulls that beta's images, which is what matters, and a clone at the tip of a beta is a
+development build whose images are allowed to lag it. `pats_build` still tells the two apart, for the lxd proxy key
+(bytes for a dev build) and for the proxy check below.
 
 ### the proxy exception
 
@@ -185,11 +186,11 @@ for all of them together; a check that does not answer in time is skipped silent
 lxd properties), and into each pair's `metadata.json`, so a score can be read against the harness that produced it.
 
 today the harnesses install at `@latest` unless `CLAUDE_CLI_VERSION` and friends are set, so two images of one pats
-version built a week apart carry different harnesses, and the published docker image and an lxd image provisioned
-from the same script disagree. proposed: each pats release pins its harness versions in one file both the dockerfile
-and the provision script read. then "same pats version" means the same harnesses, the stamps confirm it, and a newer
-harness arrives with a newer pats. a project wanting another harness version sets it in its `provision` layer, and
-the stamp records what it got.
+version built a week apart carry different harnesses, and the published docker image and an lxd image provisioned from
+the same script disagree. proposed (`harness-pins.md`): each pats release pins its harness versions in one file both
+the dockerfile and the provision script read, bumped at each release. then "same pats version" means the same
+harnesses, the stamps confirm it, and a newer harness arrives with a newer pats. a project wanting another harness
+version sets it in its `provision` layer, and the stamp records what it got.
 
 a run warns when a pinned image's stamps differ from what this pats release pins (an image built by an older pats,
 or a provision layer that changed a harness): same warning, same going on.
