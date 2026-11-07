@@ -30,8 +30,9 @@ var (
 	probeOnline = probe{"online", "sh", `command -v bash >/dev/null 2>&1 || exit 0; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null || timeout 5 bash -c 'exec 3<>/dev/tcp/8.8.8.8/53' 2>/dev/null`}
 	// probeCanary: every way out with the proxy env unset; see canaryVerdict.
 	probeCanary = probe{"canary", "bash", canaryScript}
-	// probeReach: the proxy at $1 port $2 answers; see reachVerdict.
-	probeReach = probe{"reach", "bash", `timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null && echo "egress-reach ok=1" || echo "egress-reach ok=0"`}
+	// probeReach: the proxy at $1 port $2 answers; see reachVerdict. the
+	// inner bash gets them as its own args, so they stay data.
+	probeReach = probe{"reach", "bash", `timeout 5 bash -c 'exec 3<>/dev/tcp/$1/$2' reach "$1" "$2" 2>/dev/null && echo "egress-reach ok=1" || echo "egress-reach ok=0"`}
 	// probeHostile: as root, a default route through the bridge's host side
 	// ($1, at mac $2) and a try out; see hostileVerdict.
 	probeHostile = probe{"hostile", "sh", `ip neigh replace "$1" lladdr "$2" dev pats0 nud permanent && ip route replace default via "$1" dev pats0 && { timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null && echo "egress-hostile leak=1" || echo "egress-hostile leak=0"; }; ip route del default 2>/dev/null; ip neigh del "$1" dev pats0 2>/dev/null; true`}
