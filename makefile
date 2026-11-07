@@ -41,6 +41,10 @@ cover:  ## Show test coverage per function in the CLI
 	go test -coverprofile=/tmp/pats-cover.out ./...
 	go tool cover -func=/tmp/pats-cover.out
 
+.PHONY: specs
+specs:  ## Model-check the fizzbee specs (needs fizz)
+	cd docs/spec/fizz && for f in *.fizz; do timeout -k 10 300 fizz $$f || exit 1; done
+
 FUZZTIME ?= 10s
 
 .PHONY: fuzz
