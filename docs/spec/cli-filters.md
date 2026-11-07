@@ -1,6 +1,6 @@
 # cli filters
 
-status: proposed, not implemented.
+status: implemented.
 
 ## problem
 
