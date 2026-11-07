@@ -502,6 +502,9 @@ func (f *fakeDaemon) cp(stderr io.Writer, src, dst string) error {
 			b, _ := os.ReadFile(src)
 			return c.put(p, b)
 		}
+		if _, isFile := c.files[p]; isFile {
+			return dockerFail(stderr, "cannot copy a directory over the file %s", p)
+		}
 		base := p
 		if c.isDir(p) && !contents {
 			base = path.Join(p, filepath.Base(src))

@@ -149,7 +149,9 @@ func TestContainerCopyRules(t *testing.T) {
 			if err := exec.Command(driver, "info").Run(); err != nil {
 				t.Skip(driver + " not responding")
 			}
-			sb, err := New(Options{Driver: driver, Image: testImage})
+			// qualified: podman with short-name enforcement will not pull
+			// an unqualified name.
+			sb, err := New(Options{Driver: driver, Image: "docker.io/library/" + testImage})
 			require.NoError(t, err)
 			sess, err := sb.Start(context.Background(), Spec{Workdir: t.TempDir()})
 			require.NoError(t, err)
