@@ -325,3 +325,27 @@ func (fs *faults) call(ctx context.Context, args []string, stderr io.Writer, do 
 	fmt.Fprintln(stderr, "Error: injected fault after the daemon acted")
 	return exitStatus(1)
 }
+
+// faultKinds are the ways one cli call goes wrong: the server refuses it, or
+// does it and the client still fails; or the run's context ends there, before
+// the server acts or after (an init then finishing on the server).
+var faultKinds = []struct {
+	name          string
+	after, cancel bool
+}{
+	{"fail", false, false},
+	{"fail-after", true, false},
+	{"cancel", false, true},
+	{"cancel-after", true, true},
+}
+
+// isRemoval says whether a cli call removes something: lxc's deletes,
+// docker's rm, network rm and kill.
+func isRemoval(call string) bool {
+	for _, p := range []string{"delete ", "rm ", "network rm ", "kill "} {
+		if strings.HasPrefix(call, p) {
+			return true
+		}
+	}
+	return strings.Contains(call, " delete ")
+}

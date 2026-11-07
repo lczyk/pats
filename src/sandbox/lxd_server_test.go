@@ -228,19 +228,6 @@ func TestLXDCleanOnServer(t *testing.T) {
 	require.NoError(t, ls.Close())
 }
 
-// faultKinds are the ways one lxc call goes wrong: the server refuses it, or
-// does it and the client still fails; or the run's context ends there, before
-// the server acts or after (an init then finishing on the server).
-var faultKinds = []struct {
-	name          string
-	after, cancel bool
-}{
-	{"fail", false, false},
-	{"fail-after", true, false},
-	{"cancel", false, true},
-	{"cancel-after", true, true},
-}
-
 // sweep runs entry once per lxc call it makes, with that call faulted each
 // way, until a run ends before the fault is reached. after each run the
 // run's process ends, and nothing of the run may be left on the server.
@@ -275,11 +262,6 @@ func sweep(t *testing.T, entry func(t *testing.T, f *fakeServer, ctx context.Con
 			}
 		}
 	}
-}
-
-// isRemoval says whether an lxc call removes something.
-func isRemoval(call string) bool {
-	return strings.HasPrefix(call, "delete ") || strings.Contains(call, " delete ")
 }
 
 // cleanLater runs pats clean from another process an hour on, when every run
