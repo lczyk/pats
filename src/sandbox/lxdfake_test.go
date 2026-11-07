@@ -1064,6 +1064,11 @@ func (f *fakeServer) leftovers(token string) []string {
 		if !cached && mine(im.props, strings.Join(im.aliases, ",")) {
 			out = append(out, "image "+fp[:12]+" "+strings.Join(im.aliases, ","))
 		}
+		for _, al := range im.aliases {
+			if cached && strings.HasSuffix(al, "-"+token) {
+				out = append(out, "alias "+al+" on a cached image")
+			}
+		}
 	}
 	for _, op := range f.ops {
 		out = append(out, "operation on "+op.inst)
