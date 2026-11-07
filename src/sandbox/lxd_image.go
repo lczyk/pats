@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -112,7 +113,7 @@ func (l *lxd) poolSpace(ctx context.Context) (free, total uint64, ok bool) {
 // project, anything else as the cli resolves it.
 func (l *lxd) fingerprint(ctx context.Context, ref string) (string, error) {
 	args := []string{"image", "info"}
-	if strings.HasPrefix(ref, "pats-img-") {
+	if strings.HasPrefix(ref, "pats-img-") || isFingerprint(ref) {
 		args = append(args, l.ref(ref), "--project", lxdProject)
 	} else {
 		args = append(args, ref)
@@ -127,6 +128,41 @@ func (l *lxd) fingerprint(ctx context.Context, ref string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no fingerprint in lxc image info %s", ref)
+}
+
+// fingerprintRe is an lxd image fingerprint: sha256 hex.
+var fingerprintRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// isFingerprint says whether ref names an image by fingerprint.
+func isFingerprint(ref string) bool { return fingerprintRe.MatchString(ref) }
+
+// LXDFingerprint resolves an image ref to its fingerprint: a pats-img- alias
+// or a fingerprint in the pats project, anything else as the cli resolves it.
+func LXDFingerprint(ctx context.Context, o Options, ref string) (string, error) {
+	l := newLXD(defaultProcess, lxcCLI, o)
+	if err := l.prepareServer(ctx); err != nil {
+		return "", err
+	}
+	return l.fingerprint(ctx, ref)
+}
+
+// LXDRemote is the remote o names, or the cli's default when it names none,
+// without touching the server.
+func LXDRemote(ctx context.Context, o Options) (string, error) {
+	if o.Remote != "" {
+		return o.Remote, nil
+	}
+	return newLXD(defaultProcess, lxcCLI, o).lxc(ctx, "remote", "get-default")
+}
+
+// LXDProxyImage makes (or finds) the egress proxy image on o's server and
+// returns its alias.
+func LXDProxyImage(ctx context.Context, o Options) (string, error) {
+	l := newLXD(defaultProcess, lxcCLI, o)
+	if err := l.prepareServer(ctx); err != nil {
+		return "", err
+	}
+	return l.proxyImage(ctx)
 }
 
 // imageKey digests every input of a provisioned image.

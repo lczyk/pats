@@ -1,0 +1,352 @@
+package eval
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/version"
+	"github.com/lczyk/pats/src/sandbox"
+)
+
+// InitOptions configures `pats init`.
+type InitOptions struct {
+	ConfigDir string
+	Out       io.Writer
+	Now       time.Time
+	Suites    []string // run's selectors: the sandboxes these pairs use
+	Agents    []string
+	Tasks     []string
+	Sandboxes []string // narrow to these sandbox ids
+	Driver    string   // narrow to sandboxes of this driver
+	Force     bool     // rebuild and re-pull what exists
+}
+
+// Init makes every image the selected pairs' sandboxes need and pins it in
+// .pats/images.json, which `pats run` starts from. a sandbox that fails does
+// not stop the others; their pins are still written.
+func Init(cfg *config.Config, opts InitOptions) error {
+	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
+		opts.ConfigDir = abs
+	}
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	ro := Options{ConfigDir: opts.ConfigDir, Out: opts.Out, Color: useColor(opts.Out)}
+	lg := logw{opts.Out, ro.Color}
+
+	sbs, err := initSandboxes(cfg, opts)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	defer sandbox.ShutdownLXD()
+
+	type pinned struct {
+		target, sb string
+		e          *pinEntry
+	}
+	var done []pinned
+	var failed []string
+	for _, sb := range sbs {
+		lg.info("sandbox %q: making its images (%s)", sb.ID, sb.Driver)
+		target, e, err := initSandbox(ctx, sb, ro, opts)
+		if err != nil {
+			lg.error("sandbox %q: %v", sb.ID, err)
+			failed = append(failed, sb.ID)
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		lg.info("sandbox %q: pinned %s under %s", sb.ID, short(e.Image.ID), target)
+		done = append(done, pinned{target, sb.ID, e})
+	}
+
+	keep := map[string]bool{}
+	for _, sb := range cfg.Sandboxes {
+		keep[sb.ID] = true
+	}
+	err = updatePins(opts.ConfigDir, func(f *pinFile) error {
+		for _, p := range done {
+			f.setPin(p.target, p.sb, p.e, opts.Now)
+		}
+		f.dropMissing(keep, opts.Now)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("init failed for sandbox(es) %s", strings.Join(failed, ", "))
+	}
+	return nil
+}
+
+// initSandboxes is what init makes: the sandboxes the selected pairs use,
+// narrowed by --sandbox and --driver.
+func initSandboxes(cfg *config.Config, opts InitOptions) ([]config.Sandbox, error) {
+	pairs, err := cfg.ExpandTestPairs(opts.Suites...)
+	if err != nil {
+		return nil, err
+	}
+	if len(opts.Agents) > 0 || len(opts.Tasks) > 0 {
+		if pairs, err = cfg.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
+			return nil, err
+		}
+	}
+	used := usedSandboxes(cfg, pairs)
+	want := map[string]bool{}
+	for _, id := range opts.Sandboxes {
+		if !used[id] {
+			return nil, fmt.Errorf("--sandbox %q: no selected pair uses it", id)
+		}
+		want[id] = true
+	}
+	var out []config.Sandbox
+	for _, sb := range cfg.Sandboxes {
+		if !used[sb.ID] || (len(want) > 0 && !want[sb.ID]) || (opts.Driver != "" && sb.Driver != opts.Driver) {
+			continue
+		}
+		out = append(out, sb)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no sandbox to init: the selection uses none")
+	}
+	return out, nil
+}
+
+// initSandbox makes one sandbox's images and returns its pin.
+func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions) (string, *pinEntry, error) {
+	h := hostFor(sb)
+	target, daemon, err := h.target(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	e := &pinEntry{
+		Daemon:      daemon,
+		PatsVersion: version.Info.Version,
+		PatsBuild:   patsBuild(),
+		Built:       opts.Now.UTC().Format(time.RFC3339),
+		Inputs:      map[string]string{},
+	}
+	switch p, ok := h.(puller); {
+	case sb.Driver == "lxd":
+		err = initLXD(ctx, sb, ro, opts, lxdOptions(sb), e)
+	case ok:
+		err = initContainer(ctx, sb, ro, opts, p, e)
+	default:
+		err = fmt.Errorf("driver %q has no images to init", sb.Driver)
+	}
+	return target, e, err
+}
+
+// initContainer makes a docker or podman sandbox's image and proxy: built
+// from build: or base / provision, else pulled when absent (always, with
+// --force).
+func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h puller, e *pinEntry) error {
+	lg := logw{ro.Out, ro.Color}
+	warned := false
+	base := func() string {
+		img, warn := sandbox.SandboxImage("")
+		if warn != "" && !warned {
+			lg.warn("%s", warn)
+			warned = true
+		}
+		return img
+	}
+	switch {
+	case provisions(sb):
+		id, _, err := provisionedContainerImage(ctx, sb, ro, base, opts.Force)
+		if err != nil {
+			return err
+		}
+		e.Image = pinImage{ID: id, Built: true}
+	case sb.Build != "":
+		ctxDir, dockerfile, err := resolveBuildSpec(ro.ConfigDir, sb.Build)
+		if err != nil {
+			return err
+		}
+		id, _, err := sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile, Force: opts.Force}, base)
+		if err != nil {
+			return err
+		}
+		e.Image = pinImage{ID: id, Built: true}
+	case sb.Image != "":
+		im, err := ensurePulled(ctx, h, sb.Image, false, opts.Force, lg)
+		if err != nil {
+			return err
+		}
+		e.Image = im
+	default:
+		im, err := ensurePulled(ctx, h, base(), true, opts.Force, lg)
+		if err != nil {
+			return err
+		}
+		e.Image = im
+	}
+	if sb.Egress.Set {
+		ref, warn := sandbox.ProxyImage(sb.Egress.Image)
+		if warn != "" {
+			lg.warn("%s", warn)
+		}
+		im, err := ensurePulled(ctx, h, ref, sb.Egress.Image == "", opts.Force, lg)
+		if err != nil {
+			return fmt.Errorf("egress proxy: %w", err)
+		}
+		e.Proxy = &im
+	}
+	return nil
+}
+
+// ensurePulled pins ref, pulling it when absent or when forced. published
+// says it is one of pats's own images, which pats owns however it got here;
+// any other image is pats's only when this pull brought it.
+func ensurePulled(ctx context.Context, h puller, ref string, published, force bool, lg logw) (pinImage, error) {
+	pulled := false
+	if force || !h.present(ctx, ref) {
+		lg.info("pulling %s", ref)
+		if err := h.pull(ctx, ref); err != nil {
+			return pinImage{}, err
+		}
+		pulled = true
+	}
+	id, digest, err := h.inspect(ctx, ref)
+	if err != nil {
+		return pinImage{}, err
+	}
+	return pinImage{ID: id, Name: ref, Digest: digest, Pulled: published || pulled}, nil
+}
+
+// initLXD makes an lxd sandbox's layers and proxy on its server, logging to
+// .pats/init/<sandbox>.log, and pins them by fingerprint.
+func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, o sandbox.Options, e *pinEntry) error {
+	if sb.Image != "" {
+		fp, err := sandbox.LXDFingerprint(ctx, o, sb.Image)
+		if err != nil {
+			return err
+		}
+		e.Image = pinImage{ID: fp, Name: sb.Image}
+	} else {
+		logPath := filepath.Join(ro.ConfigDir, ".pats", "init", sb.ID+".log")
+		alias, layers, _, err := lxdImage(ctx, sb, ro, logPath)
+		if err != nil {
+			return err
+		}
+		fp, err := sandbox.LXDFingerprint(ctx, o, alias)
+		if err != nil {
+			return err
+		}
+		e.Image = pinImage{ID: fp, Name: alias, Built: true}
+		for _, l := range layers {
+			lfp, err := sandbox.LXDFingerprint(ctx, o, l)
+			if err != nil {
+				return err
+			}
+			e.Layers = append(e.Layers, lfp)
+		}
+	}
+	if sb.Egress.Set {
+		po := o
+		lg := logw{ro.Out, ro.Color}
+		po.Progress = func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
+		po.Warn = func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
+		alias, err := sandbox.LXDProxyImage(ctx, po)
+		if err != nil {
+			return fmt.Errorf("egress proxy: %w", err)
+		}
+		fp, err := sandbox.LXDFingerprint(ctx, o, alias)
+		if err != nil {
+			return err
+		}
+		e.Proxy = &pinImage{ID: fp, Name: alias, Built: true}
+	}
+	return nil
+}
+
+// runImage is the ref a run starts the sandbox from: the pinned id, on the
+// remote the configured image named for an lxd image of another server.
+func (e *pinEntry) runImage(sb config.Sandbox) string {
+	if sb.Driver == "lxd" && sb.Image != "" {
+		if remote, _, ok := strings.Cut(e.Image.Name, ":"); ok {
+			return remote + ":" + e.Image.ID
+		}
+	}
+	return e.Image.ID
+}
+
+// usePins points each sandbox the pairs use at its pinned images, and stops
+// the run, naming the init that fixes it, when one is not pinned for where
+// the run would start it, or its image is gone.
+func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
+	pins, err := readPins(opts.ConfigDir)
+	if err != nil {
+		return err
+	}
+	used := usedSandboxes(cfg, pairs)
+	var missing []string
+	var reasons []string
+	for i, sb := range cfg.Sandboxes {
+		if !used[sb.ID] {
+			continue
+		}
+		h := hostFor(sb)
+		target, daemon, err := h.target(ctx)
+		if err != nil {
+			return fmt.Errorf("sandbox %q: %w", sb.ID, err)
+		}
+		e := pins.entry(target, sb.ID)
+		reason := ""
+		switch {
+		case e == nil:
+			reason = "not pinned for " + target
+		case e.Daemon != daemon:
+			reason = "pinned against another " + sb.Driver + " daemon"
+		case !h.present(ctx, e.runImage(sb)):
+			reason = "its pinned image " + short(e.Image.ID) + " is gone"
+		case sb.Egress.Set && e.Proxy == nil:
+			reason = "no egress proxy pinned"
+		case sb.Egress.Set && !h.present(ctx, e.Proxy.ID):
+			reason = "its pinned egress proxy " + short(e.Proxy.ID) + " is gone"
+		}
+		if reason != "" {
+			missing = append(missing, sb.ID)
+			reasons = append(reasons, fmt.Sprintf("  %s: %s", sb.ID, reason))
+			continue
+		}
+		cfg.Sandboxes[i].Image = e.runImage(sb)
+		if e.Proxy != nil {
+			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	cmd := "pats init"
+	if len(missing) < len(used) {
+		sort.Strings(missing)
+		for _, id := range missing {
+			cmd += " --sandbox " + id
+		}
+	}
+	return fmt.Errorf("images missing for %d sandbox(es):\n%s\nrun `%s` first", len(missing), strings.Join(reasons, "\n"), cmd)
+}
+
+// short is an image id or fingerprint cut to its first 12 hex digits.
+func short(id string) string {
+	h := strings.TrimPrefix(id, "sha256:")
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
+}

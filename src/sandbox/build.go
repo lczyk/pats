@@ -18,6 +18,7 @@ import (
 type ContainerBuild struct {
 	Dir        string // the context
 	Dockerfile string
+	Force      bool // build even when an image from identical inputs exists, with no layer cache
 }
 
 // BuildContainerImage resolves a build: sandbox to an image id for a
@@ -60,10 +61,12 @@ func buildContainerImage(ctx context.Context, r runner, driver string, b Contain
 			hash = rehash(hash, ids)
 		}
 	}
-	if id := cachedImageID(ctx, r, hash); id != "" {
-		return id, false, nil
+	if !b.Force {
+		if id := cachedImageID(ctx, r, hash); id != "" {
+			return id, false, nil
+		}
 	}
-	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg)
+	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force)
 	return id, err == nil, err
 }
 
@@ -113,8 +116,11 @@ const baseArg = "PATS_SANDBOX"
 // buildImage builds one resolved context and returns the image id. a non-empty
 // hash is stamped onto the image (see hashLabel) so the next run can find it;
 // a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
-func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash, base string) (string, error) {
+func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool) (string, error) {
 	args := []string{"build", "-q", "-f", dockerfile}
+	if noCache {
+		args = append(args, "--no-cache")
+	}
 	if base != "" {
 		args = append(args, "--build-arg", baseArg+"="+base)
 	}

@@ -51,6 +51,10 @@ func Image(repo, configured, hint string) (image, warn string) {
 	return repo + ":v" + v, ""
 }
 
+// IsRelease reports whether v (a leading v allowed) is a tagged release
+// version, one with published images.
+func IsRelease(v string) bool { return releaseVersion(strings.TrimPrefix(v, "v")) }
+
 // releaseVersion reports whether v is a tagged release: X.Y.Z, optionally
 // with an alpha / beta / rc pre-release (1.0.0-beta.1, 1.0.0-rc1) -- the shapes that
 // have a published v<version> image. anything else (empty, a dev or dirty

@@ -279,6 +279,9 @@ func (s *lxdSession) closeEgress() {
 // process (every proxied pair needs it, and resolving it means fetching the
 // binary); see buildProxyImage.
 func (l *lxd) proxyImage(ctx context.Context) (string, error) {
+	if l.o.ProxyImage != "" {
+		return l.o.ProxyImage, nil
+	}
 	// held across the build, so concurrent pairs wait for one build.
 	x := &l.p.lxd
 	x.proxyMu.Lock()

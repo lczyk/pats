@@ -56,6 +56,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: knockout, scorers: sc}}}
 	require.NoError(t, cfg.Validate())
 
 	var out bytes.Buffer
+	pinAll(t, root, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: root, Now: time.Now(), Out: &out})
 	require.NoError(t, err, out.String())
 	outDir := filepath.Join(runDir, "a", "curl")

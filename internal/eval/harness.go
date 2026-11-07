@@ -37,9 +37,10 @@ const promptName = "prompt.txt"
 func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskEgress, workDir, runID, auditPath, label string) (*harness, error) {
 	box, err := newSandbox(sandbox.Options{
 		Driver: sb.Driver, Image: sb.Image, Remote: sb.Remote, VM: sb.VM, Profiles: sb.Profiles, Config: sb.Config,
-		Limits:   sandbox.Limits{CPU: sb.Limits.CPU, Memory: sb.Limits.Memory, Disk: sb.Limits.Disk},
-		Progress: func(msg string) { logw{opts.Out, opts.Color}.info("sandbox %q: %s", sb.ID, msg) },
-		Warn:     func(msg string) { logw{opts.Out, opts.Color}.warn("sandbox %q: %s", sb.ID, msg) },
+		ProxyImage: sb.ProxyImage,
+		Limits:     sandbox.Limits{CPU: sb.Limits.CPU, Memory: sb.Limits.Memory, Disk: sb.Limits.Disk},
+		Progress:   func(msg string) { logw{opts.Out, opts.Color}.info("sandbox %q: %s", sb.ID, msg) },
+		Warn:       func(msg string) { logw{opts.Out, opts.Color}.warn("sandbox %q: %s", sb.ID, msg) },
 	}.WithEnv())
 	if err != nil {
 		return nil, err

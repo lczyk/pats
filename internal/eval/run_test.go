@@ -56,6 +56,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
 	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
@@ -330,6 +331,7 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	cfg := parseCfg(t, src)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err) // a failing pair is logged, not fatal
 
@@ -367,6 +369,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
@@ -403,6 +406,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
@@ -449,6 +453,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
@@ -500,6 +505,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
@@ -530,12 +536,21 @@ a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}
 t: {kind: task, items: {t: {prompt-file: prompt.txt}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
+	h := newFakeHost()
+	useHost(t, h)
 
+	// before init the run stops, naming the command.
 	var out bytes.Buffer
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
-	require.NoError(t, err)
+	assert.Error(t, err, "run `pats init` first")
+
+	// init pulls the published sandbox, and the run starts from its id.
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}))
 	want, _ := sandbox.SandboxImage("")
-	assert.Equal(t, image, want)
+	assert.EqualArrays(t, h.pulls, []string{want})
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	assert.Equal(t, image, "sha256:pulled-"+want)
 }
 
 // the prompt is staged in the harness HOME, never in the workdir the agent
@@ -564,6 +579,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
@@ -591,6 +607,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, _ := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 
 	home, err := os.ReadFile(filepath.Join(runDir, "a", "t", "home-path"))
@@ -611,6 +628,7 @@ s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
 `)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.Error(t, err, assert.AnyError)
 	assert.ContainsString(t, err.Error(), "no (agent, task) pairs to run")
@@ -760,6 +778,7 @@ t: {kind: task, items: {t: {prompt: p, `+c.task+`, collect: "touch $PATS_OUTPUT_
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 			var out bytes.Buffer
+			pinAll(t, dir, cfg)
 			runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 			require.NoError(t, err)
 			var pm pairMeta
@@ -798,6 +817,7 @@ t: {kind: task, items: {t: {prompt: p, prepare-cmd: ./setup.sh --fast, env: {BRA
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 	assert.Equal(t, strings.Join(fake.pushed, " "), prepareMount)
@@ -833,6 +853,7 @@ t: {kind: task, items: {t: {prompt: p, prepare-cmd: seed, collect: "cp $PATS_WOR
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "prepared.txt"))
@@ -859,6 +880,7 @@ t: {kind: task, items: {t: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $PATS_
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "got.txt"))

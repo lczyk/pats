@@ -146,6 +146,9 @@ type Options struct {
 	Config   map[string]string // instance config, passed through
 	Uplink   string            // an existing bridge for builders and proxies; "" -> pats's own
 	ProxyBin string            // a linux pats for the server's arch, put in the proxy image
+	// ProxyImage is the egress proxy image a run uses as is, never building
+	// one: a fingerprint or alias in the pats project. "" -> built on demand.
+	ProxyImage string
 	// EgressPool is the cidr egress networks are carved from; "" -> the
 	// default. docker, podman and lxd.
 	EgressPool string

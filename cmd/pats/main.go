@@ -27,6 +27,7 @@ import (
 type Options struct {
 	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 
+	Init   InitCommand   `command:"init" description:"make and pin the images the suites' sandboxes need"`
 	Run    RunCommand    `command:"run" description:"run the suites (agents x tasks)"`
 	Score  ScoreCommand  `command:"score" description:"score the most recent run (tasks x scorers)"`
 	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
@@ -45,6 +46,33 @@ type CleanCommand struct {
 
 func (c *CleanCommand) Execute(args []string) error {
 	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, Force: c.Force, LXDRemotes: c.LXDRemote, Out: os.Stdout})
+}
+
+// InitCommand makes and pins the sandboxes' images.
+type InitCommand struct {
+	Agents    []string `long:"agent" short:"a" description:"only the sandboxes these agents or agent vectors use (repeatable); default: all"`
+	Tasks     []string `long:"task" short:"t" description:"only the sandboxes these tasks' pairs use (repeatable); default: all"`
+	Suites    []string `long:"suite" short:"S" description:"only the sandboxes these suites or suite vectors use (repeatable); default: all"`
+	Sandboxes []string `long:"sandbox" description:"only these sandboxes (repeatable); default: every one the selection uses"`
+	Driver    string   `long:"driver" description:"only sandboxes of this driver"`
+	Force     bool     `long:"force" description:"rebuild and re-pull what already exists"`
+}
+
+func (c *InitCommand) Execute(args []string) error {
+	cfg, err := load(opts.Config)
+	if err != nil {
+		return err
+	}
+	return eval.Init(cfg, eval.InitOptions{
+		ConfigDir: filepath.Dir(opts.Config),
+		Out:       os.Stdout,
+		Suites:    c.Suites,
+		Agents:    c.Agents,
+		Tasks:     c.Tasks,
+		Sandboxes: c.Sandboxes,
+		Driver:    c.Driver,
+		Force:     c.Force,
+	})
 }
 
 // RunCommand runs the suites.

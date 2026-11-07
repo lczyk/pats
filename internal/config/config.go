@@ -60,6 +60,9 @@ type Sandbox struct {
 	// itself. the escape hatch for a tool the egress tls contract misses
 	// (e.g. DENO_CERT=/sbx-ca/bundle.pem).
 	Env map[string]string `yaml:"env" tmpl:"-"`
+	// ProxyImage is the egress proxy image a run starts its proxies from: the
+	// pinned one, set by the run from the pins, never by pats.yaml.
+	ProxyImage string `yaml:"-"`
 }
 
 // Egress is a sandbox's outbound network policy. absent, the network is

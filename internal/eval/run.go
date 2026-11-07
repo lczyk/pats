@@ -84,24 +84,16 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	// an lxd run's marker goes when the run ends; its lease stops.
 	defer sandbox.ShutdownLXD()
 
-	// resolve images first -- everything after (preflight included) runs on
-	// them: the default pats sandbox for sandboxes naming neither image nor
-	// build, then build: contexts to image ids.
-	// the run dir comes first: image builds log into it.
+	// the images `pats init` pinned, first: everything after (preflight
+	// included) starts from them, and a run never builds or pulls.
+	if err := usePins(ctx, cfg, opts, pairs); err != nil {
+		return "", err
+	}
 	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
 	if err != nil {
 		return "", err
 	}
 	lg.info("run dir: %s", relToCwd(runDir))
-	defaultImages(cfg, opts, pairs)
-	if err := buildImages(ctx, cfg, opts, pairs, runDir); err != nil {
-		return "", err
-	}
-	// pre-pull the egress proxy image (if any) before preflight, which itself
-	// starts the proxy -- else the pull stalls the first check silently.
-	if err := pullEgressImages(ctx, cfg, opts, pairs); err != nil {
-		return "", err
-	}
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
@@ -677,7 +669,7 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, harness, auditPath strin
 		None:      sb.Egress.None,
 		Set:       sb.Egress.Set,
 		Policy:    sb.Egress.Policy,
-		Image:     sb.Egress.Image,
+		Image:     sb.ProxyImage,
 		AuditPath: auditPath,
 		SelfTest:  selfTest,
 	}

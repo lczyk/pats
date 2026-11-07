@@ -51,7 +51,7 @@ func TestLXDImageBuild(t *testing.T) {
 		argv []string
 		pins string
 	}
-	run := func(t *testing.T, sb config.Sandbox, fail bool) ([]call, string, string, bool, error) {
+	run := func(t *testing.T, sb config.Sandbox, fail bool) ([]call, []string, string, string, bool, error) {
 		var calls []call
 		old := lxdImageFn
 		lxdImageFn = func(ctx context.Context, o sandbox.Options, spec sandbox.LXDImageSpec, log io.Writer) (string, bool, error) {
@@ -74,16 +74,17 @@ func TestLXDImageBuild(t *testing.T) {
 		var out bytes.Buffer
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
-		run := t.TempDir()
-		_, built, err := lxdImage(context.Background(), sb, Options{ConfigDir: dir, Out: &out}, run)
-		b, _ := os.ReadFile(filepath.Join(run, "images", sb.ID+".log"))
-		return calls, out.String(), string(b), built, err
+		logPath := filepath.Join(t.TempDir(), "init", sb.ID+".log")
+		_, layers, built, err := lxdImage(context.Background(), sb, Options{ConfigDir: dir, Out: &out}, logPath)
+		b, _ := os.ReadFile(logPath)
+		return calls, layers, out.String(), string(b), built, err
 	}
 
 	t.Run("the pats sandbox, then the provision", func(t *testing.T) {
-		calls, out, log, built, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Provision: "provision.sh"}, false)
+		calls, layers, out, log, built, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Provision: "provision.sh"}, false)
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 2)
+		assert.EqualArrays(t, layers, []string{"pats-img-1"})
 		assert.Equal(t, calls[0].base, lxdSandboxBase)
 		assert.Equal(t, calls[1].base, "pats-img-1")
 		// the pats layer carries the pins beside its script (and so in its key);
@@ -98,17 +99,24 @@ func TestLXDImageBuild(t *testing.T) {
 		assert.ContainsString(t, log, "build output of pats-img-1")
 	})
 	t.Run("a base of its own", func(t *testing.T) {
-		calls, _, _, built, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Base: "ubuntu:24.04"}, false)
+		calls, layers, _, _, built, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Base: "ubuntu:24.04"}, false)
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 1)
+		assert.Len(t, layers, 0)
 		assert.Equal(t, calls[0].base, "ubuntu:24.04")
 		assert.That(t, built, "built is false")
 	})
 	t.Run("a failed build", func(t *testing.T) {
-		_, _, _, _, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Provision: "provision.sh"}, true)
+		_, _, _, _, _, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Provision: "provision.sh"}, true)
 		require.Error(t, err, "provisioning exited 1")
 		assert.ContainsString(t, err.Error(), "build output of pats-img-1")
 		assert.ContainsString(t, err.Error(), "(full log: ")
-		assert.ContainsString(t, err.Error(), filepath.Join("images", "box.log"))
+		assert.ContainsString(t, err.Error(), filepath.Join("init", "box.log"))
+	})
+	t.Run("the pats sandbox alone", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{ID: "box", Driver: "lxd"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 1) // no empty project layer on top
+		assert.Len(t, layers, 0)
 	})
 }
