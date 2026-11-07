@@ -122,6 +122,13 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 	}
 	defer logF.Close()
 	o := sandbox.Options{Driver: "lxd", Remote: sb.Remote, VM: sb.VM}
+	lg := logw{opts.Out, opts.Color}
+	progress := func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
+	warn := func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
+	fail := func(err error) error {
+		b, _ := os.ReadFile(logPath)
+		return fmt.Errorf("%w%s\n(full log: %s)", err, sandbox.LogTail(string(b)), relToCwd(logPath))
+	}
 	base, anyBuilt := sb.Base, false
 	if base == "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, images.ProvisionSandbox, "", sandbox.ProvisionMount)
@@ -129,12 +136,12 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 			return "", false, err
 		}
 		defer sandbox.RemoveTemp(material)
-		base, anyBuilt, err = sandbox.LXDImage(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv}, logF)
+		base, anyBuilt, err = sandbox.LXDImage(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn}, logF)
 		if err != nil {
-			return "", false, fmt.Errorf("%w (see %s)", err, relToCwd(logPath))
+			return "", false, fail(err)
 		}
 	}
-	spec := sandbox.LXDImageSpec{Base: base}
+	spec := sandbox.LXDImageSpec{Base: base, Progress: progress, Warn: warn}
 	if sb.Provision != "" || sb.ProvisionCmd != "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
 		if err != nil {
@@ -145,7 +152,7 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, runDir strin
 	}
 	alias, built, err := sandbox.LXDImage(ctx, o, spec, logF)
 	if err != nil {
-		return "", false, fmt.Errorf("%w (see %s)", err, relToCwd(logPath))
+		return "", false, fail(err)
 	}
 	return alias, built || anyBuilt, nil
 }

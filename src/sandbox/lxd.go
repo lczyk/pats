@@ -496,13 +496,31 @@ func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
 // not told about (its FORWARD policy, with br_netfilter), which fails every
 // pair in its own words unless caught here.
 func (s *lxdSession) reachesInternet(ctx context.Context) error {
-	var out bytes.Buffer
-	probe := `timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null || timeout 5 bash -c 'exec 3<>/dev/tcp/8.8.8.8/53' 2>/dev/null`
-	code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", probe}, Root: true, Dir: "/"}, &out, &out)
-	if err == nil && code == 0 {
+	if s.online(ctx) {
 		return nil
 	}
 	return fmt.Errorf("lxd: the sandbox's bridge %s does not reach the internet. %s", s.bridge, dockerBridgeHint)
+}
+
+// online says whether the instance gets a tcp connection out to the
+// internet, retrying a few times while a fresh nic settles. an instance with
+// no bash cannot be probed and passes.
+func (s *lxdSession) online(ctx context.Context) bool {
+	probe := `command -v bash >/dev/null 2>&1 || exit 0; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null || timeout 5 bash -c 'exec 3<>/dev/tcp/8.8.8.8/53' 2>/dev/null`
+	for i := 0; i < 3; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(2 * time.Second):
+			}
+		}
+		var out bytes.Buffer
+		if code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", probe}, Root: true, Dir: "/"}, &out, &out); err == nil && code == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // dockerBridgeHint is what an admin does once on a server whose docker drops

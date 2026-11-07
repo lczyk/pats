@@ -29,7 +29,31 @@ type LXDImageSpec struct {
 	Base     string // an image ref the cli resolves (ubuntu:26.04), or a pats-img- alias
 	Material string
 	Argv     []string
+	// Progress and Warn, when set, get each build step and warning as they
+	// happen; the log gets them too.
+	Progress func(msg string)
+	Warn     func(msg string)
 }
+
+func (s LXDImageSpec) step(log io.Writer, format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	fmt.Fprintf(log, "==> %s\n", msg)
+	if s.Progress != nil {
+		s.Progress(msg)
+	}
+}
+
+func (s LXDImageSpec) warn(log io.Writer, format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	fmt.Fprintf(log, "==> warning: %s\n", msg)
+	if s.Warn != nil {
+		s.Warn(msg)
+	}
+}
+
+// lowPoolSpace is the free space under which a build warns: a builder and
+// the image it publishes take a few GiB.
+const lowPoolSpace = 5 << 30
 
 // LXDImage returns the alias of the image spec provisions on l's server,
 // building it on a miss. the alias is keyed on the base image's fingerprint,
@@ -57,10 +81,31 @@ func (l *lxd) image(ctx context.Context, spec LXDImageSpec, log io.Writer) (stri
 	if _, err := l.fingerprint(ctx, alias); err == nil {
 		return alias, false, nil
 	}
+	spec.step(log, "building lxd image %s on %s from %s", alias, l.o.Remote, spec.Base)
+	if free, total, ok := l.poolSpace(ctx); ok && free < lowPoolSpace {
+		spec.warn(log, "storage pool %s on %s has %.1f GiB free of %.1f GiB; a build takes a few", l.pool, l.o.Remote, float64(free)/(1<<30), float64(total)/(1<<30))
+	}
 	if err := l.build(ctx, spec, alias, log); err != nil {
 		return "", false, err
 	}
 	return alias, true, nil
+}
+
+// poolSpace is the pats pool's free and total bytes, when the server says.
+func (l *lxd) poolSpace(ctx context.Context) (free, total uint64, ok bool) {
+	var res struct {
+		Space struct {
+			Used  uint64 `json:"used"`
+			Total uint64 `json:"total"`
+		} `json:"space"`
+	}
+	if l.pool == "" || l.query(ctx, "/1.0/storage-pools/"+l.pool+"/resources", &res) != nil || res.Space.Total == 0 {
+		return 0, 0, false
+	}
+	if res.Space.Used > res.Space.Total {
+		return 0, res.Space.Total, true
+	}
+	return res.Space.Total - res.Space.Used, res.Space.Total, true
 }
 
 // fingerprint is an image's fingerprint: a pats-img- alias in the pats
@@ -152,7 +197,15 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	name := "pats-build-" + lxdRunToken + "-" + strings.TrimPrefix(alias, "pats-img-")[:8]
 	s := &lxdSession{l: l, name: name}
 	defer func() {
-		_, _ = l.lxc(context.Background(), "delete", s.inst(), "--project", lxdProject, "--force")
+		_, derr := l.lxc(context.Background(), "delete", s.inst(), "--project", lxdProject, "--force")
+		if derr == nil || strings.Contains(strings.ToLower(derr.Error()), "not found") {
+			return
+		}
+		msg := fmt.Sprintf("builder %s was left behind (%v); pats clean removes it once this run has ended", name, derr)
+		spec.warn(log, "%s", msg)
+		if err != nil {
+			err = fmt.Errorf("%w (%s)", err, msg)
+		}
 	}()
 	args := []string{"launch", spec.Base, s.inst(), "--project", lxdProject, "--storage", l.pool, "-n", net}
 	if strings.HasPrefix(spec.Base, "pats-img-") {
@@ -164,12 +217,15 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	for _, kv := range lxdMeta() {
 		args = append(args, "-c", kv)
 	}
-	fmt.Fprintf(log, "==> launching builder %s from %s\n", name, spec.Base)
+	spec.step(log, "launching builder %s", name)
 	if _, err := l.lxc(ctx, args...); err != nil {
 		return err
 	}
 	if err := s.waitReady(ctx, true); err != nil {
 		return fmt.Errorf("%w (does the uplink bridge %s reach the internet? on a host running docker, a new bridge needs an admin rule; or set %s to a bridge that works)", err, net, lxdUplinkEnv)
+	}
+	if !s.online(ctx) {
+		return fmt.Errorf("lxd: the image builder on bridge %s does not reach the internet. %s. or set %s to a bridge that does (e.g. lxdbr0)", net, dockerBridgeHint, lxdUplinkEnv)
 	}
 	// cloud-init may still be configuring the base on first boot.
 	_, _ = s.exec(ctx, Cmd{Argv: []string{"sh", "-c", "command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1; true"}, Root: true, Dir: "/"}, io.Discard, io.Discard)
@@ -178,7 +234,7 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 			return err
 		}
 	}
-	fmt.Fprintf(log, "==> provisioning: %s\n", strings.Join(spec.Argv, " "))
+	spec.step(log, "provisioning: %s", strings.Join(spec.Argv, " "))
 	if len(spec.Argv) > 0 {
 		wrapped := append([]string{"/bin/sh", "-c", `PATH="` + ProvisionMount + `/bin:$PATH"; export PATH; exec "$@"`, "provision"}, spec.Argv...)
 		code, err := s.exec(ctx, Cmd{Argv: wrapped, Root: true, Dir: "/"}, log, log)
@@ -202,7 +258,7 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, alias string, log io
 	private := alias + "-" + lxdRunToken
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
 	pub = append(pub, lxdMeta()...)
-	fmt.Fprintf(log, "==> publishing %s\n", alias)
+	spec.step(log, "publishing %s", alias)
 	if _, err := l.lxc(ctx, pub...); err != nil {
 		return err
 	}

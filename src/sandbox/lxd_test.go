@@ -395,3 +395,88 @@ func TestLXDClean(t *testing.T) {
 	}))
 	assert.Equal(t, strings.Contains(strings.Join(calls, "\n"), "delete srv:pats-dead"), false)
 }
+
+// a build on a miss: progress per step, a low pool warned about, and a
+// builder with no internet failing fast with the docker hint, before any
+// provisioning runs. a builder the cleanup could not delete is named.
+func TestLXDImageBuild(t *testing.T) {
+	t.Setenv(lxdUplinkEnv, "up0")
+	run := func(t *testing.T, offline, keepBuilder bool) (*fakeLXC, []string, []string, error) {
+		l, f := fakeLXD(Options{Driver: "lxd"})
+		inner := f.run
+		l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.HasPrefix(joined, "image info ubuntu:26.04"):
+				f.calls = append(f.calls, args)
+				io.WriteString(stdout, "Fingerprint: abc\n")
+				return nil
+			case strings.HasPrefix(joined, "image info srv:pats-img-"):
+				f.calls = append(f.calls, args)
+				if strings.Contains(joined, "-"+lxdRunToken+" ") {
+					io.WriteString(stdout, "Fingerprint: def\n") // the run-private alias, published
+					return nil
+				}
+				return &fakeExit{}
+			case strings.Contains(joined, "/storage-pools/default/resources"):
+				f.calls = append(f.calls, args)
+				io.WriteString(stdout, `{"space":{"used":`+strconv.Itoa(27<<30)+`,"total":`+strconv.Itoa(28<<30)+`}}`)
+				return nil
+			case offline && strings.Contains(joined, "/dev/tcp/1.1.1.1/443"):
+				f.calls = append(f.calls, args)
+				return &fakeExit{}
+			case keepBuilder && strings.HasPrefix(joined, "delete srv:pats-build-"):
+				f.calls = append(f.calls, args)
+				io.WriteString(stderr, "Error: busy")
+				return &fakeExit{}
+			}
+			return inner(ctx, stdin, stdout, stderr, args...)
+		}
+		var steps, warns []string
+		spec := LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"},
+			Progress: func(m string) { steps = append(steps, m) }, Warn: func(m string) { warns = append(warns, m) }}
+		_, _, err := l.image(context.Background(), spec, io.Discard)
+		return f, steps, warns, err
+	}
+
+	t.Run("offline", func(t *testing.T) {
+		f, _, warns, err := run(t, true, false)
+		require.Error(t, err, "image builder on bridge up0 does not reach the internet")
+		assert.ContainsString(t, err.Error(), "DOCKER-USER")
+		assert.ContainsString(t, err.Error(), lxdUplinkEnv)
+		for _, c := range f.calls {
+			assert.That(t, !strings.Contains(strings.Join(c, " "), "provision true"), "provisioned offline")
+		}
+		assert.Equal(t, len(warns), 1)
+		assert.ContainsString(t, warns[0], "1.0 GiB free of 28.0 GiB")
+	})
+
+	t.Run("ok", func(t *testing.T) {
+		_, steps, _, err := run(t, false, false)
+		require.NoError(t, err)
+		assert.Equal(t, len(steps), 4)
+		assert.ContainsString(t, steps[0], "building lxd image pats-img-")
+		assert.ContainsString(t, steps[1], "launching builder pats-build-")
+		assert.ContainsString(t, steps[2], "provisioning: true")
+		assert.ContainsString(t, steps[3], "publishing pats-img-")
+	})
+
+	t.Run("builder left behind", func(t *testing.T) {
+		_, _, warns, err := run(t, true, true)
+		require.Error(t, err, "was left behind")
+		assert.ContainsString(t, warns[len(warns)-1], "builder pats-build-")
+	})
+}
+
+func TestLogTail(t *testing.T) {
+	assert.Equal(t, LogTail(""), "")
+	var b strings.Builder
+	for i := 0; i < 40; i++ {
+		b.WriteString("line " + strconv.Itoa(i) + "\n")
+	}
+	b.WriteString(strings.Repeat("x", 500) + "\n")
+	got := LogTail(b.String())
+	assert.ContainsString(t, got, "line 39")
+	assert.That(t, !strings.Contains(got, "line 25\n"), "kept too much: %s", got)
+	assert.ContainsString(t, got, strings.Repeat("x", 240)+"...")
+}
