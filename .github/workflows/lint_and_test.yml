@@ -30,8 +30,14 @@ jobs:
   # docker, whose FORWARD policy drops traffic on bridges it was not told
   # about, so pats's bridges are let through first -- the same rule an admin
   # adds on any lxd server that runs docker.
+  # the current lts and the next major: the rest api is additive, but the
+  # behaviours the driver works around may not be.
   lxd-e2e:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lxd: ['5.21/stable', '6/stable']
     steps:
     - uses: actions/checkout@v6
 
@@ -43,7 +49,7 @@ jobs:
     - name: Set up LXD
       uses: canonical/setup-lxd@8c6a87bfb56aa48f3fb9b830baa18562d8bfd4ee # v1
       with:
-        channel: 5.21/stable
+        channel: ${{ matrix.lxd }}
 
     - name: Let pats's bridges past docker
       run: |
