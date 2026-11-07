@@ -143,6 +143,10 @@ type Options struct {
 	VM       bool              // a virtual machine rather than a system container
 	Profiles []string          // in the pats project
 	Config   map[string]string // instance config, passed through
+	// Progress and Warn, when set, get the steps and warnings of an image
+	// the driver builds on its own (lxd's egress proxy image).
+	Progress func(msg string)
+	Warn     func(msg string)
 }
 
 // Limits caps a sandbox's resources; zero values leave the driver's default.

@@ -352,12 +352,21 @@ mkdir -p /etc/netplan /etc/pats && cp ` + ProvisionMount + `/60-pats-uplink.yaml
 		return "", err
 	}
 	pl := &lxd{o: Options{Driver: "lxd", Remote: l.o.Remote}, bin: l.bin, run: l.run}
+	spec := LXDImageSpec{Base: lxdProxyBase, Material: material, Argv: []string{"/bin/sh", ProvisionMount + "/script"},
+		Progress: prefixed(l.o.Progress, "egress proxy: "), Warn: prefixed(l.o.Warn, "egress proxy: ")}
 	var log bytes.Buffer
-	alias, _, err := pl.image(ctx, LXDImageSpec{Base: lxdProxyBase, Material: material, Argv: []string{"/bin/sh", ProvisionMount + "/script"}}, &log)
+	alias, _, err := pl.image(ctx, spec, &log)
 	if err != nil {
 		return "", fmt.Errorf("%w%s", err, LogTail(log.String()))
 	}
 	return alias, nil
+}
+
+func prefixed(f func(string), p string) func(string) {
+	if f == nil {
+		return nil
+	}
+	return func(msg string) { f(p + msg) }
 }
 
 // serverArch is the lxd server's architecture as a go arch.

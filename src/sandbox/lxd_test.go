@@ -543,3 +543,37 @@ func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
 	require.NoError(t, l.deleteInstance("pats-x"))
 	assert.That(t, !present, "instance left behind")
 }
+
+// the proxy image, built on the driver's own, reports its steps through the
+// driver's Progress like a sandbox image build does.
+func TestLXDProxyImageProgress(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "pats")
+	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
+	t.Setenv(lxdProxyBinEnv, bin)
+	t.Setenv(lxdUplinkEnv, "up0")
+	var steps []string
+	l, f := fakeLXD(Options{Driver: "lxd", Remote: "srv", Progress: func(m string) { steps = append(steps, m) }})
+	inner := f.run
+	l.run = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "image info "+lxdProxyBase):
+			io.WriteString(stdout, "Fingerprint: abc\n")
+			return nil
+		case strings.HasPrefix(joined, "image info srv:pats-img-"):
+			if strings.Contains(joined, "-"+lxdRunToken+" ") {
+				io.WriteString(stdout, "Fingerprint: def\n")
+				return nil
+			}
+			return &fakeExit{}
+		case joined == "query srv:/1.0":
+			io.WriteString(stdout, `{"environment":{"architectures":["x86_64"]}}`)
+			return nil
+		}
+		return inner(ctx, stdin, stdout, stderr, args...)
+	}
+	_, err := l.buildProxyImage(context.Background())
+	require.NoError(t, err)
+	require.That(t, len(steps) > 0, "no progress")
+	assert.ContainsString(t, steps[0], "egress proxy: building lxd image pats-img-")
+}
