@@ -1,6 +1,8 @@
 # harness versions per pats release
 
-status: proposed, not implemented. a reminder for later; the release workflow around it is out of scope here.
+status: implemented: the pins file, the provision script and dockerfile reading it, the lxd image key and the hash
+inputs. the per-release bump is a manual step until the "later" items land; the release workflow around it is out of
+scope here.
 `init.md` relies on it: its component-version check compares an image's stamped harness versions against what the
 running pats release pins.
 
