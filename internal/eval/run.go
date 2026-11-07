@@ -261,19 +261,19 @@ type egressRecord struct {
 }
 
 type pairMeta struct {
-	Agent       string  `json:"agent"`
-	Harness     string  `json:"harness,omitempty"`
-	Task        string  `json:"task"`
-	Sandbox     string  `json:"sandbox"`
-	Image       string  `json:"image"`
-	Sudo        bool    `json:"sudo,omitempty"` // the agent could sudo (lxd)
+	Agent   string `json:"agent"`
+	Harness string `json:"harness,omitempty"`
+	Task    string `json:"task"`
+	Sandbox string `json:"sandbox"`
+	Image   string `json:"image"`
+	Sudo    bool   `json:"sudo,omitempty"` // the agent could sudo (lxd)
 	// the lxd server and image the pair ran on.
-	LXD *sandbox.LXDProvenance `json:"lxd,omitempty"`
-	ExitCode    int     `json:"exit_code"`
-	DurationS   float64 `json:"duration_s"`
-	Status      string  `json:"status"` // ok | nonzero | error
-	Error       string  `json:"error,omitempty"`
-	PatsVersion string  `json:"pats_version"`
+	LXD         *sandbox.LXDProvenance `json:"lxd,omitempty"`
+	ExitCode    int                    `json:"exit_code"`
+	DurationS   float64                `json:"duration_s"`
+	Status      string                 `json:"status"` // ok | nonzero | error
+	Error       string                 `json:"error,omitempty"`
+	PatsVersion string                 `json:"pats_version"`
 	// egress the proxy refused, by kind: denied is what no rule anticipated
 	// (the cheat signal), blocked is what the policy names, failed is upstream
 	// trouble. see readEgressAudit.
