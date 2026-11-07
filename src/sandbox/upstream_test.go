@@ -73,3 +73,18 @@ func TestRepository(t *testing.T) {
 		assert.Equal(t, Repository(in), want, in)
 	}
 }
+
+// a remote ref may name its image by fingerprint, or a unique prefix of one.
+func TestLXDRemoteFingerprintByFingerprint(t *testing.T) {
+	f := newFakeServer(t)
+	l := lxdOn(t, f, Options{})
+	want := fakeFP("ubuntu:26.04")
+	for _, ref := range []string{"ubuntu:" + want, "ubuntu:" + want[:12]} {
+		fp, err := l.remoteFingerprint(context.Background(), ref)
+		require.NoError(t, err)
+		assert.Equal(t, fp, want)
+	}
+	got, err := l.fingerprint(context.Background(), "ubuntu:"+want)
+	require.NoError(t, err)
+	assert.Equal(t, got, want)
+}

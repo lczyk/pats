@@ -169,12 +169,24 @@ func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error)
 	if err := json.Unmarshal([]byte(out), &ims); err != nil {
 		return "", err
 	}
-	// the filter matches on prefixes too: the alias itself decides.
+	// the filter matches on prefixes too: the alias itself decides, or a
+	// fingerprint (or a unique prefix of one) the ref names.
 	for _, im := range ims {
 		for _, a := range im.Aliases {
 			if a.Name == alias {
 				return im.Fingerprint, nil
 			}
+		}
+	}
+	if isHex(alias) {
+		var hits []string
+		for _, im := range ims {
+			if strings.HasPrefix(im.Fingerprint, alias) {
+				hits = append(hits, im.Fingerprint)
+			}
+		}
+		if len(hits) == 1 {
+			return hits[0], nil
 		}
 	}
 	return "", fmt.Errorf("lxd image %s: not listed", ref)

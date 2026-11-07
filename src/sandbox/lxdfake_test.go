@@ -654,7 +654,7 @@ func (f *fakeServer) image(stdout, stderr io.Writer, a fakeArgs) error {
 		var list []map[string]any
 		for ref, fp := range f.bases {
 			r, alias := lxcRef(ref)
-			if r == remote && strings.HasPrefix(alias, p[3]) {
+			if r == remote && (strings.HasPrefix(alias, p[3]) || strings.HasPrefix(fp, p[3])) {
 				list = append(list, map[string]any{"fingerprint": fp, "aliases": []map[string]string{{"name": alias}}})
 			}
 		}
