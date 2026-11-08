@@ -24,7 +24,7 @@ import (
 type ScoreOptions struct {
 	ConfigDir string   // dir holding pats.yaml -- scorer paths resolve against it
 	RunDir    string   // explicit run dir, or "" for the latest under .pats/runs
-	Jobs      int      // max concurrent scorer cells; 0 -> serial (1), negative -> auto (see resolveJobs)
+	Jobs      int      // max concurrent scores; 0 -> serial (1), negative -> auto (see resolveJobs)
 	Judge     bool     // also run agent scorers
 	Suites    []string // only expand these suites (empty -> all)
 	Agents    []string // filter the scored pairs to these agents (empty -> all)
@@ -38,17 +38,23 @@ type ScoreOptions struct {
 	noReport bool
 }
 
-// ScoreReport is the aggregated result of scoring a run.
+// scoresVersion is scores.json's own format. a file of any other version was
+// written by another pats: it reads as unscored and is never merged into.
+const scoresVersion = 2
+
+// ScoreReport is the aggregated result of scoring a run, kept as scores.json.
+// it is pats's own state; `pats report --json` is the interface (report.go).
 type ScoreReport struct {
+	Version  int                `json:"version"`
 	RunDir   string             `json:"run_dir"`
-	Cells    []ScoreCell        `json:"cells"`
+	Scores   []ScoreResult      `json:"scores"`
 	PerPair  map[string]float64 `json:"per_pair"` // "agent/task" -> mean over scorers
 	PerAgent map[string]float64 `json:"per_agent"`
 	Overall  float64            `json:"overall"`
 }
 
-// ScoreCell is one (agent, task, scorer) result.
-type ScoreCell struct {
+// ScoreResult is one scorer's score for one pair.
+type ScoreResult struct {
 	Agent  string  `json:"agent"`
 	Task   string  `json:"task"`
 	Scorer string  `json:"scorer"`
@@ -109,7 +115,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		byTask[sp.Task] = append(byTask[sp.Task], sp)
 	}
 
-	// flatten to one job per (pair, scorer) cell so jobs can run concurrently.
+	// flatten to one job per (pair, scorer) score so jobs can run concurrently.
 	type scoreJob struct {
 		agent, task string
 		outDir      string
@@ -137,7 +143,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if len(jobs) == 0 && narrowed {
 		hint := ""
 		if gated > 0 {
-			hint = fmt.Sprintf(" (%d agent scorer cell(s) need --judge)", gated)
+			hint = fmt.Sprintf(" (%d agent score(s) need --judge)", gated)
 		}
 		return nil, fmt.Errorf("%w: no pair with output in this run has a selected scorer%s", errNothingToScore, hint)
 	}
@@ -154,7 +160,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		bar = newProgress(opts.Out, len(jobs), labelW)
 		defer bar.close()
 	} else if njobs > 1 {
-		lg.info("scoring %d cells, up to %d in parallel", len(jobs), njobs)
+		lg.info("computing %d scores, up to %d in parallel", len(jobs), njobs)
 	}
 
 	// same bounded-worker-pool pattern as Run: buffered per-job output emitted
@@ -163,7 +169,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	sem := make(chan struct{}, njobs)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var cells []ScoreCell
+	var results []ScoreResult
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			if bar != nil {
@@ -199,7 +205,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			default:
 				jlg.info("[%s x %s] %s = %.4f", j.agent, j.task, j.sc.ID, score)
 				mu.Lock()
-				cells = append(cells, ScoreCell{j.agent, j.task, j.sc.ID, score})
+				results = append(results, ScoreResult{j.agent, j.task, j.sc.ID, score})
 				mu.Unlock()
 			}
 
@@ -217,19 +223,19 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 
 	var rep *ScoreReport
 	if narrowed {
-		scope := map[ScoreCell]bool{}
+		scope := map[ScoreResult]bool{}
 		for _, j := range jobs {
-			scope[ScoreCell{Agent: j.agent, Task: j.task, Scorer: j.sc.ID}] = true
+			scope[ScoreResult{Agent: j.agent, Task: j.task, Scorer: j.sc.ID}] = true
 		}
-		if rep, err = mergeScores(cfg, runDir, cells, scope); err != nil {
+		if rep, err = mergeScores(cfg, runDir, results, scope); err != nil {
 			return nil, err
 		}
 	} else {
-		rep = aggregate(runDir, cells, testPairs)
+		rep = aggregate(runDir, results, testPairs)
 	}
 	if !opts.noReport {
 		report(opts.Out, rep, opts.Color)
-		statsReport(opts.Out, runDir)
+		statsReport(opts.Out, runDir, rep, opts.Out)
 	}
 	if err := writeJSON(filepath.Join(runDir, "scores.json"), rep); err != nil {
 		return rep, err
@@ -237,32 +243,31 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	return rep, nil
 }
 
-// Report reprints the scoring report of a past run from its scores.json.
-// runArg resolves like `pats score -r`: "" -> latest, else dir or run name.
-func Report(configDir, runArg string, out io.Writer) error {
-	runDir, err := resolveRunDir(filepath.Join(configDir, runsSubdir), runArg)
-	if err != nil {
-		return err
-	}
+// errOldScores: a scores.json of another format, from another pats.
+var errOldScores = errors.New("was scored by an older pats")
+
+// readScores reads a run's scores.json. a missing file is fs.ErrNotExist; one
+// of another version is errOldScores, never decoded as this one.
+func readScores(runDir string) (*ScoreReport, error) {
 	data, err := os.ReadFile(filepath.Join(runDir, "scores.json"))
 	if err != nil {
-		return fmt.Errorf("no scores for %s (run `pats score` first): %w", relToCwd(runDir), err)
+		return nil, err
 	}
 	var rep ScoreReport
 	if err := json.Unmarshal(data, &rep); err != nil {
-		return fmt.Errorf("parse scores.json: %w", err)
+		return nil, fmt.Errorf("parse scores.json: %w", err)
 	}
-	logw{out, useColor(out)}.info("report: %s", relToCwd(runDir))
-	report(out, &rep, useColor(out))
-	statsReport(out, runDir)
-	return nil
+	if rep.Version != scoresVersion {
+		return nil, fmt.Errorf("%s %w: run `pats score -r %s`", relToCwd(runDir), errOldScores, filepath.Base(runDir))
+	}
+	return &rep, nil
 }
 
 // errScorerNA is the silent-skip signal: a scorer printed "na", meaning it
-// doesn't apply to this cell. dropped from aggregation, not logged as an error.
+// doesn't apply to this pair. dropped from aggregation, not logged as an error.
 var errScorerNA = errors.New("scorer reported n/a")
 
-// errNothingToScore: a narrowed selection reaches no cell in a run.
+// errNothingToScore: a narrowed selection reaches no score in a run.
 var errNothingToScore = errors.New("nothing to score")
 
 // agentInfo carries the per-agent fields a scorer's env needs, keyed by agent
@@ -324,14 +329,14 @@ func parseScore(s string) (float64, error) {
 	return f, nil
 }
 
-func aggregate(runDir string, cells []ScoreCell, testPairs []config.TestPair) *ScoreReport {
+func aggregate(runDir string, results []ScoreResult, testPairs []config.TestPair) *ScoreReport {
 	// per (agent,task): mean over scorers.
 	type acc struct {
 		n   int
 		sum float64
 	}
 	pair := map[string]*acc{}
-	for _, c := range cells {
+	for _, c := range results {
 		k := c.Agent + "/" + c.Task
 		a := pair[k]
 		if a == nil {
@@ -377,7 +382,7 @@ func aggregate(runDir string, cells []ScoreCell, testPairs []config.TestPair) *S
 		overall = osum / float64(len(perAgent))
 	}
 	return &ScoreReport{
-		RunDir: runDir, Cells: cells,
+		Version: scoresVersion, RunDir: runDir, Scores: results,
 		PerPair: perPair, PerAgent: perAgent, Overall: overall,
 	}
 }
@@ -404,7 +409,7 @@ func scoreColor(s float64) string {
 
 // report prints a tasks x agents pivot table -- each cell a coloured
 // "0.85 [######-]" -- with per-agent averages, the overall score, and a
-// per-scorer breakdown for every pair (worst first).
+// per-scorer breakdown of the pairs below 1 (worst first).
 func report(w io.Writer, r *ScoreReport, color bool) {
 	agents := sortedKeys(r.PerAgent)
 	taskSet := map[string]bool{}
@@ -482,9 +487,23 @@ func report(w io.Writer, r *ScoreReport, color bool) {
 		fmt.Fprintf(w, "%-*s  %s\n", labelW, "overall", overall)
 	}
 
-	// per-scorer breakdown, every pair, worst first.
-	pairs := sortedKeys(r.PerPair)
+	// per-scorer breakdown of the pairs below 1, worst first.
+	all := sortedKeys(r.PerPair)
+	if len(all) == 0 {
+		return
+	}
+	var pairs []string
+	for _, k := range all {
+		if r.PerPair[k] < 1 {
+			pairs = append(pairs, k)
+		}
+	}
 	if len(pairs) == 0 {
+		if len(all) == 1 {
+			fmt.Fprintln(w, "\nthe one pair at 1.00")
+		} else {
+			fmt.Fprintf(w, "\nall %d pairs at 1.00\n", len(all))
+		}
 		return
 	}
 	sort.Slice(pairs, func(i, j int) bool {
@@ -501,10 +520,10 @@ func report(w io.Writer, r *ScoreReport, color bool) {
 	}
 	for _, k := range pairs {
 		agent, task, _ := strings.Cut(k, "/")
-		var cells []ScoreCell
-		for _, c := range r.Cells {
+		var results []ScoreResult
+		for _, c := range r.Scores {
 			if c.Agent == agent && c.Task == task {
-				cells = append(cells, c)
+				results = append(results, c)
 			}
 		}
 
@@ -512,7 +531,7 @@ func report(w io.Writer, r *ScoreReport, color bool) {
 		// only the deviants are named. keeps the line proportional to how
 		// interesting the pair is, not to how many scorers exist.
 		counts := map[float64]int{}
-		for _, c := range cells {
+		for _, c := range results {
 			counts[c.Score]++
 		}
 		mode, modeN := 0.0, 0
@@ -531,8 +550,8 @@ func report(w io.Writer, r *ScoreReport, color bool) {
 		}
 		fmt.Fprintf(w, "  %-*s  %s\n", kw, k, summary)
 
-		var devs []ScoreCell
-		for _, c := range cells {
+		var devs []ScoreResult
+		for _, c := range results {
 			if modeN > 1 && c.Score == mode {
 				continue
 			}
@@ -714,12 +733,12 @@ func splitRunName(name string) (date string, n int, ok bool) {
 	return date, n, true
 }
 
-// mergeScores folds a narrowed score's cells into the run's existing
-// scores.json: cells in scope (the cells this score set out to compute) are
-// replaced by what it computed, cells outside it are kept unless the config
+// mergeScores folds a narrowed score's results into the run's existing
+// scores.json: those in scope (what this score set out to compute) are
+// replaced by what it computed, the rest are kept unless the config
 // no longer has their (agent, task, scorer), and the report is aggregated
 // over every suite's pairs.
-func mergeScores(cfg *config.Config, runDir string, cells []ScoreCell, scope map[ScoreCell]bool) (*ScoreReport, error) {
+func mergeScores(cfg *config.Config, runDir string, results []ScoreResult, scope map[ScoreResult]bool) (*ScoreReport, error) {
 	allPairs, err := cfg.ExpandTestPairs()
 	if err != nil {
 		return nil, err
@@ -732,28 +751,26 @@ func mergeScores(cfg *config.Config, runDir string, cells []ScoreCell, scope map
 	for _, sp := range allScore {
 		scorersOf[sp.Task] = append(scorersOf[sp.Task], sp.Scorer)
 	}
-	valid := map[ScoreCell]bool{}
+	valid := map[ScoreResult]bool{}
 	for _, tp := range allPairs {
 		for _, sc := range scorersOf[tp.Task] {
-			valid[ScoreCell{Agent: tp.Agent, Task: tp.Task, Scorer: sc}] = true
+			valid[ScoreResult{Agent: tp.Agent, Task: tp.Task, Scorer: sc}] = true
 		}
 	}
 
-	merged := append([]ScoreCell(nil), cells...)
-	data, err := os.ReadFile(filepath.Join(runDir, "scores.json"))
+	merged := append([]ScoreResult(nil), results...)
+	prev, err := readScores(runDir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
+	case errors.Is(err, errOldScores):
 		return nil, err
+	case err != nil:
+		return nil, fmt.Errorf("%w (a narrowed score merges into it; score without filters to rebuild it)", err)
 	default:
-		var prev ScoreReport
-		if err := json.Unmarshal(data, &prev); err != nil {
-			return nil, fmt.Errorf("scores.json: %w (a narrowed score merges into it; score without filters to rebuild it)", err)
-		}
-		for _, c := range prev.Cells {
-			key := ScoreCell{Agent: c.Agent, Task: c.Task, Scorer: c.Scorer}
+		for _, r := range prev.Scores {
+			key := ScoreResult{Agent: r.Agent, Task: r.Task, Scorer: r.Scorer}
 			if !scope[key] && valid[key] {
-				merged = append(merged, c)
+				merged = append(merged, r)
 			}
 		}
 	}

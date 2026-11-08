@@ -207,7 +207,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 //	<0  -> auto: autoN() (vm-accurate docker cpu count on macos for the run
 //	       phase; host cpus for the score phase, which never touches docker),
 //	       falling back to host cpus when autoN() reports < 1, clamped to
-//	       [1,8]. pairs/cells are network-bound (model round-trips), so cpu is
+//	       [1,8]. pairs and scores are network-bound (model round-trips), so cpu is
 //	       a rough proxy, not a real limit -- the clamp stops a big box from
 //	       hammering the daemon + tripping rate-limits.
 func resolveJobs(j int, autoN func() int) int {
@@ -807,12 +807,31 @@ func nextRunDir(base string, now time.Time) (string, error) {
 	return dir, nil
 }
 
+// writeJSON replaces path through a temp file and a rename, so a write cut
+// short leaves the old file or none, never half of one.
 func writeJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }

@@ -5,13 +5,13 @@ import (
 	"fmt"
 )
 
-// TestPair is one expanded (agent, task) cell of a suite.
+// TestPair is one expanded (agent, task) pair of a suite.
 type TestPair struct {
 	Agent string
 	Task  string
 }
 
-// ScorePair is one expanded (task, scorer) cell of a suite.
+// ScorePair is one expanded (task, scorer) combination of a suite.
 type ScorePair struct {
 	Task   string
 	Scorer string

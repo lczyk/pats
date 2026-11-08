@@ -174,8 +174,8 @@ su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [one, zero]}}}
 	assert.Equal(t, rep.PerPair["a/t"], 0.5)
 }
 
-// -a / -t / -s narrow the cells scored; they intersect, and a combination
-// that leaves no cell is an error rather than an empty scores.json.
+// -a / -t / -s narrow the scores computed; they intersect, and a combination
+// that leaves none is an error rather than an empty scores.json.
 func TestScoreFilters(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))
@@ -197,26 +197,26 @@ suites:
     only-t2: {agents: ag, tasks: t2, scorers: y}
     run-only: {agents: ag, tasks: t1}
 `)
-	// which cells a selection computes: no earlier scores.json to merge into.
-	cells := func(o ScoreOptions) []string {
+	// which scores a selection computes: no earlier scores.json to merge into.
+	computed := func(o ScoreOptions) []string {
 		t.Helper()
 		_ = os.Remove(filepath.Join(run, "scores.json"))
 		o.ConfigDir, o.RunDir, o.Out = dir, run, &bytes.Buffer{}
 		rep, err := Score(cfg, o)
 		require.NoError(t, err)
 		var got []string
-		for _, c := range rep.Cells {
+		for _, c := range rep.Scores {
 			got = append(got, c.Agent+"/"+c.Task+"/"+c.Scorer)
 		}
 		return got
 	}
 
-	assert.Len(t, cells(ScoreOptions{}), 6) // 4 pairs x x, plus a/t2 and b/t2 x y
-	assert.EqualArraysUnordered(t, cells(ScoreOptions{Scorers: []string{"y"}}), []string{"a/t2/y", "b/t2/y"})
-	assert.EqualArraysUnordered(t, cells(ScoreOptions{Agents: []string{"a"}, Scorers: []string{"x"}}),
+	assert.Len(t, computed(ScoreOptions{}), 6) // 4 pairs x x, plus a/t2 and b/t2 x y
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Scorers: []string{"y"}}), []string{"a/t2/y", "b/t2/y"})
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Agents: []string{"a"}, Scorers: []string{"x"}}),
 		[]string{"a/t1/x", "a/t2/x"})
-	assert.EqualArraysUnordered(t, cells(ScoreOptions{Tasks: []string{"t1"}}), []string{"a/t1/x", "b/t1/x"})
-	assert.EqualArraysUnordered(t, cells(ScoreOptions{Suites: []string{"only-t2"}, Agents: []string{"b"}}),
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Tasks: []string{"t1"}}), []string{"a/t1/x", "b/t1/x"})
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Suites: []string{"only-t2"}, Agents: []string{"b"}}),
 		[]string{"b/t2/y"})
 
 	// each filter alone matches, together they leave nothing.
@@ -252,7 +252,7 @@ suites:
 	assert.Error(t, err, `--agent "nope"`)
 }
 
-// a narrowed score folds its cells into scores.json: what it recomputed is
+// a narrowed score folds its scores into scores.json: what it recomputed is
 // replaced, the rest is kept, and a failed narrowed score leaves the file be.
 func TestScoreNarrowedMerges(t *testing.T) {
 	dir := t.TempDir()
@@ -276,9 +276,9 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: tasks, scorers: scorers}}
 		o.ConfigDir, o.RunDir, o.Out = dir, run, &bytes.Buffer{}
 		return Score(cfg, o)
 	}
-	cellMap := func(r *ScoreReport) map[string]float64 {
+	scoreMap := func(r *ScoreReport) map[string]float64 {
 		m := map[string]float64{}
-		for _, c := range r.Cells {
+		for _, c := range r.Scores {
 			m[c.Agent+"/"+c.Task+"/"+c.Scorer] = c.Score
 		}
 		return m
@@ -286,27 +286,28 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: tasks, scorers: scorers}}
 
 	rep, err := score(ScoreOptions{})
 	require.NoError(t, err)
-	assert.Len(t, rep.Cells, 4)
+	assert.Len(t, rep.Scores, 4)
 
-	// y fixed: rescoring only y keeps x's cells and the means cover all four.
+	// y fixed: rescoring only y keeps x's scores and the means cover all four.
 	write("y.sh", "echo 1.0")
 	rep, err = score(ScoreOptions{Scorers: []string{"y"}})
 	require.NoError(t, err)
-	assert.EqualMaps(t, cellMap(rep), map[string]float64{"a/t1/x": 1, "a/t1/y": 1, "b/t1/x": 1, "b/t1/y": 1})
+	assert.EqualMaps(t, scoreMap(rep), map[string]float64{"a/t1/x": 1, "a/t1/y": 1, "b/t1/x": 1, "b/t1/y": 1})
 	assert.Equal(t, rep.Overall, 1.0)
 
-	// a recomputed cell that now fails is dropped, not kept stale.
+	// a recomputed score that now fails is dropped, not kept stale.
 	write("x.sh", "exit 1")
 	rep, err = score(ScoreOptions{Agents: []string{"a"}, Scorers: []string{"x"}})
 	require.NoError(t, err)
-	assert.EqualMaps(t, cellMap(rep), map[string]float64{"a/t1/y": 1, "b/t1/x": 1, "b/t1/y": 1})
+	assert.EqualMaps(t, scoreMap(rep), map[string]float64{"a/t1/y": 1, "b/t1/x": 1, "b/t1/y": 1})
 
 	// the file on disk is the merged report.
 	data, err := os.ReadFile(filepath.Join(run, "scores.json"))
 	require.NoError(t, err)
 	var onDisk ScoreReport
 	require.NoError(t, json.Unmarshal(data, &onDisk))
-	assert.Len(t, onDisk.Cells, 3)
+	assert.Len(t, onDisk.Scores, 3)
+	assert.Equal(t, onDisk.Version, scoresVersion)
 
 	// a corrupt scores.json stops a narrowed score instead of being replaced.
 	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), []byte(`{"cells": [`), 0o644))
@@ -315,6 +316,17 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: tasks, scorers: scorers}}
 	got, err := os.ReadFile(filepath.Join(run, "scores.json"))
 	require.NoError(t, err)
 	assert.Equal(t, string(got), `{"cells": [`)
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), data, 0o644))
+
+	// another pats's scores.json is never merged into: it decodes, but as
+	// nothing this pats wrote, and merging would drop what it held.
+	old := `{"cells": [{"agent": "a", "task": "t1", "scorer": "x", "score": 1}], "overall": 1}`
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), []byte(old), 0o644))
+	_, err = score(ScoreOptions{Scorers: []string{"y"}})
+	assert.ErrorIs(t, err, errOldScores)
+	got, err = os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), old)
 	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), data, 0o644))
 
 	// a narrowed score that reaches nothing leaves scores.json as it was.
@@ -347,7 +359,7 @@ func TestParseScore(t *testing.T) {
 
 func TestReportPivot(t *testing.T) {
 	r := &ScoreReport{
-		Cells: []ScoreCell{
+		Scores: []ScoreResult{
 			{Agent: "a1", Task: "t1", Scorer: "s1", Score: 1.0},
 			{Agent: "a1", Task: "t2", Scorer: "s1", Score: 0.5},
 			{Agent: "a1", Task: "t2", Scorer: "s2", Score: 0.0},
@@ -376,13 +388,13 @@ func TestReportPivot(t *testing.T) {
 	assert.ContainsString(t, lines[4], "overall")
 	assert.ContainsString(t, lines[4], "0.76")
 
-	// breakdown covers every pair, worst first; deviants indented per line,
-	// worst first (no mode tally here -- each pair's scores are all distinct).
-	assert.ContainsString(t, out, "scorer breakdown:")
-	assert.ContainsString(t, out, "a1/t2")
-	assert.ContainsString(t, out, "\n    s2=0.00\n    s1=0.50\n")
-	assert.ContainsString(t, out, "a1/t1") // perfect pairs listed too
-	assert.ContainsString(t, out, "\n    s1=1.00\n")
+	// breakdown covers the pairs below 1, worst first; deviants indented per
+	// line, worst first (no mode tally here -- each pair's scores are distinct).
+	_, breakdown, _ := strings.Cut(out, "scorer breakdown:")
+	assert.ContainsString(t, breakdown, "a1/t2")
+	assert.ContainsString(t, breakdown, "\n    s2=0.00\n    s1=0.50\n")
+	assert.ContainsString(t, breakdown, "a2/t1")
+	assert.That(t, !strings.Contains(breakdown, "a1/t1"), "a pair at 1 is not in the breakdown")
 
 	// no ansi when color off; ansi present when on.
 	assert.That(t, !strings.Contains(out, "\033["), "no ansi in plain output")
@@ -390,6 +402,20 @@ func TestReportPivot(t *testing.T) {
 	report(&buf, r, true)
 	assert.ContainsString(t, buf.String(), "\033[32m")
 	assert.ContainsString(t, buf.String(), "\033[31m")
+}
+
+// a report whose every pair is at 1 says so in one line instead of a breakdown.
+func TestReportAllPerfect(t *testing.T) {
+	r := &ScoreReport{
+		Scores:   []ScoreResult{{Agent: "a", Task: "t1", Scorer: "s", Score: 1}, {Agent: "a", Task: "t2", Scorer: "s", Score: 1}},
+		PerPair:  map[string]float64{"a/t1": 1, "a/t2": 1},
+		PerAgent: map[string]float64{"a": 1},
+		Overall:  1,
+	}
+	var buf bytes.Buffer
+	report(&buf, r, false)
+	assert.ContainsString(t, buf.String(), "\nall 2 pairs at 1.00\n")
+	assert.That(t, !strings.Contains(buf.String(), "scorer breakdown"), "no breakdown")
 }
 
 // numeric -r selectors: positive = run number, 0 = latest, negative = from

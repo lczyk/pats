@@ -256,14 +256,6 @@ func mmss(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", s/60, s%60)
 }
 
-func countLines(path string) (int, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	return bytes.Count(b, []byte{'\n'}), nil
-}
-
 // isProgressTTY reports whether w is a terminal a bar can be drawn on (a char
 // device). a *bytes.Buffer (tests) or a pipe/file (ci, tee) is not.
 func isProgressTTY(w io.Writer) bool {
@@ -516,7 +508,7 @@ type runSummary struct {
 	OutputTokens        int            `json:"output_tokens,omitempty"`
 	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int            `json:"cache_creation_tokens,omitempty"`
-	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // opencode splits these out; claude + codex fold them into output
+	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // the reasoning part of OutputTokens, where the log splits it out
 	PremiumRequests     int            `json:"premium_requests,omitempty"` // copilot's billing unit -- its cost analog
 	TTFTms              int            `json:"ttft_ms,omitempty"`
 	APIDurationMs       int            `json:"api_duration_ms,omitempty"`
@@ -585,6 +577,9 @@ func codexSummary(path string) *runSummary {
 			hasEvent = true
 		}
 	}
+	if sc.Err() != nil {
+		return nil // a scan cut short would count part of the stream as all of it
+	}
 	if !hasEvent {
 		return nil
 	}
@@ -631,6 +626,9 @@ func copilotSummary(path string) *runSummary {
 			hasEvent = true
 		}
 	}
+	if sc.Err() != nil {
+		return nil
+	}
 	if !hasEvent {
 		return nil // empty/garbage log -> nothing worth storing
 	}
@@ -664,13 +662,17 @@ func opencodeSummary(path string) *runSummary {
 			sum.HasCost = true
 			sum.CostUSD += ev.Part.Cost
 			sum.InputTokens += ev.Part.Tokens.Input
-			sum.OutputTokens += ev.Part.Tokens.Output
+			// opencode reports reasoning apart; output counts it, as claude's and codex's do.
+			sum.OutputTokens += ev.Part.Tokens.Output + ev.Part.Tokens.Reasoning
 			sum.ReasoningTokens += ev.Part.Tokens.Reasoning
 			sum.CacheReadTokens += ev.Part.Tokens.Cache.Read
 			sum.CacheCreationTokens += ev.Part.Tokens.Cache.Write
 		case "error":
 			sum.IsError = true
 		}
+	}
+	if sc.Err() != nil {
+		return nil
 	}
 	sum.NumTurns = steps
 	if steps == 0 && len(sum.Tools) == 0 && !sum.IsError {
@@ -718,6 +720,9 @@ func claudeSummary(path string) *runSummary {
 			sum.CacheReadTokens = ev.Usage.CacheRead
 			sum.CacheCreationTokens = ev.Usage.CacheCreation
 		}
+	}
+	if sc.Err() != nil {
+		return nil
 	}
 	if !hasResult && len(sum.Tools) == 0 {
 		return nil // empty/garbage log -> nothing worth storing

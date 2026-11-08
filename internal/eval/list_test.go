@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -87,7 +88,10 @@ func TestListRuns(t *testing.T) {
 	mk("20260101-002", "t1", "ok")
 	mk("20260101-002", "t2", "error")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "20260101-001", "scores.json"),
-		[]byte(`{"overall":0.5}`), 0o644))
+		[]byte(`{"version":2,"overall":0.5}`), 0o644))
+	// another pats's scores.json shows as unscored, not as its stale overall.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "20260101-002", "scores.json"),
+		[]byte(`{"overall":0.9}`), 0o644))
 
 	var out bytes.Buffer
 	require.NoError(t, ListRuns(dir, &out))
@@ -96,6 +100,7 @@ func TestListRuns(t *testing.T) {
 	assert.ContainsString(t, s, "2 ok")          // tally
 	assert.ContainsString(t, s, "0.50")          // scored
 	assert.ContainsString(t, s, "1 ok, 1 error") // mixed-status tally, ordered
+	assert.That(t, !strings.Contains(s, "0.90"), "an old scores.json is not read")
 }
 
 // no runs dir -> no error, empty-ish output.

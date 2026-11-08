@@ -66,17 +66,6 @@ func TestStatTapCapsUnboundedLine(t *testing.T) {
 	assert.Equal(t, len(tap.buf), 0)
 }
 
-func TestCountLines(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "egress.log")
-	require.NoError(t, os.WriteFile(p, []byte("a\nb\nc\n"), 0o644))
-	n, err := countLines(p)
-	require.NoError(t, err)
-	assert.Equal(t, n, 3)
-	_, err = countLines(filepath.Join(dir, "missing"))
-	assert.Error(t, err, assert.AnyError) // missing file (non-proxy) -> not readable
-}
-
 func TestClaudeSummary(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "stdout.log")
@@ -121,7 +110,7 @@ func TestOpencodeSummary(t *testing.T) {
 	assert.NearlyEqual(t, s.CostUSD, 0.03, 1e-9)
 	assert.Equal(t, s.HasCost, true)
 	assert.Equal(t, s.InputTokens, 300)
-	assert.Equal(t, s.OutputTokens, 200)
+	assert.Equal(t, s.OutputTokens, 225) // reasoning counted in output, as the other harnesses do
 	assert.Equal(t, s.ReasoningTokens, 25)
 	assert.Equal(t, s.CacheReadTokens, 3000)
 	assert.Equal(t, s.CacheCreationTokens, 30)

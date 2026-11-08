@@ -1,10 +1,8 @@
 package eval
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -132,12 +130,11 @@ func ListRuns(configDir string, out io.Writer) error {
 // runStatusTally counts pair metadata.json files under a run and tallies their
 // status (e.g. "7 ok, 2 error"). returns the tally and the pair count.
 func runStatusTally(runDir string) (string, int) {
-	metas, _ := filepath.Glob(filepath.Join(runDir, "*", "*", "metadata.json"))
+	pairs := readPairs(runDir, nil, nil)
 	counts := map[string]int{}
-	for _, m := range metas {
-		var pm pairMeta
-		if b, err := os.ReadFile(m); err == nil && json.Unmarshal(b, &pm) == nil {
-			counts[pm.Status]++
+	for _, p := range pairs {
+		if p.meta != nil {
+			counts[p.meta.Status]++
 		}
 	}
 	var parts []string
@@ -147,20 +144,16 @@ func runStatusTally(runDir string) (string, int) {
 		}
 	}
 	if len(parts) == 0 {
-		return "-", len(metas)
+		return "-", len(pairs)
 	}
-	return strings.Join(parts, ", "), len(metas)
+	return strings.Join(parts, ", "), len(pairs)
 }
 
 // runScore returns the run's overall score (2dp) from scores.json, or "-" if it
-// hasn't been scored.
+// hasn't been scored by this pats.
 func runScore(runDir string) string {
-	b, err := os.ReadFile(filepath.Join(runDir, "scores.json"))
+	r, err := readScores(runDir)
 	if err != nil {
-		return "-"
-	}
-	var r ScoreReport
-	if json.Unmarshal(b, &r) != nil {
 		return "-"
 	}
 	return fmt.Sprintf("%.2f", r.Overall)

@@ -107,8 +107,8 @@ func (r *RunCommand) Execute(args []string) error {
 // ScoreCommand scores a run (the latest by default).
 type ScoreCommand struct {
 	Run     string   `long:"run" short:"r" description:"run to score: a dir, a friendly name like fluffy-bunny, a number (1 = run 001; 0 = latest, -1 = second to last; default: latest), or all"`
-	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scorer cells to run in parallel; -1 for auto"`
-	Judge   bool     `long:"judge" description:"also run agent scorers: each judges its cells in a sandbox"`
+	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scores to compute in parallel; -1 for auto"`
+	Judge   bool     `long:"judge" description:"also run agent scorers: each judges its pairs in a sandbox"`
 	Agents  []string `long:"agent" short:"a" description:"only score these agents' pairs, or agent vectors' (repeatable); default: all"`
 	Tasks   []string `long:"task" short:"t" description:"only score these tasks' pairs, or task vectors' (repeatable); default: all"`
 	Scorers []string `long:"scorer" short:"s" description:"only run these scorers or scorer vectors (repeatable); default: all"`
@@ -137,11 +137,12 @@ func (s *ScoreCommand) Execute(args []string) error {
 // ReportCommand reprints a run's report from its scores.json (the latest run
 // by default). reads run artifacts only -- no config load, like `list runs`.
 type ReportCommand struct {
-	Run string `long:"run" short:"r" description:"run to report: a dir, a friendly name like fluffy-bunny, or a number (1 = run 001; 0 = latest, -1 = second to last; default: latest)"`
+	Run  string `long:"run" short:"r" description:"run to report: a dir, a friendly name like fluffy-bunny, or a number (1 = run 001; 0 = latest, -1 = second to last; default: latest)"`
+	JSON bool   `long:"json" description:"print the run's results as one json document, for scripts, and nothing else"`
 }
 
 func (c *ReportCommand) Execute(args []string) error {
-	return eval.Report(filepath.Dir(opts.Config), c.Run, os.Stdout)
+	return eval.Report(filepath.Dir(opts.Config), c.Run, c.JSON, os.Stdout, os.Stderr)
 }
 
 // ListCommand groups the per-kind list subcommands.

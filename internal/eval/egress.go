@@ -351,3 +351,16 @@ func yamlScalar(s string) string {
 	}
 	return s
 }
+
+// humanBytes renders a byte count with a binary suffix: 512, 1.5k, 3.2M.
+func humanBytes(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprint(n)
+	case n < 1<<20:
+		return fmt.Sprintf("%.1fk", float64(n)/1024)
+	case n < 1<<30:
+		return fmt.Sprintf("%.1fM", float64(n)/(1<<20))
+	}
+	return fmt.Sprintf("%.1fG", float64(n)/(1<<30))
+}
