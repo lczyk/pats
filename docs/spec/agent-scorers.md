@@ -152,7 +152,7 @@ a judge is a pair run through `runPair`, not a parallel code path:
 - the order is a task's with one step in front: copy the judged pair into the fresh workdir, `stage`, resolve the
   prompt, start, `prepare`, the judge, sync, `collect` (into `PATS_OUTPUT_DIR`, the judge's own dir), parse the
   verdict.
-- a failed `stage` or `prepare` is the judge's setup error: an error cell, logged, with a failed `verdict.json`. a failed `collect`
+- a failed `stage` or `prepare` is the judge's setup error: a failed score, logged, with a failed `verdict.json`. a failed `collect`
   warns, as for a task, and doesn't touch the verdict.
 - the verdict comes only from the judge's final text. `collect` gathers files, never the score.
 - the output dir is `<run>/.judge/<scorer>/<agent>/<task>/`, holding what any pair dir holds (`stdout.log`,
@@ -178,7 +178,7 @@ then shared.
     block every time. a run whose background sub-agent finishes after the answer emits a later `result` too (19 of
     1784 past logs had more than one; in the one inspected, the last was a short "verdict stands" note). so the
     `result` events are walked from last to first, and the first whose last line parses is the verdict. a later
-    `result` with a `SCORE:` line anywhere in it that does not parse as its last line makes the cell an error: the
+    `result` with a `SCORE:` line anywhere in it that does not parse as its last line makes the score a failure: the
     judge tried to give a new verdict and botched it, and the earlier one may be what it meant to retract. a later
     note with no `SCORE:` line at all is skipped.
   - codex: the `text` of the last `item.completed` event whose item is an `agent_message` (present in all 37 past
@@ -189,8 +189,8 @@ then shared.
   (case-insensitive), the number in [0,1]. `SCORE:` anywhere earlier is ignored: the judge may quote the footer, or
   read a `SCORE:` line out of the files it was given.
 - **outcomes** -- as for a script scorer, whose non-zero exit is a failure whatever it printed. the judge's run must
-  end `ok` (exit 0, no harness error, no timeout) and its final text must parse; then a score is an ordinary cell and
-  `na` drops the cell, as a script scorer's `na` does. anything else is an error cell, logged and dropped from
+  end `ok` (exit 0, no harness error, no timeout) and its final text must parse; then the score is an ordinary one and
+  `na` drops it, as a script scorer's `na` does. anything else is a failed score, logged and dropped from
   aggregation, even when a `SCORE:` line parsed.
 - **verdict.json** -- `{ok, score | na, error, footer_version, judge, scorer, judged: {agent, task}}`, written for
   every judge run, failed or not. `judge` is the judge agent's id: the dir names only the scorer and the judged pair,
@@ -202,36 +202,36 @@ then shared.
 agent scorers rerun on every `pats score --judge`.
 
 ```
-for each agent cell (judged pair x agent scorer) in the selected suites:
+for each agent score (judged pair x agent scorer) in the selected suites:
   judged pair has no metadata.json        -> skipped (its status is unknown)
   its status is error                     -> na, no judge (setup failed, the agent never ran)
   its status is timeout and not synced    -> na, no judge (nothing came home)
   summary.is_error                        -> na, no judge (harness error)
   --judge                                 -> judge job; its verdict.json replaces any earlier one
-  otherwise, verdict.json is ok           -> that verdict's cell, no judge
+  otherwise, verdict.json is ok           -> that verdict's score, no judge
   otherwise                               -> skipped; one line at the end:
-                                             "N agent cells not judged (pass --judge)"
+                                             "N agent scores not judged (pass --judge)"
 ```
 
-- the first row is the agent cells' own: script scorers keep today's rule, a pair dir that exists is scored
+- the first row is the agent scores' own: script scorers keep today's rule, a pair dir that exists is scored
   (`score.go`), metadata or not. a pair dir without `metadata.json` is a run that died mid-pair, or a prompt that
   failed to resolve (`runPair` returns before writing it); a judge can't tell which, so it waits.
 - `ok` and `nonzero` pairs are judged, and so is a `timeout` pair whose files came home (collect ran on them): an
   agent that ran out of time halfway through still left gradable output. the run phase records this as
   `synced: true` in the pair's `metadata.json`, which it knows today but doesn't write.
-- there is no cache key and no staleness check. a stored verdict only keeps judged cells in `scores.json` across a
+- there is no cache key and no staleness check. a stored verdict only keeps judged scores in `scores.json` across a
   plain `pats score`, which replaces the file when unnarrowed. after editing a judge's prompt, steps or agent, its old
   verdicts stand until the next `--judge`.
-- a narrowed score merges (`cli-filters.md`), and its scope is every agent cell the selection holds, whichever row of
-  the table above it took, not only the cells it judged: a selected cell whose pair now fails replaces its old number
+- a narrowed score merges (`cli-filters.md`), and its scope is every agent score the selection holds, whichever row of
+  the table above it took, not only the ones it judged: a selected score whose pair now fails replaces its old number
   with `na`, and a skipped one drops its old number, rather than either keeping a stale score in the mean.
-- `--judge` judges every agent cell the selection holds. to iterate on one judge, narrow the selection to it:
+- `--judge` judges every agent score the selection holds. to iterate on one judge, narrow the selection to it:
   `pats score --judge -s my-judge`, with `-a` / `-t` to narrow the pairs too (`cli-filters.md`).
 - `pats score` already holds the config dir's lock (`.pats/lock`, `lock.go`) that `pats run` takes, so judges never
   read pair dirs a run is still writing. that lock covers this config's runs only: `-r` takes any directory, and
   another project's run sits behind its own lock. so `--judge` refuses a run dir outside this config's
   `.pats/runs/`; script scorers keep scoring any dir, as today.
-- before the first judge job, pats prints one line: `judging N cells with <judge agents>`. no prompt, no cap.
+- before the first judge job, pats prints one line: `judging N scores with <judge agents>`. no prompt, no cap.
 - judge sandboxes are made by `pats init`, like every other (`init.md`). init's selection counts a sandbox as used
   when a selected pair's agent runs in it or when an agent scorer in the selected suites names a judge agent that
   does, so a bare `pats init` covers the judges, `--sandbox` accepts a judge-only sandbox, and `-a` / `-t` narrow the
@@ -242,8 +242,8 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
   or pulls. without `--judge` no pin is read and nothing is preflighted.
 - the judge jobs are one run in `sandbox-seams.md`'s clean: the score process holds its own run token and lease for
   them, made before the first sandbox, so `pats clean` never takes a judge sandbox while the score is alive.
-- judge jobs share the `-j` pool with script cells, and a judge sandbox's `max-parallel` caps its judges as it caps
-  its pairs. a slow judge holds a slot that fast script cells wait on, a known cost in v1.
+- judge jobs share the `-j` pool with script scores, and a judge sandbox's `max-parallel` caps its judges as it caps
+  its pairs. a slow judge holds a slot that fast script scores wait on, a known cost in v1.
 - `Score()` gets a context with the same signal handling as `Run()`, so ctrl+c tears judge sandboxes down. `Score`'s
   options grow into the run phase's `Options` (or both narrow to a shared struct), since the build, preflight and
   harness-home helpers take those.
@@ -254,14 +254,14 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
 
 ## reporting
 
-- agent cells are ordinary `ScoreCell`s and count in the headline mean.
+- agent scores are ordinary `ScoreResult`s and count in the headline mean.
 - an unjudged pair (`na` above) drops out of the mean, which flatters an agent that fails often. the report puts a
   per-agent count of failed pairs next to the mean, so the gap shows: the pairs the table above leaves unjudged
   (status `error`, an unsynced `timeout`, a harness error), counted once per pair, not per scorer. the count covers
   every pair the report's means cover, not only a narrowed score's selection: a pair's status is the run's and does
   not change between scores, so each `pats score`, narrowed or not, counts it over the whole report from the pairs'
   `metadata.json` and writes it to `scores.json` beside the means, where `pats report` reads it. a judge's
-  own failure (an error cell on a pair that ran fine) is not the judged agent's and is counted apart, per judge agent,
+  own failure (a failed score on a pair that ran fine) is not the judged agent's and is counted apart, per judge agent,
   in the judges section below. script scorers get the same treatment (backlog F1).
 - the stats table `pats score` and `pats report` print (`statsReport`) gets a separate judges section, per judge
   agent: cost, tokens and duration summed from `<run>/.judge/*/*/*/metadata.json`, failures counted from
@@ -288,6 +288,6 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
   webfetch are untested end to end.
 - **the judge queue.** a separate pool (`--judge-jobs`) instead of the shared `-j`, when head-of-line blocking
   shows up.
-- **samples.** `samples: N` judging each cell N times and averaging, with each sample a pair dir of its own.
+- **samples.** `samples: N` judging each score N times and averaging, with each sample a pair dir of its own.
 - **what the judge reads.** the raw `stdout.log` now; a normalised transcript (backlog F8) if raw ndjson turns out to
   distract the judge.
