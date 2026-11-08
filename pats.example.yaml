@@ -1,8 +1,8 @@
 # pats.yaml is a mapping of vectors. the key is the vector's id. a vector has a `kind` (sandbox | agent | task | scorer | suite),
 # optional `defaults`, and `items` keyed by id. an item inherits every default it doesn't set, and `field: ~` unsets one.
 # ids are unique per kind. a reference (a suite axis, `sandbox:`, `-a` / `-t` / `-s`) takes a vector id or an item id.
-# in defaults and items, `${task}` / `${agent}` / `${scorer}` / `${sandbox}` expand to the item's id and `${vector}` to its vector's,
-# except inside inline content (a prompt, a script body, env). the readme has the full rules.
+# nothing in pats.yaml is templated: a step is a shell script, and reads the ids it runs for from its env
+# ($PATS_TASK_ID, $PATS_TASK_VECTOR, $PATS_SCORER_ID, ...). the readme has the full rules.
 
 sandbox:
   kind: sandbox
@@ -29,7 +29,7 @@ sandbox:
       #   npm:    registry.npmjs.org
       #   crates: crates.io, static.crates.io, index.crates.io
       #   go:     proxy.golang.org, sum.golang.org, storage.googleapis.com
-      # `base:` + `provision:` / `provision-cmd:` make the image instead (any driver): the step runs once per image, as root.
+      # `base:` + `provision:` make the image instead (any driver): the script runs once per image, as root, with bin/ on PATH.
       # `limits: {cpu: 4, memory: 8GiB}` caps resources; `max-parallel: 2` caps this sandbox's concurrent pairs.
     # an lxd sandbox: a system container (or `vm: true`) on the server an lxc remote names. with no `base` it is
     # provisioned with the pats sandbox's tools; `sudo: true` lets the agent sudo, `config:` and `profiles:` pass through.
@@ -60,19 +60,19 @@ haiku:
 #       harness: claude-cli-keyless
 #       model: claude-sonnet-4-6
 
-# the prompt is `prompt` (literal text), `prompt-file` or `prompt-cmd` (its stdout). stage and collect are an inline script
-# (`stage`, `collect`) or a command line (`stage-cmd`, `collect-cmd`), run on the host with PATS_* env set and this dir's
-# bin/ on PATH: stage before the sandbox starts, collect after the agent. `prepare` / `prepare-cmd` runs inside the
-# sandbox as root, after stage and before the agent. `env:` adds variables for the task's scripts. timeout is per
-# pair, 10m by default, and covers the agent only.
+# the prompt is `prompt` (literal text), `prompt-file` or `prompt-cmd` (a script; its stdout). `stage` and `collect` are
+# shell scripts, a one-liner like `./collect.sh --fast` included, run on the host with PATS_* env set and this dir's bin/
+# on PATH: stage before the sandbox starts, collect after the agent. `prepare` runs inside the sandbox as root, after
+# stage and before the agent, with bin/ (and nothing else from the host) on its PATH. `env:` adds variables for the
+# task's scripts. timeout is per pair, 10m by default, and covers the agent only.
 # a task vector can instead take `dir: <path>`: every directory under it holding a task.yaml is one task, configured by that
 # file alone, with its scripts run and its paths resolved in its own directory.
 write-readme:
   kind: task
   defaults:
-    prompt-file: prompts/${vector}-${task}.txt
-    stage-cmd: scripts/stage.sh --${task}
-    collect-cmd: scripts/collect.sh --${task}
+    prompt-cmd: cat "prompts/$PATS_TASK_VECTOR-$PATS_TASK_ID.txt"
+    stage: scripts/stage.sh --"$PATS_TASK_ID"
+    collect: scripts/collect.sh --"$PATS_TASK_ID"
   items:
     simple:
     hard:
@@ -82,11 +82,11 @@ write-readme:
       #   allow: [registry.npmjs.org]          # a host this task alone needs
       #   deny: ['github.com/*/monorepo-answers*']
 
-# a scorer (`score` inline, or `score-cmd`) reads a pair's collected output and prints a float in [0,1], or `na`, on its first stdout line.
+# a scorer's `score` is a script: it reads a pair's collected output and prints a float in [0,1], or `na`, on its first stdout line.
 style:
   kind: scorer
   defaults:
-    score-cmd: scorers/${scorer}.sh
+    score: scorers/"$PATS_SCORER_ID".sh
   items:
     only-ascii:
     title-correct:

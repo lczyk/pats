@@ -24,7 +24,7 @@ in v1:
 - a judge agent is an ordinary agent, run exactly as a task agent is: same harness command, same tools, same sandbox.
   the sandbox and the copy are the only constraints. a judge may run whatever it likes in its sandbox (a checker, a
   build of the output), and nothing it does reaches the run.
-- an agent scorer takes every field a task takes: the prompt, `stage`, `prepare`, `collect` (each inline or `-cmd`),
+- an agent scorer takes every field a task takes: the prompt, `stage`, `prepare`, `collect` (each a script),
   `env`, `sudo`, `egress`, `timeout`.
 - task agents run exactly as today.
 
@@ -57,7 +57,7 @@ quality:
     slice-builds:
       stage: cp "cases/$PATS_SCORED_TASK_ID/case.yaml" "$PATS_WORKDIR/"
       prepare: apt-get install -y dpkg-dev
-      collect-cmd: scorers/keep-build-log.sh    # into the judge's own dir
+      collect: scorers/keep-build-log.sh        # into the judge's own dir
       sudo: true
       timeout: 15m
       egress:
@@ -69,12 +69,12 @@ quality:
 - `agent` names exactly one judging agent: any agent, in a suite or not. an agent vector id is an error, so one scorer
   has one judge (a panel of judges is several scorers). an agent named only by scorers is not an orphan (as today).
 - one of `prompt` / `prompt-file` / `prompt-cmd`, resolved as a task's prompt is.
-- `stage` / `stage-cmd`, `prepare` / `prepare-cmd`, `collect` / `collect-cmd`, `env`, `sudo`, `egress` and `timeout`
+- `stage`, `prepare`, `collect`, `env`, `sudo`, `egress` and `timeout`
   are new on `Scorer`, with a task's meaning, rules and validation (`env` keeps off `PATS_*`; `egress` adds `allow` /
   `deny` entries over the judge sandbox's lists, posture stays the sandbox's). `timeout` defaults to `5m`, not a
   task's `10m`.
-- a script scorer sets none of them: each is a validation error next to `score` / `score-cmd`.
-- a scorer sets either `score` / `score-cmd` or `agent` + a prompt, never both (as today).
+- a script scorer sets none of them: each is a validation error next to `score`.
+- a scorer sets either `score` or `agent` + a prompt, never both (as today).
 - the judge's sandbox comes from its agent. a judge that needs a different sandbox or posture (not just extra hosts)
   is another entry in the agent vector.
 
@@ -92,8 +92,8 @@ quality:
   truth from the task dir, an answer key, one of the logs left out above. a `prompt-cmd` can embed material in the
   prompt too, and nothing stops it, but the docs steer to `stage`: files keep the prompt short and let the judge look
   things up. it also takes out what a judge must not see: a blind judge removes the answer key the judged task's
-  `collect` left beside its output. a one-line step is an inline `stage:`, which runs under `sh`: a `stage-cmd`
-  runs without a shell and expands no `$PATS_*`.
+  `collect` left beside its output. a one-line `stage:` runs under `sh` like any step (`steps.md`), so it expands
+  `$PATS_*`.
 - **the host env** -- every host step of an agent scorer (`stage`, `prompt-cmd`, `collect`) runs in the scorer's
   directory with two sets of vars (see "scorer env" below): the `PATS_SCORED_*` set every scorer gets, describing the
   pair being graded, and the vars a task's steps get, describing the judge's own run -- `PATS_AGENT_ID` (the judge),

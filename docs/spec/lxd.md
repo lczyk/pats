@@ -36,7 +36,7 @@ lxd:
       remote: armstrong          # an `lxc remote`; omitted -> the cli's current remote
       vm: true                   # omitted -> a system container
       base: ubuntu:26.04         # omitted -> the pats sandbox image
-      provision-cmd: ./provision.sh   # or `provision: |` inline; once per image, as root
+      provision: provision-box   # a script (here bin/provision-box) or `provision: |`; once per image, as root
       sudo: false                # default; may the agent sudo. a task can override
       max-parallel: 2            # cap this sandbox's pairs whatever -j says
       limits:                    # driver-neutral; docker maps to --cpus / --memory
@@ -49,7 +49,7 @@ lxd:
       egress: ...                # the 1.x egress schema, unchanged
 ```
 
-- `base` + `provision` (inline / `provision-cmd`, the same two-form rule as the task run fields) are the
+- `base` + `provision` (a shell script, as every step is: `steps.md`) are the
   driver-neutral way to make an image. the script sees only itself and the host `bin/` on its `PATH`; anything bigger
   it downloads. `bin/` crosses machines (a mac driving an x86_64 server), so under lxd it may hold scripts and linux
   binaries for the server's arch only: pats checks each file's header before the push and refuses anything else
@@ -74,10 +74,10 @@ lxd:
 
 | step | where | when |
 |---|---|---|
-| `stage` / `stage-cmd` | host | before the sandbox starts: ground truth, seeded files, fetches the agent may not make |
-| `prepare` / `prepare-cmd` | inside, as root | after the push, before the agent: per-task system state |
+| `stage` | host | before the sandbox starts: ground truth, seeded files, fetches the agent may not make |
+| `prepare` | inside, as root | after the push, before the agent: per-task system state |
 | the prompt | inside, as the agent | spread's `execute` |
-| `collect` / `collect-cmd` | host | after the pull |
+| `collect` | host | after the pull |
 
 - today's host-side `prepare` becomes `stage`. `prepare` takes spread's meaning: setup on the system under test.
 - host steps pair as `stage` / `collect`, in-sandbox ones as `prepare` (spread's `restore` / `debug` later if wanted;
@@ -287,8 +287,9 @@ whether the agent had sudo.
 
 ## mason
 
-- its dockerfile becomes a `provision.sh` on top of the pats sandbox image: apt packages, chisel picked by
-  `dpkg --print-architecture`, `git config --system protocol.version 1`.
+- its dockerfile becomes a provision script on top of the pats sandbox image (in `bin/`, the only host files a
+  provision step sees): apt packages, chisel picked by `dpkg --print-architecture`, `git config --system
+  protocol.version 1`.
 - its host `prepare` scripts become `stage`; nothing else in the task directories changes.
 - one sandbox per driver in its `pats.yaml`; agents pick theirs.
 - a container sandbox with `config: {security.nesting: true}` and `sudo: true` lets an agent run chisel-releases'
