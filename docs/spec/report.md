@@ -99,19 +99,10 @@ small nor quite parsable:
 
 ## the human report
 
-what `pats score` and `pats report` print:
+one tasks x agents pivot, worst task first, each cell a pair's mean with a mark when the pair did not end ok, and
+per-agent `avg`, `cost` and `time` rows. it replaced the breakdown and run stats table this section first proposed;
+`report()` in `report.go` and the readme describe it.
 
-- **the pivot** -- unchanged: tasks x agents, `0.85 [######-]`, coloured, worst task first, `avg` and `overall` rows
-  when there is more than one task.
-- **the breakdown** -- only pairs whose mean is below 1, worst first, each as today (its most common score folded into
-  a tally, up to 5 others named). when every pair is at 1, one line: `all <n> pairs at 1.00`, or `the one pair at
-  1.00`.
-- **the run stats** -- `PAIR STATUS TIME TURNS IN OUT COST TOOLS NET DENIED`, plus the totals row. `IN` and `OUT`
-  are the document's `input_tokens` and `output_tokens`, kept apart since either can be unknown alone (copilot has
-  no input count). a `null` shows as `-`, and a total sums the known values only, as `COST` does today. `LINES`
-  (stdout lines), `BYTES` (egress bytes) and `BLOCKED` (egress the policy named, so expected) go; the document has the
-  rest of the token counts and both egress lists. `TOOLS` and `NET` stay as the cheat signals they are beside
-  `DENIED`.
 - log lines stay on stdout as today. `report --json` is the one place stdout has to be clean.
 
 ## dropping cell
