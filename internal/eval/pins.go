@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -140,7 +141,34 @@ func readPins(configDir string) (*pinFile, error) {
 	if f.Version != pinsVersion {
 		return nil, fmt.Errorf(".pats/%s is format %d, this pats reads %d: run `pats init`", pinsName, f.Version, pinsVersion)
 	}
+	f.normalizeIDs()
 	return f, nil
+}
+
+// normalizeIDs spells every container image id as the driver does now
+// (sandbox.ImageID): a pin podman's inspect wrote holds the hex alone, and
+// read as another id it would supersede, and so remove, its own image.
+func (f *pinFile) normalizeIDs() {
+	container := func(target string) bool {
+		kind, _, _ := strings.Cut(target, ":")
+		return sandbox.IsEngine(kind)
+	}
+	for target, entries := range f.Targets {
+		if !container(target) {
+			continue
+		}
+		for _, e := range entries {
+			e.Image.ID = sandbox.ImageID(e.Image.ID)
+			if e.Proxy != nil {
+				e.Proxy.ID = sandbox.ImageID(e.Proxy.ID)
+			}
+		}
+	}
+	for i, s := range f.Superseded {
+		if container(s.Target) {
+			f.Superseded[i].ID = sandbox.ImageID(s.ID)
+		}
+	}
 }
 
 // updatePins applies change to the pin file under .pats/images.lock: it

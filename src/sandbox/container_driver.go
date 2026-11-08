@@ -74,7 +74,7 @@ func (c *container) Resolve(ctx context.Context, ref string) (Image, error) {
 		return Image{}, noImage(err)
 	}
 	id, digests, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
-	img := Image{ID: id, Name: ref}
+	img := Image{ID: ImageID(id), Name: ref}
 	want := Repository(ref)
 	for i, rd := range strings.Fields(digests) {
 		name, d, ok := strings.Cut(rd, "@")
@@ -102,9 +102,19 @@ func (c *container) Images(ctx context.Context) (map[string]bool, error) {
 	}
 	ids := map[string]bool{}
 	for _, id := range strings.Fields(string(out)) {
-		ids[id] = true
+		ids[ImageID(id)] = true
 	}
 	return ids, nil
+}
+
+// ImageID spells a container image id one way, sha256:<hex>: podman's
+// image inspect prints the hex alone, where its images and --iidfile, and
+// docker everywhere, print the prefix.
+func ImageID(id string) string {
+	if isFingerprint(id) {
+		return "sha256:" + id
+	}
+	return id
 }
 
 func (c *container) Pull(ctx context.Context, ref string, force bool, log io.Writer) (Image, bool, error) {
@@ -159,7 +169,7 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 	if err != nil {
 		return Image{}, "", false, err
 	}
-	return Image{ID: id}, base, built, nil
+	return Image{ID: ImageID(id)}, base, built, nil
 }
 
 // provisionDockerfile runs spec's provision step on its base, with its

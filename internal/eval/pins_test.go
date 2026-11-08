@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,4 +164,21 @@ func useFakeSandbox(t *testing.T, fake sandbox.Sandbox) {
 	old := newSandbox
 	newSandbox = func(sandbox.Options, sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	t.Cleanup(func() { newSandbox = old })
+}
+
+// a container pin podman's inspect wrote holds a bare hex id; read back it is
+// the driver's sha256:<hex>, so a re-init does not take it for another
+// image. an lxd fingerprint stays as it is.
+func TestPinsNormalizeIDs(t *testing.T) {
+	hex := strings.Repeat("ab", 32)
+	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{
+		"podman:local": {"s": {Image: pinImage{ID: hex}, Proxy: &pinImage{ID: hex}}},
+		"lxd:srv":      {"l": {Image: pinImage{ID: hex}}},
+	}, Superseded: []superseded{{Target: "podman:local", ID: hex}, {Target: "lxd:srv", ID: hex}}}
+	f.normalizeIDs()
+	require.Equal(t, f.Targets["podman:local"]["s"].Image.ID, "sha256:"+hex)
+	require.Equal(t, f.Targets["podman:local"]["s"].Proxy.ID, "sha256:"+hex)
+	require.Equal(t, f.Targets["lxd:srv"]["l"].Image.ID, hex)
+	require.Equal(t, f.Superseded[0].ID, "sha256:"+hex)
+	require.Equal(t, f.Superseded[1].ID, hex)
 }

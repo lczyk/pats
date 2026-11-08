@@ -106,11 +106,15 @@ func (f *fakeDaemon) imageCmd(stdout, stderr io.Writer, args []string) (handled 
 		if id == "" {
 			return true, f.noSuchImage(stderr, args[4])
 		}
+		shown := id
+		if f.driver == "podman" {
+			shown = strings.TrimPrefix(id, "sha256:") // podman's inspect drops the prefix its images -q keeps
+		}
 		switch args[3] {
 		case "{{.Id}}":
-			fmt.Fprintln(stdout, id)
+			fmt.Fprintln(stdout, shown)
 		case "{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}":
-			fmt.Fprintf(stdout, "%s|", id)
+			fmt.Fprintf(stdout, "%s|", shown)
 			for _, d := range f.images[id].digests {
 				fmt.Fprintf(stdout, "%s ", d)
 			}
