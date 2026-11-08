@@ -53,18 +53,24 @@ func parseStamps(out string) (map[string]string, error) {
 	return stamps, nil
 }
 
-// containerStamps runs stampScript in a throwaway container of image id. an
+// stamps runs stampScript in a throwaway container of image id. an
 // image with no shell has no stamps; any other failure is an error. the
 // container is named, so one a timeout or a failure leaves behind is
 // removed.
-func containerStamps(ctx context.Context, r runner, id string, timeout time.Duration) (map[string]string, error) {
+func (c *container) stamps(ctx context.Context, id string, timeout time.Duration) (map[string]string, error) {
+	if err := c.p.holdLease(); err != nil {
+		return nil, err
+	}
+	r := c.r
 	var suffix [6]byte
 	_, _ = rand.Read(suffix[:])
 	name := "pats-stamp-" + hex.EncodeToString(suffix[:])
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var out, errb bytes.Buffer
-	err := r.Run(rctx, nil, &out, &errb, "run", "--rm", "--name", name, "--network", "none", "--entrypoint", "sh", id, "-c", stampScript)
+	args := append([]string{"run", "--rm", "--name", name}, c.p.runLabels()...)
+	args = append(args, "--network", "none", "--entrypoint", "sh", id, "-c", stampScript)
+	err := r.Run(rctx, nil, &out, &errb, args...)
 	if err == nil {
 		return parseStamps(out.String())
 	}

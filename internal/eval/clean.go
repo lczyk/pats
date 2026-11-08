@@ -5,10 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/lczyk/pats/src/sandbox"
@@ -16,32 +13,33 @@ import (
 
 // CleanOptions configures Clean.
 type CleanOptions struct {
-	Drivers   []string      // container clis to sweep; nil: docker and podman, whichever are installed
-	OlderThan time.Duration // leftover temp dirs younger than this are kept
+	Drivers   []string      // container engines to sweep; nil: docker and podman, whichever are installed
+	OlderThan time.Duration // a dead run's temp dirs younger than this are kept
 	DryRun    bool
-	// Force also removes containers and networks this user and host do not
-	// own: another user's on a shared daemon, or ones made before pats
-	// labelled its own.
+	// Force also removes runs this clean cannot judge (another user's or
+	// machine's on a shared daemon), and what no run owns (lxd's uplink).
+	// a run whose fresh lease this clean reads is never removed by it.
 	Force bool
+	// Run removes that one run, whatever its lease.
+	Run string
 	// LXDRemotes are the lxd servers to sweep; nil: the lxc cli's default
 	// remote, when lxc is installed and Drivers is nil.
 	LXDRemotes []string
 	Out        io.Writer
 }
 
-// Clean removes what crashed runs left behind. every agent, sidecar and
-// network pats makes is named after its pair's workdir (sbx-agent-<dir>,
-// sbx-proxy-<dir>, sbx-egr-<dir>) and labelled with its owner (host and uid).
-// one of this owner's is a leftover once the pats process named in its
-// workdir's owner file is gone; another owner's cannot be judged from here
-// (its workdir is in someone else's cache, or on another machine) and is left
-// unless Force. a temp dir is kept while its owner runs, and otherwise goes
-// once older than OlderThan.
+// openDriver opens a place to clean; a var so tests fake it.
+var openDriver = sandbox.Open
+
+// Clean removes what dead runs left behind, on every driver it sweeps and in
+// the temp root, by the rule in sandbox.Clean. it holds init's machine lock
+// while it removes, so the two never act on one daemon at once.
 func Clean(ctx context.Context, o CleanOptions) error {
-	tmp, err := sandbox.TempRoot()
-	if err != nil {
-		return err
+	type place struct {
+		name string
+		o    sandbox.Options
 	}
+	var places []place
 	drivers := o.Drivers
 	if drivers == nil {
 		for _, d := range sandbox.Engines() {
@@ -50,75 +48,9 @@ func Clean(ctx context.Context, o CleanOptions) error {
 			}
 		}
 	}
-	var errs []error
-	act := "removed"
-	if o.DryRun {
-		act = "would remove"
-	}
-	owner := "label=" + sandbox.OwnerLabel()
 	for _, d := range drivers {
-		// list returns every name with the prefix and the set this owner made.
-		list := func(kind, prefix string) (all []string, mine map[string]bool, err error) {
-			args := []string{"ps", "-a", "--filter", "name=^" + prefix, "--format", "{{.Names}}"}
-			if kind == "network" {
-				args = []string{"network", "ls", "--filter", "name=^" + prefix, "--format", "{{.Name}}"}
-			}
-			out, err := exec.CommandContext(ctx, d, args...).Output()
-			if err != nil {
-				return nil, nil, err
-			}
-			own, err := exec.CommandContext(ctx, d, append(args[:len(args)-2:len(args)-2], "--filter", owner, "--format", args[len(args)-1])...).Output()
-			if err != nil {
-				return nil, nil, err
-			}
-			mine = map[string]bool{}
-			for _, n := range strings.Fields(string(own)) {
-				mine[n] = true
-			}
-			return strings.Fields(string(out)), mine, nil
-		}
-		foreign := 0
-		sweep := func(kind, prefix string, rm ...string) error {
-			all, mine, err := list(kind, prefix)
-			if err != nil {
-				return err
-			}
-			for _, name := range all {
-				if !mine[name] && !o.Force {
-					foreign++
-					continue
-				}
-				if mine[name] && sandbox.TempOwnerAlive(filepath.Join(tmp, strings.TrimPrefix(name, prefix))) {
-					continue
-				}
-				if !o.DryRun {
-					if out, err := exec.CommandContext(ctx, d, append(rm, name)...).CombinedOutput(); err != nil {
-						errs = append(errs, fmt.Errorf("%s %s %s: %w (%s)", d, strings.Join(rm, " "), name, err, strings.TrimSpace(string(out))))
-						continue
-					}
-				}
-				fmt.Fprintf(o.Out, "%s %s %s %s\n", act, d, kind, name)
-			}
-			return nil
-		}
-		// agents first: one still attached keeps its network from going.
-		if err := sweep("container", "sbx-agent-", "rm", "-f"); err != nil {
-			fmt.Fprintf(o.Out, "%s: skipped (%v)\n", d, err)
-			continue
-		}
-		if err := sweep("container", "sbx-proxy-", "rm", "-f"); err != nil {
-			errs = append(errs, fmt.Errorf("%s ps: %w", d, err))
-			continue
-		}
-		if err := sweep("network", "sbx-egr-", "network", "rm"); err != nil {
-			errs = append(errs, fmt.Errorf("%s network ls: %w", d, err))
-			continue
-		}
-		if foreign > 0 {
-			fmt.Fprintf(o.Out, "%s: left %d not made by %s (another user, another machine, or an older pats); --force removes them\n", d, foreign, sandbox.OwnerLabel())
-		}
+		places = append(places, place{d, sandbox.Options{Driver: d}.WithEnv()})
 	}
-
 	remotes := o.LXDRemotes
 	if remotes == nil && o.Drivers == nil {
 		if _, err := exec.LookPath("lxc"); err == nil {
@@ -126,39 +58,51 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		}
 	}
 	for _, r := range remotes {
-		if err := sandbox.CleanLXD(ctx, r, o.Force, o.DryRun, o.Out); err != nil {
+		name := "lxd"
+		if r != "" {
+			name += " " + r
+		}
+		places = append(places, place{name, sandbox.Options{Driver: "lxd", Remote: r}.WithEnv()})
+	}
+
+	unlock, err := machineLock()
+	if err != nil {
+		return fmt.Errorf("cannot take %s.lock: %w", projectsFile(), err)
+	}
+	defer unlock()
+	var errs []error
+	listed := map[string]bool{}
+	complete := true
+	for _, p := range places {
+		d, err := openDriver(p.o)
+		if err != nil {
+			errs = append(errs, err)
+			complete = false
+			continue
+		}
+		runs, err := sandbox.Clean(ctx, d, sandbox.CleanOptions{Place: p.name, Force: o.Force, Run: o.Run, DryRun: o.DryRun, Out: o.Out})
+		for t := range runs {
+			listed[t] = true
+		}
+		if err != nil {
+			if runs == nil {
+				// the place could not be listed: its daemon is down, or
+				// the cli is not set up for it.
+				fmt.Fprintf(o.Out, "%s: skipped (%v)\n", p.name, err)
+				complete = false
+				continue
+			}
 			errs = append(errs, err)
 		}
 	}
-
-	ents, err := os.ReadDir(tmp)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return errors.Join(errs...)
+	if o.Run == "" {
+		// a lease file names a run a skipped place may still hold.
+		if !complete {
+			listed = nil
 		}
-		return errors.Join(append(errs, err)...)
-	}
-	for _, e := range ents {
-		p := filepath.Join(tmp, e.Name())
-		if owner, ok := strings.CutSuffix(p, ".owner"); ok {
-			// an owner file outlives its dir when the caller removed the dir.
-			if _, err := os.Stat(owner); os.IsNotExist(err) && !o.DryRun {
-				_ = os.Remove(p)
-			}
-			continue
+		if err := sandbox.CleanTemp(listed, o.OlderThan, o.DryRun, o.Out); err != nil {
+			errs = append(errs, err)
 		}
-		info, err := e.Info()
-		if err != nil || !e.IsDir() || time.Since(info.ModTime()) < o.OlderThan || sandbox.TempOwnerAlive(p) {
-			continue
-		}
-		if !o.DryRun {
-			if err := os.RemoveAll(p); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			_ = os.Remove(p + ".owner")
-		}
-		fmt.Fprintf(o.Out, "%s %s\n", act, p)
 	}
 	return errors.Join(errs...)
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // the image half of fakeDaemon: what the container driver's image methods
@@ -168,6 +169,61 @@ func (f *fakeDaemon) imageCmd(stdout, stderr io.Writer, args []string) (handled 
 		delete(f.images, id)
 	case at(0) == "build":
 		return true, f.build(stderr, args[1:])
+	case at(0) == "ps" && strings.Join(args, " ") == "ps -a -q --no-trunc --filter label=pats.run":
+		var ids []string
+		for id, c := range f.ctrs {
+			if c.labels["pats.run"] != "" {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		fmt.Fprint(stdout, strings.Join(ids, "\n"))
+	case at(0) == "container" && at(1) == "inspect" && at(2) == "--format":
+		if args[3] != `{{.Name}}|{{index .Config.Labels "pats.run"}}|{{index .Config.Labels "pats.owner"}}|{{.Created}}` {
+			f.t.Errorf("fake %s: container inspect format %q", f.driver, args[3])
+		}
+		var missing []string
+		for _, ref := range args[4:] {
+			c := f.lookup(ref)
+			if c == nil {
+				missing = append(missing, ref)
+				continue
+			}
+			name, created := c.name, c.created.Format(time.RFC3339Nano)
+			if name == "" {
+				name = c.id[:12]
+			}
+			if f.driver == "docker" {
+				name = "/" + name
+			} else {
+				created = c.created.String()
+			}
+			fmt.Fprintf(stdout, "%s|%s|%s|%s\n", name, c.labels["pats.run"], c.labels["pats.owner"], created)
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(stderr, "Error: No such object: %s\n", missing[0])
+			return true, exitStatus(1)
+		}
+	case at(0) == "network" && strings.Join(args, " ") == "network ls -q --filter label=pats.run":
+		var names []string
+		for name, n := range f.nets {
+			if n.labels["pats.run"] != "" {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		fmt.Fprint(stdout, strings.Join(names, "\n"))
+	case at(0) == "network" && at(1) == "inspect" && at(2) == "--format":
+		if args[3] != `{{.Name}}|{{index .Labels "pats.run"}}|{{index .Labels "pats.owner"}}|{{.Created}}` {
+			f.t.Errorf("fake %s: network inspect format %q", f.driver, args[3])
+		}
+		for _, name := range args[4:] {
+			n := f.nets[name]
+			if n == nil {
+				return true, dockerFail(stderr, "network %s not found", name)
+			}
+			fmt.Fprintf(stdout, "%s|%s|%s|%s\n", name, n.labels["pats.run"], n.labels["pats.owner"], n.created.String())
+		}
 	default:
 		return false, nil
 	}

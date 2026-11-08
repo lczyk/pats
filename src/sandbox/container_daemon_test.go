@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -79,29 +80,11 @@ func TestContainerSessionOnDaemon(t *testing.T) {
 	}
 }
 
-// findable says whether pats clean finds a leftover: an sbx- name and the
-// owner label.
-func (f *fakeDaemon) findable() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var lost []string
-	for _, c := range f.ctrs {
-		if !strings.HasPrefix(c.name, namePrefix) || c.labels["pats.owner"] == "" {
-			lost = append(lost, "container "+c.image+" "+c.name)
-		}
-	}
-	for name, n := range f.nets {
-		if name != "bridge" && name != "podman" && (!strings.HasPrefix(name, namePrefix) || n.labels["pats.owner"] == "") {
-			lost = append(lost, "network "+name)
-		}
-	}
-	return lost
-}
-
 // containerSweep is sweep for the container driver: one entry run per call
-// it reaches, each fault kind. nothing may be left, or, where the faulted
-// call was itself a removal, only what pats clean finds.
-func containerSweep(t *testing.T, driver string, entry func(t *testing.T, f *fakeDaemon, ctx context.Context)) {
+// it reaches, each fault kind. nothing may be left once the run's process
+// ends, or, where the faulted call was itself a removal, once a later
+// clean has run.
+func containerSweep(t *testing.T, driver string, entry func(t *testing.T, f *fakeDaemon, ctx context.Context) *process) {
 	for _, kind := range faultKinds {
 		for k := 0; ; k++ {
 			f := newFakeDaemon(t, driver)
@@ -111,12 +94,14 @@ func containerSweep(t *testing.T, driver string, entry func(t *testing.T, f *fak
 				stop = cancel
 			}
 			f.faults.arm(k, kind.after, stop)
-			entry(t, f, ctx)
+			p := entry(t, f, ctx)
 			cancel()
+			p.shutdown()
 			hit, call := f.faults.reached()
 			left := f.leftovers()
 			if len(left) > 0 && isRemoval(call) {
-				left = f.findable()
+				containerCleanLater(t, f, p)
+				left = f.leftovers()
 			}
 			if len(left) > 0 {
 				t.Errorf("%s at fault %d (%s) left:\n  %s", kind.name, k, call, strings.Join(left, "\n  "))
@@ -128,6 +113,17 @@ func containerSweep(t *testing.T, driver string, entry func(t *testing.T, f *fak
 			}
 		}
 	}
+}
+
+// containerCleanLater runs pats clean on f from another process of run's
+// user an hour on, when every run not renewing its lease is dead.
+func containerCleanLater(t *testing.T, f *fakeDaemon, run *process) {
+	f.faults.off()
+	c := newContainer(testProcess(t), runFunc(f.run), Options{Driver: f.driver})
+	c.p.home = run.home
+	c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
+	_, err := c.p.clean(context.Background(), c, CleanOptions{Place: f.driver, Out: io.Discard})
+	require.NoError(t, err)
 }
 
 // containerRun is a driver and egress mode a container sweep covers.
@@ -152,12 +148,14 @@ func TestContainerSweepStart(t *testing.T) {
 	for _, run := range containerRuns() {
 		mode, driver := run.mode, run.driver
 		t.Run(driver+"/"+mode.name, func(t *testing.T) {
-			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) {
-				sess, err := containerOn(t, f).Start(ctx, Spec{Workdir: workdir(t), Egress: mode.egress})
+			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) *process {
+				c := containerOn(t, f)
+				sess, err := c.Start(ctx, Spec{Workdir: workdir(t), Egress: mode.egress})
 				f.faults.off()
 				if err == nil {
 					sess.Close()
 				}
+				return c.p
 			})
 		})
 	}
@@ -168,15 +166,52 @@ func TestContainerSweepClose(t *testing.T) {
 	for _, run := range containerRuns() {
 		mode, driver := run.mode, run.driver
 		t.Run(driver+"/"+mode.name, func(t *testing.T) {
-			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) {
+			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) *process {
 				plan := f.faults.plan
 				f.faults.off()
-				sess, err := containerOn(t, f).Start(context.Background(), Spec{Workdir: workdir(t), Egress: mode.egress})
+				c := containerOn(t, f)
+				sess, err := c.Start(context.Background(), Spec{Workdir: workdir(t), Egress: mode.egress})
 				require.NoError(t, err)
 				f.faults.arm(plan.at, plan.after, plan.cancel)
 				sess.Close()
 				f.faults.off()
+				return c.p
 			})
 		})
+	}
+}
+
+// every call of a clean of a dead run's leftovers: whatever a failed call
+// left, the next clean takes.
+func TestContainerSweepClean(t *testing.T) {
+	for _, driver := range []string{"docker", "podman"} {
+		t.Run(driver, func(t *testing.T) {
+			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) *process {
+				plan := f.faults.plan
+				f.faults.off()
+				dead := containerOn(t, f)
+				_, err := dead.Start(context.Background(), Spec{Workdir: workdir(t), Egress: containerModes[len(containerModes)-1].egress})
+				require.NoError(t, err)
+				crashLease(dead.p)
+				c := newContainer(testProcess(t), runFunc(f.run), Options{Driver: driver})
+				c.p.home = dead.p.home
+				c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
+				f.faults.arm(plan.at, plan.after, plan.cancel)
+				_, _ = c.p.clean(ctx, c, CleanOptions{Place: driver, Out: io.Discard})
+				f.faults.off()
+				containerCleanLater(t, f, dead.p)
+				return dead.p
+			})
+		})
+	}
+}
+
+// crashLease ends p's lease renewal as a crash does: the file stays, and
+// goes stale.
+func crashLease(p *process) {
+	if p.lease.stop != nil {
+		close(p.lease.stop)
+		<-p.lease.done
+		p.lease.stop = nil
 	}
 }

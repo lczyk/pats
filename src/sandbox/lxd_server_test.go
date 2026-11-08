@@ -226,7 +226,7 @@ func TestLXDCleanOnServer(t *testing.T) {
 	f.mu.Lock()
 	f.acls[live.marker()].config["user.pats.lease"] = fmt.Sprint(later.now.Unix())
 	f.mu.Unlock()
-	require.NoError(t, cleaner.clean(context.Background(), false, false, io.Discard))
+	require.NoError(t, cleanOn(context.Background(), cleaner))
 	assert.Equal(t, strings.Join(f.leftovers(dead.p.token), "\n"), "")
 	assert.That(t, f.has("instance", ls.(*lxdSession).name), "a live run's instance was removed")
 	require.NoError(t, ls.Close())
@@ -274,7 +274,7 @@ func cleanLater(t *testing.T, f *fakeServer) {
 	f.faults.off()
 	c := lxdOn(t, f, Options{Remote: "srv"})
 	c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
-	require.NoError(t, c.clean(context.Background(), false, false, io.Discard))
+	require.NoError(t, cleanOn(context.Background(), c))
 }
 
 // every call of Start, under every egress mode, failed or cancelled: what
@@ -408,7 +408,7 @@ func TestLXDSweepClean(t *testing.T) {
 		c := lxdOn(t, f, Options{Remote: "srv"})
 		c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
 		f.faults.arm(plan.at, plan.after, plan.cancel)
-		_ = c.clean(ctx, false, false, io.Discard)
+		_ = cleanOn(ctx, c)
 		f.faults.off()
 		cleanLater(t, f)
 		return dead.p
@@ -447,7 +447,7 @@ func TestLXDLease(t *testing.T) {
 		mc := newManualClock(start)
 		l := lxdOn(t, f, Options{})
 		l.p.clock = mc
-		l.p.t.leaseEvery, l.p.t.leaseStale = 2*time.Minute, 10*time.Minute
+		l.p.t.leaseEvery, l.p.t.leaseWake, l.p.t.leaseStale = 2*time.Minute, 30*time.Second, 10*time.Minute
 		_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir()})
 		require.NoError(t, err)
 		return f, l, mc
@@ -479,7 +479,7 @@ func TestLXDLease(t *testing.T) {
 		c := lxdOn(t, f, Options{Remote: "srv"})
 		c.p.clock = fixedClock{now: at}
 		c.p.t.leaseStale = 10 * time.Minute
-		require.NoError(t, c.clean(context.Background(), false, false, io.Discard))
+		require.NoError(t, cleanOn(context.Background(), c))
 	}
 	alive := func(f *fakeServer, l *lxd) bool { return len(f.leftovers(l.p.token)) > 0 }
 
@@ -623,4 +623,10 @@ func TestImageKeyVersionAndKey(t *testing.T) {
 	x, _ := imageKey("fp", lxdImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"a"}}, false)
 	y, _ := imageKey("fp", lxdImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"b"}}, false)
 	assert.Equal(t, x, y)
+}
+
+// cleanOn runs a clean of l's server by l's process.
+func cleanOn(ctx context.Context, l *lxd) error {
+	_, err := l.p.clean(ctx, l, CleanOptions{Place: "lxd", Out: io.Discard})
+	return err
 }

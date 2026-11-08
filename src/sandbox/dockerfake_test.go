@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeDaemon answers the docker (or podman) cli the way the daemon does, for
@@ -58,7 +59,8 @@ type fakeCtr struct {
 	binds           []fakeBind
 	files           map[string][]byte // outside the binds
 	dirs            map[string]bool
-	rm              bool          // --rm: gone once it stops
+	rm              bool // --rm: gone once it stops
+	created         time.Time
 	gone            chan struct{} // closed when it is removed
 }
 
@@ -71,6 +73,7 @@ type fakeDNet struct {
 	subnet   netip.Prefix
 	internal bool
 	labels   map[string]string
+	created  time.Time
 }
 
 func newFakeDaemon(t *testing.T, driver string) *fakeDaemon {
@@ -240,6 +243,10 @@ func (f *fakeDaemon) runCtr(ctx context.Context, stdout, stderr io.Writer, args 
 		}
 		return ""
 	}
+	// every container pats makes is a run's, or clean never finds it.
+	if !hasLabel(flags["--label"], "pats.run=") || !hasLabel(flags["--label"], "pats.owner=") {
+		f.t.Errorf("fake %s: a container without the run labels: run %s", f.driver, strings.Join(args, " "))
+	}
 	f.mu.Lock()
 	net := last("--network")
 	if net != "" && net != "none" && f.nets[net] == nil {
@@ -257,7 +264,7 @@ func (f *fakeDaemon) runCtr(ctx context.Context, stdout, stderr io.Writer, args 
 		return dockerFail(stderr, "Conflict. The container name %q is already in use", "/"+name)
 	}
 	f.seq++
-	c := &fakeCtr{id: fmt.Sprintf("%064x", f.seq), name: last("--name"), image: image, labels: map[string]string{},
+	c := &fakeCtr{id: fmt.Sprintf("%064x", f.seq), name: last("--name"), image: image, labels: map[string]string{}, created: time.Now(),
 		nets: map[string]netip.Addr{}, env: map[string]string{}, files: map[string][]byte{}, dirs: map[string]bool{"/": true},
 		rm: bools["--rm"], gone: make(chan struct{})}
 	for _, l := range flags["--label"] {
@@ -369,7 +376,7 @@ func (f *fakeDaemon) netCreate(stderr io.Writer, args []string) error {
 			return dockerFail(stderr, "Pool overlaps with other one on this address space")
 		}
 	}
-	n := &fakeDNet{subnet: subnet, internal: bools["--internal"], labels: map[string]string{}}
+	n := &fakeDNet{subnet: subnet, internal: bools["--internal"], labels: map[string]string{}, created: time.Now()}
 	for _, l := range flags["--label"] {
 		k, v, _ := strings.Cut(l, "=")
 		n.labels[k] = v
@@ -626,4 +633,13 @@ func (f *fakeDaemon) leftovers() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func hasLabel(labels []string, prefix string) bool {
+	for _, l := range labels {
+		if strings.HasPrefix(l, prefix) && len(l) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // the lxd driver drives a (usually remote) lxd server through the lxc cli and
@@ -105,6 +106,7 @@ type lxdServer struct {
 	pool   string
 	stop   chan struct{} // ends the marker's lease renewal
 	done   chan struct{} // closed once the renewal has ended
+	leased time.Time     // the lease the marker was made with
 	l      *lxd
 }
 
@@ -123,10 +125,11 @@ func (l *lxd) prepareServer(ctx context.Context) error {
 	}
 	x.mu.Unlock()
 	srv.once.Do(func() {
+		srv.leased = l.p.clock.Now()
 		srv.remote, srv.pool, srv.err = l.setupServer(ctx)
 		if srv.err == nil {
 			srv.stop, srv.done = make(chan struct{}), make(chan struct{})
-			go srv.renew()
+			go srv.renew(l.p.clock.NewTicker(l.p.t.leaseWake), srv.leased)
 		}
 	})
 	l.o.Remote, l.pool = srv.remote, srv.pool
@@ -184,19 +187,25 @@ func (l *lxd) setupServer(ctx context.Context) (remote, pool string, err error) 
 	return remote, pool, nil
 }
 
-// renew keeps the marker's lease fresh while the process lives, and makes
+// renew keeps the marker's lease fresh while the process lives (it wakes
+// every leaseWake and renews once leaseEvery has passed), and makes
 // the marker again when it is gone: a setup of the same server under
 // another remote name that failed removed it, or an admin did.
-func (srv *lxdServer) renew() {
+func (srv *lxdServer) renew(t ticker, last time.Time) {
 	defer close(srv.done)
 	p := srv.l.p
-	t := p.clock.NewTicker(p.t.leaseEvery)
 	defer t.Stop()
 	for {
 		select {
 		case <-srv.stop:
 			return
 		case <-t.C():
+			// on the wall clock, so a machine waking from sleep renews
+			// within a wake.
+			if p.clock.Now().Round(0).Sub(last.Round(0)) < p.t.leaseEvery {
+				continue
+			}
+			last = p.clock.Now()
 			// bounded: shutdown waits for a renewal in flight.
 			ctx, cancel := context.WithTimeout(context.Background(), p.t.cliCleanup)
 			lease := "user.pats.lease=" + strconv.FormatInt(p.clock.Now().Unix(), 10)
@@ -211,6 +220,7 @@ func (srv *lxdServer) renew() {
 }
 
 func (p *process) shutdown() {
+	defer p.endLease()
 	x := &p.lxd
 	x.mu.Lock()
 	defer x.mu.Unlock()

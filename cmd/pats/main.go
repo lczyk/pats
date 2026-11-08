@@ -19,6 +19,7 @@ import (
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/eval"
 	"github.com/lczyk/pats/internal/version"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // Options is the global command structure parsed by go-flags. Config is
@@ -33,19 +34,20 @@ type Options struct {
 	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
 	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
 	Egress EgressCommand `command:"egress" description:"the egress proxy: check a policy, read an audit, serve it"`
-	Clean  CleanCommand  `command:"clean" description:"remove what crashed runs left behind: sidecars, networks, temp dirs"`
+	Clean  CleanCommand  `command:"clean" description:"remove what dead runs left behind: containers, instances, networks, temp dirs"`
 }
 
 // CleanCommand sweeps leftovers of crashed runs.
 type CleanCommand struct {
 	DryRun    bool          `long:"dry-run" short:"n" description:"print what would go, remove nothing"`
 	OlderThan time.Duration `long:"older-than" default:"24h" description:"keep temp dirs younger than this (a live run may own them)"`
-	Force     bool          `long:"force" description:"also remove containers and networks another user or host made, and lxd runs whose lease is live"`
+	Force     bool          `long:"force" description:"also remove runs this clean cannot judge (another user's or machine's on a shared daemon), and lxd's shared uplink; never a run whose lease is fresh"`
+	Run       string        `long:"run" description:"remove this one run (its token), whatever its lease"`
 	LXDRemote []string      `long:"lxd-remote" description:"lxd remote to sweep (repeatable); default: the lxc cli's default remote, when lxc is installed"`
 }
 
 func (c *CleanCommand) Execute(args []string) error {
-	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, Force: c.Force, LXDRemotes: c.LXDRemote, Out: os.Stdout})
+	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, Force: c.Force, Run: c.Run, LXDRemotes: c.LXDRemote, Out: os.Stdout})
 }
 
 // InitCommand makes and pins the sandboxes' images.
@@ -234,7 +236,11 @@ func main() {
 	parser.Name = "pats"
 	parser.Usage = "[OPTIONS] COMMAND"
 
-	if _, err := parser.Parse(); err != nil {
+	_, err := parser.Parse()
+	// every command's leases end with it: a temp dir or a container's lease
+	// file, an lxd run's marker. run and init end theirs themselves.
+	sandbox.Shutdown()
+	if err != nil {
 		var flagsErr *flags.Error
 		if errors.As(err, &flagsErr) && flagsErr.Type == flags.ErrHelp {
 			help := flagsErr.Message

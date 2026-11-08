@@ -357,8 +357,10 @@ func TestLXDStartProxy(t *testing.T) {
 
 // clean groups by run token: a run whose marker's lease is stale goes,
 // instances before bridges before acls before the marker; a run with a fresh
-// lease stays unless forced; a run with no marker goes once all of it is old;
-// cached images stay always.
+// lease stays, forced or not, unless named; a run with no marker goes once all
+// of it is old; cached images stay always, and so does an image a run built
+// whose alias a forced init re-pointed away (a pin may name it); one under a
+// run's private alias alone goes once unused for 30 days.
 func TestLXDClean(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	old, fresh := now.Add(-time.Hour).Unix(), now.Add(-time.Minute).Unix()
@@ -381,6 +383,7 @@ func TestLXDClean(t *testing.T) {
 		"/1.0/networks": []map[string]any{
 			{"name": "patsbrdead", "config": cfg("dead", old)},
 			{"name": "lxdbr0", "config": map[string]string{}},
+			{"name": "patsup", "config": map[string]string{}},
 		},
 		"/1.0/network-acls": []map[string]any{
 			{"name": "patsbrdead", "config": cfg("dead", old)},
@@ -390,6 +393,9 @@ func TestLXDClean(t *testing.T) {
 		"/1.0/images": []map[string]any{
 			{"fingerprint": "aaaaaaaaaaaaaaaa", "properties": cfg("dead", old), "aliases": []map[string]string{{"name": "pats-img-k"}}},
 			{"fingerprint": "bbbbbbbbbbbbbbbb", "properties": cfg("dead", old), "aliases": []map[string]string{{"name": "pats-img-k-dead"}}},
+			{"fingerprint": "cccccccccccccccc", "properties": cfg("dead", old), "aliases": []map[string]string{}},
+			{"fingerprint": "dddddddddddddddd", "properties": cfg("dead", old), "aliases": []map[string]string{{"name": "pats-img-d-dead"}},
+				"uploaded_at": now.Add(-24 * time.Hour), "last_used_at": "0001-01-01T00:00:00Z"},
 		},
 	}
 	var calls []string
@@ -411,13 +417,15 @@ func TestLXDClean(t *testing.T) {
 		return nil
 	})
 	var out bytes.Buffer
-	require.NoError(t, l.clean(context.Background(), false, false, &out))
+	_, err := l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Out: &out})
+	require.NoError(t, err)
 	log := strings.Join(calls, "\n")
 	for _, want := range []string{"delete srv:pats-dead", "network delete srv:patsbrdead", "network acl delete srv:patsbrdead",
 		"image delete srv:bbbbbbbbbbbbbbbb", "network acl delete srv:pats-run-dead", "delete srv:pats-orphan"} {
 		assert.ContainsString(t, log, want)
 	}
-	for _, keep := range []string{"srv:pats-live", "srv:pats-young", "srv:user-thing", "srv:lxdbr0", "aaaaaaaaaaaaaaaa"} {
+	for _, keep := range []string{"srv:pats-live", "srv:pats-young", "srv:user-thing", "srv:lxdbr0", "srv:patsup", "srv:aaaaaaaaaaaaaaaa",
+		"srv:cccccccccccccccc", "srv:dddddddddddddddd"} {
 		assert.Equal(t, strings.Contains(log, "delete "+keep), false, "%s removed", keep)
 	}
 	assert.That(t, strings.Index(log, "delete srv:pats-dead") < strings.Index(log, "network delete srv:patsbrdead"), "bridge before its instance")
@@ -425,8 +433,19 @@ func TestLXDClean(t *testing.T) {
 	assert.ContainsString(t, out.String(), "left 2 live run(s)")
 
 	calls = nil
-	require.NoError(t, l.clean(context.Background(), true, false, &out))
-	assert.ContainsString(t, strings.Join(calls, "\n"), "delete srv:pats-live")
+	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Force: true, Out: &out})
+	require.NoError(t, err)
+	log = strings.Join(calls, "\n")
+	assert.Equal(t, strings.Contains(log, "delete srv:pats-live"), false, "force took a live run")
+	up := strings.Index(log, "network delete srv:patsup")
+	require.That(t, up >= 0, "force left the shared uplink:\n%s", log)
+	assert.That(t, up > strings.LastIndex(log, "delete srv:pats-"), "the uplink went before an instance on it")
+	calls = nil
+	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Run: "live", Out: &out})
+	require.NoError(t, err)
+	log = strings.Join(calls, "\n")
+	assert.ContainsString(t, log, "delete srv:pats-live")
+	assert.Equal(t, strings.Contains(log, "delete srv:pats-young"), false, "--run took another run")
 }
 
 // a build on a miss: progress per step, a low pool warned about, and a

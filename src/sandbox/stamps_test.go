@@ -94,7 +94,8 @@ func TestContainerStampsFailures(t *testing.T) {
 			}
 			return nil
 		})
-		s, err := containerStamps(context.Background(), r, "img", time.Second)
+		c := newContainer(testProcess(t), r, Options{Driver: "docker"})
+		s, err := c.stamps(context.Background(), "img", time.Second)
 		return calls, s, err
 	}
 	t.Run("no shell", func(t *testing.T) {

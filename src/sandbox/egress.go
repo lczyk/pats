@@ -26,12 +26,12 @@ import (
 // crashed run is easy to spot and sweep up.
 const namePrefix = "sbx-"
 
-// OwnerLabel is the label pats puts on every container and network it makes:
-// the host and uid that made it, so `pats clean` only judges its own. another
-// user's workdir owner files live in their cache, or on another machine.
-func OwnerLabel() string { return defaultProcess.ownerLabel() }
-
-func (p *process) ownerLabel() string { return "pats.owner=" + p.owner() }
+// runLabels are the labels pats puts on every container and network it
+// makes: the run's token and owner (host, uid and client id), which `pats
+// clean` finds a run's leftovers and judges them by. labels never change.
+func (p *process) runLabels() []string {
+	return []string{"--label", "pats.run=" + p.token, "--label", "pats.owner=" + p.owner()}
+}
 
 // hostOwner is the host, uid and client id that made a resource.
 func hostOwner() string {
@@ -341,7 +341,8 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	}
 
 	m, err = prepare(spec.Egress, func() ([]byte, error) {
-		return c.dockerOut(ctx, "run", "--rm", "--entrypoint", "cat", c.image, caBundlePath)
+		args := append(append([]string{"run", "--rm"}, c.p.runLabels()...), "--entrypoint", "cat", c.image, caBundlePath)
+		return c.dockerOut(ctx, args...)
 	})
 	if err != nil {
 		teardown()
@@ -351,14 +352,15 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// the proxy sits at a fixed address on the internal net (the gateway takes
 	// the first), so the agent needs no resolver to find it.
 	proxyIP := subnet.Addr().Next().Next()
-	runArgs := []string{"run", "-d", "--rm", "--name", proxyName, "--network", net, "--ip", proxyIP.String(),
-		"--label", c.p.ownerLabel(),
+	runArgs := []string{"run", "-d", "--rm", "--name", proxyName, "--network", net, "--ip", proxyIP.String()}
+	runArgs = append(runArgs, c.p.runLabels()...)
+	runArgs = append(runArgs,
 		// the sidecar also sits on the default network, where a container
 		// could hand-craft frames at it to be routed out: it forwards nothing
 		// and needs no capability to listen on an unprivileged port.
 		"--sysctl", "net.ipv4.ip_forward=0", "--sysctl", "net.ipv6.conf.all.forwarding=0",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-	}
+	)
 	// the proxy sidecar is rootless and reads its config from env; the trust
 	// bundle is the one thing too big for env, so it is mounted read-only.
 	if m.caCert != "" {
@@ -431,7 +433,7 @@ func (c *container) createNetwork(ctx context.Context, name string, pool netip.P
 	var last string
 	for range subnetTries {
 		subnet := c.p.nextSubnet(pool)
-		args := []string{"network", "create", "--internal", "--label", c.p.ownerLabel()}
+		args := append([]string{"network", "create", "--internal"}, c.p.runLabels()...)
 		args = append(args, engines[c.driver].internalNet...)
 		args = append(args, "--subnet", subnet.String())
 		out, err := c.docker(ctx, append(args, name)...)
@@ -521,7 +523,8 @@ func (c *container) proxyReachable(ctx context.Context, net, addr string) error 
 
 // probeArgs runs p in a throwaway container of the sandbox image on net.
 func (c *container) probeArgs(net string, p probe, args ...string) []string {
-	run := append([]string{"run", "--rm", "--network", net}, engines[c.driver].agentNet...)
+	run := append(append([]string{"run", "--rm"}, c.p.runLabels()...), "--network", net)
+	run = append(run, engines[c.driver].agentNet...)
 	argv := p.argv(args...)
 	return append(append(run, "--entrypoint", argv[0], c.image), argv[1:]...)
 }

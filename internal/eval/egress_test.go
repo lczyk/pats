@@ -3,6 +3,7 @@ package eval
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,7 +172,8 @@ func TestSuggestEgress(t *testing.T) {
 	assert.Error(t, SuggestEgress(empty, "", &out), "no egress.log")
 }
 
-// leftovers go: temp dirs past the age cutoff, and nothing younger.
+// leftovers go: a dead run's temp dirs past the age cutoff, and nothing
+// younger.
 func TestCleanTempDirs(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
@@ -190,10 +192,14 @@ func TestCleanTempDirs(t *testing.T) {
 	_, err = os.Stat(old)
 	require.NoError(t, err)
 
-	// an old dir whose maker still runs is kept: a run with no timeout can
-	// own its dirs for days.
-	live, err := sandbox.MkTemp("pats-work-live-")
-	require.NoError(t, err)
+	// an old dir whose run is alive is kept: a run with no timeout can own
+	// its dirs for days. the run's lease is fresh.
+	live := filepath.Join(root, "pats-work-live")
+	require.NoError(t, os.MkdirAll(live, 0o700))
+	require.NoError(t, os.WriteFile(live+".owner", []byte("0123456789ab"), 0o600))
+	lease := filepath.Join(filepath.Dir(root), "run-0123456789ab.lease")
+	host, _ := os.Hostname()
+	require.NoError(t, os.WriteFile(lease, fmt.Appendf(nil, "%s %d\n", host, os.Getpid()), 0o644))
 	require.NoError(t, os.Chtimes(live, past, past))
 
 	out.Reset()
@@ -205,69 +211,11 @@ func TestCleanTempDirs(t *testing.T) {
 	_, err = os.Stat(live)
 	require.NoError(t, err)
 
-	// once its maker is gone, the same dir goes, owner file and all.
-	require.NoError(t, os.WriteFile(live+".owner", []byte("999999999"), 0o600))
+	// once its run is dead, the same dir goes, owner file and all.
+	require.NoError(t, os.Chtimes(lease, past, past))
 	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{}, OlderThan: 24 * time.Hour, Out: &out}))
 	_, err = os.Stat(live)
 	assert.Error(t, err, assert.AnyError)
 	_, err = os.Stat(live + ".owner")
 	assert.Error(t, err, assert.AnyError)
-}
-
-// an agent, sidecar and network belong to a live pair only while the pats
-// process that made the pair's workdir runs; a crashed run's go in the same
-// pass, the agent before the network it holds. what another owner made is
-// left unless forced: its workdir is not ours to look at.
-func TestCleanContainersByOwner(t *testing.T) {
-	cache := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cache)
-	t.Setenv("HOME", cache)
-	live, err := sandbox.MkTemp("pats-work-")
-	require.NoError(t, err)
-	dead, err := sandbox.MkTemp("pats-work-")
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(dead+".owner", []byte("999999999"), 0o600))
-
-	// a fake driver lists, per prefix, our live and dead pair's names, plus a
-	// foreign one when not filtered by owner label; it logs every call.
-	bin := t.TempDir()
-	calls := filepath.Join(bin, "calls")
-	script := `#!/bin/sh
-echo "$@" >> ` + calls + `
-case "$1 $2" in
-  "ps -a"|"network ls")
-    p=${4#name=^}
-    printf '%s%s\n%s%s\n' $p ` + filepath.Base(live) + ` $p ` + filepath.Base(dead) + `
-    case "$*" in *label=pats.owner=*) ;; *) printf '%sforeign\n' $p ;; esac ;;
-esac
-`
-	drv := filepath.Join(bin, "fakedriver")
-	require.NoError(t, os.WriteFile(drv, []byte(script), 0o755))
-
-	var out bytes.Buffer
-	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{drv}, OlderThan: 24 * time.Hour, Out: &out}))
-	b, err := os.ReadFile(calls)
-	require.NoError(t, err)
-	log := string(b)
-	assert.ContainsString(t, log, "label="+sandbox.OwnerLabel())
-	assert.ContainsString(t, log, "rm -f sbx-proxy-"+filepath.Base(dead))
-	assert.ContainsString(t, log, "network rm sbx-egr-"+filepath.Base(dead))
-	agentRm := strings.Index(log, "rm -f sbx-agent-"+filepath.Base(dead))
-	require.That(t, agentRm >= 0, "dead agent not removed:\n%s", log)
-	assert.That(t, agentRm < strings.Index(log, "network rm sbx-egr-"+filepath.Base(dead)))
-	for _, n := range []string{"sbx-agent-", "sbx-proxy-", "sbx-egr-"} {
-		assert.Equal(t, strings.Contains(log, " "+n+filepath.Base(live)+"\n"), false, "live %s removed", n)
-		assert.Equal(t, strings.Contains(log, n+"foreign"), false, "foreign %s removed unforced", n)
-	}
-	assert.ContainsString(t, out.String(), "left 3 not made by")
-
-	require.NoError(t, os.Remove(calls))
-	out.Reset()
-	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{drv}, OlderThan: 24 * time.Hour, Force: true, Out: &out}))
-	b, err = os.ReadFile(calls)
-	require.NoError(t, err)
-	log = string(b)
-	assert.ContainsString(t, log, "rm -f sbx-proxy-foreign")
-	assert.ContainsString(t, log, "network rm sbx-egr-foreign")
-	assert.Equal(t, strings.Contains(log, " sbx-proxy-"+filepath.Base(live)+"\n"), false, "forced clean removed a live pair")
 }

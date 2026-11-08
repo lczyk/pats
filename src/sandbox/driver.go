@@ -44,6 +44,11 @@ type Driver interface {
 
 	// Sandbox makes sandboxes of one image here.
 	Sandbox(o SandboxOptions) (Sandbox, error)
+
+	// Runs is what the place holds of each run, unjudged (see Clean).
+	Runs(ctx context.Context) ([]RunRecord, error)
+	// Remove removes one thing a run left; one already gone is no error.
+	Remove(ctx context.Context, r Resource) error
 }
 
 // ImageUsage is what lxd's server records of an image's use; a container

@@ -36,6 +36,9 @@ type process struct {
 	clock clock
 	t     timings
 	reg   registry
+	// home is the per-user dir the temp root and the lease files live in.
+	home  func() (string, error)
+	lease hostLease
 
 	slot atomic.Uint32 // the next egress subnet
 
@@ -56,7 +59,8 @@ type lxdProcess struct {
 // go by the clock; the bounds put on a context (instanceGone, cliCleanup,
 // proxyFetch) are wall time, since a context deadline is.
 type timings struct {
-	leaseEvery    time.Duration // how often a live run renews its marker's lease
+	leaseEvery    time.Duration // how often a live run renews its lease
+	leaseWake     time.Duration // how often the renewal looks at the clock
 	leaseStale    time.Duration // how old a lease is before clean takes the run as gone
 	instanceGone  time.Duration // how long a delete waits out a server operation on the instance
 	deleteRetry   time.Duration
@@ -72,6 +76,7 @@ type timings struct {
 
 var defaultTimings = timings{
 	leaseEvery:    2 * time.Minute,
+	leaseWake:     30 * time.Second,
 	leaseStale:    10 * time.Minute,
 	instanceGone:  5 * time.Minute,
 	deleteRetry:   2 * time.Second,
@@ -88,7 +93,7 @@ var defaultTimings = timings{
 func newProcess(c clock, t timings) *process {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
-	return &process{token: hex.EncodeToString(b), owner: sync.OnceValue(hostOwner), clock: c, t: t, reg: defaultRegistry,
+	return &process{token: hex.EncodeToString(b), owner: sync.OnceValue(hostOwner), clock: c, t: t, reg: defaultRegistry, home: cacheDir,
 		lxd: lxdProcess{servers: map[string]*lxdServer{}, proxyImages: map[string]string{}}}
 }
 

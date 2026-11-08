@@ -193,7 +193,7 @@ func (c *container) ProxyImage(ctx context.Context, ref string, force bool, log 
 }
 
 func (c *container) Stamps(ctx context.Context, id string) (map[string]string, error) {
-	return containerStamps(ctx, c.r, id, stampTimeout)
+	return c.stamps(ctx, id, stampTimeout)
 }
 
 func (c *container) RemoveImage(ctx context.Context, id string) error {

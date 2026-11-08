@@ -86,11 +86,13 @@ func (r *procRunner) Start(stdin io.Reader, stdout, stderr io.Writer, args ...st
 // down when the test ends.
 func testProcess(t *testing.T) *process {
 	p := newProcess(wallClock{}, timings{
-		leaseEvery: time.Hour, leaseStale: 10 * time.Minute, instanceGone: 5 * time.Second,
+		leaseEvery: time.Hour, leaseWake: time.Hour, leaseStale: 10 * time.Minute, instanceGone: 5 * time.Second,
 		deleteRetry: time.Millisecond, ready: 5 * time.Second, readyPoll: time.Millisecond,
 		onlineRetry: time.Millisecond, proxyReady: 5 * time.Second, execGrace: 100 * time.Millisecond,
 		followerGrace: 100 * time.Millisecond, cliCleanup: 5 * time.Second, proxyFetch: 5 * time.Second,
 	})
+	home := t.TempDir()
+	p.home = func() (string, error) { return home, nil }
 	t.Cleanup(p.shutdown)
 	return p
 }

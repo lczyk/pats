@@ -230,6 +230,10 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: resolve workdir: %w", ErrLaunch, err)
 	}
+	// the lease before anything of the run exists, so clean judges it alive.
+	if err := c.p.holdLease(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
 	// egress policy: none -> no network; proxy -> sidecar on an internal net.
 	netArgs, teardown, err := c.setupEgress(ctx, spec)
 	if err != nil {
@@ -248,9 +252,9 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 		"-w", WorkMount,
 		"-v", abs + ":" + WorkMount,
 	}
-	// the owner label goes on every agent, named or not: it is what says the
-	// container is pats's.
-	args = append(args, "--label", c.p.ownerLabel())
+	// the run's labels go on every agent, named or not: they are what says
+	// the container is pats's, and whose.
+	args = append(args, c.p.runLabels()...)
 	if name := agentName(abs); name != "" {
 		args = append(args, "--name", name)
 	}

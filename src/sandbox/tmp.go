@@ -4,8 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 )
 
@@ -19,14 +17,23 @@ import (
 // fix then is to unset it. a fully remote daemon (no shared fs at all) can't be
 // helped by any host path; that's out of scope.
 //
-// the dir gets a sibling <dir>.owner holding this process's pid, so `pats
-// clean` can tell a live run's dir from a crashed one's. it is a sibling, not
-// a file inside, because the dir is often bind-mounted as the agent's workdir.
+// the dir gets a sibling <dir>.owner holding this process's run token, so
+// `pats clean` can tell a live run's dir from a crashed one's by the run's
+// lease. it is a sibling, not a file inside, because the dir is often
+// bind-mounted as the agent's workdir.
 func MkTemp(prefix string) (string, error) {
-	base, err := TempRoot()
+	return defaultProcess.mkTemp(prefix)
+}
+
+func (p *process) mkTemp(prefix string) (string, error) {
+	if err := p.holdLease(); err != nil {
+		return "", err
+	}
+	home, err := p.home()
 	if err != nil {
 		return "", err
 	}
+	base := filepath.Join(home, "tmp")
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}
@@ -34,7 +41,7 @@ func MkTemp(prefix string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(dir+ownerSuffix, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+	if err := os.WriteFile(dir+ownerSuffix, []byte(p.token), 0o600); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
@@ -48,23 +55,8 @@ func RemoveTemp(dir string) error {
 	return err
 }
 
-// ownerSuffix names the pid file beside each MkTemp dir.
+// ownerSuffix names the owner file beside each MkTemp dir.
 const ownerSuffix = ".owner"
-
-// TempOwnerAlive reports whether the process that made a MkTemp dir is still
-// running. a dir with no readable owner file (made before owners existed, or
-// whose owner file is gone) reports false.
-func TempOwnerAlive(dir string) bool {
-	b, err := os.ReadFile(dir + ownerSuffix)
-	if err != nil {
-		return false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return false
-	}
-	return processAlive(pid)
-}
 
 // processAlive asks the kernel whether pid exists: signal 0 delivers nothing
 // but still checks. EPERM means it exists under another user.
