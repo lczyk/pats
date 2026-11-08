@@ -60,14 +60,15 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	var done []pinned
 	var failed []string
 	for _, sb := range sbs {
-		lg.info("sandbox %q: making its images (%s)", sb.ID, sb.Driver)
+		lg.info("sandbox %q: %s", sb.ID, initWhat(sb, opts.ConfigDir))
 		target, e, err := initSandbox(ctx, sb, ro, opts)
 		if err != nil {
-			lg.error("sandbox %q: %v", sb.ID, err)
 			failed = append(failed, sb.ID)
 			if ctx.Err() != nil {
+				lg.error("sandbox %q: interrupted", sb.ID)
 				break
 			}
+			lg.error("sandbox %q: %v", sb.ID, err)
 			continue
 		}
 		lg.info("sandbox %q: pinned %s under %s", sb.ID, short(e.Image.ID), target)
@@ -165,6 +166,21 @@ func initSandboxes(cfg *config.Config, opts InitOptions) ([]config.Sandbox, erro
 	return out, nil
 }
 
+// initWhat says what init is about to do for sb, and where a build logs.
+func initWhat(sb config.Sandbox, configDir string) string {
+	build := provisions(sb) || sb.Build != ""
+	if sb.Driver == "lxd" {
+		build = sb.Image == ""
+		if !build && !strings.Contains(sb.Image, ":") {
+			return "pinning its image"
+		}
+	}
+	if !build {
+		return "pulling images"
+	}
+	return "building images (log: " + relToCwd(initLogPath(configDir, sb.ID)) + ")"
+}
+
 // initSandbox makes one sandbox's images and returns its pin.
 func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions) (string, *pinEntry, error) {
 	h, err := hostFor(sb)
@@ -239,9 +255,10 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 			lg.warn("sandbox %q: its base %s moved while init built on it; its upstream is not tracked until the next pats init", sb.ID, ref)
 		}
 	}()
+	progress := func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
 	switch {
 	case provisions(sb):
-		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force}
+		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force, Progress: progress}
 		if sb.Provision != "" {
 			material, argv, err := stageMaterial(ro.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 			if err != nil {
@@ -260,7 +277,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if err != nil {
 			return err
 		}
-		img, _, _, err := h.Build(ctx, sandbox.BuildSpec{Dir: ctxDir, Dockerfile: dockerfile, SandboxImage: base, Force: opts.Force}, logF)
+		img, _, _, err := h.Build(ctx, sandbox.BuildSpec{Dir: ctxDir, Dockerfile: dockerfile, SandboxImage: base, Force: opts.Force, Progress: progress}, logF)
 		if err != nil {
 			return fail(err)
 		}

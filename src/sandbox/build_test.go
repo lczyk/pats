@@ -267,12 +267,14 @@ func TestBaseImageIDs(t *testing.T) {
 		}
 		return nil
 	})
-	ids, err := baseImageIDs(context.Background(), drv, []string{"present:1"})
+	ids, err := baseImageIDs(context.Background(), drv, []string{"present:1"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ids, "present:1=sha256:old\n")
-	ids, err = baseImageIDs(context.Background(), drv, []string{"absent:1"})
+	var said []string
+	ids, err = baseImageIDs(context.Background(), drv, []string{"absent:1"}, func(m string) { said = append(said, m) })
 	require.NoError(t, err)
 	assert.Equal(t, ids, "absent:1=sha256:new\n")
+	assert.Equal(t, strings.Join(said, "|"), "pulling absent:1")
 	assert.NotEqual(t, rehash("h", "a=1\n"), rehash("h", "a=2\n"))
 	assert.Equal(t, rehash("h", ""), "h")
 }

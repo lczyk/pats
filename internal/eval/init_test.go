@@ -13,6 +13,7 @@ import (
 	"github.com/lczyk/assert/require"
 
 	"github.com/lczyk/pats/images"
+	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -254,4 +255,26 @@ func TestComponentStamps(t *testing.T) {
 	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})
 	require.NoError(t, err)
 	assert.ContainsString(t, out.String(), `sandbox "own": its harnesses differ from what this pats pins: claude 0.0.1, pinned `+pins["claude"])
+}
+
+// init's opening line for a sandbox says whether it builds (and where that
+// logs) or only pulls.
+func TestInitWhat(t *testing.T) {
+	dir := "/nonexistent/proj"
+	log := relToCwd(filepath.Join(dir, ".pats", "init", "s.log"))
+	cases := []struct {
+		sb   config.Sandbox
+		want string
+	}{
+		{config.Sandbox{ID: "s", Driver: "docker"}, "pulling images"},
+		{config.Sandbox{ID: "s", Driver: "docker", Image: "my/image:1"}, "pulling images"},
+		{config.Sandbox{ID: "s", Driver: "docker", Provision: "provision"}, "building images (log: " + log + ")"},
+		{config.Sandbox{ID: "s", Driver: "podman", Build: "."}, "building images (log: " + log + ")"},
+		{config.Sandbox{ID: "s", Driver: "lxd"}, "building images (log: " + log + ")"},
+		{config.Sandbox{ID: "s", Driver: "lxd", Image: "ubuntu:26.04"}, "pulling images"},
+		{config.Sandbox{ID: "s", Driver: "lxd", Image: "my-alias"}, "pinning its image"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, initWhat(c.sb, dir), c.want, c.sb.Driver)
+	}
 }

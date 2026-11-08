@@ -145,7 +145,7 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 	if sandbox == nil {
 		sandbox = func() string { img, _ := SandboxImage(""); return img }
 	}
-	b := containerBuild{Dir: spec.Dir, Dockerfile: spec.Dockerfile, Force: spec.Force, Log: log}
+	b := containerBuild{Dir: spec.Dir, Dockerfile: spec.Dockerfile, Force: spec.Force, Log: log, Progress: spec.Progress}
 	if spec.Dockerfile == "" {
 		gen, err := MkTemp("pats-build-")
 		if err != nil {

@@ -21,6 +21,9 @@ type containerBuild struct {
 	Dockerfile string
 	Force      bool      // build even when an image from identical inputs exists, with no layer cache
 	Log        io.Writer // the build's whole output; nil discards it
+	// Progress, when set, gets a base pull, each build step, and a step
+	// that runs long.
+	Progress func(msg string)
 }
 
 // buildContainerImage resolves a build to an image id for a container
@@ -51,7 +54,7 @@ func buildContainerImage(ctx context.Context, r runner, driver string, b contain
 		if !exact {
 			hash = "" // the key could not name the base the build uses: build, the layer cache decides
 		} else {
-			ids, err := baseImageIDs(ctx, r, refs)
+			ids, err := baseImageIDs(ctx, r, refs, b.Progress)
 			if err != nil {
 				return "", "", false, err
 			}
@@ -60,10 +63,23 @@ func buildContainerImage(ctx context.Context, r runner, driver string, b contain
 	}
 	if !b.Force {
 		if id := cachedImageID(ctx, r, hash); id != "" {
+			if b.Progress != nil {
+				b.Progress("unchanged since its last build")
+			}
 			return id, baseImg, false, nil
 		}
 	}
-	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, b.Log)
+	log := b.Log
+	if b.Progress != nil {
+		steps := newBuildSteps(b.Progress)
+		if log == nil {
+			log = steps
+		} else {
+			log = io.MultiWriter(log, steps)
+		}
+		defer steps.start()()
+	}
+	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, log)
 	return id, baseImg, err == nil, err
 }
 
@@ -236,11 +252,15 @@ func fromRefs(dfData []byte, base string) (refs []string, exact bool) {
 // local one, pulled first when absent, as the build itself would. a base the
 // user refreshes with a pull then changes the cache key and forces a
 // rebuild, where hashing the tag alone would keep the stale image forever.
-func baseImageIDs(ctx context.Context, r runner, refs []string) (string, error) {
+// progress, when set, hears of each pull.
+func baseImageIDs(ctx context.Context, r runner, refs []string, progress func(string)) (string, error) {
 	var b strings.Builder
 	for _, ref := range refs {
 		id, err := output(ctx, r, "image", "inspect", "--format", "{{.Id}}", ref)
 		if err != nil {
+			if progress != nil {
+				progress("pulling " + ref)
+			}
 			if out, err := combined(ctx, r, "pull", "-q", ref); err != nil {
 				return "", fmt.Errorf("pull base %s: %w (%s)", ref, err, out)
 			}
