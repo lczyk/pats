@@ -19,7 +19,7 @@ import (
 )
 
 // ProvisionMount is where provisioning material lives in a builder while the
-// script runs: the script, a -cmd's file, and the pats root's bin/.
+// script runs: the script and the pats root's bin/.
 const ProvisionMount = "/pats-provision"
 
 // provisionerVersion is in every image key: bump it when what pats itself

@@ -33,7 +33,7 @@ env:
   BRANCH: ubuntu-26.04
 stage: |
   stage-truth
-collect-cmd: ./collect.sh
+collect: ./collect.sh
 `,
 		"cases/knockout/curl/truth.yaml": "expected\n",
 		"bin/stage-truth": "#!/bin/sh\n" +
@@ -49,7 +49,7 @@ collect-cmd: ./collect.sh
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 knockout: {kind: task, dir: cases/knockout}
-sc: {kind: scorer, items: {dir-seen: {score-cmd: ./score-dir.sh}}}
+sc: {kind: scorer, items: {dir-seen: {score: ./score-dir.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: knockout, scorers: sc}}}
 `))
 	require.NoError(t, err)

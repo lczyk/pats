@@ -51,7 +51,7 @@ func TestRunE2E(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, collect-cmd: ./collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, collect: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -406,7 +406,7 @@ func TestRunPairCollectsOnTimeout(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect-cmd: ./collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -453,7 +453,7 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect-cmd: ./collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -505,7 +505,7 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, stage-cmd: ./prepare.sh, collect-cmd: ./collect.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, stage: ./prepare.sh, collect: ./collect.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -612,7 +612,7 @@ func TestRunPairStageFailureCleansHome(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, stage-cmd: ./prepare.sh}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, stage: ./prepare.sh}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 
@@ -819,24 +819,27 @@ func TestRunPairPrepareInSandbox(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "helper"), []byte("#!/bin/sh\n"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "setup.sh"), []byte("#!/bin/sh\n"), 0o755))
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: s}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p, prepare-cmd: ./setup.sh --fast, env: {BRANCH: main}}}}
+t: {kind: task, items: {t: {prompt: p, prepare: helper --fast, env: {BRANCH: main}, stage: 'echo "$PATS_TASK_VECTOR" > "$PATS_OUTPUT_DIR/vector"'}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 	var out bytes.Buffer
 	pinAll(t, dir, cfg)
-	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
+	vector, err := os.ReadFile(filepath.Join(runDir, "a", "t", "vector"))
+	require.NoError(t, err)
+	assert.Equal(t, string(vector), "t\n") // a host step knows its task's vector
 	assert.Equal(t, strings.Join(fake.pushed, " "), prepareMount)
 	require.That(t, len(fake.rootCmds) >= 2, "root cmds: %v", fake.rootCmds)
 	prep := fake.rootCmds[0]
-	assert.Equal(t, strings.Join(prep.Argv[len(prep.Argv)-2:], " "), prepareMount+"/cmd/setup.sh --fast")
+	assert.Equal(t, strings.Join(prep.Argv[len(prep.Argv)-3:], " "), "/bin/sh -e "+prepareMount+"/script")
 	assert.ContainsString(t, prep.Argv[2], prepareMount+"/bin:$PATH")
 	assert.Equal(t, prep.Env["PATS_WORKDIR"], sandbox.WorkMount)
 	assert.Equal(t, prep.Env["BRANCH"], "main")
+	assert.Equal(t, prep.Env["PATS_TASK_VECTOR"], "t")
 	_, hasOut := prep.Env["PATS_OUTPUT_DIR"]
 	assert.Equal(t, hasOut, false)
 	assert.Equal(t, strings.Join(fake.rootCmds[1].Argv, " "), "rm -rf "+prepareMount)
@@ -859,7 +862,7 @@ func TestRunE2EPrepare(t *testing.T) {
 	cfg := parseCfg(t, `
 s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p, prepare-cmd: seed, collect: "cp $PATS_WORKDIR/prepared.txt $PATS_OUTPUT_DIR/"}}}
+t: {kind: task, items: {t: {prompt: p, prepare: seed, collect: "cp $PATS_WORKDIR/prepared.txt $PATS_OUTPUT_DIR/"}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 `)
 	var out bytes.Buffer
@@ -884,7 +887,7 @@ func TestRunE2EProvision(t *testing.T) {
 	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {base: ubuntu:26.04, provision-cmd: "mark once"}}}
+s: {kind: sandbox, items: {s: {base: ubuntu:26.04, provision: "mark once"}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
 t: {kind: task, items: {t: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $PATS_OUTPUT_DIR/"}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t}}}

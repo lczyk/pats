@@ -17,7 +17,7 @@ func TestLocalInputs(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "tool"), []byte("#!/bin/sh\n"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("#!/bin/sh\ntrue\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "provision-box"), []byte("#!/bin/sh\ntrue\n"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "ctx"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ctx", "Dockerfile"), []byte("FROM scratch\nCOPY x /x\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ctx", "x"), []byte("1"), 0o644))
@@ -25,7 +25,7 @@ func TestLocalInputs(t *testing.T) {
 sb:
   kind: sandbox
   items:
-    prov: {base: ubuntu:26.04, provision-cmd: ./provision.sh}
+    prov: {base: ubuntu:26.04, provision: provision-box}
     built: {build: ctx}
 ag: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {a: {sandbox: prov}, b: {sandbox: built}}}
 t: {kind: task, items: {t: {prompt: p}}}
@@ -43,10 +43,10 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "tool"), []byte("#!/bin/sh\necho\n"), 0o755))
 	assert.That(t, inputs(0)["provision"] != prov["provision"], "a bin/ edit left the provision inputs as they were")
 	prov = inputs(0)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("#!/bin/sh\nfalse\n"), 0o755))
-	assert.That(t, inputs(0)["provision"] != prov["provision"], "a script edit left the provision inputs as they were")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "provision-box"), []byte("#!/bin/sh\nfalse\n"), 0o755))
+	assert.That(t, inputs(0)["provision"] != prov["provision"], "a helper edit left the provision inputs as they were")
 	prov = inputs(0)
-	cfg.Sandboxes[0].ProvisionCmd = "./provision.sh v2"
+	cfg.Sandboxes[0].Provision = "provision-box v2"
 	assert.That(t, inputs(0)["provision"] != prov["provision"], "an argument change left the provision inputs as they were")
 	cfg.Sandboxes[0].Base = "ubuntu:24.04"
 	assert.Equal(t, inputs(0)["base_ref"], "ubuntu:24.04")

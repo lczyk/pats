@@ -80,8 +80,8 @@ func ListScorers(cfg *config.Config, out io.Writer) error {
 		switch {
 		case s.IsAgent():
 			src = "agent: " + s.Agent
-		case s.ScoreCmd != "":
-			src = "cmd: " + s.ScoreCmd
+		case !strings.Contains(strings.TrimSpace(s.Score), "\n"):
+			src = strings.TrimSpace(s.Score)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", s.Vector, s.ID, src)
 	}

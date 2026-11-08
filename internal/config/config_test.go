@@ -39,7 +39,7 @@ const base = `
 s: {kind: sandbox, items: {s: {image: img}}}
 a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
 t: {kind: task, items: {t: {prompt: p.txt}}}
-sc: {kind: scorer, items: {sc: {score-cmd: sc.py}}}
+sc: {kind: scorer, items: {sc: {score: ./sc.py}}}
 su: {kind: suite, items: {su: {agents: a, tasks: t, scorers: sc}}}
 `
 
@@ -48,12 +48,12 @@ func TestParseVectors(t *testing.T) {
 slicer:
   kind: task
   defaults:
-    prompt-file: prompts/${task}.txt
-    stage-cmd: tasks/${vector}/prepare_${task}.sh
-    collect-cmd: tasks/collect.sh
+    prompt-file: prompt.txt
+    stage: tasks/prepare.sh
+    collect: tasks/collect.sh
   items:
     base-passwd:
-    curl: {timeout: 15m, collect-cmd: ~}
+    curl: {timeout: 15m, collect: ~}
 misc:
   kind: task
   items:
@@ -67,32 +67,32 @@ misc:
 	assert.Equal(t, bp.Vector, "slicer")
 	assert.Equal(t, help.Vector, "misc")
 
-	// defaults inherited and interpolated per item.
-	assert.Equal(t, bp.PromptFile, "prompts/base-passwd.txt")
-	assert.Equal(t, bp.StageCmd, "tasks/slicer/prepare_base-passwd.sh")
-	assert.Equal(t, bp.CollectCmd, "tasks/collect.sh")
+	// defaults inherited by each item, as written.
+	assert.Equal(t, bp.PromptFile, "prompt.txt")
+	assert.Equal(t, bp.Stage, "tasks/prepare.sh")
+	assert.Equal(t, bp.Collect, "tasks/collect.sh")
 	assert.Equal(t, bp.Timeout, "")
 	assert.Equal(t, bp.Dir, "")
 
 	// item overrides a field, and an explicit null unsets one.
-	assert.Equal(t, curl.PromptFile, "prompts/curl.txt")
+	assert.Equal(t, curl.PromptFile, "prompt.txt")
 	assert.Equal(t, curl.Timeout, "15m")
-	assert.Equal(t, curl.CollectCmd, "")
+	assert.Equal(t, curl.Collect, "")
 
-	// a vector without defaults; an inline prompt is content, not a template.
+	// a vector without defaults; a prompt's text is the agent's, as written.
 	assert.Equal(t, help.Prompt, "write the ${task} readme")
 }
 
-// a slot (prompt / prompt-file / prompt-cmd, stage / stage-cmd, ...)
-// merges as a unit: an item setting one key replaces whatever form the
-// defaults used, and a null on any key clears the slot.
+// the prompt's slot (prompt / prompt-file / prompt-cmd) merges as a unit: an
+// item setting one key replaces whatever form the defaults used, and a null
+// on any key clears it. a step is one key, merged like any other.
 func TestParseSlotsMergeAsUnits(t *testing.T) {
 	c := parseT(t, `
 v:
   kind: task
   defaults:
     prompt-file: p.txt
-    stage-cmd: prep.sh
+    stage: ./prep.sh
     collect: |
       echo collect
   items:
@@ -100,23 +100,23 @@ v:
     inline:
       prompt: literal
       stage: |
-        echo hi ${task}
+        echo hi "$PATS_TASK_ID"
     cleared:
-      collect-cmd: ~
+      collect: ~
+      prompt-cmd: ~
 `)
 	inherits, inline, cleared := c.Tasks[0], c.Tasks[1], c.Tasks[2]
 	assert.Equal(t, inherits.PromptFile, "p.txt")
-	assert.Equal(t, inherits.StageCmd, "prep.sh")
+	assert.Equal(t, inherits.Stage, "./prep.sh")
 	assert.Equal(t, inherits.Collect, "echo collect\n")
 
 	assert.Equal(t, inline.Prompt, "literal")
 	assert.Equal(t, inline.PromptFile, "")
-	assert.Equal(t, inline.Stage, "echo hi ${task}\n") // script bodies aren't templated
-	assert.Equal(t, inline.StageCmd, "")
+	assert.Equal(t, inline.Stage, "echo hi \"$PATS_TASK_ID\"\n")
 
 	assert.Equal(t, cleared.Collect, "")
-	assert.Equal(t, cleared.CollectCmd, "")
-	assert.Equal(t, cleared.PromptFile, "p.txt")
+	assert.Equal(t, cleared.Stage, "./prep.sh")
+	assert.Equal(t, cleared.PromptFile, "")
 }
 
 // env merges key by key over defaults; a null drops one inherited key. values
@@ -138,7 +138,7 @@ v:
     b:
       env:
         MODE: denovo
-        RAW: ${task}
+        RAW: $PATS_TASK_ID
 `)
 	a, b := c.Tasks[0], c.Tasks[1]
 	assert.Equal(t, len(a.Env), 2)
@@ -146,7 +146,7 @@ v:
 	assert.Equal(t, a.Env["BRANCH"], "ubuntu-26.04")
 	assert.Equal(t, b.Env["MODE"], "denovo")
 	assert.Equal(t, b.Env["KEEP"], "1")
-	assert.Equal(t, b.Env["RAW"], "${task}")
+	assert.Equal(t, b.Env["RAW"], "$PATS_TASK_ID")
 }
 
 func TestParseSandboxDriverDefault(t *testing.T) {
@@ -166,7 +166,7 @@ func TestParseDefaultsViaAnchors(t *testing.T) {
 	c := parseT(t, `
 sdf:
   kind: scorer
-  defaults: &py {score-cmd: "scorers/${scorer}.py"}
+  defaults: &py {score: "scorers/scorer_$PATS_SCORER_ID.py"}
   items: {one: ~, two: ~}
 transcript:
   kind: scorer
@@ -174,20 +174,20 @@ transcript:
   items: {three: ~}
 misc:
   kind: task
-  defaults: &td {prompt-file: p.txt, collect-cmd: c.sh}
+  defaults: &td {prompt-file: p.txt, collect: ./c.sh}
   items: {x: ~}
 misc2:
   kind: task
-  defaults: {<<: *td, collect-cmd: ~, timeout: 5m}
-  items: {y: ~, z: {collect-cmd: z.sh}}
+  defaults: {<<: *td, collect: ~, timeout: 5m}
+  items: {y: ~, z: {collect: ./z.sh}}
 `)
-	assert.Equal(t, c.Scorers[2].ScoreCmd, "scorers/three.py")
+	assert.Equal(t, c.Scorers[2].Score, "scorers/scorer_$PATS_SCORER_ID.py")
 	assert.Equal(t, c.Scorers[2].Vector, "transcript")
 	y, z := c.Tasks[1], c.Tasks[2]
 	assert.Equal(t, y.PromptFile, "p.txt")
-	assert.Equal(t, y.CollectCmd, "")
+	assert.Equal(t, y.Collect, "")
 	assert.Equal(t, y.Timeout, "5m")
-	assert.Equal(t, z.CollectCmd, "z.sh")
+	assert.Equal(t, z.Collect, "./z.sh")
 }
 
 func TestParseSuiteDefaults(t *testing.T) {
@@ -221,10 +221,20 @@ func TestParseErrors(t *testing.T) {
 		{"item not a mapping", "x: {kind: task, items: {a: [1]}}\n", "task \"a\": must be a mapping"},
 		{"unknown field on item", "x: {kind: task, items: {a: {bogus: 1}}}\n", "task \"a\": unknown field \"bogus\""},
 		{"unknown field in defaults", "x: {kind: agent, defaults: {kind: claude-cli-keyless}, items: {a: ~}}\n", "defaults: unknown field \"kind\""},
-		{"unknown template variable", "x: {kind: task, items: {a: {prompt-file: \"p/${id}.txt\"}}}\n", "unknown variable ${id} (${task}, ${vector})"},
-		{"wrong kind variable", "x: {kind: scorer, items: {a: {score-cmd: \"p/${task}.py\"}}}\n", "unknown variable ${task}"},
+		{"a template in a path", "x: {kind: task, items: {a: {prompt-file: \"p/${task}.txt\"}}}\n", "${task}: pats.yaml is not templated; a step reads the id from $PATS_TASK_ID"},
+		{"a template in a script", "x: {kind: scorer, items: {a: {score: \"p/${scorer}.py\"}}}\n", "${scorer}: pats.yaml is not templated; a step reads the id from $PATS_SCORER_ID"},
+		{"a vector template in a task", "x: {kind: task, defaults: {prompt-cmd: \"cat ${vector}.txt\"}, items: {a: ~}}\n", "a step reads the id from $PATS_TASK_VECTOR"},
+		{"a template in env", "x: {kind: task, items: {a: {prompt: p, env: {X: \"${agent}\"}}}}\n", "${agent}: pats.yaml is not templated"},
+		{"a template in egress", "x: {kind: task, items: {a: {prompt: p, egress: {allow: [\"${task}.example.com\"]}}}}\n", "${task}: pats.yaml is not templated"},
+		{"a template on a sandbox", "x: {kind: sandbox, items: {s: {image: \"img-${sandbox}\"}}}\n", "${sandbox}: pats.yaml is not templated, and no step env var carries it"},
+		{"a vector template on an agent", "x: {kind: agent, items: {a: {sandbox: \"${vector}\"}}}\n", "${vector}: pats.yaml is not templated, and no step env var carries it"},
+		{"a template in defaults every item overrides", "x: {kind: task, defaults: {prompt-file: \"p/${task}.txt\"}, items: {a: {prompt: hello}}}\n", "defaults: ${task}: pats.yaml is not templated"},
+		{"a template in a dir", "x: {kind: task, dir: \"cases/${vector}\"}\n", "dir: ${vector}: pats.yaml is not templated"},
+		{"stage-cmd is gone", "x: {kind: task, items: {a: {prompt: p, stage-cmd: ./s.sh}}}\n", "stage-cmd is gone: use stage, a shell script"},
+		{"score-cmd is gone, in defaults", "x: {kind: scorer, defaults: {score-cmd: ./s.py}, items: {a: ~}}\n", "score-cmd is gone: use score"},
+		{"provision-cmd is gone", "x: {kind: sandbox, items: {s: {provision-cmd: ./p.sh}}}\n", "provision-cmd is gone: use provision"},
 		{"two keys of one slot", "x: {kind: task, items: {a: {prompt: p, prompt-file: f}}}\n", "prompt, prompt-file are mutually exclusive"},
-		{"two keys of one slot in defaults", "x: {kind: task, defaults: {stage: a, stage-cmd: b}, items: {a: ~}}\n", "stage, stage-cmd are mutually exclusive"},
+		{"two keys of one slot in defaults", "x: {kind: task, defaults: {prompt: a, prompt-cmd: b}, items: {a: ~}}\n", "prompt, prompt-cmd are mutually exclusive"},
 		{"agent-id is renamed agent", "x: {kind: scorer, items: {a: {agent-id: j}}}\n", "unknown field \"agent-id\""},
 		{"dir on a scorer vector", "x: {kind: scorer, dir: scorers}\n", "dir is only supported on task vectors"},
 	}
@@ -256,9 +266,9 @@ func TestValidateErrors(t *testing.T) {
 		{"image and build", "s: {kind: sandbox, items: {s: {image: img, build: .}}}\n", "mutually exclusive"},
 		{"bwrap not implemented", "s: {kind: sandbox, items: {s: {driver: bwrap}}}\n", "bwrap driver not implemented"},
 		{"unknown driver", "s: {kind: sandbox, items: {s: {driver: lxc, image: i}}}\n", "unknown driver \"lxc\""},
-		{"scorer needs a source", "x: {kind: scorer, items: {x: {}}}\n", "needs score, score-cmd or agent"},
-		{"scorer with both", "x: {kind: scorer, items: {x: {score-cmd: s.py, agent: a, prompt: p}}}\n", "mutually exclusive"},
-		{"script scorer with prompt", "x: {kind: scorer, items: {x: {score-cmd: s.py, prompt: p}}}\n", "a prompt is an agent-scorer field"},
+		{"scorer needs a source", "x: {kind: scorer, items: {x: {}}}\n", "needs score or agent"},
+		{"scorer with both", "x: {kind: scorer, items: {x: {score: ./s.py, agent: a, prompt: p}}}\n", "mutually exclusive"},
+		{"script scorer with prompt", "x: {kind: scorer, items: {x: {score: ./s.py, prompt: p}}}\n", "a prompt is an agent-scorer field"},
 		{"agent scorer not implemented", "x: {kind: scorer, items: {x: {agent: ghost, prompt: p}}}\n", "agent scorers are not implemented"},
 		{"dangling scorer agent", "x: {kind: scorer, items: {x: {agent: ghost, prompt: p}}}\n", "unknown agent \"ghost\""},
 		{"agent scorer without prompt", "x: {kind: scorer, items: {x: {agent: ghost}}}\n", "needs one of prompt, prompt-file or prompt-cmd"},
@@ -294,7 +304,7 @@ func TestValidateErrors(t *testing.T) {
 		{"vector id shadows an item of its kind", base + "t2: {kind: task, items: {x: {prompt: p}, y: {prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: a, tasks: t2}}}\nt3: {kind: task, items: {t2: {prompt: p}}}\n", "share an id but name different things"},
 		{"slash in id", "x: {kind: task, items: {a/b: {prompt: p}}}\n", "may not contain"},
 		{"orphaned task", base + "t2: {kind: task, items: {forgotten: {prompt: p}}}\n", "task \"forgotten\" is in no suite"},
-		{"orphaned scorer", base + "sc2: {kind: scorer, items: {lost: {score-cmd: s.py}}}\n", "scorer \"lost\" is in no suite"},
+		{"orphaned scorer", base + "sc2: {kind: scorer, items: {lost: {score: ./s.py}}}\n", "scorer \"lost\" is in no suite"},
 		{"orphaned agent", base + "b: {kind: agent, items: {idle: {harness: opencode-openrouter, model: m}}}\n", "agent \"idle\" is in no suite"},
 		{"lxd key under docker", base + "d: {kind: sandbox, items: {d: {vm: true}}}\n", "vm is lxd-only"},
 		{"sudo under docker", base + "d: {kind: sandbox, items: {d: {sudo: true}}}\n", "sudo is lxd-only"},

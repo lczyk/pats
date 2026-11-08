@@ -34,7 +34,7 @@ tasks:
 scorers:
   kind: scorer
   items:
-    exact: {score-cmd: exact.sh}
+    exact: {score: ./exact.sh}
     judge: {agent: claude, prompt: judge.txt}
 `))
 	require.NoError(t, err)

@@ -14,71 +14,49 @@ import (
 // so shared helpers are called by name.
 const binDir = "bin"
 
-// step is one host-side script: an inline body or a command line (at most one
-// is set), run in dir -- the directory of the file the item was defined in,
-// which relative paths in cmd resolve against too.
+// step is one host-side script, run in dir: the directory of the file the item
+// was defined in.
 type step struct {
-	inline string
-	cmd    string
+	script string
 	dir    string
 }
 
-func (s step) set() bool { return s.inline != "" || s.cmd != "" }
+func (s step) set() bool { return s.script != "" }
 
 // command builds the step's process with root/bin prepended to PATH, PATS_ROOT
-// and env on top of the host environment. an inline body is written to a
-// temp file: with a #! line it is exec'd (its shebang picks the interpreter),
-// without one it runs under `/bin/sh -e`. a cmd is split into words (posix
-// quoting, no shell); a first word containing a / is a file resolved against
-// dir, a bare one is looked up on PATH. the returned cleanup removes the temp
-// file.
+// and env on top of the host environment. the script is written to a temp
+// file: with a #! line it is exec'd (its shebang picks the interpreter),
+// without one it runs under `/bin/sh -e`, so a one-liner like `./collect.sh
+// --fast` runs that file. the returned cleanup removes the temp file.
 func (s step) command(root string, env map[string]string) (*exec.Cmd, func(), error) {
 	// PWD follows the dir the script runs in: the inherited one names pats's
 	// own cwd, and a shell trusts it when it resolves to the same place.
 	environ := append(hostEnviron(root, env), "PWD="+s.dir)
-	nop := func() {}
-	if s.inline != "" {
-		f, err := os.CreateTemp("", "pats-script-")
-		if err != nil {
-			return nil, nop, err
-		}
-		cleanup := func() { os.Remove(f.Name()) }
-		_, werr := f.WriteString(s.inline)
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
-		}
-		if werr != nil {
+	f, err := os.CreateTemp("", "pats-script-")
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { os.Remove(f.Name()) }
+	_, werr := f.WriteString(s.script)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		cleanup()
+		return nil, nil, werr
+	}
+	var cmd *exec.Cmd
+	if strings.HasPrefix(s.script, "#!") {
+		if err := os.Chmod(f.Name(), 0o700); err != nil {
 			cleanup()
-			return nil, nop, werr
+			return nil, nil, err
 		}
-		var cmd *exec.Cmd
-		if strings.HasPrefix(s.inline, "#!") {
-			if err := os.Chmod(f.Name(), 0o700); err != nil {
-				cleanup()
-				return nil, nop, err
-			}
-			cmd = exec.Command(f.Name())
-		} else {
-			cmd = exec.Command("/bin/sh", "-e", f.Name())
-		}
-		cmd.Dir, cmd.Env = s.dir, environ
-		return cmd, cleanup, nil
+		cmd = exec.Command(f.Name())
+	} else {
+		cmd = exec.Command("/bin/sh", "-e", f.Name())
 	}
-
-	argv, err := splitArgs(s.cmd)
-	if err != nil {
-		return nil, nop, err
-	}
-	if len(argv) == 0 {
-		return nil, nop, fmt.Errorf("empty command")
-	}
-	path, err := resolveCommand(argv[0], s.dir, pathOf(environ))
-	if err != nil {
-		return nil, nop, err
-	}
-	cmd := exec.Command(path, argv[1:]...)
 	cmd.Dir, cmd.Env = s.dir, environ
-	return cmd, nop, nil
+	return cmd, cleanup, nil
 }
 
 // run executes the step with stdout and stderr streamed to out.
@@ -126,50 +104,4 @@ func hostEnviron(root string, env map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	return out
-}
-
-// pathOf returns the PATH value from an environ list.
-func pathOf(environ []string) string {
-	for i := len(environ) - 1; i >= 0; i-- {
-		if v, ok := strings.CutPrefix(environ[i], "PATH="); ok {
-			return v
-		}
-	}
-	return ""
-}
-
-// resolveCommand finds a command's executable: a name containing a / is a
-// file resolved against dir, a bare name is searched for on path.
-func resolveCommand(name, dir, path string) (string, error) {
-	if strings.Contains(name, "/") {
-		p := name
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(dir, p)
-		}
-		return p, checkExecutable(p)
-	}
-	for _, d := range filepath.SplitList(path) {
-		if d == "" {
-			continue
-		}
-		p := filepath.Join(d, name)
-		if checkExecutable(p) == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("%s: command not found (not in bin/ or on PATH)", name)
-}
-
-func checkExecutable(p string) error {
-	fi, err := os.Stat(p)
-	if err != nil {
-		return err
-	}
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", p)
-	}
-	if fi.Mode()&0o111 == 0 {
-		return fmt.Errorf("%s is not executable (chmod +x)", p)
-	}
-	return nil
 }

@@ -18,7 +18,7 @@ import (
 func Parse(data []byte) (*Config, error) { return ParseIn(".", data) }
 
 // ParseIn decodes a pats.yaml body into a Config: every vector's items merged
-// with its defaults and interpolated, `dir` vectors read from under root.
+// with its defaults and checked for templating, `dir` vectors read from under root.
 // structural problems (unknown keys, bad shapes, unknown template variables)
 // are errors here, each with its line; semantic ones are Validate's.
 func ParseIn(root string, data []byte) (*Config, error) {
@@ -82,6 +82,10 @@ func (c *Config) loadVector(root, id string, node *yaml.Node) error {
 				errs.add("line %d: vector %q: %s and dir are mutually exclusive -- a task in a directory is configured by its own %s", v.Line, id, k, taskFile)
 			}
 		}
+		if m := templateVar.FindStringSubmatch(dirNode.Value); m != nil {
+			errs.add("line %d: vector %q: dir: ${%s}: pats.yaml is not templated", dirNode.Line, id, m[1])
+			return errs.err()
+		}
 		if err := c.loadDir(root, id, dirNode); err != nil {
 			errs.errs = append(errs.errs, err)
 		}
@@ -96,8 +100,16 @@ func (c *Config) loadVector(root, id string, node *yaml.Node) error {
 		if err == nil {
 			err = checkSlots(defaults, kind, what)
 		}
+		// on their own: an item that overrides a field must not hide a
+		// placeholder its default holds.
+		if err == nil {
+			var only any
+			if only, err = merge(prototype(kind), kind, defaults, nil); err == nil {
+				err = checkTemplates(only, kind)
+			}
+		}
 		if err != nil {
-			errs.errs = append(errs.errs, err)
+			errs.errs = append(errs.errs, fmt.Errorf("line %d: %s: %w", d.Line, what, err))
 		}
 	}
 
@@ -122,8 +134,8 @@ func (c *Config) loadVector(root, id string, node *yaml.Node) error {
 	return errs.err()
 }
 
-// loadItem decodes one item node, merges it over defaults, interpolates it and
-// appends it to c. dir is where it was defined, relative to the pats root.
+// loadItem decodes one item node, merges it over defaults, checks it holds no
+// placeholder and appends it to c. dir is where it was defined, relative to the pats root.
 func (c *Config) loadItem(kind, vector, id, dir string, node *yaml.Node, defaults map[string]*yaml.Node) error {
 	proto := prototype(kind)
 	known := yamlKeys(reflect.TypeOf(proto).Elem())
@@ -142,7 +154,7 @@ func (c *Config) loadItem(kind, vector, id, dir string, node *yaml.Node, default
 	if err != nil {
 		return fmt.Errorf("line %d: %s: %w", node.Line, what, err)
 	}
-	if err := interpolate(item, kind, id, vector); err != nil {
+	if err := checkTemplates(item, kind); err != nil {
 		return fmt.Errorf("line %d: %s: %w", node.Line, what, err)
 	}
 	c.append(kind, id, vector, dir, item)
@@ -267,19 +279,18 @@ func (c *Config) append(kind, id, vector, dir string, item any) {
 // slots groups the keys that are alternative forms of one field: an item sets
 // at most one key per slot, and a slot merges over defaults as a unit.
 var slots = map[string][][]string{
-	"task": {
-		{"prompt", "prompt-file", "prompt-cmd"},
-		{"stage", "stage-cmd"},
-		{"prepare", "prepare-cmd"},
-		{"collect", "collect-cmd"},
-	},
-	"sandbox": {
-		{"provision", "provision-cmd"},
-	},
-	"scorer": {
-		{"score", "score-cmd"},
-		{"prompt", "prompt-file", "prompt-cmd"},
-	},
+	"task":   {{"prompt", "prompt-file", "prompt-cmd"}},
+	"scorer": {{"prompt", "prompt-file", "prompt-cmd"}},
+}
+
+// removed are the keys a step's -cmd form had, and what replaced them: every
+// step is one field, a shell script (docs/spec/steps.md).
+var removed = map[string]string{
+	"stage-cmd":     "stage",
+	"prepare-cmd":   "prepare",
+	"collect-cmd":   "collect",
+	"score-cmd":     "score",
+	"provision-cmd": "provision",
 }
 
 // checkSlots rejects one layer setting two keys of the same slot.
@@ -416,7 +427,11 @@ func fieldsOf(node *yaml.Node, known map[string]bool, what string) (map[string]*
 	}
 	var errs errList
 	for k, v := range m {
-		if !known[k] {
+		switch {
+		case known[k]:
+		case removed[k] != "":
+			errs.add("line %d: %s: %s is gone: use %s, a shell script (`%s: ./script.sh --flag` runs that file)", v.Line, what, k, removed[k], removed[k])
+		default:
 			errs.add("line %d: %s: unknown field %q", v.Line, what, k)
 		}
 	}
@@ -470,35 +485,66 @@ func yamlKeys(t reflect.Type) map[string]bool {
 	return keys
 }
 
-var tmplVar = regexp.MustCompile(`\$\{([^}]*)\}`)
+// templateEnv is the step env var carrying what a ${...} pats once expanded
+// in pats.yaml named, on an item of kind; "" when no step gets it.
+func templateEnv(name, kind string) string {
+	if kind != "task" && kind != "scorer" {
+		return "" // an agent runs no step of its own, a provision none of these
+	}
+	switch name {
+	case "task":
+		return "PATS_TASK_ID"
+	case "agent":
+		return "PATS_AGENT_ID"
+	case "scorer":
+		return "PATS_SCORER_ID"
+	case "vector":
+		switch kind {
+		case "task":
+			return "PATS_TASK_VECTOR"
+		case "scorer":
+			return "PATS_SCORER_VECTOR"
+		}
+	}
+	return ""
+}
 
-// interpolate expands ${<kind>} (the item's id) and ${vector} in the string
-// fields of item, nested structs included. fields tagged `tmpl:"-"` are
-// content (inline prompts, script bodies, env) and are left alone; suites
-// hold references, not templates. an unknown variable is an error.
-func interpolate(item any, kind, id, vector string) error {
+var templateVar = regexp.MustCompile(`\$\{(task|agent|scorer|sandbox|vector)\}`)
+
+// checkTemplates refuses a ${task}-style placeholder in any string field of
+// item, nested structs, lists and maps included: pats expands none, and a
+// config written for when it did must fail rather than read a file named
+// prompts/${task}.txt. fields tagged `text:"free"` (a prompt's text, the
+// agent's to read) are left alone; suites hold references, not text.
+func checkTemplates(item any, kind string) error {
 	if kind == "suite" {
 		return nil
 	}
-	vars := map[string]string{kind: id, "vector": vector}
 	var errs errList
+	seen := map[string]bool{}
 	var walk func(v reflect.Value)
 	walk = func(v reflect.Value) {
 		switch v.Kind() {
 		case reflect.String:
-			out := tmplVar.ReplaceAllStringFunc(v.String(), func(m string) string {
-				name := m[2 : len(m)-1]
-				if val, ok := vars[name]; ok {
-					return val
+			for _, m := range templateVar.FindAllStringSubmatch(v.String(), -1) {
+				if seen[m[1]] {
+					continue
 				}
-				errs.add("unknown variable ${%s} (${%s}, ${vector})", name, kind)
-				return m
-			})
-			v.SetString(out)
+				seen[m[1]] = true
+				if env := templateEnv(m[1], kind); env != "" {
+					errs.add("${%s}: pats.yaml is not templated; a step reads the id from $%s", m[1], env)
+				} else {
+					errs.add("${%s}: pats.yaml is not templated, and no step env var carries it", m[1])
+				}
+			}
+		case reflect.Pointer:
+			if !v.IsNil() {
+				walk(v.Elem())
+			}
 		case reflect.Struct:
 			t := v.Type()
 			for i := 0; i < v.NumField(); i++ {
-				if t.Field(i).Tag.Get("tmpl") == "-" {
+				if t.Field(i).Tag.Get("text") == "free" || !t.Field(i).IsExported() {
 					continue
 				}
 				walk(v.Field(i))
@@ -506,6 +552,10 @@ func interpolate(item any, kind, id, vector string) error {
 		case reflect.Slice:
 			for i := 0; i < v.Len(); i++ {
 				walk(v.Index(i))
+			}
+		case reflect.Map:
+			for _, k := range v.MapKeys() {
+				walk(v.MapIndex(k))
 			}
 		}
 	}

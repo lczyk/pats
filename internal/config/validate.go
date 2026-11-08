@@ -119,7 +119,7 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 		if s.Build != "" {
 			ways = append(ways, "build")
 		}
-		if s.Base != "" || s.Provision != "" || s.ProvisionCmd != "" {
+		if s.Base != "" || s.Provision != "" {
 			ways = append(ways, "base / provision")
 		}
 		if len(ways) > 1 {
@@ -369,11 +369,11 @@ var sizeRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(B|kB|MB|GB|TB|KiB|MiB|GiB|Ti
 
 func (c *Config) validateScorers(add func(string, ...any)) {
 	for _, s := range c.Scorers {
-		script := s.Score != "" || s.ScoreCmd != ""
+		script := s.Score != ""
 		prompt := s.Prompt != "" || s.PromptFile != "" || s.PromptCmd != ""
 		switch {
 		case script && s.IsAgent():
-			add("scorer %q: score / score-cmd and agent are mutually exclusive (a script scorer or an agent scorer, not both)", s.ID)
+			add("scorer %q: score and agent are mutually exclusive (a script scorer or an agent scorer, not both)", s.ID)
 		case script:
 			if prompt {
 				add("scorer %q: a prompt is an agent-scorer field -- remove it, or replace the score with agent", s.ID)
@@ -387,7 +387,7 @@ func (c *Config) validateScorers(add func(string, ...any)) {
 				add("scorer %q: an agent scorer needs one of prompt, prompt-file or prompt-cmd", s.ID)
 			}
 		default:
-			add("scorer %q: needs score, score-cmd or agent", s.ID)
+			add("scorer %q: needs score or agent", s.ID)
 		}
 	}
 }

@@ -31,7 +31,7 @@ func usedSandboxes(cfg *config.Config, pairs []config.TestPair) map[string]bool 
 
 // provisions reports whether a sandbox makes its image from base / provision.
 func provisions(sb config.Sandbox) bool {
-	return sb.Base != "" || sb.Provision != "" || sb.ProvisionCmd != ""
+	return sb.Base != "" || sb.Provision != ""
 }
 
 // lxdImage provisions an lxd sandbox's image on h: with no base, the pats
@@ -63,7 +63,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 	}
 	base, anyBuilt := sb.Base, false
 	if base == "" {
-		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, images.ProvisionSandbox, "", sandbox.ProvisionMount)
+		material, argv, err := stageMaterial(opts.ConfigDir, images.ProvisionSandbox, sandbox.ProvisionMount)
 		if err != nil {
 			return img, nil, false, nil, err
 		}
@@ -84,8 +84,8 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 		img = layer
 	}
 	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.ID, Force: force}
-	if sb.Provision != "" || sb.ProvisionCmd != "" {
-		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
+	if sb.Provision != "" {
+		material, argv, err := stageMaterial(opts.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 		if err != nil {
 			return img, nil, false, nil, err
 		}

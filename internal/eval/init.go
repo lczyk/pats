@@ -242,8 +242,8 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 	switch {
 	case provisions(sb):
 		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force}
-		if sb.Provision != "" || sb.ProvisionCmd != "" {
-			material, argv, err := stageMaterial(ro.ConfigDir, ro.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
+		if sb.Provision != "" {
+			material, argv, err := stageMaterial(ro.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 			if err != nil {
 				return err
 			}

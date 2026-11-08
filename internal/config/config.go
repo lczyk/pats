@@ -44,12 +44,11 @@ type Sandbox struct {
 	// provision script runs once per image, as root, on top of base (the pats
 	// sandbox when base is empty). docker compiles them to a dockerfile, lxd
 	// provisions a builder instance.
-	Base         string `yaml:"base"`
-	Provision    string `yaml:"provision" tmpl:"-"`
-	ProvisionCmd string `yaml:"provision-cmd"`
-	Sudo         bool   `yaml:"sudo"`         // may the agent sudo; a task can override (lxd only)
-	MaxParallel  int    `yaml:"max-parallel"` // cap on this sandbox's concurrent pairs, whatever -j says
-	Limits       Limits `yaml:"limits"`
+	Base        string `yaml:"base"`
+	Provision   string `yaml:"provision"`
+	Sudo        bool   `yaml:"sudo"`         // may the agent sudo; a task can override (lxd only)
+	MaxParallel int    `yaml:"max-parallel"` // cap on this sandbox's concurrent pairs, whatever -j says
+	Limits      Limits `yaml:"limits"`
 	// lxd only.
 	Remote   string            `yaml:"remote"` // an lxc remote; "" -> the cli's current one
 	VM       bool              `yaml:"vm"`     // a virtual machine rather than a system container
@@ -59,7 +58,7 @@ type Sandbox struct {
 	// Env goes into the sandboxed agent's environment, under what pats sets
 	// itself. the escape hatch for a tool the egress tls contract misses
 	// (e.g. DENO_CERT=/sbx-ca/bundle.pem).
-	Env map[string]string `yaml:"env" tmpl:"-"`
+	Env map[string]string `yaml:"env"`
 	// ProxyImage is the egress proxy image a run starts its proxies from: the
 	// pinned one, set by the run from the pins, never by pats.yaml.
 	ProxyImage string `yaml:"-"`
@@ -159,28 +158,25 @@ type Agent struct {
 	Effort  string `yaml:"effort"`  // optional reasoning effort (claude/copilot --effort; codex model_reasoning_effort; opencode --variant)
 }
 
-// Task is one scenario handed to a task-running agent. each run slot has an
-// inline form (content) and a -cmd form (a command line); the prompt also has
-// a -file form. Dir is where the task was defined, relative to the pats root:
+// Task is one scenario handed to a task-running agent. each step is a shell
+// script; the prompt is text, a file or a script's stdout. Dir is where the
+// task was defined, relative to the pats root:
 // "" for pats.yaml, the task's directory for a task.yaml. its paths resolve
 // and its scripts run there.
 type Task struct {
 	ID         string            `yaml:"-"`
 	Vector     string            `yaml:"-"`
 	Dir        string            `yaml:"-"`
-	Prompt     string            `yaml:"prompt" tmpl:"-"`  // the instruction, literal
-	PromptFile string            `yaml:"prompt-file"`      // a file holding the instruction
-	PromptCmd  string            `yaml:"prompt-cmd"`       // a command printing the instruction; runs after stage
-	Stage      string            `yaml:"stage" tmpl:"-"`   // inline host script seeding the sandbox before it starts
-	StageCmd   string            `yaml:"stage-cmd"`        // host command seeding the sandbox before it starts
-	Sudo       *bool             `yaml:"sudo"`             // overrides the sandbox's sudo for this task's pairs
-	Prepare    string            `yaml:"prepare" tmpl:"-"` // inline script run inside the sandbox, as root, before the agent
-	PrepareCmd string            `yaml:"prepare-cmd"`      // command run inside the sandbox, as root, before the agent
-	Collect    string            `yaml:"collect" tmpl:"-"` // inline script gathering outputs
-	CollectCmd string            `yaml:"collect-cmd"`      // command gathering outputs
-	Timeout    string            `yaml:"timeout"`          // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
-	Env        map[string]string `yaml:"env" tmpl:"-"`     // exported to the task's host scripts
-	Egress     TaskEgress        `yaml:"egress"`           // unioned over the sandbox's lists for this task's pairs
+	Prompt     string            `yaml:"prompt" text:"free"` // the instruction, literal
+	PromptFile string            `yaml:"prompt-file"`        // a file holding the instruction
+	PromptCmd  string            `yaml:"prompt-cmd"`         // a script printing the instruction; runs after stage
+	Stage      string            `yaml:"stage"`              // host script seeding the sandbox before it starts
+	Sudo       *bool             `yaml:"sudo"`               // overrides the sandbox's sudo for this task's pairs
+	Prepare    string            `yaml:"prepare"`            // script run inside the sandbox, as root, before the agent
+	Collect    string            `yaml:"collect"`            // host script gathering outputs
+	Timeout    string            `yaml:"timeout"`            // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
+	Env        map[string]string `yaml:"env"`                // exported to the task's host scripts
+	Egress     TaskEgress        `yaml:"egress"`             // unioned over the sandbox's lists for this task's pairs
 }
 
 // TaskEgress is what a task adds to its sandbox's egress policy: entries for
@@ -235,17 +231,16 @@ func (t Task) TimeoutDuration() time.Duration {
 }
 
 // Scorer scores one aspect of a task's collected output, 0.0 - 1.0. a script
-// scorer sets `score` (inline) or `score-cmd`: exit 0 + first stdout line =
+// scorer sets `score`, a script: exit 0 + first stdout line =
 // float [0,1] or "na" (skip), exit != 0 = failure. an agent scorer sets
 // `agent` plus one of the prompt keys instead: an agent judges the output.
 type Scorer struct {
 	ID         string `yaml:"-"`
 	Vector     string `yaml:"-"`
 	Dir        string `yaml:"-"`
-	Score      string `yaml:"score" tmpl:"-"` // inline scoring script
-	ScoreCmd   string `yaml:"score-cmd"`      // scoring command
-	Agent      string `yaml:"agent"`          // agent scorer: the judging agent
-	Prompt     string `yaml:"prompt" tmpl:"-"`
+	Score      string `yaml:"score"` // scoring script
+	Agent      string `yaml:"agent"` // agent scorer: the judging agent
+	Prompt     string `yaml:"prompt" text:"free"`
 	PromptFile string `yaml:"prompt-file"`
 	PromptCmd  string `yaml:"prompt-cmd"`
 }

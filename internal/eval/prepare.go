@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,7 +22,7 @@ const setupTimeout = 10 * time.Minute
 const syncTimeout = 10 * time.Minute
 
 // prepareMount is where the prepare step's material lives inside the sandbox
-// while it runs: the script, a -cmd's file, and the pats root's bin/. it is
+// while it runs: the script and the pats root's bin/. it is
 // removed before the agent starts, since the agent can read everything else.
 const prepareMount = "/pats-prepare"
 
@@ -33,6 +32,7 @@ const prepareMount = "/pats-prepare"
 func prepareEnv(t config.Task, a config.Agent, agentID, runID string) map[string]string {
 	env := map[string]string{
 		"PATS_TASK_ID":       t.ID,
+		"PATS_TASK_VECTOR":   t.Vector,
 		"PATS_AGENT_ID":      agentID,
 		"PATS_AGENT_HARNESS": a.Harness,
 		"PATS_MODEL":         a.Model,
@@ -47,10 +47,10 @@ func prepareEnv(t config.Task, a config.Agent, agentID, runID string) map[string
 }
 
 // stageMaterial stages a step that runs inside a sandbox or a builder: the
-// pats root's bin/, and the inline script or the -cmd's file, in a fresh temp
-// dir; argv runs it once the dir is at mount. a -cmd's bare first word is
-// looked up on PATH in there, bin/ first. the caller removes dir.
-func stageMaterial(root, dir, inline, cmdline, mount string) (material string, argv []string, err error) {
+// pats root's bin/ and the script, in a fresh temp dir; argv runs it once the
+// dir is at mount (by its #! line, else under /bin/sh -e). the caller removes
+// dir.
+func stageMaterial(root, script, mount string) (material string, argv []string, err error) {
 	material, err = sandbox.MkTemp("pats-material-")
 	if err != nil {
 		return "", nil, err
@@ -63,47 +63,17 @@ func stageMaterial(root, dir, inline, cmdline, mount string) (material string, a
 	if err := copyTree(filepath.Join(root, binDir), filepath.Join(material, "bin")); err != nil {
 		return "", nil, err
 	}
-	switch {
-	case inline != "":
-		mode := os.FileMode(0o644)
-		if strings.HasPrefix(inline, "#!") {
-			mode = 0o755
-		}
-		if err := os.WriteFile(filepath.Join(material, "script"), []byte(inline), mode); err != nil {
-			return "", nil, err
-		}
-		if mode == 0o755 {
-			argv = []string{mount + "/script"}
-		} else {
-			argv = []string{"/bin/sh", "-e", mount + "/script"}
-		}
-	default:
-		argv, err = splitArgs(cmdline)
-		if err != nil {
-			return "", nil, err
-		}
-		if len(argv) == 0 {
-			return "", nil, fmt.Errorf("empty command")
-		}
-		if strings.Contains(argv[0], "/") {
-			p, err := resolveCommand(argv[0], dir, "")
-			if err != nil {
-				return "", nil, err
-			}
-			if err := os.MkdirAll(filepath.Join(material, "cmd"), 0o755); err != nil {
-				return "", nil, err
-			}
-			dst := filepath.Join(material, "cmd", filepath.Base(p))
-			if err := copyFile(p, dst); err != nil {
-				return "", nil, err
-			}
-			if err := os.Chmod(dst, 0o755); err != nil {
-				return "", nil, err
-			}
-			argv[0] = path.Join(mount, "cmd", filepath.Base(p))
-		}
+	mode := os.FileMode(0o644)
+	if strings.HasPrefix(script, "#!") {
+		mode = 0o755
 	}
-	return material, argv, nil
+	if err := os.WriteFile(filepath.Join(material, "script"), []byte(script), mode); err != nil {
+		return "", nil, err
+	}
+	if mode == 0o755 {
+		return material, []string{mount + "/script"}, nil
+	}
+	return material, []string{"/bin/sh", "-e", mount + "/script"}, nil
 }
 
 // inPath wraps argv so mount/bin is first on the sandbox's PATH, which is not
@@ -116,7 +86,7 @@ func inPath(mount string, argv []string) []string {
 // material is pushed to prepareMount, run with prepareMount/bin first on PATH
 // and the workdir as cwd, then removed. output goes to log.
 func runPrepare(ctx context.Context, sess sandbox.Session, root, taskDir string, t config.Task, env map[string]string, log io.Writer) error {
-	material, argv, err := stageMaterial(root, taskDir, t.Prepare, t.PrepareCmd, prepareMount)
+	material, argv, err := stageMaterial(root, t.Prepare, prepareMount)
 	if err != nil {
 		return err
 	}

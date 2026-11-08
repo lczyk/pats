@@ -387,6 +387,7 @@ func runPair(
 		"PATS_AGENT_ID":      p.Agent,
 		"PATS_AGENT_HARNESS": a.Harness,
 		"PATS_TASK_ID":       p.Task,
+		"PATS_TASK_VECTOR":   t.Vector,
 		"PATS_MODEL":         a.Model,
 		"PATS_WORKDIR":       workDir,
 		"PATS_OUTPUT_DIR":    outDir,
@@ -410,7 +411,7 @@ func runPair(
 	// a failed setup step (stage, start, prepare) is the pair's error: the
 	// agent never runs, nothing is collected, and the metadata names the step.
 	var setupErr error
-	if stage := (step{t.Stage, t.StageCmd, taskDir}); stage.set() {
+	if stage := (step{t.Stage, taskDir}); stage.set() {
 		if err := runLogged(filepath.Join(outDir, "stage.log"), opts.Out, func(w io.Writer) error {
 			return stage.run(opts.ConfigDir, hostEnv, w)
 		}); err != nil {
@@ -461,7 +462,7 @@ func runPair(
 			setupErr = fmt.Errorf("start: %w", err)
 		default:
 			defer sess.Close()
-			if t.Prepare != "" || t.PrepareCmd != "" {
+			if t.Prepare != "" {
 				env := prepareEnv(t, a, p.Agent, filepath.Base(runDir))
 				if err := runLogged(filepath.Join(outDir, "prepare.log"), nil, func(w io.Writer) error {
 					return runPrepare(sctx, sess, opts.ConfigDir, taskDir, t, env, w)
@@ -513,7 +514,7 @@ func runPair(
 	// collect when the agent ran, left something to gather (it finished, or
 	// timed out mid-run) and its files are on the host. a launch failure left
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
-	if collect := (step{t.Collect, t.CollectCmd, taskDir}); (r.err == nil || r.timedOut) && synced && collect.set() {
+	if collect := (step{t.Collect, taskDir}); (r.err == nil || r.timedOut) && synced && collect.set() {
 		if err := collect.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
 			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
 		}
@@ -749,7 +750,7 @@ func relToCwd(p string) string {
 
 // taskPrompt is the prompt handed to the agent: the literal prompt, the
 // contents of prompt-file (resolved against the task's dir), or the stdout of
-// prompt-cmd, run after stage with the task's env.
+// prompt-cmd, a script run after stage with the task's env.
 func taskPrompt(root, dir string, t config.Task, env map[string]string) ([]byte, error) {
 	switch {
 	case t.PromptFile != "":
@@ -759,7 +760,7 @@ func taskPrompt(root, dir string, t config.Task, env map[string]string) ([]byte,
 		}
 		return os.ReadFile(p)
 	case t.PromptCmd != "":
-		return step{cmd: t.PromptCmd, dir: dir}.output(root, env)
+		return step{script: t.PromptCmd, dir: dir}.output(root, env)
 	}
 	return []byte(t.Prompt), nil
 }

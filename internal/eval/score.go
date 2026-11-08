@@ -280,7 +280,7 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 	if sc.IsAgent() {
 		return 0, fmt.Errorf("agent scorer not implemented yet")
 	}
-	out, err := step{sc.Score, sc.ScoreCmd, filepath.Join(opts.ConfigDir, sc.Dir)}.output(opts.ConfigDir, map[string]string{
+	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.output(opts.ConfigDir, map[string]string{
 		"PATS_RUN_ID":        filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
 		"PATS_OUTPUT_DIR":    outDir,
@@ -288,6 +288,7 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 		"PATS_AGENT_ID":      agent,
 		"PATS_TASK_ID":       task,
 		"PATS_SCORER_ID":     sc.ID,
+		"PATS_SCORER_VECTOR": sc.Vector,
 		"PATS_MODEL":         info.model,
 		"PATS_AGENT_HARNESS": info.harness,
 	})
