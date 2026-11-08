@@ -194,11 +194,12 @@ func TestContainerResolveDigest(t *testing.T) {
 // a provision build runs its step on its base, with the material copied in
 // for the step and removed after; with no base, on the pats sandbox.
 func TestProvisionDockerfile(t *testing.T) {
-	assert.Equal(t, provisionDockerfile(BuildSpec{Base: "ubuntu:26.04", Material: "/m", Argv: []string{"./x.sh"}}),
+	assert.Equal(t, provisionDockerfile(BuildSpec{Base: "ubuntu:26.04", Material: "/m", Argv: []string{"./x.sh"}}, nil),
 		"ARG PATS_SANDBOX\nFROM ubuntu:26.04\nUSER root\nCOPY . /pats-provision\n"+
 			`RUN ["/bin/sh","-c","PATH=\"/pats-provision/bin:$PATH\"; export PATH; exec \"$@\"","provision","./x.sh"]`+"\n"+
 			"RUN rm -rf /pats-provision\n")
-	assert.Equal(t, provisionDockerfile(BuildSpec{}), "ARG PATS_SANDBOX\nFROM ${PATS_SANDBOX}\nUSER root\n")
+	assert.Equal(t, provisionDockerfile(BuildSpec{}, func() string { return "pats/sandbox:v1" }),
+		"ARG PATS_SANDBOX=pats/sandbox:v1\nFROM ${PATS_SANDBOX}\nUSER root\n")
 }
 
 // podman's overrides reach the cli the driver runs, not only its target.

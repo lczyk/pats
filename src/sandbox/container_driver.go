@@ -153,7 +153,7 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 		}
 		defer RemoveTemp(gen)
 		b.Dockerfile = filepath.Join(gen, "Dockerfile")
-		if err := os.WriteFile(b.Dockerfile, []byte(provisionDockerfile(spec)), 0o644); err != nil {
+		if err := os.WriteFile(b.Dockerfile, []byte(provisionDockerfile(spec, sandbox)), 0o644); err != nil {
 			return Image{}, "", false, err
 		}
 		b.Dir = spec.Material
@@ -173,14 +173,16 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 }
 
 // provisionDockerfile runs spec's provision step on its base, with its
-// material copied in for the step and removed after.
-func provisionDockerfile(spec BuildSpec) string {
-	from := spec.Base
+// material copied in for the step and removed after. with no base it builds
+// on the pats sandbox, which the build arg names and the default repeats so
+// the dockerfile reads as valid on its own.
+func provisionDockerfile(spec BuildSpec, sandbox func() string) string {
+	arg, from := baseArg, spec.Base
 	if from == "" {
-		from = "${" + baseArg + "}"
+		arg, from = baseArg+"="+sandbox(), "${"+baseArg+"}"
 	}
 	var df strings.Builder
-	fmt.Fprintf(&df, "ARG %s\nFROM %s\nUSER root\n", baseArg, from)
+	fmt.Fprintf(&df, "ARG %s\nFROM %s\nUSER root\n", arg, from)
 	if len(spec.Argv) > 0 {
 		if spec.Material != "" {
 			fmt.Fprintf(&df, "COPY . %s\n", ProvisionMount)
