@@ -32,7 +32,7 @@ way `run`'s filters do. so `score` gets the same filters, plus one for scorers.
   other cell is kept unless the config no longer has its (agent, task, scorer), and the means cover them all. a
   narrowed score that reaches no cell is an error and leaves the file alone; `-r all` skips a run where that happens
   and fails only when every run does. an unnarrowed score replaces the file, as before.
-- `--agentic` keeps its meaning and composes: `pats score --agentic -s my-judge` judges that scorer's cells and nothing
+- `--judge` keeps its meaning and composes: `pats score --judge -s my-judge` judges that scorer's cells and nothing
   else (`agent-scorers.md`).
 
 ## the one trap

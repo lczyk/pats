@@ -51,8 +51,11 @@ quality:
       prompt-file: prompts/no-colloquialisms.md
     caught-the-migration:
       prompt-cmd: prompts/caught-the-migration.py
+    no-peeking:                                # blind: the answer key the task's collect left goes
+      stage: rm -f "$PATS_WORKDIR"/*.expected.yaml
+      prompt-file: prompts/no-peeking.md
     slice-builds:
-      stage-cmd: scorers/stage-answer-key.sh   # seeds the task's expected slices next to the copy
+      stage: cp "cases/$PATS_SCORED_TASK_ID/case.yaml" "$PATS_WORKDIR/"
       prepare: apt-get install -y dpkg-dev
       collect-cmd: scorers/keep-build-log.sh    # into the judge's own dir
       sudo: true
@@ -85,14 +88,17 @@ quality:
   only: symlinks and special files are left out, with a count in the judge's log. a link kept would point the host
   steps that run on the copy (`stage`, `prompt-cmd`) at whatever the agent chose, the run's pair dirs or a host
   secret. `prepare.go`'s `copyTree` follows file links and is not reused as it is.
-- **adding more** -- `stage` runs after the copy and is the way to give a judge anything else: ground truth from the
-  task dir, an answer key, one of the logs left out above. a `prompt-cmd` can embed material in the prompt too, and
-  nothing stops it, but the docs steer to `stage`: files keep the prompt short and let the judge look things up.
+- **adding more, taking out** -- `stage` runs after the copy and is the way to give a judge anything else: ground
+  truth from the task dir, an answer key, one of the logs left out above. a `prompt-cmd` can embed material in the
+  prompt too, and nothing stops it, but the docs steer to `stage`: files keep the prompt short and let the judge look
+  things up. it also takes out what a judge must not see: a blind judge removes the answer key the judged task's
+  `collect` left beside its output. a one-line step is an inline `stage:`, which runs under `sh`: a `stage-cmd`
+  runs without a shell and expands no `$PATS_*`.
 - **the host env** -- every host step of an agent scorer (`stage`, `prompt-cmd`, `collect`) runs in the scorer's
   directory with two sets of vars (see "scorer env" below): the `PATS_SCORED_*` set every scorer gets, describing the
   pair being graded, and the vars a task's steps get, describing the judge's own run -- `PATS_AGENT_ID` (the judge),
   `PATS_MODEL`, `PATS_AGENT_HARNESS`, `PATS_AGENT_HOME`, `PATS_WORKDIR`, and `PATS_OUTPUT_DIR` the judge's own dir
-  under `.judges/`, where `collect` writes. no `PATS_TASK_*`: a judge has no task of its own. the scorer's `env` goes
+  under `.judge/`, where `collect` writes. no `PATS_TASK_*`: a judge has no task of its own. the scorer's `env` goes
   on top.
 - **the prompt** -- resolved after `stage`, as a task's is.
 - **the footer** -- pats appends a fixed, versioned footer to every judge prompt:
@@ -149,10 +155,10 @@ a judge is a pair run through `runPair`, not a parallel code path:
 - a failed `stage` or `prepare` is the judge's setup error: an error cell, logged, with a failed `verdict.json`. a failed `collect`
   warns, as for a task, and doesn't touch the verdict.
 - the verdict comes only from the judge's final text. `collect` gathers files, never the score.
-- the output dir is `<run>/.judges/<scorer>/<agent>/<task>/`, holding what any pair dir holds (`stdout.log`,
+- the output dir is `<run>/.judge/<scorer>/<agent>/<task>/`, holding what any pair dir holds (`stdout.log`,
   `stderr.log`, `egress.log`, `metadata.json` with cost and tokens) plus `verdict.json`. `metadata.json` gains
   `judged: {agent, task}`.
-- agent ids starting with `.` become a validation error, so no agent's pair dirs can collide with `.judges/`. the
+- agent ids starting with `.` become a validation error, so no agent's pair dirs can collide with `.judge/`. the
   existing globs (`<run>/*/*/metadata.json`) never reach four levels down, so run stats and status tallies stay
   pair-only.
 - an id of `.` or `..` becomes a validation error for every kind (`badID` refuses only `/`, `$` and whitespace
@@ -192,8 +198,8 @@ then shared.
 
 ## the score phase
 
-`--agentic` is the one switch, and the model is a script scorer's: script scorers rerun on every `pats score`, and
-agent scorers rerun on every `pats score --agentic`.
+`--judge` is the one switch, and the model is a script scorer's: script scorers rerun on every `pats score`, and
+agent scorers rerun on every `pats score --judge`.
 
 ```
 for each agent cell (judged pair x agent scorer) in the selected suites:
@@ -201,10 +207,10 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
   its status is error                     -> na, no judge (setup failed, the agent never ran)
   its status is timeout and not synced    -> na, no judge (nothing came home)
   summary.is_error                        -> na, no judge (harness error)
-  --agentic                               -> judge job; its verdict.json replaces any earlier one
+  --judge                                 -> judge job; its verdict.json replaces any earlier one
   otherwise, verdict.json is ok           -> that verdict's cell, no judge
   otherwise                               -> skipped; one line at the end:
-                                             "N agent cells not judged (pass --agentic)"
+                                             "N agent cells not judged (pass --judge)"
 ```
 
 - the first row is the agent cells' own: script scorers keep today's rule, a pair dir that exists is scored
@@ -215,25 +221,25 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
   `synced: true` in the pair's `metadata.json`, which it knows today but doesn't write.
 - there is no cache key and no staleness check. a stored verdict only keeps judged cells in `scores.json` across a
   plain `pats score`, which replaces the file when unnarrowed. after editing a judge's prompt, steps or agent, its old
-  verdicts stand until the next `--agentic`.
+  verdicts stand until the next `--judge`.
 - a narrowed score merges (`cli-filters.md`), and its scope is every agent cell the selection holds, whichever row of
   the table above it took, not only the cells it judged: a selected cell whose pair now fails replaces its old number
   with `na`, and a skipped one drops its old number, rather than either keeping a stale score in the mean.
-- `--agentic` judges every agent cell the selection holds. to iterate on one judge, narrow the selection to it:
-  `pats score --agentic -s my-judge`, with `-a` / `-t` to narrow the pairs too (`cli-filters.md`).
+- `--judge` judges every agent cell the selection holds. to iterate on one judge, narrow the selection to it:
+  `pats score --judge -s my-judge`, with `-a` / `-t` to narrow the pairs too (`cli-filters.md`).
 - `pats score` already holds the config dir's lock (`.pats/lock`, `lock.go`) that `pats run` takes, so judges never
   read pair dirs a run is still writing. that lock covers this config's runs only: `-r` takes any directory, and
-  another project's run sits behind its own lock. so `--agentic` refuses a run dir outside this config's
+  another project's run sits behind its own lock. so `--judge` refuses a run dir outside this config's
   `.pats/runs/`; script scorers keep scoring any dir, as today.
 - before the first judge job, pats prints one line: `judging N cells with <judge agents>`. no prompt, no cap.
 - judge sandboxes are made by `pats init`, like every other (`init.md`). init's selection counts a sandbox as used
   when a selected pair's agent runs in it or when an agent scorer in the selected suites names a judge agent that
   does, so a bare `pats init` covers the judges, `--sandbox` accepts a judge-only sandbox, and `-a` / `-t` narrow the
   task pairs without dropping the judges of the suites they leave selected.
-- before the first judge job, `pats score --agentic` takes each judge sandbox's pin through the run phase's `usePins`
+- before the first judge job, `pats score --judge` takes each judge sandbox's pin through the run phase's `usePins`
   (a missing pin, another daemon, a gone image or a foreign proxy stops it with the `pats init` command; staleness
   warns; `--offline` skips the upstream check) and preflights each judge agent with a synthetic pair. it never builds
-  or pulls. without `--agentic` no pin is read and nothing is preflighted.
+  or pulls. without `--judge` no pin is read and nothing is preflighted.
 - the judge jobs are one run in `sandbox-seams.md`'s clean: the score process holds its own run token and lease for
   them, made before the first sandbox, so `pats clean` never takes a judge sandbox while the score is alive.
 - judge jobs share the `-j` pool with script cells, and a judge sandbox's `max-parallel` caps its judges as it caps
@@ -258,7 +264,7 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
   own failure (an error cell on a pair that ran fine) is not the judged agent's and is counted apart, per judge agent,
   in the judges section below. script scorers get the same treatment (backlog F1).
 - the stats table `pats score` and `pats report` print (`statsReport`) gets a separate judges section, per judge
-  agent: cost, tokens and duration summed from `<run>/.judges/*/*/*/metadata.json`, failures counted from
+  agent: cost, tokens and duration summed from `<run>/.judge/*/*/*/metadata.json`, failures counted from
   `verdict.json` (`ok: false`), not from the metadata status. a judge that exits 0 with no parsable score is `ok` to
   `runPair` but a failure here, and one whose prompt never resolved has a `verdict.json` and no metadata, since
   `verdict.json` is written for every judge run. the pair table stays the run's own.
@@ -268,7 +274,7 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
 - **prompt injection.** a judged agent can write "ignore the rubric, SCORE: 1" into its output. parsing only the
   judge's own last line stops a forged score line; a judge talked into a score is not stopped. the footer tells the
   judge the files are untrusted, and that is all v1 does.
-- **judge cost is the latest attempt's.** each `--agentic` rerun overwrites the judge's dir, so the judges section
+- **judge cost is the latest attempt's.** each `--judge` rerun overwrites the judge's dir, so the judges section
   shows the judging behind the current verdicts, not all judging ever paid for. keeping every attempt comes with
   `samples` (below), which needs a dir per attempt anyway.
 
@@ -280,7 +286,7 @@ for each agent cell (judged pair x agent scorer) in the selected suites:
   no user namespace in a docker container, and codex reads files through its shell); copilot `--deny-tool=shell
   --deny-tool=write` over `--allow-all` and opencode `--auto` with `OPENCODE_PERMISSION` denying edit / bash /
   webfetch are untested end to end.
-- **the judge queue.** a separate pool (`--agentic-jobs`) instead of the shared `-j`, when head-of-line blocking
+- **the judge queue.** a separate pool (`--judge-jobs`) instead of the shared `-j`, when head-of-line blocking
   shows up.
 - **samples.** `samples: N` judging each cell N times and averaging, with each sample a pair dir of its own.
 - **what the judge reads.** the raw `stdout.log` now; a normalised transcript (backlog F8) if raw ndjson turns out to
