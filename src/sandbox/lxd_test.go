@@ -66,16 +66,20 @@ type fakeExit struct{}
 
 func (fakeExit) Error() string { return "exit status 1" }
 
-func fakeLXD(t *testing.T, o Options) (*lxd, *fakeLXC) {
+func fakeLXD(t *testing.T, o Options, s ...SandboxOptions) (*lxd, *fakeLXC) {
 	f := &fakeLXC{}
-	return newLXD(testProcess(t), runFunc(f.run), o), f
+	l := newLXD(testProcess(t), runFunc(f.run), o)
+	if len(s) > 0 {
+		l = l.on(s[0])
+	}
+	return l, f
 }
 
 // an open sandbox: made stopped from the image (on its own server) in the pats project on the
 // pinned remote, stamped as this run's, its own bridge and acl in the default
 // project, the expanded config checked before start, the workdir pushed.
 func TestLXDStartOpen(t *testing.T) {
-	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "pats-img-x", Limits: Limits{CPU: 2, Memory: "4GiB", Disk: "10GiB"}})
+	l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "pats-img-x", Limits: Limits{CPU: 2, Memory: "4GiB", Disk: "10GiB"}})
 	work := t.TempDir()
 	sess, err := l.Start(context.Background(), Spec{Workdir: work})
 	require.NoError(t, err)
@@ -119,7 +123,7 @@ func TestLXDStartOpen(t *testing.T) {
 // a nic a profile adds is refused, and so is raw config, before anything
 // starts; under egress none the instance gets no nic at all.
 func TestLXDStartRefusesForeignNic(t *testing.T) {
-	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img", Profiles: []string{"extra"}})
+	l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "img", Profiles: []string{"extra"}})
 	f.devices = map[string]map[string]string{"eth9": {"type": "nic", "network": "lxdbr0"}}
 	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
 	assert.Error(t, err, "would bypass the sandbox's egress")
@@ -128,7 +132,7 @@ func TestLXDStartRefusesForeignNic(t *testing.T) {
 	assert.NotNil(t, f.call("delete"))
 	assert.ContainsString(t, strings.Join(f.call("init"), " "), "-p extra")
 
-	l, f = fakeLXD(t, Options{Driver: "lxd", Image: "img"})
+	l, f = fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "img"})
 	f.config = map[string]string{"raw.lxc": "lxc.net.0.type=veth"}
 	_, err = l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
 	assert.Error(t, err, "raw config")
@@ -143,7 +147,7 @@ func TestLXDExecArgs(t *testing.T) {
 	args = strings.Join(s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}), " ")
 	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / --env A=1 --env B=2 -- id")
 
-	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img", VM: true})
+	l, f := fakeLXD(t, Options{Driver: "lxd", VM: true}, SandboxOptions{Image: "img"})
 	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
 	require.NoError(t, err)
 	assert.ContainsString(t, strings.Join(f.call("init"), " "), "--vm -c agent.nic_config=true")
@@ -152,7 +156,7 @@ func TestLXDExecArgs(t *testing.T) {
 // HandOver writes the sudoers rule only when the pair allows sudo.
 func TestLXDHandOverSudo(t *testing.T) {
 	for _, sudo := range []bool{false, true} {
-		l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img"})
+		l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "img"})
 		sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}, Sudo: sudo})
 		require.NoError(t, err)
 		f.reset()
@@ -166,7 +170,7 @@ func TestLXDHandOverSudo(t *testing.T) {
 
 // Sync replaces each writable bind's host copy with what is in the instance.
 func TestLXDSync(t *testing.T) {
-	l, _ := fakeLXD(t, Options{Driver: "lxd", Image: "img"})
+	l, _ := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "img"})
 	work, ro := t.TempDir(), t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(work, "stale"), []byte("x"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(ro, "keep"), []byte("x"), 0o644))
@@ -293,7 +297,7 @@ func TestLXDName(t *testing.T) {
 func TestLXDStartProxy(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "pats")
 	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
-	l, f := fakeLXD(t, Options{Driver: "lxd", Image: "img", ProxyBin: bin, Uplink: "up0"})
+	l, f := fakeLXD(t, Options{Driver: "lxd", ProxyBin: bin, Uplink: "up0"}, SandboxOptions{Image: "img"})
 	answers := map[string]string{
 		"egress-canary":        "egress-canary leak=0\n",
 		"egress-reach":         "egress-reach ok=1\n",
@@ -465,9 +469,9 @@ func TestLXDImageBuild(t *testing.T) {
 			return inner(ctx, stdin, stdout, stderr, args...)
 		})
 		var steps, warns []string
-		spec := LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"},
+		spec := lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"},
 			Progress: func(m string) { steps = append(steps, m) }, Warn: func(m string) { warns = append(warns, m) }}
-		_, _, err := l.image(context.Background(), spec, io.Discard)
+		_, _, _, _, err := l.image(context.Background(), spec, io.Discard)
 		return f, steps, warns, err
 	}
 
@@ -586,13 +590,12 @@ func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
 	assert.That(t, !present, "instance left behind")
 }
 
-// the proxy image, built on the driver's own, reports its steps through the
-// driver's Progress like a sandbox image build does.
+// the proxy image build writes its steps to the log it is given, as a
+// sandbox image build does.
 func TestLXDProxyImageProgress(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "pats")
 	require.NoError(t, os.WriteFile(bin, []byte("elf"), 0o755))
-	var steps []string
-	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv", ProxyBin: bin, Uplink: "up0", Progress: func(m string) { steps = append(steps, m) }})
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv", ProxyBin: bin, Uplink: "up0"})
 	inner := f.run
 	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 		joined := strings.Join(args, " ")
@@ -612,10 +615,11 @@ func TestLXDProxyImageProgress(t *testing.T) {
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
 	})
-	_, err := l.buildProxyImage(context.Background())
+	var log bytes.Buffer
+	_, built, err := l.buildProxyImage(context.Background(), false, &log)
 	require.NoError(t, err)
-	require.That(t, len(steps) > 0, "no progress")
-	assert.ContainsString(t, steps[0], "egress proxy: building lxd image pats-img-")
+	assert.Equal(t, built, true)
+	assert.ContainsString(t, log.String(), "==> building lxd image pats-img-")
 }
 
 // a fresh client's first command prints a banner before the remote's name.

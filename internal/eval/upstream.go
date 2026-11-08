@@ -20,12 +20,6 @@ const upstreamPrefix = "upstream:"
 // upstreamBudget is all the upstream checks of a run get, together.
 const upstreamBudget = 5 * time.Second
 
-// the lookups, vars so tests fake them.
-var (
-	registryDigest       = sandbox.RegistryDigest
-	lxdRemoteFingerprint = sandbox.LXDRemoteFingerprint
-)
-
 // publishedRepo says whether ref is one of pats's own published images at
 // a release's tag (v1.0.0-beta.5), which never changes upstream. its
 // :latest or ubuntu tags do, and are checked like any image.
@@ -107,13 +101,8 @@ func stableBases(before, after map[string]string) (held map[string]string, moved
 func baseDigests(ctx context.Context, sb config.Sandbox, configDir string, h puller, log io.Writer) map[string]string {
 	out := map[string]string{}
 	for _, ref := range fromImages(sb, configDir) {
-		if !h.present(ctx, ref) {
-			if err := h.pull(ctx, ref, log); err != nil {
-				continue
-			}
-		}
-		if _, digest, err := h.inspect(ctx, ref); err == nil && digest != "" {
-			out[ref] = digest
+		if img, _, err := h.Pull(ctx, ref, false, log); err == nil && img.Digest != "" {
+			out[ref] = img.Digest
 		}
 	}
 	return out
@@ -121,9 +110,10 @@ func baseDigests(ctx context.Context, sb config.Sandbox, configDir string, h pul
 
 // upstreamCheck is one sandbox's upstream refs, for a run to compare.
 type upstreamCheck struct {
-	sb     string
-	lxd    bool
-	o      sandbox.Options // the lxd server whose arch and instance type pick the image
+	sb string
+	// up looks a ref up on the sandbox's driver: a registry's digest, or an
+	// image remote's fingerprint for its server's arch and instance type.
+	up     func(ctx context.Context, ref string) (string, error)
 	inputs map[string]string
 }
 
@@ -133,8 +123,6 @@ type upstreamCheck struct {
 func checkUpstream(ctx context.Context, checks []upstreamCheck, budget time.Duration) []string {
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	// read once: a lookup past the budget runs on after this returns.
-	registry, lxd := registryDigest, lxdRemoteFingerprint
 	var mu sync.Mutex
 	var warns []string
 	var wg sync.WaitGroup
@@ -147,13 +135,7 @@ func checkUpstream(ctx context.Context, checks []upstreamCheck, budget time.Dura
 			wg.Add(1)
 			go func(c upstreamCheck, ref, pinned string) {
 				defer wg.Done()
-				var now string
-				var err error
-				if c.lxd {
-					now, err = lxd(ctx, c.o, ref)
-				} else {
-					now, err = registry(ctx, ref)
-				}
+				now, err := c.up(ctx, ref)
 				if err != nil || ctx.Err() != nil || now == pinned {
 					return
 				}

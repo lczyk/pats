@@ -14,35 +14,31 @@ import (
 	"strings"
 )
 
-// ContainerBuild is the docker build context a sandbox names with build:.
-type ContainerBuild struct {
+// containerBuild is the docker build context of a build: sandbox, or of
+// one pats generated.
+type containerBuild struct {
 	Dir        string // the context
 	Dockerfile string
 	Force      bool      // build even when an image from identical inputs exists, with no layer cache
 	Log        io.Writer // the build's whole output; nil discards it
 }
 
-// BuildContainerImage resolves a build: sandbox to an image id for a
-// container driver: an image already built from identical inputs (the
-// dockerfile, the context it reads, the id of every FROM image) when one
-// exists, else a fresh build. base gives the pats sandbox image, asked for
-// only when the dockerfile names PATS_SANDBOX, and handed in as that build
-// arg. built reports whether a build ran.
-func BuildContainerImage(ctx context.Context, driver string, b ContainerBuild, base func() string) (id string, built bool, err error) {
-	return buildContainerImage(ctx, cliRunner(driver), driver, b, base)
-}
-
-func buildContainerImage(ctx context.Context, r runner, driver string, b ContainerBuild, base func() string) (id string, built bool, err error) {
+// buildContainerImage resolves a build to an image id for a container
+// driver: an image already built from identical inputs (the dockerfile, the
+// context it reads, the id of every FROM image) when one exists, else a
+// fresh build. base gives the pats sandbox image, asked for only when the
+// dockerfile names PATS_SANDBOX, and handed in as that build arg; baseImg is
+// what it gave, "" when not asked. built reports whether a build ran.
+func buildContainerImage(ctx context.Context, r runner, driver string, b containerBuild, base func() string) (id, baseImg string, built bool, err error) {
 	// read once, shared by checkPatsIgnored (via usesContext) and
 	// buildContextHash below.
 	dfData, dfErr := os.ReadFile(b.Dockerfile)
 	if err := checkPatsIgnored(b.Dir, b.Dockerfile, dfData, dfErr); err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	// the dry cache check: hash the build inputs and look for an image
 	// already labelled with that hash -- a hit skips the build entirely
 	// instead of rebuilding and hoping the layer cache holds.
-	baseImg := ""
 	if bytes.Contains(dfData, []byte(baseArg)) {
 		baseImg = base()
 	}
@@ -57,18 +53,18 @@ func buildContainerImage(ctx context.Context, r runner, driver string, b Contain
 		} else {
 			ids, err := baseImageIDs(ctx, r, refs)
 			if err != nil {
-				return "", false, err
+				return "", "", false, err
 			}
 			hash = rehash(hash, ids)
 		}
 	}
 	if !b.Force {
 		if id := cachedImageID(ctx, r, hash); id != "" {
-			return id, false, nil
+			return id, baseImg, false, nil
 		}
 	}
 	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, b.Log)
-	return id, err == nil, err
+	return id, baseImg, err == nil, err
 }
 
 // LogTail is a build log's last lines, for an error: what failed is usually

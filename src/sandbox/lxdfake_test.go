@@ -140,14 +140,15 @@ func fakeFP(s string) string {
 }
 
 // lxdOn is an lxd driver on f, with a process of its own.
-func lxdOn(t *testing.T, f *fakeServer, o Options) *lxd {
+func lxdOn(t *testing.T, f *fakeServer, o Options, s ...SandboxOptions) *lxd {
 	if o.Driver == "" {
 		o.Driver = "lxd"
 	}
-	if o.Image == "" {
-		o.Image = "img"
+	so := SandboxOptions{Image: "img"}
+	if len(s) > 0 {
+		so = s[0]
 	}
-	return newLXD(testProcess(t), runFunc(f.run), o)
+	return newLXD(testProcess(t), runFunc(f.run), o).on(so)
 }
 
 func (f *fakeServer) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {

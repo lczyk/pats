@@ -11,7 +11,6 @@ import (
 	"io"
 	"maps"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -43,10 +42,6 @@ type Options struct {
 	Suites    []string  // only expand these suites (empty -> all)
 	Offline   bool      // skip the upstream checks, for a machine without a network
 }
-
-// newSandbox is sandbox.New, swappable in tests to run the orchestration
-// against a fake sandbox (no docker).
-var newSandbox = sandbox.New
 
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
 // a single pair failing is logged and skipped -- it does not abort the run.
@@ -83,7 +78,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// an lxd run's marker goes when the run ends; its lease stops.
-	defer sandbox.ShutdownLXD()
+	defer sandbox.Shutdown()
 
 	// the images `pats init` pinned, first: everything after (preflight
 	// included) starts from them, and a run never builds or pulls.
@@ -230,30 +225,24 @@ func resolveJobs(j int, autoN func() int) int {
 }
 
 // autoCPUs sizes -j auto by the machine the pairs run on: an lxd server's
-// cpus when a sandbox the run uses is lxd, else the docker daemon's.
+// cpus when a sandbox the run uses is lxd, else the first used sandbox's
+// daemon's.
 func autoCPUs(ctx context.Context, cfg *config.Config, pairs []config.TestPair) int {
 	used := usedSandboxes(cfg, pairs)
-	for _, sb := range cfg.Sandboxes {
-		if used[sb.ID] && sb.Driver == "lxd" {
-			return lxdCPUs(ctx, sb.Remote)
+	var pick *config.Sandbox
+	for i, sb := range cfg.Sandboxes {
+		if used[sb.ID] && (pick == nil || (sb.Driver == "lxd" && pick.Driver != "lxd")) {
+			pick = &cfg.Sandboxes[i]
 		}
 	}
-	return dockerNCPU()
-}
-
-// lxdCPUs is sandbox.ServerCPUs, a var like dockerNCPU.
-var lxdCPUs = sandbox.ServerCPUs
-
-// dockerNCPU returns the docker daemon's cpu count, or 0 if it can't be read.
-// a var, like newSandbox, so a test can assert the score phase never reaches
-// for it -- scoring runs no containers.
-var dockerNCPU = func() int {
-	out, err := exec.Command("docker", "info", "--format", "{{.NCPU}}").Output()
+	if pick == nil {
+		return 0
+	}
+	h, err := hostFor(*pick)
 	if err != nil {
 		return 0
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	return n
+	return h.CPUs(ctx)
 }
 
 // egressRecord is what a pair ran under and what crossed the proxy, so a run
@@ -274,12 +263,12 @@ type pairMeta struct {
 	Image   string `json:"image"`
 	Sudo    bool   `json:"sudo,omitempty"` // the agent could sudo (lxd)
 	// the lxd server and image the pair ran on.
-	LXD         *sandbox.LXDProvenance `json:"lxd,omitempty"`
-	ExitCode    int                    `json:"exit_code"`
-	DurationS   float64                `json:"duration_s"`
-	Status      string                 `json:"status"` // ok | nonzero | error
-	Error       string                 `json:"error,omitempty"`
-	PatsVersion string                 `json:"pats_version"`
+	LXD         *lxdProvenance `json:"lxd,omitempty"`
+	ExitCode    int            `json:"exit_code"`
+	DurationS   float64        `json:"duration_s"`
+	Status      string         `json:"status"` // ok | nonzero | error
+	Error       string         `json:"error,omitempty"`
+	PatsVersion string         `json:"pats_version"`
 	// egress the proxy refused, by kind: denied is what no rule anticipated
 	// (the cheat signal), blocked is what the policy names, failed is upstream
 	// trouble. see readEgressAudit.
@@ -548,7 +537,7 @@ func runPair(
 		Components: sb.Components,
 	}
 	if sb.Driver == "lxd" {
-		meta.LXD = lxdProvenance(ctx, sb)
+		meta.LXD = lxdProvenanceOf(ctx, sb)
 	}
 	if h.spec.Egress.Set {
 		meta.Egress = &egressRecord{
@@ -591,20 +580,40 @@ func runPair(
 	return nil
 }
 
+// lxdProvenance is what a pair's metadata records of the lxd server and
+// image it ran on.
+type lxdProvenance struct {
+	Remote           string `json:"remote"`
+	InstanceType     string `json:"instance_type"` // container | virtual-machine
+	ImageFingerprint string `json:"image_fingerprint"`
+	ServerVersion    string `json:"server_version"`
+}
+
 // lxdProvenances caches each lxd sandbox's provenance for the run: one
 // server round trip per sandbox, not per pair.
 var lxdProvenances sync.Map
 
-func lxdProvenance(ctx context.Context, sb config.Sandbox) *sandbox.LXDProvenance {
+func lxdProvenanceOf(ctx context.Context, sb config.Sandbox) *lxdProvenance {
 	if v, ok := lxdProvenances.Load(sb.ID + "\x00" + sb.Image); ok {
-		return v.(*sandbox.LXDProvenance)
+		return v.(*lxdProvenance)
 	}
-	p, err := sandbox.LXDInfo(ctx, sandbox.Options{Driver: "lxd", Image: sb.Image, Remote: sb.Remote, VM: sb.VM})
-	if err != nil && p.Remote == "" {
+	h, err := hostFor(sb)
+	if err != nil {
 		return nil
 	}
-	lxdProvenances.Store(sb.ID+"\x00"+sb.Image, &p)
-	return &p
+	t, err := h.Target(ctx)
+	if err != nil {
+		return nil
+	}
+	p := &lxdProvenance{Remote: strings.TrimPrefix(t.Key, "lxd:"), InstanceType: "container", ServerVersion: t.Version}
+	if sb.VM {
+		p.InstanceType = "virtual-machine"
+	}
+	if img, err := h.Resolve(ctx, sb.Image); err == nil {
+		p.ImageFingerprint = img.ID
+	}
+	lxdProvenances.Store(sb.ID+"\x00"+sb.Image, p)
+	return p
 }
 
 // runLogged runs f with its output written to logPath and, when tee is set,

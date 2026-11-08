@@ -47,7 +47,7 @@ func (s *deadlineSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, std
 func TestPreflightBudgets(t *testing.T) {
 	box := &deadlineBox{}
 	old := newSandbox
-	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return box, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return box, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()

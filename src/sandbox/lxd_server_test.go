@@ -167,7 +167,7 @@ func TestLXDTwoProcesses(t *testing.T) {
 	}
 	ch := make(chan res, 4)
 	for _, run := range []*lxd{a, a, b, b} {
-		l := newLXD(run.p, run.r, run.o)
+		l := newLXD(run.p, run.r, run.o).on(run.s)
 		go func() {
 			sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: lxdEgressModes[2].egress})
 			if err != nil {
@@ -354,7 +354,7 @@ func TestLXDCleanCreateInFlight(t *testing.T) {
 func TestLXDSweepImage(t *testing.T) {
 	sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
 		l := lxdOn(t, f, Options{})
-		_, _, _ = l.image(ctx, LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
+		_, _, _, _, _ = l.image(ctx, lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
 		return l.p
 	})
 }
@@ -567,7 +567,7 @@ func TestLXDCopyImageOnServer(t *testing.T) {
 func TestLXDImageOwnBaseOnServer(t *testing.T) {
 	f := newFakeServer(t)
 	l := lxdOn(t, f, Options{})
-	_, _, err := l.image(context.Background(), LXDImageSpec{Base: "img", Argv: []string{"true"}}, io.Discard)
+	_, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "img", Argv: []string{"true"}}, io.Discard)
 	require.NoError(t, err)
 	// by the fingerprint its key was made of, never the name again.
 	assert.ContainsString(t, strings.Join(f.call("launch"), " "), "launch srv:"+fakeFP("img")+" ")
@@ -579,8 +579,8 @@ func TestLXDImageOwnBaseOnServer(t *testing.T) {
 func TestLXDImagePropsAndForceOnServer(t *testing.T) {
 	f := newFakeServer(t)
 	l := lxdOn(t, f, Options{})
-	spec := LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}, Role: "project", Sandbox: "mason"}
-	alias, built, err := l.image(context.Background(), spec, io.Discard)
+	spec := lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}, Role: "project", Sandbox: "mason"}
+	alias, _, _, built, err := l.image(context.Background(), spec, io.Discard)
 	require.NoError(t, err)
 	assert.That(t, built, "the first build did not build")
 	first := f.lookupImage(alias)
@@ -590,12 +590,12 @@ func TestLXDImagePropsAndForceOnServer(t *testing.T) {
 	assert.Equal(t, props["pats.version"], version.Info.Version)
 	assert.Equal(t, "pats-img-"+props["pats.inputs"], alias)
 
-	_, built, err = l.image(context.Background(), spec, io.Discard)
+	_, _, _, built, err = l.image(context.Background(), spec, io.Discard)
 	require.NoError(t, err)
 	assert.That(t, !built, "an unforced build of a present key built")
 
 	spec.Force = true
-	again, built, err := l.image(context.Background(), spec, io.Discard)
+	again, _, _, built, err := l.image(context.Background(), spec, io.Discard)
 	require.NoError(t, err)
 	assert.That(t, built && again == alias, "a forced build: built %v, alias %s", built, again)
 	second := f.lookupImage(alias)
@@ -612,7 +612,7 @@ func TestLXDImagePropsAndForceOnServer(t *testing.T) {
 func TestImageKeyVersionAndKey(t *testing.T) {
 	old := version.Info
 	t.Cleanup(func() { version.Info = old })
-	spec := LXDImageSpec{Argv: []string{"true"}}
+	spec := lxdImageSpec{Argv: []string{"true"}}
 	a, err := imageKey("fp", spec, false)
 	require.NoError(t, err)
 	version.Info.Version = "9.9.9"
@@ -620,7 +620,7 @@ func TestImageKeyVersionAndKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.That(t, a != b, "a new pats version kept the key")
 
-	x, _ := imageKey("fp", LXDImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"a"}}, false)
-	y, _ := imageKey("fp", LXDImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"b"}}, false)
+	x, _ := imageKey("fp", lxdImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"a"}}, false)
+	y, _ := imageKey("fp", lxdImageSpec{Key: "proxy 9.9.9 amd64", Argv: []string{"b"}}, false)
 	assert.Equal(t, x, y)
 }

@@ -1,174 +1,95 @@
 package eval
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-// imageHost is where a sandbox's images live, as init and run see it.
+// imageHost is where a sandbox's images live, as init and run see it: a
+// sandbox.Driver, narrowed to what they ask of it.
 type imageHost interface {
-	// target names the host in the pin file, resolved now (a later change
-	// of default must not move a pin); daemon identifies the daemon that
-	// answers, "" where the target says it all.
-	target(ctx context.Context) (target, daemon string, err error)
-	// present says whether the image ref is on the host.
-	present(ctx context.Context, ref string) bool
-	// stamps are the harness versions inside image id, those it has.
-	stamps(ctx context.Context, id string) (map[string]string, error)
+	// Target names the host in the pin file, resolved now (a later change
+	// of default must not move a pin), with the daemon that answers.
+	Target(ctx context.Context) (sandbox.Target, error)
+	// Resolve is the image a ref names now.
+	Resolve(ctx context.Context, ref string) (sandbox.Image, error)
+	// Stamps are the harness versions inside image id, those it has.
+	Stamps(ctx context.Context, id string) (map[string]string, error)
 }
 
-// puller is a container host init pulls into.
+// puller is a host init pulls into.
 type puller interface {
 	imageHost
-	// inspect is an image's id and, when it came from a registry, its digest.
-	inspect(ctx context.Context, ref string) (id, digest string, err error)
-	// pull fetches ref, its progress to log.
-	pull(ctx context.Context, ref string, log io.Writer) error
-	// ids is every image id the daemon holds, tagged or not.
-	ids(ctx context.Context) (map[string]bool, error)
+	// Images is every image id the host holds, tagged or not.
+	Images(ctx context.Context) (map[string]bool, error)
+	Pull(ctx context.Context, ref string, force bool, log io.Writer) (sandbox.Image, bool, error)
 }
 
-// hostFor is the image host of a sandbox's driver; a var so tests fake it.
-var hostFor = func(sb config.Sandbox) imageHost {
-	if sb.Driver == "lxd" {
-		return lxdHost{o: lxdOptions(sb)}
-	}
-	return containerHost{driver: sb.Driver}
+// builder is a host init makes a sandbox's images on.
+type builder interface {
+	puller
+	Build(ctx context.Context, spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error)
+	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (sandbox.Image, bool, error)
 }
 
-// lxdOptions are the driver options an lxd sandbox's images are made with.
-func lxdOptions(sb config.Sandbox) sandbox.Options {
-	return sandbox.Options{Driver: "lxd", Remote: sb.Remote, VM: sb.VM}.WithEnv()
+// host is all eval asks of a sandbox's driver.
+type host interface {
+	builder
+	// Upstream is the id or digest ref's source names now.
+	Upstream(ctx context.Context, ref string) (string, error)
+	CPUs(ctx context.Context) int
 }
 
-// containerHost is a docker or podman daemon, through its cli.
-type containerHost struct{ driver string }
-
-func (h containerHost) cli(ctx context.Context, args ...string) (string, error) {
-	var out, errb bytes.Buffer
-	cmd := exec.CommandContext(ctx, h.driver, args...)
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s %s: %w (%s)", h.driver, strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
-	}
-	return strings.TrimSpace(out.String()), nil
-}
-
-// target is docker:<context> with the daemon's id, or podman:<connection>
-// with the connection's uri (podman has no daemon id), podman:local when
-// it has no connection configured.
-func (h containerHost) target(ctx context.Context) (string, string, error) {
-	if h.driver == "podman" {
-		// the cli's own overrides first: a service uri, then a named connection.
-		if uri := os.Getenv("CONTAINER_HOST"); uri != "" {
-			return "podman:" + uri, uri, nil
-		}
-		want := os.Getenv("CONTAINER_CONNECTION")
-		out, err := h.cli(ctx, "system", "connection", "list", "--format", "json")
-		if err != nil {
-			return "", "", err
-		}
-		var conns []struct {
-			Name    string
-			URI     string
-			Default bool
-		}
-		_ = json.Unmarshal([]byte(out), &conns)
-		for _, c := range conns {
-			if (want != "" && c.Name == want) || (want == "" && c.Default) {
-				return "podman:" + c.Name, c.URI, nil
-			}
-		}
-		if want != "" {
-			return "", "", fmt.Errorf("podman connection %q (CONTAINER_CONNECTION) not found", want)
-		}
-		return "podman:local", "local", nil
-	}
-	name, err := h.cli(ctx, "context", "show")
-	if err != nil {
-		return "", "", err
-	}
-	id, err := h.cli(ctx, "info", "--format", "{{.ID}}")
-	if err != nil {
-		return "", "", err
-	}
-	return h.driver + ":" + name, id, nil
-}
-
-func (h containerHost) present(ctx context.Context, ref string) bool {
-	_, err := h.cli(ctx, "image", "inspect", "--format", "{{.Id}}", ref)
-	return err == nil
-}
-
-func (h containerHost) stamps(ctx context.Context, id string) (map[string]string, error) {
-	return sandbox.ContainerStamps(ctx, h.driver, id)
-}
-
-func (h containerHost) inspect(ctx context.Context, ref string) (id, digest string, err error) {
-	out, err := h.cli(ctx, "image", "inspect", "--format", "{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}", ref)
-	if err != nil {
-		return "", "", err
-	}
-	id, digests, _ := strings.Cut(out, "|")
-	// an image pulled from two repositories has a digest in each: the one
-	// of the repository asked for.
-	want := sandbox.Repository(ref)
-	for _, rd := range strings.Fields(digests) {
-		if name, d, ok := strings.Cut(rd, "@"); ok && sandbox.Repository(name) == want {
-			digest = d
-			break
-		}
-	}
-	return id, digest, nil
-}
-
-func (h containerHost) ids(ctx context.Context) (map[string]bool, error) {
-	out, err := h.cli(ctx, "images", "-a", "-q", "--no-trunc")
+// hostFor is the driver of a sandbox's place; a var so tests fake it.
+var hostFor = func(sb config.Sandbox) (host, error) {
+	d, err := sandbox.Open(placeOptions(sb))
 	if err != nil {
 		return nil, err
 	}
-	ids := map[string]bool{}
-	for _, id := range strings.Fields(out) {
-		ids[id] = true
-	}
-	return ids, nil
+	return d, nil
 }
 
-func (h containerHost) pull(ctx context.Context, ref string, log io.Writer) error {
-	var errb bytes.Buffer
-	cmd := exec.CommandContext(ctx, h.driver, "pull", ref)
-	cmd.Stdout, cmd.Stderr = log, io.MultiWriter(log, &errb)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s pull %s: %w (%s)", h.driver, ref, err, strings.TrimSpace(errb.String()))
-	}
-	return nil
+// placeOptions are the driver options of the place a sandbox runs on.
+func placeOptions(sb config.Sandbox) sandbox.Options {
+	return sandbox.Options{Driver: sb.Driver, Remote: sb.Remote, VM: sb.VM}.WithEnv()
 }
 
-// lxdHost is an lxd server, through the lxc cli.
-type lxdHost struct{ o sandbox.Options }
-
-func (h lxdHost) target(ctx context.Context) (string, string, error) {
-	remote, err := sandbox.LXDRemote(ctx, h.o)
+// newSandbox makes a sandbox on a place, swappable in tests to run the
+// orchestration against a fake sandbox (no docker).
+var newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+	d, err := sandbox.Open(o)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
-	return "lxd:" + remote, "", nil
+	return d.Sandbox(s)
 }
 
-func (h lxdHost) present(ctx context.Context, ref string) bool {
-	_, err := sandbox.LXDFingerprint(ctx, h.o, ref)
-	return err == nil
+// stepLog is a build log that also reports its steps: each "==> " line
+// to step, each "==> warning: " line to warn.
+type stepLog struct {
+	w          io.Writer
+	step, warn func(msg string)
+	partial    []byte
 }
 
-func (h lxdHost) stamps(ctx context.Context, id string) (map[string]string, error) {
-	return sandbox.LXDImageStamps(ctx, h.o, id)
+func (s *stepLog) Write(p []byte) (int, error) {
+	n, err := s.w.Write(p)
+	s.partial = append(s.partial, p...)
+	for {
+		line, rest, ok := strings.Cut(string(s.partial), "\n")
+		if !ok {
+			break
+		}
+		s.partial = []byte(rest)
+		if msg, ok := strings.CutPrefix(line, "==> warning: "); ok {
+			s.warn(msg)
+		} else if msg, ok := strings.CutPrefix(line, "==> "); ok {
+			s.step(msg)
+		}
+	}
+	return n, err
 }

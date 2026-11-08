@@ -2,7 +2,6 @@ package eval
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -86,15 +85,6 @@ func TestInitPinsContainers(t *testing.T) {
 	f, err = readPins(dir)
 	require.NoError(t, err)
 	assert.That(t, f.entry("fake:host", "own").Image.Pulled, "a re-init forgot pats pulled the image")
-}
-
-// podman's target follows the overrides its cli honours.
-func TestPodmanTargetEnv(t *testing.T) {
-	t.Setenv("CONTAINER_HOST", "ssh://core@box/run/podman.sock")
-	target, daemon, err := containerHost{driver: "podman"}.target(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, target, "podman:ssh://core@box/run/podman.sock")
-	assert.Equal(t, daemon, "ssh://core@box/run/podman.sock")
 }
 
 // --sandbox, --driver and run's selectors narrow what init makes; a sandbox

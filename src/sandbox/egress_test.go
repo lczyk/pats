@@ -45,7 +45,7 @@ func newFakeDocker(t *testing.T) *fakeDocker {
 }
 
 func (f *fakeDocker) container() *container {
-	return newContainer(testProcess(f.t), runFunc(f.run), Options{Driver: "docker", Image: "img"})
+	return newContainer(testProcess(f.t), runFunc(f.run), Options{Driver: "docker"}).on(SandboxOptions{Image: "img"})
 }
 
 func (f *fakeDocker) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {

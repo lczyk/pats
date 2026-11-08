@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -26,6 +27,8 @@ type fakeHost struct {
 	untagged           map[string]bool   // ids held with no ref
 	pullTo             string            // the id a pull lands on, when set
 	digests            map[string]string // ref -> registry digest
+	cpus               int
+	upstream           func(ref string) (string, error)
 }
 
 func newFakeHost(refs ...string) *fakeHost {
@@ -36,23 +39,23 @@ func newFakeHost(refs ...string) *fakeHost {
 	return h
 }
 
-func (h *fakeHost) target(context.Context) (string, string, error) {
-	return h.targetName, h.daemon, nil
+func (h *fakeHost) Target(context.Context) (sandbox.Target, error) {
+	return sandbox.Target{Key: h.targetName, Daemon: h.daemon}, nil
 }
 
-func (h *fakeHost) present(_ context.Context, ref string) bool {
-	if _, ok := h.refs[ref]; ok {
-		return true
+func (h *fakeHost) Resolve(_ context.Context, ref string) (sandbox.Image, error) {
+	if id, ok := h.refs[ref]; ok {
+		return sandbox.Image{ID: id, Name: ref, Digest: h.digests[ref]}, nil
 	}
 	for _, id := range h.refs {
 		if id == ref {
-			return true
+			return sandbox.Image{ID: id, Name: ref}, nil
 		}
 	}
-	return false
+	return sandbox.Image{}, fmt.Errorf("%w: %s", sandbox.ErrNoImage, ref)
 }
 
-func (h *fakeHost) stamps(context.Context, string) (map[string]string, error) {
+func (h *fakeHost) Stamps(context.Context, string) (map[string]string, error) {
 	if h.stampErr != nil {
 		return nil, h.stampErr
 	}
@@ -63,14 +66,7 @@ func (h *fakeHost) stamps(context.Context, string) (map[string]string, error) {
 	return out, nil
 }
 
-func (h *fakeHost) inspect(_ context.Context, ref string) (string, string, error) {
-	if id, ok := h.refs[ref]; ok {
-		return id, h.digests[ref], nil
-	}
-	return "", "", errNoImage
-}
-
-func (h *fakeHost) ids(context.Context) (map[string]bool, error) {
+func (h *fakeHost) Images(context.Context) (map[string]bool, error) {
 	ids := map[string]bool{}
 	for _, id := range h.refs {
 		ids[id] = true
@@ -81,30 +77,53 @@ func (h *fakeHost) ids(context.Context) (map[string]bool, error) {
 	return ids, nil
 }
 
-func (h *fakeHost) pull(_ context.Context, ref string, log io.Writer) error {
-	fmt.Fprintf(log, "pulled %s\n", ref)
+func (h *fakeHost) Pull(ctx context.Context, ref string, force bool, log io.Writer) (sandbox.Image, bool, error) {
+	if _, ok := h.refs[ref]; ok && !force {
+		img, err := h.Resolve(ctx, ref)
+		return img, false, err
+	}
+	if log != nil {
+		fmt.Fprintf(log, "pulled %s\n", ref)
+	}
 	h.pulls = append(h.pulls, ref)
-	if h.samePull && h.refs[ref] != "" {
-		return nil
+	if !h.samePull || h.refs[ref] == "" {
+		h.refs[ref] = "sha256:pulled-" + ref
+		if h.pullTo != "" {
+			h.refs[ref] = h.pullTo
+		}
 	}
-	h.refs[ref] = "sha256:pulled-" + ref
-	if h.pullTo != "" {
-		h.refs[ref] = h.pullTo
-	}
-	return nil
+	img, err := h.Resolve(ctx, ref)
+	return img, err == nil, err
 }
 
-var errNoImage = &noImage{}
+func (h *fakeHost) ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (sandbox.Image, bool, error) {
+	return h.Pull(ctx, ref, force, log)
+}
 
-type noImage struct{}
+// Build builds every spec into an image named after its base, or its
+// dockerfile.
+func (h *fakeHost) Build(_ context.Context, spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
+	id := "sha256:built-" + spec.Base + spec.Dockerfile
+	h.refs[id] = id
+	return sandbox.Image{ID: id}, "", true, nil
+}
 
-func (*noImage) Error() string { return "no such image" }
+func (h *fakeHost) Upstream(_ context.Context, ref string) (string, error) {
+	if h.upstream == nil {
+		return "", errors.New("offline")
+	}
+	return h.upstream(ref)
+}
+
+func (h *fakeHost) CPUs(context.Context) int { return h.cpus }
+
+var errNoImage = errors.New("no such image")
 
 // useHost makes every sandbox's image host h for the test.
-func useHost(t *testing.T, h imageHost) {
+func useHost(t *testing.T, h host) {
 	t.Helper()
 	old := hostFor
-	hostFor = func(config.Sandbox) imageHost { return h }
+	hostFor = func(config.Sandbox) (host, error) { return h, nil }
 	t.Cleanup(func() { hostFor = old })
 }
 
@@ -142,6 +161,6 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 func useFakeSandbox(t *testing.T, fake sandbox.Sandbox) {
 	t.Helper()
 	old := newSandbox
-	newSandbox = func(sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(sandbox.Options, sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	t.Cleanup(func() { newSandbox = old })
 }

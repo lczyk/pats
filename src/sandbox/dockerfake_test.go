@@ -34,6 +34,14 @@ type fakeDaemon struct {
 	execs  map[*fakeExec]bool
 	seq    int
 
+	images   map[string]*fakeDImage       // by id
+	registry map[string]fakeRegistryImage // what a pull of a ref brings
+	conns    []map[string]any             // podman's connections
+	daemonID string
+	cpus     int
+	pulls    int
+	builds   int
+
 	canary string // the canary's output
 	// agent, when set, runs an exec the fake does not claim (the agent's
 	// command, a root step). ctx ends when the container is killed.
@@ -72,12 +80,19 @@ func newFakeDaemon(t *testing.T, driver string) *fakeDaemon {
 	}
 	return &fakeDaemon{t: t, driver: driver, ctrs: map[string]*fakeCtr{}, execs: map[*fakeExec]bool{},
 		nets:   map[string]*fakeDNet{def: {subnet: netip.MustParsePrefix("172.17.0.0/16")}},
-		canary: "egress-canary leak=0\n"}
+		canary: "egress-canary leak=0\n",
+		images: map[string]*fakeDImage{}, daemonID: "DAEMON:" + driver, cpus: 6,
+		registry: map[string]fakeRegistryImage{
+			"img":            {fakeImageID("img"), "sha256:d-img"},
+			"ubuntu:26.04":   {fakeImageID("ubuntu:26.04"), "sha256:d-ubuntu"},
+			"python:3":       {fakeImageID("python:3"), "sha256:d-python"},
+			"other/python:3": {fakeImageID("python:3"), "sha256:d-other"},
+		}}
 }
 
 // containerOn is a docker driver on f, with a process of its own.
 func containerOn(t *testing.T, f *fakeDaemon) *container {
-	return newContainer(testProcess(t), runFunc(f.run), Options{Driver: f.driver, Image: "img"})
+	return newContainer(testProcess(t), runFunc(f.run), Options{Driver: f.driver}).on(SandboxOptions{Image: "img"})
 }
 
 func (f *fakeDaemon) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
@@ -176,6 +191,9 @@ func (f *fakeDaemon) do(ctx context.Context, stdin io.Reader, stdout, stderr io.
 		}
 		c.nets[args[2]] = netip.Addr{}
 		return nil
+	}
+	if handled, err := f.imageCmd(stdout, stderr, args); handled {
+		return err
 	}
 	f.t.Errorf("fake %s: unknown command %s", f.driver, strings.Join(args, " "))
 	return dockerFail(stderr, "unknown command")

@@ -26,10 +26,10 @@ const ProvisionMount = "/pats-provision"
 // does to a provisioned image changes, so cached images are remade.
 const provisionerVersion = "2"
 
-// LXDImageSpec is one provisioning step: argv runs as root in an instance
+// lxdImageSpec is one provisioning step: argv runs as root in an instance
 // launched from Base, with Material (a host dir) at ProvisionMount and its
 // bin/ first on PATH.
-type LXDImageSpec struct {
+type lxdImageSpec struct {
 	Base     string // an image ref the cli resolves (ubuntu:26.04), or a pats-img- alias
 	Material string
 	Argv     []string
@@ -37,9 +37,6 @@ type LXDImageSpec struct {
 	// happen; the log gets them too.
 	Progress func(msg string)
 	Warn     func(msg string)
-	// Based, when set, gets the fingerprint Base resolved to: what the
-	// image's key, and so the image, is built on.
-	Based func(fp string)
 	// Role (sandbox | project | proxy) and Sandbox are recorded on the
 	// image as pats.role and pats.sandbox, for people listing images.
 	Role, Sandbox string
@@ -52,7 +49,7 @@ type LXDImageSpec struct {
 	Key string
 }
 
-func (s LXDImageSpec) step(log io.Writer, format string, a ...any) {
+func (s lxdImageSpec) step(log io.Writer, format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
 	fmt.Fprintf(log, "==> %s\n", msg)
 	if s.Progress != nil {
@@ -60,7 +57,7 @@ func (s LXDImageSpec) step(log io.Writer, format string, a ...any) {
 	}
 }
 
-func (s LXDImageSpec) warn(log io.Writer, format string, a ...any) {
+func (s lxdImageSpec) warn(log io.Writer, format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
 	fmt.Fprintf(log, "==> warning: %s\n", msg)
 	if s.Warn != nil {
@@ -72,43 +69,37 @@ func (s LXDImageSpec) warn(log io.Writer, format string, a ...any) {
 // the image it publishes take a few GiB.
 const lowPoolSpace = 5 << 30
 
-// LXDImage returns the alias of the image spec provisions on l's server,
-// building it on a miss. the alias is keyed on the base image's fingerprint,
-// the material, argv, the instance type and what pats adds itself, so a
-// refreshed base or an edited script makes a new image. log gets the build's
-// output. built reports whether one ran.
-func LXDImage(ctx context.Context, o Options, spec LXDImageSpec, log io.Writer) (alias string, built bool, err error) {
-	l := newLXD(defaultProcess, lxcCLI, o)
-	return l.image(ctx, spec, log)
-}
-
-func (l *lxd) image(ctx context.Context, spec LXDImageSpec, log io.Writer) (string, bool, error) {
+// image finds or builds the image spec provisions on l's server: its
+// alias and fingerprint, and the fingerprint of the base it is keyed on.
+// the alias is keyed on the base image's fingerprint, the material, argv,
+// the instance type and what pats adds itself, so a refreshed base or an
+// edited script makes a new image. log gets the build's output. built
+// reports whether one ran.
+func (l *lxd) image(ctx context.Context, spec lxdImageSpec, log io.Writer) (alias, fp, base string, built bool, err error) {
 	if err := l.prepareServer(ctx); err != nil {
-		return "", false, err
+		return "", "", "", false, err
 	}
-	fp, err := l.fingerprint(ctx, spec.Base)
+	base, err = l.fingerprint(ctx, spec.Base)
 	if err != nil {
-		return "", false, fmt.Errorf("base %s: %w", spec.Base, err)
+		return "", "", "", false, fmt.Errorf("base %s: %w", spec.Base, err)
 	}
-	if spec.Based != nil {
-		spec.Based(fp)
-	}
-	key, err := imageKey(fp, spec, l.o.VM)
+	key, err := imageKey(base, spec, l.o.VM)
 	if err != nil {
-		return "", false, err
+		return "", "", "", false, err
 	}
-	alias := "pats-img-" + key
-	if _, err := l.fingerprint(ctx, alias); err == nil && !spec.Force {
-		return alias, false, nil
+	alias = "pats-img-" + key
+	if fp, err := l.fingerprint(ctx, alias); err == nil && !spec.Force {
+		return alias, fp, base, false, nil
 	}
 	spec.step(log, "building lxd image %s on %s from %s", alias, l.o.Remote, spec.Base)
 	if free, total, ok := l.poolSpace(ctx); ok && free < lowPoolSpace {
 		spec.warn(log, "storage pool %s on %s has %.1f GiB free of %.1f GiB; a build takes a few", l.pool, l.o.Remote, float64(free)/(1<<30), float64(total)/(1<<30))
 	}
-	if err := l.build(ctx, spec, fp, alias, log); err != nil {
-		return "", false, err
+	fp, err = l.build(ctx, spec, base, alias, log)
+	if err != nil {
+		return "", "", "", false, err
 	}
-	return alias, true, nil
+	return alias, fp, base, true, nil
 }
 
 // poolSpace is the pats pool's free and total bytes, when the server says.
@@ -183,28 +174,10 @@ var fingerprintRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // isFingerprint says whether ref names an image by fingerprint.
 func isFingerprint(ref string) bool { return fingerprintRe.MatchString(ref) }
 
-// LXDFingerprint resolves an image ref to its fingerprint: a pats-img- alias
-// or a fingerprint in the pats project, anything else as the cli resolves it.
-func LXDFingerprint(ctx context.Context, o Options, ref string) (string, error) {
-	l := newLXD(defaultProcess, lxcCLI, o)
-	if err := l.prepareServer(ctx); err != nil {
-		return "", err
-	}
-	return l.fingerprint(ctx, ref)
-}
-
-// LXDCopyImage brings ref, an image on another remote (ubuntu:26.04), onto
-// o's server in the pats project, so instances start from it there without a
-// download; present already, it is left alone unless force. it returns the
-// fingerprint, and whether this call copied it.
-func LXDCopyImage(ctx context.Context, o Options, ref string, force bool) (string, bool, error) {
-	l := newLXD(defaultProcess, lxcCLI, o)
-	if err := l.prepareServer(ctx); err != nil {
-		return "", false, err
-	}
-	return l.copyImage(ctx, ref, force)
-}
-
+// copyImage brings ref, an image on another remote (ubuntu:26.04), onto
+// l's server in the pats project, so instances start from it there without
+// a download; present already, it is left alone unless force. it returns
+// the fingerprint, and whether this call copied it. l is ready.
 func (l *lxd) copyImage(ctx context.Context, ref string, force bool) (string, bool, error) {
 	fp, err := l.fingerprint(ctx, ref)
 	if err != nil {
@@ -222,27 +195,8 @@ func (l *lxd) copyImage(ctx context.Context, ref string, force bool) (string, bo
 	return fp, true, nil
 }
 
-// LXDRemote is the remote o names, or the cli's default when it names none,
-// without touching the server.
-func LXDRemote(ctx context.Context, o Options) (string, error) {
-	if o.Remote != "" {
-		return o.Remote, nil
-	}
-	return newLXD(defaultProcess, lxcCLI, o).defaultRemote(ctx)
-}
-
-// LXDProxyImage makes (or finds) the egress proxy image on o's server and
-// returns its alias.
-func LXDProxyImage(ctx context.Context, o Options) (string, error) {
-	l := newLXD(defaultProcess, lxcCLI, o)
-	if err := l.prepareServer(ctx); err != nil {
-		return "", err
-	}
-	return l.proxyImage(ctx)
-}
-
 // imageKey digests every input of a provisioned image.
-func imageKey(fp string, spec LXDImageSpec, vm bool) (string, error) {
+func imageKey(fp string, spec lxdImageSpec, vm bool) (string, error) {
 	h := sha256.New()
 	// the pats version too: a layer on a custom base inherits no other.
 	fmt.Fprintf(h, "provisioner=%s\nbase=%s\nvm=%v\npats=%s\n", provisionerVersion, fp, vm, version.Info.Version)
@@ -306,10 +260,10 @@ func (l *lxd) uplink(ctx context.Context) (string, error) {
 // publishes under a run-private alias first and only then claims alias, so
 // two runs missing the same image never replace one in use: the loser's copy
 // is deleted, the winner's is identical by construction.
-func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string, log io.Writer) (err error) {
+func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string, log io.Writer) (fp string, err error) {
 	net, err := l.uplink(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	name := "pats-build-" + l.p.token + "-" + strings.TrimPrefix(alias, "pats-img-")[:8]
 	s := &lxdSession{l: l, name: name}
@@ -337,19 +291,19 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string
 	args = append(args, l.metaFlags()...)
 	spec.step(log, "launching builder %s", name)
 	if _, err := l.lxc(ctx, args...); err != nil {
-		return err
+		return "", err
 	}
 	if err := s.waitReady(ctx, true); err != nil {
-		return fmt.Errorf("%w (does the uplink bridge %s reach the internet? on a host running docker, a new bridge needs an admin rule; or set %s to a bridge that works)", err, net, LXDUplinkEnv)
+		return "", fmt.Errorf("%w (does the uplink bridge %s reach the internet? on a host running docker, a new bridge needs an admin rule; or set %s to a bridge that works)", err, net, LXDUplinkEnv)
 	}
 	if !s.online(ctx) {
-		return fmt.Errorf("lxd: the image builder on bridge %s does not reach the internet. %s. or set %s to a bridge that does (e.g. lxdbr0)", net, dockerBridgeHint, LXDUplinkEnv)
+		return "", fmt.Errorf("lxd: the image builder on bridge %s does not reach the internet. %s. or set %s to a bridge that does (e.g. lxdbr0)", net, dockerBridgeHint, LXDUplinkEnv)
 	}
 	// cloud-init may still be configuring the base on first boot.
 	_, _ = s.exec(ctx, Cmd{Argv: []string{"sh", "-c", "command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1; true"}, Root: true, Dir: "/"}, io.Discard, io.Discard)
 	if spec.Material != "" {
 		if err := s.Push(ctx, spec.Material, ProvisionMount); err != nil {
-			return err
+			return "", err
 		}
 	}
 	spec.step(log, "provisioning: %s", strings.Join(spec.Argv, " "))
@@ -357,10 +311,10 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string
 		wrapped := append([]string{"/bin/sh", "-c", `PATH="` + ProvisionMount + `/bin:$PATH"; export PATH; exec "$@"`, "provision"}, spec.Argv...)
 		code, err := s.exec(ctx, Cmd{Argv: wrapped, Root: true, Dir: "/"}, log, log)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if code != 0 {
-			return fmt.Errorf("provisioning exited %d", code)
+			return "", fmt.Errorf("provisioning exited %d", code)
 		}
 	}
 	// what pats needs of every image: the agent user, and no cloud-init to
@@ -368,7 +322,7 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string
 	epilogue := `rm -rf ` + ProvisionMount + `; id -u ` + lxdAgentUser + ` >/dev/null 2>&1 || useradd -m -s /bin/bash ` + lxdAgentUser + `; mkdir -p /etc/cloud && touch /etc/cloud/cloud-init.disabled`
 	var out bytes.Buffer
 	if code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", epilogue}, Root: true, Dir: "/"}, &out, &out); err != nil || code != 0 {
-		return fmt.Errorf("provisioning epilogue: %v %s", err, strings.TrimSpace(out.String()))
+		return "", fmt.Errorf("provisioning epilogue: %v %s", err, strings.TrimSpace(out.String()))
 	}
 	// the harness versions inside, as image properties init pins and runs check.
 	var stampOut, stampErr bytes.Buffer
@@ -377,19 +331,19 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string
 	timedOut := errors.Is(sctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	scancel()
 	if timedOut {
-		return fmt.Errorf("stamping the harness versions took over %s", stampTimeout)
+		return "", fmt.Errorf("stamping the harness versions took over %s", stampTimeout)
 	}
 	if err != nil {
-		return err
+		return "", err
 	} else if code != 0 {
-		return fmt.Errorf("stamping the harness versions exited %d: %s", code, strings.TrimSpace(stampErr.String()))
+		return "", fmt.Errorf("stamping the harness versions exited %d: %s", code, strings.TrimSpace(stampErr.String()))
 	}
 	stamps, err := parseStamps(stampOut.String())
 	if err != nil {
-		return err
+		return "", err
 	}
 	if _, err := l.lxc(ctx, "stop", s.inst(), "--project", lxdProject); err != nil {
-		return err
+		return "", err
 	}
 	private := alias + "-" + l.p.token
 	pub := []string{"publish", s.inst(), l.o.Remote + ":", "--project", lxdProject, "--alias", private}
@@ -413,15 +367,15 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string
 		}
 	}()
 	if _, err := l.lxc(ctx, pub...); err != nil {
-		return err
+		return "", err
 	}
-	fp, err := l.fingerprint(ctx, private)
+	fp, err = l.fingerprint(ctx, private)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if _, err := l.lxc(ctx, "image", "alias", "create", l.ref(alias), fp, "--project", lxdProject); err != nil {
 		if _, ferr := l.fingerprint(ctx, alias); ferr != nil {
-			return err
+			return "", err
 		}
 		if spec.Force {
 			// a forced build replaces what the alias named, in one call: the
@@ -429,55 +383,15 @@ func (l *lxd) build(ctx context.Context, spec LXDImageSpec, baseFP, alias string
 			body, _ := json.Marshal(map[string]string{"target": fp, "description": ""})
 			if _, err := l.lxc(ctx, "query", "-X", "PUT", "-d", string(body),
 				l.o.Remote+":/1.0/images/aliases/"+alias+"?project="+lxdProject); err != nil {
-				return err
+				return "", err
 			}
 			_, _ = l.lxc(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
-			return nil
+			return fp, nil
 		}
 		// another run built it first: use theirs.
 		_, _ = l.lxc(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)
-		return nil
+		return l.fingerprint(ctx, alias)
 	}
 	_, _ = l.lxc(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
-	return nil
-}
-
-// LXDProvenance is what a pair's metadata records of the lxd server and
-// image it ran on.
-type LXDProvenance struct {
-	Remote           string `json:"remote"`
-	InstanceType     string `json:"instance_type"` // container | virtual-machine
-	ImageFingerprint string `json:"image_fingerprint"`
-	ServerVersion    string `json:"server_version"`
-}
-
-// LXDInfo resolves o's remote, image fingerprint and server version.
-func LXDInfo(ctx context.Context, o Options) (LXDProvenance, error) {
-	l := newLXD(defaultProcess, lxcCLI, o)
-	if err := l.prepareServer(ctx); err != nil {
-		return LXDProvenance{}, err
-	}
-	p := LXDProvenance{Remote: l.o.Remote, InstanceType: "container"}
-	if o.VM {
-		p.InstanceType = "virtual-machine"
-	}
-	fp, err := l.fingerprint(ctx, o.Image)
-	if err != nil {
-		return p, err
-	}
-	p.ImageFingerprint = fp
-	out, err := l.lxc(ctx, "query", l.o.Remote+":/1.0")
-	if err != nil {
-		return p, err
-	}
-	var srv struct {
-		Environment struct {
-			ServerVersion string `json:"server_version"`
-		} `json:"environment"`
-	}
-	if err := json.Unmarshal([]byte(out), &srv); err != nil {
-		return p, err
-	}
-	p.ServerVersion = srv.Environment.ServerVersion
-	return p, nil
+	return fp, nil
 }

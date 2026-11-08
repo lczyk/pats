@@ -17,35 +17,27 @@ import (
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-func fakeLookups(t *testing.T, registry func(ctx context.Context, ref string) (string, error), lxd func(ctx context.Context, o sandbox.Options, ref string) (string, error)) {
-	t.Helper()
-	oldR, oldL := registryDigest, lxdRemoteFingerprint
-	registryDigest, lxdRemoteFingerprint = registry, lxd
-	t.Cleanup(func() { registryDigest, lxdRemoteFingerprint = oldR, oldL })
-}
-
 // a moved upstream ref warns; an unmoved one, a failed lookup and one past
 // the budget say nothing; the whole check ends at the budget.
 func TestCheckUpstream(t *testing.T) {
-	fakeLookups(t,
-		func(ctx context.Context, ref string) (string, error) {
-			switch ref {
-			case "moved:1":
-				return "sha256:new", nil
-			case "broken:1":
-				return "", errors.New("401")
-			case "slow:1":
-				<-ctx.Done()
-				return "sha256:late", nil
-			}
-			return "sha256:same", nil
-		},
-		func(ctx context.Context, o sandbox.Options, ref string) (string, error) { return "fp-new", nil })
+	registry := func(ctx context.Context, ref string) (string, error) {
+		switch ref {
+		case "moved:1":
+			return "sha256:new", nil
+		case "broken:1":
+			return "", errors.New("401")
+		case "slow:1":
+			<-ctx.Done()
+			return "sha256:late", nil
+		}
+		return "sha256:same", nil
+	}
+	lxd := func(ctx context.Context, ref string) (string, error) { return "fp-new", nil }
 	checks := []upstreamCheck{
-		{sb: "c", inputs: map[string]string{
+		{sb: "c", up: registry, inputs: map[string]string{
 			"upstream:moved:1": "sha256:old", "upstream:same:1": "sha256:same",
 			"upstream:broken:1": "sha256:x", "upstream:slow:1": "sha256:x", "provision": "h"}},
-		{sb: "l", lxd: true, inputs: map[string]string{"upstream:ubuntu:26.04": "fp-old"}},
+		{sb: "l", up: lxd, inputs: map[string]string{"upstream:ubuntu:26.04": "fp-old"}},
 	}
 	start := time.Now()
 	warns := checkUpstream(context.Background(), checks, 200*time.Millisecond)
@@ -62,7 +54,6 @@ func TestUpstreamInputs(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "ctx"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ctx", "Dockerfile"),
 		[]byte("ARG PATS_SANDBOX\nFROM python:3 AS b\nFROM ${PATS_SANDBOX}\nCOPY --from=b / /\n"), 0o644))
-	fakeLookups(t, nil, func(ctx context.Context, o sandbox.Options, ref string) (string, error) { return "fp-" + ref, nil })
 	h := newFakeHost()
 	h.refs["python:3"] = "sha256:py"
 	h.digests = map[string]string{"python:3": "sha256:pydigest"}
@@ -112,13 +103,13 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
 func TestRunUpstreamWarnsAndOffline(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, initCfg)
-	pinAll(t, dir, cfg)
+	h := pinAll(t, dir, cfg)
 	require.NoError(t, updatePins(dir, func(f *pinFile) error {
 		f.Targets["fake:host"]["own"].Inputs["upstream:my/image:1"] = "sha256:old"
 		return nil
 	}))
 	var calls atomic.Int32
-	fakeLookups(t, func(context.Context, string) (string, error) { calls.Add(1); return "sha256:new", nil }, nil)
+	h.upstream = func(string) (string, error) { calls.Add(1); return "sha256:new", nil }
 	useFakeSandbox(t, &fakeSandbox{})
 	var out bytes.Buffer
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})

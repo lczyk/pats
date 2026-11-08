@@ -23,7 +23,7 @@ func TestRunTaskDir(t *testing.T) {
 		staged = string(data)
 	}}
 	old := newSandbox
-	newSandbox = func(o sandbox.Options) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	root := tree(t, map[string]string{

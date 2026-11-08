@@ -21,15 +21,9 @@ const lxdUnusedFor = 30 * 24 * time.Hour
 
 // remover is a host init may remove superseded images from.
 type remover interface {
-	// remove removes image id; an image still in use or already gone says
-	// so in its error, or none for gone.
-	remove(ctx context.Context, id string) error
-}
-
-// lxdRemover is an lxd server's side of removal.
-type lxdRemover interface {
-	remover
-	usage(ctx context.Context, id string) (sandbox.LXDImageUse, error)
+	// RemoveImage removes image id; an image still in use says so in its
+	// error, one already gone is no error.
+	RemoveImage(ctx context.Context, id string) error
 }
 
 // hostForTarget is the host a pin file target names, as it answers now;
@@ -39,37 +33,17 @@ var hostForTarget = func(ctx context.Context, target, daemon string) (h imageHos
 	kind, rest, _ := strings.Cut(target, ":")
 	switch kind {
 	case "lxd":
-		return lxdHost{o: sandbox.Options{Driver: "lxd", Remote: rest}.WithEnv()}, true
+		d, err := sandbox.Open(sandbox.Options{Driver: "lxd", Remote: rest}.WithEnv())
+		return d, err == nil
 	case "docker", "podman": // sandbox.Engines()
-		h := containerHost{driver: kind}
-		now, d, err := h.target(ctx)
-		return h, err == nil && now == target && d == daemon
+		d, err := sandbox.Open(sandbox.Options{Driver: kind}.WithEnv())
+		if err != nil {
+			return nil, false
+		}
+		now, err := d.Target(ctx)
+		return d, err == nil && now.Key == target && now.Daemon == daemon
 	}
 	return nil, false
-}
-
-func (h containerHost) remove(ctx context.Context, id string) error {
-	_, err := h.cli(ctx, "rmi", id) // no -f: an image a container uses stays
-	if err != nil && goneMsg(err) {
-		return nil
-	}
-	return err
-}
-
-// goneMsg says whether an engine's or lxd's error says the image is not
-// there, as opposed to a failure to ask.
-func goneMsg(err error) bool {
-	m := strings.ToLower(err.Error())
-	// docker's, podman's and lxd's own words for an image that is not there.
-	return strings.Contains(m, "no such image") || strings.Contains(m, "image not known") || strings.Contains(m, "image not found")
-}
-
-func (h lxdHost) remove(ctx context.Context, id string) error {
-	return sandbox.LXDDeleteImage(ctx, h.o, id)
-}
-
-func (h lxdHost) usage(ctx context.Context, id string) (sandbox.LXDImageUse, error) {
-	return sandbox.LXDImageUsage(ctx, h.o, id)
 }
 
 // projectsFile lists every project whose init ran on this machine, one path
@@ -228,10 +202,10 @@ func removeOne(ctx context.Context, h imageHost, s superseded, others map[string
 	if !ok {
 		return "its host cannot remove images"
 	}
-	if l, ok := h.(lxdRemover); ok {
-		u, err := l.usage(ctx, s.ID)
+	if l, ok := h.(sandbox.ImageUsage); ok {
+		u, err := l.Usage(ctx, s.ID)
 		if err != nil {
-			if goneMsg(err) {
+			if errors.Is(err, sandbox.ErrNoImage) {
 				return "" // gone already
 			}
 			return err.Error()
@@ -254,7 +228,7 @@ func removeOne(ctx context.Context, h imageHost, s superseded, others map[string
 			return "another project on this machine pins it"
 		}
 	}
-	if err := r.remove(ctx, s.ID); err != nil {
+	if err := r.RemoveImage(ctx, s.ID); err != nil {
 		return err.Error()
 	}
 	return ""

@@ -49,7 +49,8 @@ type lxd struct {
 	p    *process
 	r    runner
 	o    Options
-	pool string // the storage pool the default project's default profile uses
+	s    SandboxOptions // the sandbox's, zero on the driver itself
+	pool string         // the storage pool the default project's default profile uses
 }
 
 func newLXD(p *process, r runner, o Options) *lxd { return &lxd{p: p, r: r, o: o} }
@@ -209,12 +210,6 @@ func (srv *lxdServer) renew() {
 	}
 }
 
-// ShutdownLXD ends this process's runs on every lxd server it used: lease
-// renewal stops and the marker goes. what the run made is already gone (each
-// session closes its own); a crash skips this, and `pats clean` sees the
-// lease go stale.
-func ShutdownLXD() { defaultProcess.shutdown() }
-
 func (p *process) shutdown() {
 	x := &p.lxd
 	x.mu.Lock()
@@ -300,7 +295,7 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
 
-	img := l.o.Image
+	img := l.s.Image
 	if !strings.Contains(img, ":") {
 		img = l.ref(img) // a pats image or fingerprint on the instance's own server
 	}
@@ -310,20 +305,20 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		args = append(args, "--vm", "-c", "agent.nic_config=true")
 	}
 	args = append(args, l.metaFlags()...)
-	if l.o.Limits.CPU > 0 {
-		args = append(args, "-c", "limits.cpu="+strconv.Itoa(l.o.Limits.CPU))
+	if l.s.Limits.CPU > 0 {
+		args = append(args, "-c", "limits.cpu="+strconv.Itoa(l.s.Limits.CPU))
 	}
-	if l.o.Limits.Memory != "" {
-		args = append(args, "-c", "limits.memory="+l.o.Limits.Memory)
+	if l.s.Limits.Memory != "" {
+		args = append(args, "-c", "limits.memory="+l.s.Limits.Memory)
 	}
-	if l.o.Limits.Disk != "" {
-		args = append(args, "-d", "root,size="+l.o.Limits.Disk)
+	if l.s.Limits.Disk != "" {
+		args = append(args, "-d", "root,size="+l.s.Limits.Disk)
 	}
-	for _, k := range sortedKeys(l.o.Config) {
-		args = append(args, "-c", k+"="+l.o.Config[k])
+	for _, k := range sortedKeys(l.s.Config) {
+		args = append(args, "-c", k+"="+l.s.Config[k])
 	}
-	if len(l.o.Profiles) > 0 {
-		for _, p := range l.o.Profiles {
+	if len(l.s.Profiles) > 0 {
+		for _, p := range l.s.Profiles {
 			args = append(args, "-p", p)
 		}
 	}
@@ -965,29 +960,6 @@ func (op lxdOperation) names(url string) bool {
 	}
 	e, _ := op.Metadata["entity_url"].(string)
 	return match(e)
-}
-
-// ServerCPUs is the lxd server's cpu count, 0 when it cannot be read: -j auto
-// sizes the run by the machine the pairs run on.
-func ServerCPUs(ctx context.Context, remote string) int {
-	l := newLXD(defaultProcess, lxcCLI, Options{Remote: remote})
-	p := "/1.0/resources"
-	if remote != "" {
-		p = remote + ":" + p
-	}
-	out, err := l.lxc(ctx, "query", p)
-	if err != nil {
-		return 0
-	}
-	var res struct {
-		CPU struct {
-			Total int `json:"total"`
-		} `json:"cpu"`
-	}
-	if json.Unmarshal([]byte(out), &res) != nil {
-		return 0
-	}
-	return res.CPU.Total
 }
 
 func sortedKeys(m map[string]string) []string {

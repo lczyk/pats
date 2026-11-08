@@ -13,6 +13,8 @@ type engine struct {
 	internalNet []string
 	// agentNet are the run flags a container on that network needs.
 	agentNet []string
+	// cpus is the info template for the daemon's cpu count.
+	cpus string
 }
 
 var engines = map[string]engine{
@@ -25,6 +27,7 @@ var engines = map[string]engine{
 		// external names to the host; with no upstream it cannot. peer names
 		// (none needed, the proxy is an ip) keep resolving.
 		agentNet: []string{"--dns", "0.0.0.0"},
+		cpus:     "{{.NCPU}}",
 	},
 	"podman": {
 		defaultNetwork: "podman",
@@ -32,6 +35,7 @@ var engines = map[string]engine{
 		// and the sidecar would inherit it as its only nameserver: it could
 		// then resolve nothing upstream. nothing here needs peer names.
 		internalNet: []string{"--disable-dns"},
+		cpus:        "{{.Host.CPUs}}",
 	},
 }
 

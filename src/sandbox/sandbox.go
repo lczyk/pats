@@ -134,35 +134,25 @@ func run(ctx context.Context, sb Sandbox, spec Spec, stdout, stderr io.Writer) (
 // two apart.
 var ErrLaunch = errors.New("sandbox never launched")
 
-// Options picks and configures a driver.
+// Options is the place a driver works on.
 type Options struct {
 	Driver string // docker | podman | lxd
-	Image  string // the image to start: a container image, or an lxd image alias
-	Limits Limits
 	// lxd only.
-	Remote   string            // an lxc remote; "" -> the cli's current one
-	VM       bool              // a virtual machine rather than a system container
-	Profiles []string          // in the pats project
-	Config   map[string]string // instance config, passed through
-	Uplink   string            // an existing bridge for builders and proxies; "" -> pats's own
-	ProxyBin string            // a linux pats for the server's arch, put in the proxy image
-	// ProxyImage is the egress proxy image a run uses as is, never building
-	// one: a fingerprint or alias in the pats project. "" -> built on demand.
-	ProxyImage string
-	// ForceImages rebuilds the images the driver makes on its own (lxd's
-	// egress proxy) even when one of the key exists.
-	ForceImages bool
+	Remote   string // an lxc remote; "" -> the cli's current one
+	VM       bool   // virtual machines rather than system containers
+	Uplink   string // an existing bridge for builders and proxies; "" -> pats's own
+	ProxyBin string // a linux pats for the server's arch, put in the proxy image
 	// EgressPool is the cidr egress networks are carved from; "" -> the
 	// default. docker, podman and lxd.
 	EgressPool string
-	// Progress and Warn, when set, get the steps and warnings of an image
-	// the driver builds on its own (lxd's egress proxy image).
-	Progress func(msg string)
-	Warn     func(msg string)
+	// podman only: the cli's own overrides, CONTAINER_HOST (a service uri)
+	// and CONTAINER_CONNECTION (a named connection).
+	ContainerHost, ContainerConnection string
 }
 
 // WithEnv fills what o leaves unset from the environment: EgressPoolEnv,
-// LXDUplinkEnv, LXDProxyBinEnv. the drivers themselves read none of it.
+// LXDUplinkEnv, LXDProxyBinEnv, and podman's CONTAINER_HOST and
+// CONTAINER_CONNECTION. the drivers themselves read none of it.
 func (o Options) WithEnv() Options {
 	set := func(f *string, env string) {
 		if *f == "" {
@@ -172,6 +162,8 @@ func (o Options) WithEnv() Options {
 	set(&o.EgressPool, EgressPoolEnv)
 	set(&o.Uplink, LXDUplinkEnv)
 	set(&o.ProxyBin, LXDProxyBinEnv)
+	set(&o.ContainerHost, "CONTAINER_HOST")
+	set(&o.ContainerConnection, "CONTAINER_CONNECTION")
 	return o
 }
 
@@ -182,43 +174,36 @@ type Limits struct {
 	Disk   string // lxd only
 }
 
-// New builds a Sandbox for o.Driver. every driver needs an image. the drivers
-// read no environment: a caller that honours it passes o.WithEnv().
-func New(o Options) (Sandbox, error) {
-	switch {
-	case IsEngine(o.Driver):
-		if o.Image == "" {
-			return nil, fmt.Errorf("sandbox driver %q needs an image", o.Driver)
-		}
-		return newContainer(defaultProcess, cliRunner(o.Driver), o), nil
-	case o.Driver == "lxd":
-		if o.Image == "" {
-			return nil, errors.New("sandbox driver lxd needs an image")
-		}
-		return newLXD(defaultProcess, lxcCLI, o), nil
-	case o.Driver == "bwrap":
-		return nil, errors.New("sandbox driver bwrap not implemented yet")
-	case o.Driver == "":
-		return nil, errors.New("sandbox: empty driver")
-	default:
-		return nil, fmt.Errorf("sandbox: unknown driver %q", o.Driver)
-	}
-}
-
 // container drives docker / podman (cli-compatible); driver is which of the
 // two, and the cli r runs.
 type container struct {
 	p      *process
 	r      runner
+	o      Options
 	driver string
-	image  string
+	image  string // the sandbox's, "" on the driver itself
 	limits Limits
 	// egressPool is Options.EgressPool, parsed when a proxy needs it.
 	egressPool string
 }
 
 func newContainer(p *process, r runner, o Options) *container {
-	return &container{p: p, r: r, driver: o.Driver, image: o.Image, limits: o.Limits, egressPool: o.EgressPool}
+	return &container{p: p, r: r, o: o, driver: o.Driver, egressPool: o.EgressPool}
+}
+
+// Sandbox is c for sandboxes of o.Image.
+func (c *container) Sandbox(o SandboxOptions) (Sandbox, error) {
+	if o.Image == "" {
+		return nil, fmt.Errorf("sandbox driver %q needs an image", c.driver)
+	}
+	return c.on(o), nil
+}
+
+// on is a copy of c for sandboxes of o.
+func (c *container) on(o SandboxOptions) *container {
+	s := *c
+	s.image, s.limits = o.Image, o.Limits
+	return &s
 }
 
 // docker runs the cli and returns its output, stdout and stderr together.

@@ -34,7 +34,7 @@ var execBackends = []execBackend{
 	{
 		name: "docker",
 		session: func(p *process, r runner) Session {
-			return &containerSession{c: newContainer(p, r, Options{Driver: "docker", Image: "img"}), id: "cid", teardown: func() {}}
+			return &containerSession{c: newContainer(p, r, Options{Driver: "docker"}).on(SandboxOptions{Image: "img"}), id: "cid", teardown: func() {}}
 		},
 		agent: "kill cid",
 		root:  "kill cid",

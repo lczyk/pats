@@ -50,7 +50,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	defer sandbox.ShutdownLXD()
+	defer sandbox.Shutdown()
 
 	type pinned struct {
 		target string
@@ -95,7 +95,12 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	}
 	err = updatePins(opts.ConfigDir, func(f *pinFile) error {
 		for _, p := range done {
-			if gone := missingImage(ctx, hostFor(p.sb), p.e); gone != "" {
+			h, err := hostFor(p.sb)
+			gone := ""
+			if err == nil {
+				gone = missingImage(ctx, h, p.e)
+			}
+			if gone != "" {
 				lg.error("sandbox %q: %s was removed since this init made it, by another project's init; run pats init again", p.sb.ID, short(gone))
 				failed = append(failed, p.sb.ID)
 				continue
@@ -162,8 +167,11 @@ func initSandboxes(cfg *config.Config, opts InitOptions) ([]config.Sandbox, erro
 
 // initSandbox makes one sandbox's images and returns its pin.
 func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions) (string, *pinEntry, error) {
-	h := hostFor(sb)
-	target, daemon, err := h.target(ctx)
+	h, err := hostFor(sb)
+	if err != nil {
+		return "", nil, err
+	}
+	t, err := h.Target(ctx)
 	if err != nil {
 		return "", nil, err
 	}
@@ -172,33 +180,30 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 		return "", nil, err
 	}
 	e := &pinEntry{
-		Daemon:      daemon,
+		Daemon:      t.Daemon,
 		PatsVersion: version.Info.Version,
 		PatsBuild:   patsBuild(),
 		Built:       opts.Now.UTC().Format(time.RFC3339),
 		Inputs:      inputs,
 	}
-	switch p, ok := h.(puller); {
-	case sb.Driver == "lxd":
-		err = initLXD(ctx, sb, ro, opts, lxdOptions(sb), e)
-	case ok:
-		err = initContainer(ctx, sb, ro, opts, p, e)
-	default:
-		err = fmt.Errorf("driver %q has no images to init", sb.Driver)
+	if sb.Driver == "lxd" {
+		err = initLXD(ctx, sb, ro, opts, h, e)
+	} else {
+		err = initContainer(ctx, sb, ro, opts, h, e)
 	}
 	if err == nil {
-		e.Components, err = h.stamps(ctx, e.Image.ID)
+		e.Components, err = h.Stamps(ctx, e.Image.ID)
 	}
 	if err == nil {
 		upstreamInputs(ctx, sb, ro.ConfigDir, h, e)
 	}
-	return target, e, err
+	return t.Key, e, err
 }
 
 // initContainer makes a docker or podman sandbox's image and proxy: built
 // from build: or base / provision, else pulled when absent (always, with
 // --force).
-func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h puller, e *pinEntry) error {
+func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h builder, e *pinEntry) error {
 	lg := logw{ro.Out, ro.Color}
 	logPath := initLogPath(ro.ConfigDir, sb.ID)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
@@ -236,29 +241,38 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 	}()
 	switch {
 	case provisions(sb):
-		id, _, err := provisionedContainerImage(ctx, sb, ro, base, opts.Force, logF)
+		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force}
+		if sb.Provision != "" || sb.ProvisionCmd != "" {
+			material, argv, err := stageMaterial(ro.ConfigDir, ro.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
+			if err != nil {
+				return err
+			}
+			defer sandbox.RemoveTemp(material)
+			spec.Material, spec.Argv = material, argv
+		}
+		img, _, _, err := h.Build(ctx, spec, logF)
 		if err != nil {
 			return fail(err)
 		}
-		e.Image = pinImage{ID: id, Built: true}
+		e.Image = pinImage{ID: img.ID, Built: true}
 	case sb.Build != "":
 		ctxDir, dockerfile, err := resolveBuildSpec(ro.ConfigDir, sb.Build)
 		if err != nil {
 			return err
 		}
-		id, _, err := sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile, Force: opts.Force, Log: logF}, base)
+		img, _, _, err := h.Build(ctx, sandbox.BuildSpec{Dir: ctxDir, Dockerfile: dockerfile, SandboxImage: base, Force: opts.Force}, logF)
 		if err != nil {
 			return fail(err)
 		}
-		e.Image = pinImage{ID: id, Built: true}
+		e.Image = pinImage{ID: img.ID, Built: true}
 	case sb.Image != "":
-		im, err := ensurePulled(ctx, h, sb.Image, opts.Force, lg, logF)
+		im, err := ensurePulled(ctx, h, sb.Image, opts.Force, lg, logF, h.Pull)
 		if err != nil {
 			return err
 		}
 		e.Image = im
 	default:
-		im, err := ensurePulled(ctx, h, base(), opts.Force, lg, logF)
+		im, err := ensurePulled(ctx, h, base(), opts.Force, lg, logF, h.Pull)
 		if err != nil {
 			return err
 		}
@@ -269,7 +283,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if warn != "" {
 			lg.warn("%s", warn)
 		}
-		im, err := ensurePulled(ctx, h, ref, opts.Force, lg, logF)
+		im, err := ensurePulled(ctx, h, ref, opts.Force, lg, logF, h.ProxyImage)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)
 		}
@@ -278,86 +292,70 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 	return nil
 }
 
-// ensurePulled pins ref, pulling it when absent or when forced. the image is
-// pats's own only when this pull brought it: one already there, even a
-// published pats image, may be the user's (a local `make images` build).
-func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw, log io.Writer) (pinImage, error) {
+// pullFunc is a host's Pull, or its ProxyImage.
+type pullFunc func(ctx context.Context, ref string, force bool, log io.Writer) (sandbox.Image, bool, error)
+
+// ensurePulled pins ref, pulling it with pull when absent or when forced.
+// the image is pats's own only when this pull brought it: one already there,
+// even a published pats image, may be the user's (a local `make images`
+// build).
+func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw, log io.Writer, pull pullFunc) (pinImage, error) {
 	// what the daemon held before: an image a pull lands on that was
 	// already there, tagged or not, is not pats's.
-	had, err := h.ids(ctx)
+	had, err := h.Images(ctx)
 	if err != nil {
 		return pinImage{}, err
 	}
-	pulled := false
-	if force || !h.present(ctx, ref) {
+	if _, err := h.Resolve(ctx, ref); force || err != nil {
 		lg.info("pulling %s", ref)
-		if err := h.pull(ctx, ref, log); err != nil {
-			return pinImage{}, err
-		}
-		pulled = true
 	}
-	id, digest, err := h.inspect(ctx, ref)
+	img, fetched, err := pull(ctx, ref, force, log)
 	if err != nil {
 		return pinImage{}, err
 	}
-	return pinImage{ID: id, Name: ref, Digest: digest, Pulled: pulled && !had[id]}, nil
+	return pinImage{ID: img.ID, Name: ref, Digest: img.Digest, Pulled: fetched && !had[img.ID]}, nil
 }
 
 // initLXD makes an lxd sandbox's layers and proxy on its server, logging to
 // .pats/init/<sandbox>.log, and pins them by fingerprint.
-func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, o sandbox.Options, e *pinEntry) error {
+func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h builder, e *pinEntry) error {
+	lg := logw{ro.Out, ro.Color}
 	switch {
 	case strings.Contains(sb.Image, ":"):
 		// an image of another remote: copied onto the server now, so a run
 		// never downloads it.
-		fp, copied, err := sandbox.LXDCopyImage(ctx, o, sb.Image, opts.Force)
+		img, copied, err := h.Pull(ctx, sb.Image, opts.Force, nil)
 		if err != nil {
 			return err
 		}
-		e.Image = pinImage{ID: fp, Name: sb.Image, Pulled: copied}
+		e.Image = pinImage{ID: img.ID, Name: sb.Image, Pulled: copied}
 	case sb.Image != "":
-		fp, err := sandbox.LXDFingerprint(ctx, o, sb.Image)
+		img, err := h.Resolve(ctx, sb.Image)
 		if err != nil {
 			return err
 		}
-		e.Image = pinImage{ID: fp, Name: sb.Image}
+		e.Image = pinImage{ID: img.ID, Name: sb.Image}
 	default:
 		logPath := initLogPath(ro.ConfigDir, sb.ID)
-		alias, layers, _, upstream, err := lxdImage(ctx, sb, ro, logPath, opts.Force)
+		img, layers, _, upstream, err := lxdImage(ctx, h, sb, ro, logPath, opts.Force)
 		if err != nil {
 			return err
 		}
 		for ref, fp := range upstream {
 			e.Inputs[upstreamPrefix+ref] = fp
 		}
-		fp, err := sandbox.LXDFingerprint(ctx, o, alias)
-		if err != nil {
-			return err
-		}
-		e.Image = pinImage{ID: fp, Name: alias, Built: true}
-		for _, l := range layers {
-			lfp, err := sandbox.LXDFingerprint(ctx, o, l)
-			if err != nil {
-				return err
-			}
-			e.Layers = append(e.Layers, lfp)
-		}
+		e.Image = pinImage{ID: img.ID, Name: img.Name, Built: true}
+		e.Layers = layers
 	}
 	if sb.Egress.Set {
-		po := o
-		lg := logw{ro.Out, ro.Color}
-		po.Progress = func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
-		po.Warn = func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
-		po.ForceImages = opts.Force
-		alias, err := sandbox.LXDProxyImage(ctx, po)
+		log := &stepLog{w: io.Discard,
+			step: func(msg string) { lg.info("sandbox %q: egress proxy: %s", sb.ID, msg) },
+			warn: func(msg string) { lg.warn("sandbox %q: egress proxy: %s", sb.ID, msg) }}
+		img, _, err := h.ProxyImage(ctx, "", opts.Force, log)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)
 		}
-		fp, err := sandbox.LXDFingerprint(ctx, o, alias)
-		if err != nil {
-			return err
-		}
-		e.Proxy = &pinImage{ID: fp, Name: alias, Built: true}
+		e.Proxy = &pinImage{ID: img.ID, Name: img.Name, Built: true}
 	}
 	return nil
 }
@@ -379,11 +377,15 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		if !used[sb.ID] {
 			continue
 		}
-		h := hostFor(sb)
-		target, daemon, err := h.target(ctx)
+		h, err := hostFor(sb)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox %q: %w", sb.ID, err)
 		}
+		t, err := h.Target(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %q: %w", sb.ID, err)
+		}
+		target, daemon := t.Key, t.Daemon
 		e := pins.entry(target, sb.ID)
 		reason := ""
 		switch {
@@ -391,11 +393,11 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reason = "not pinned for " + target
 		case e.Daemon != daemon:
 			reason = "pinned against another " + sb.Driver + " daemon"
-		case !h.present(ctx, e.Image.ID):
+		case !present(ctx, h, e.Image.ID):
 			reason = "its pinned image " + short(e.Image.ID) + " is gone"
 		case sb.Egress.Set && e.Proxy == nil:
 			reason = "no egress proxy pinned"
-		case sb.Egress.Set && !h.present(ctx, e.Proxy.ID):
+		case sb.Egress.Set && !present(ctx, h, e.Proxy.ID):
 			reason = "its pinned egress proxy " + short(e.Proxy.ID) + " is gone"
 		case sb.Egress.Set:
 			reason = proxyMismatch(e)
@@ -417,7 +419,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 		cfg.Sandboxes[i].Image = e.Image.ID
 		cfg.Sandboxes[i].Components = e.Components
-		checks = append(checks, upstreamCheck{sb: sb.ID, lxd: sb.Driver == "lxd", o: lxdOptions(sb), inputs: e.Inputs})
+		checks = append(checks, upstreamCheck{sb: sb.ID, up: h.Upstream, inputs: e.Inputs})
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
 		}
@@ -439,11 +441,17 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 // it has them all.
 func missingImage(ctx context.Context, h imageHost, e *pinEntry) string {
 	for _, im := range e.images() {
-		if !h.present(ctx, im.ID) {
+		if !present(ctx, h, im.ID) {
 			return im.ID
 		}
 	}
 	return ""
+}
+
+// present says whether h holds image ref.
+func present(ctx context.Context, h imageHost, ref string) bool {
+	_, err := h.Resolve(ctx, ref)
+	return err == nil
 }
 
 // initLogPath is where init logs a sandbox's builds and pulls.

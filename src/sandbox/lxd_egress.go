@@ -115,7 +115,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	if spec.Egress.SelfTest {
 		var out bytes.Buffer
 		_, _ = s.exec(ctx, Cmd{Argv: probeCanary.argv(), Root: true, Dir: "/"}, &out, &out)
-		if err := canaryVerdict(out.String(), "lxd", l.o.Image); err != nil {
+		if err := canaryVerdict(out.String(), "lxd", l.s.Image); err != nil {
 			return err
 		}
 	}
@@ -133,7 +133,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	}
 	e.m = m
 
-	img, err := l.proxyImage(ctx)
+	img, _, err := l.proxyImage(ctx, false, nil)
 	if err != nil {
 		return fmt.Errorf("egress proxy image: %w", err)
 	}
@@ -279,75 +279,72 @@ func (s *lxdSession) closeEgress() {
 
 // proxyImage is the proxy container image on l's server, made once per
 // process (every proxied pair needs it, and resolving it means fetching the
-// binary); see buildProxyImage.
-func (l *lxd) proxyImage(ctx context.Context) (string, error) {
-	if l.o.ProxyImage != "" {
-		return l.o.ProxyImage, nil
+// binary) unless force; see buildProxyImage. a sandbox's pinned one is used
+// as is. l is ready.
+func (l *lxd) proxyImage(ctx context.Context, force bool, log io.Writer) (alias string, built bool, err error) {
+	if l.s.ProxyImage != "" {
+		return l.s.ProxyImage, false, nil
 	}
 	// held across the build, so concurrent pairs wait for one build.
 	x := &l.p.lxd
 	x.proxyMu.Lock()
 	defer x.proxyMu.Unlock()
-	if alias, ok := x.proxyImages[l.o.Remote]; ok {
-		return alias, nil
+	if alias, ok := x.proxyImages[l.o.Remote]; ok && !force {
+		return alias, false, nil
 	}
-	alias, err := l.buildProxyImage(ctx)
+	alias, built, err = l.buildProxyImage(ctx, force, log)
 	if err == nil {
 		x.proxyImages[l.o.Remote] = alias
 	}
-	return alias, err
+	return alias, built, err
 }
 
 // buildProxyImage provisions the proxy container image: a minimal ubuntu with
 // the pats binary for the server's arch, an unprivileged user to run it, and
 // dhcp on the uplink nic. keyed like any provisioned image, the binary's bytes
 // included, so a new pats makes a new one.
-func (l *lxd) buildProxyImage(ctx context.Context) (string, error) {
+func (l *lxd) buildProxyImage(ctx context.Context, force bool, log io.Writer) (string, bool, error) {
 	arch, err := l.serverArch(ctx)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	material, err := MkTemp("pats-proxy-material-")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer RemoveTemp(material)
 	if err := proxyBinary(ctx, l.p.reg, l.o.ProxyBin, arch, filepath.Join(material, "pats"), l.p.t.proxyFetch); err != nil {
-		return "", err
+		return "", false, err
 	}
 	netplan := "network:\n  version: 2\n  ethernets:\n    uplink0:\n      dhcp4: true\n"
 	if err := os.WriteFile(filepath.Join(material, "60-pats-uplink.yaml"), []byte(netplan), 0o600); err != nil {
-		return "", err
+		return "", false, err
 	}
 	script := `set -e
 cp ` + ProvisionMount + `/pats /usr/local/bin/pats && chmod 0755 /usr/local/bin/pats
 id -u ` + lxdProxyUser + ` >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin ` + lxdProxyUser + `
 mkdir -p /etc/netplan /etc/pats && cp ` + ProvisionMount + `/60-pats-uplink.yaml /etc/netplan/ && chmod 0600 /etc/netplan/60-pats-uplink.yaml`
 	if err := os.WriteFile(filepath.Join(material, "script"), []byte(script), 0o644); err != nil {
-		return "", err
+		return "", false, err
 	}
-	pl := newLXD(l.p, l.r, Options{Driver: "lxd", Remote: l.o.Remote, Uplink: l.o.Uplink})
-	spec := LXDImageSpec{Base: lxdProxyBase, Material: material, Argv: []string{"/bin/sh", ProvisionMount + "/script"},
-		Progress: prefixed(l.o.Progress, "egress proxy: "), Warn: prefixed(l.o.Warn, "egress proxy: "),
-		Role: "proxy", Force: l.o.ForceImages}
+	// always a container, whatever the sandboxes are.
+	pl := &lxd{p: l.p, r: l.r, o: Options{Driver: "lxd", Remote: l.o.Remote, Uplink: l.o.Uplink}, pool: l.pool}
+	spec := lxdImageSpec{Base: lxdProxyBase, Material: material, Argv: []string{"/bin/sh", ProvisionMount + "/script"},
+		Role: "proxy", Force: force}
 	// a release's proxy is its version on this arch; a dev build's is its
 	// binary's bytes, so every rebuild of pats makes a new one.
 	if releaseBuild() {
 		spec.Key = "proxy " + version.Info.Version + " " + arch
 	}
-	var log bytes.Buffer
-	alias, _, err := pl.image(ctx, spec, &log)
+	var buf bytes.Buffer
+	if log == nil {
+		log = io.Discard
+	}
+	alias, _, _, built, err := pl.image(ctx, spec, io.MultiWriter(&buf, log))
 	if err != nil {
-		return "", fmt.Errorf("%w%s", err, LogTail(log.String()))
+		return "", false, fmt.Errorf("%w%s", err, LogTail(buf.String()))
 	}
-	return alias, nil
-}
-
-func prefixed(f func(string), p string) func(string) {
-	if f == nil {
-		return nil
-	}
-	return func(msg string) { f(p + msg) }
+	return alias, built, nil
 }
 
 // serverArch is the lxd server's architecture as a go arch.

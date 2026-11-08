@@ -144,14 +144,6 @@ func (reg registry) challengeToken(ctx context.Context, challenge string) (strin
 	return t.Token, nil
 }
 
-// LXDRemoteFingerprint is the fingerprint an image remote's alias names now
-// (ubuntu:26.04) for o's server: its architecture, and a container or a vm
-// as o says. read with image list, which reaches simplestreams remotes as
-// well as lxd ones.
-func LXDRemoteFingerprint(ctx context.Context, o Options, ref string) (string, error) {
-	return newLXD(defaultProcess, lxcCLI, o).remoteFingerprint(ctx, ref)
-}
-
 // debianArch is the suffix image remotes put on an alias for each kernel
 // architecture (26.04/arm64).
 var debianArch = map[string]string{
@@ -159,6 +151,10 @@ var debianArch = map[string]string{
 	"s390x": "s390x", "riscv64": "riscv64",
 }
 
+// remoteFingerprint is the fingerprint an image remote's alias names now
+// (ubuntu:26.04) for l's server: its architecture, and a container or a vm
+// as l says. read with image list, which reaches simplestreams remotes as
+// well as lxd ones.
 func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error) {
 	remote, alias, ok := strings.Cut(ref, ":")
 	if !ok {
@@ -216,7 +212,7 @@ func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error)
 			return hits[0], nil
 		}
 	}
-	return "", fmt.Errorf("lxd image %s: not listed for %s %s", ref, arch, kind)
+	return "", fmt.Errorf("%w: lxd image %s is not listed for %s %s", ErrNoImage, ref, arch, kind)
 }
 
 // kernelArch is the server's architecture as lxd names it (x86_64).
@@ -226,7 +222,9 @@ func (l *lxd) kernelArch(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		l.o.Remote = remote
+		c := *l
+		c.o.Remote = remote
+		l = &c
 	}
 	var srv struct {
 		Environment struct {

@@ -18,17 +18,17 @@ const (
 	proxyRepo   = "ghcr.io/lczyk/pats/egress-proxy"
 )
 
-// SandboxImage resolves the default sandbox image; see Image.
+// SandboxImage resolves the default sandbox image; see publishedImage.
 func SandboxImage(configured string) (image, warn string) {
-	return Image(sandboxRepo, configured, "set image: to pin")
+	return publishedImage(sandboxRepo, configured, "set image: to pin")
 }
 
-// ProxyImage resolves a sandbox's egress proxy image; see Image.
+// ProxyImage resolves a sandbox's egress proxy image; see publishedImage.
 func ProxyImage(configured string) (image, warn string) {
-	return Image(proxyRepo, configured, "set a sandbox proxy-image to pin")
+	return publishedImage(proxyRepo, configured, "set a sandbox proxy-image to pin")
 }
 
-// Image resolves one of pats' published images and, when it can't pin to a
+// publishedImage resolves one of pats' published images and, when it can't pin to a
 // version, a warning to surface. a configured ref wins. otherwise the default
 // is repo:v<version> for this build's pats version -- the proxy's filtering
 // protocol and the sandbox's cli set are coupled to the binary, so :latest
@@ -40,7 +40,7 @@ func ProxyImage(configured string) (image, warn string) {
 // file), but a leading v is stripped anyway so a caller setting the version
 // by hand can't make release installs -- the ones that most need a matching
 // image -- the only builds that never pin.
-func Image(repo, configured, hint string) (image, warn string) {
+func publishedImage(repo, configured, hint string) (image, warn string) {
 	if configured != "" {
 		return configured, ""
 	}

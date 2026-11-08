@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +25,7 @@ type removingHost struct {
 	removed []string
 }
 
-func (h *removingHost) remove(_ context.Context, id string) error {
+func (h *removingHost) RemoveImage(_ context.Context, id string) error {
 	if h.inUse[id] {
 		return errors.New("image is being used by a stopped container")
 	}
@@ -34,10 +36,10 @@ func (h *removingHost) remove(_ context.Context, id string) error {
 // lxdRemovingHost adds an lxd server's image use.
 type lxdRemovingHost struct {
 	*removingHost
-	use map[string]sandbox.LXDImageUse
+	use map[string]sandbox.ImageUse
 }
 
-func (h *lxdRemovingHost) usage(_ context.Context, id string) (sandbox.LXDImageUse, error) {
+func (h *lxdRemovingHost) Usage(_ context.Context, id string) (sandbox.ImageUse, error) {
 	return h.use[id], nil
 }
 
@@ -104,7 +106,7 @@ func TestRemoveSupersededContainers(t *testing.T) {
 // it under its private alias; other machines' pins are unreachable.
 func TestRemoveSupersededLXD(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
-	h := &lxdRemovingHost{removingHost: &removingHost{fakeHost: newFakeHost()}, use: map[string]sandbox.LXDImageUse{
+	h := &lxdRemovingHost{removingHost: &removingHost{fakeHost: newFakeHost()}, use: map[string]sandbox.ImageUse{
 		"stale":   {LastUsed: now.Add(-31 * 24 * time.Hour)},
 		"recent":  {LastUsed: now.Add(-3 * 24 * time.Hour)},
 		"unused":  {Uploaded: now.Add(-40 * 24 * time.Hour)},
@@ -183,15 +185,12 @@ func TestPinsReclaimOwnership(t *testing.T) {
 // written: another project's init removed it in between.
 type vanishingHost struct {
 	*fakeHost
-	inspects *int
 }
 
-func (h vanishingHost) inspect(ctx context.Context, ref string) (string, string, error) {
-	id, digest, err := h.fakeHost.inspect(ctx, ref)
-	if *h.inspects++; *h.inspects == 1 { // the one init pins
-		delete(h.refs, ref)
-	}
-	return id, digest, err
+func (h vanishingHost) Pull(ctx context.Context, ref string, force bool, log io.Writer) (sandbox.Image, bool, error) {
+	img, fetched, err := h.fakeHost.Pull(ctx, ref, force, log)
+	delete(h.refs, ref) // another init removes it once this one has it
+	return img, fetched, err
 }
 
 // an image gone between being made and being pinned is a failed init, not
@@ -199,7 +198,7 @@ func (h vanishingHost) inspect(ctx context.Context, ref string) (string, string,
 func TestInitImageRemovedBeforePin(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, initCfg)
-	useHost(t, vanishingHost{newFakeHost("my/image:1"), new(int)})
+	useHost(t, vanishingHost{newFakeHost("my/image:1")})
 	var out bytes.Buffer
 	err := Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}})
 	assert.Error(t, err, "init failed for sandbox(es) own")
@@ -231,21 +230,12 @@ type lxdErrHost struct {
 	gone bool
 }
 
-func (h *lxdErrHost) remove(context.Context, string) error { return nil }
-func (h *lxdErrHost) usage(context.Context, string) (sandbox.LXDImageUse, error) {
+func (h *lxdErrHost) RemoveImage(context.Context, string) error { return nil }
+func (h *lxdErrHost) Usage(context.Context, string) (sandbox.ImageUse, error) {
 	if h.gone {
-		return sandbox.LXDImageUse{}, errors.New("Image not found")
+		return sandbox.ImageUse{}, fmt.Errorf("%w: Image not found", sandbox.ErrNoImage)
 	}
-	return sandbox.LXDImageUse{}, errors.New("dial: connection refused")
-}
-
-func TestGoneMsg(t *testing.T) {
-	assert.That(t, goneMsg(errors.New("Error response from daemon: No such image: x")), "docker's gone")
-	assert.That(t, goneMsg(errors.New("x: image not known")), "podman's gone")
-	assert.That(t, goneMsg(errors.New("lxc query srv:/1.0/images/x: exit status 1 (Error: Image not found)")), "lxd's gone")
-	assert.That(t, !goneMsg(errors.New("Cannot connect to the Docker daemon")), "an unreachable daemon read as gone")
-	assert.That(t, !goneMsg(errors.New(`exec: "lxc": executable file not found in $PATH`)), "a missing cli read as gone")
-	assert.That(t, !goneMsg(errors.New("Error: Project not found")), "a missing project read as gone")
+	return sandbox.ImageUse{}, errors.New("dial: connection refused")
 }
 
 // two sandboxes on one image, pulled for the first: when the first moves
@@ -374,7 +364,7 @@ func TestForcedPullOfTheSameImage(t *testing.T) {
 	h := newFakeHost("u/img:1")
 	h.samePull = true
 	var out bytes.Buffer
-	im, err := ensurePulled(context.Background(), h, "u/img:1", true, logw{&out, false}, &out)
+	im, err := ensurePulled(context.Background(), h, "u/img:1", true, logw{&out, false}, &out, h.Pull)
 	require.NoError(t, err)
 	assert.EqualArrays(t, h.pulls, []string{"u/img:1"})
 	assert.That(t, !im.owned(), "an unchanged forced pull took the user's image")
@@ -387,7 +377,7 @@ func TestPullOntoAnUntaggedImage(t *testing.T) {
 	h.untagged = map[string]bool{"sha256:x": true}
 	h.pullTo = "sha256:x"
 	var out bytes.Buffer
-	im, err := ensurePulled(context.Background(), h, "u/img:1", false, logw{&out, false}, &out)
+	im, err := ensurePulled(context.Background(), h, "u/img:1", false, logw{&out, false}, &out, h.Pull)
 	require.NoError(t, err)
 	assert.Equal(t, im.ID, "sha256:x")
 	assert.That(t, !im.owned(), "a pull onto a held image took it as pats's")

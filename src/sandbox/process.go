@@ -142,10 +142,12 @@ type proc interface {
 	Signal(os.Signal) error
 }
 
-// execRunner runs bin. waitDelay bounds how long Wait copies output after
-// the process is gone, should something it left hold the pipes open.
+// execRunner runs bin, with env on top of this process's. waitDelay bounds
+// how long Wait copies output after the process is gone, should something
+// it left hold the pipes open.
 type execRunner struct {
 	bin       string
+	env       []string
 	waitDelay time.Duration
 }
 
@@ -154,15 +156,25 @@ func cliRunner(bin string) runner { return execRunner{bin: bin, waitDelay: 10 * 
 
 var lxcCLI = cliRunner("lxc")
 
+// environ is the cli's environment: nil (this process's) when r adds none.
+func (r execRunner) environ() []string {
+	if len(r.env) == 0 {
+		return nil
+	}
+	return append(os.Environ(), r.env...)
+}
+
 func (r execRunner) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	cmd.Env = r.environ()
 	return cmd.Run()
 }
 
 func (r execRunner) Start(stdin io.Reader, stdout, stderr io.Writer, args ...string) (proc, error) {
 	cmd := exec.Command(r.bin, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	cmd.Env = r.environ()
 	cmd.WaitDelay = r.waitDelay
 	if err := cmd.Start(); err != nil {
 		return nil, err

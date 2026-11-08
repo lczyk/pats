@@ -53,14 +53,10 @@ func parseStamps(out string) (map[string]string, error) {
 	return stamps, nil
 }
 
-// ContainerStamps runs stampScript in a throwaway container of image id
-// under a container driver. an image with no shell has no stamps; any other
-// failure is an error. the container is named, so one a timeout or a
-// failure leaves behind is removed.
-func ContainerStamps(ctx context.Context, driver, id string) (map[string]string, error) {
-	return containerStamps(ctx, cliRunner(driver), id, stampTimeout)
-}
-
+// containerStamps runs stampScript in a throwaway container of image id. an
+// image with no shell has no stamps; any other failure is an error. the
+// container is named, so one a timeout or a failure leaves behind is
+// removed.
 func containerStamps(ctx context.Context, r runner, id string, timeout time.Duration) (map[string]string, error) {
 	var suffix [6]byte
 	_, _ = rand.Read(suffix[:])
@@ -82,17 +78,10 @@ func containerStamps(ctx context.Context, r runner, id string, timeout time.Dura
 	return nil, fmt.Errorf("stamping %s: %w%s", id, err, stderrTail(&errb))
 }
 
-// LXDImageStamps is the component stamps of an lxd image in the pats
-// project: the properties a pats build published it with, or, for an image
-// pats did not build, what stampScript says in a throwaway instance of it.
-func LXDImageStamps(ctx context.Context, o Options, fp string) (map[string]string, error) {
-	l := newLXD(defaultProcess, lxcCLI, o)
-	if err := l.prepareServer(ctx); err != nil {
-		return nil, err
-	}
-	return l.imageStamps(ctx, fp)
-}
-
+// imageStamps is the component stamps of an lxd image in the pats project:
+// the properties a pats build published it with, or, for an image pats did
+// not build, what stampScript says in a throwaway instance of it. l is
+// ready.
 func (l *lxd) imageStamps(ctx context.Context, fp string) (map[string]string, error) {
 	var im struct {
 		Properties map[string]string `json:"properties"`

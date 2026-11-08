@@ -54,32 +54,27 @@ func TestLXDImageBuild(t *testing.T) {
 	var lastUpstream map[string]string
 	run := func(t *testing.T, sb config.Sandbox, fail bool) ([]call, []string, string, string, bool, error) {
 		var calls []call
-		old := lxdImageFn
-		lxdImageFn = func(ctx context.Context, o sandbox.Options, spec sandbox.LXDImageSpec, log io.Writer) (string, bool, error) {
+		h := &buildingHost{fakeHost: newFakeHost(), build: func(spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
 			pins := ""
 			if spec.Material != "" {
 				b, _ := os.ReadFile(filepath.Join(spec.Material, "harness-versions"))
 				pins = string(b)
 			}
 			calls = append(calls, call{spec.Base, spec.Argv, pins})
-			if spec.Based != nil {
-				spec.Based("fp-" + spec.Base)
-			}
-			assert.Equal(t, o.Driver, "lxd")
 			spec.Progress("building " + spec.Base)
 			spec.Warn("low on space")
 			fmt.Fprintf(log, "build output of %s\n", spec.Base)
 			if fail && len(calls) == 2 {
-				return "", false, errors.New("provisioning exited 1")
+				return sandbox.Image{}, "", false, errors.New("provisioning exited 1")
 			}
-			return "pats-img-" + strconv.Itoa(len(calls)), len(calls) == 1, nil
-		}
-		defer func() { lxdImageFn = old }()
+			n := strconv.Itoa(len(calls))
+			return sandbox.Image{ID: "fp-" + n, Name: "pats-img-" + n}, "fp-" + spec.Base, len(calls) == 1, nil
+		}}
 		var out bytes.Buffer
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
 		logPath := filepath.Join(t.TempDir(), "init", sb.ID+".log")
-		_, layers, built, upstream, err := lxdImage(context.Background(), sb, Options{ConfigDir: dir, Out: &out}, logPath, false)
+		_, layers, built, upstream, err := lxdImage(context.Background(), h, sb, Options{ConfigDir: dir, Out: &out}, logPath, false)
 		b, _ := os.ReadFile(logPath)
 		lastUpstream = upstream
 		return calls, layers, out.String(), string(b), built, err
@@ -89,7 +84,7 @@ func TestLXDImageBuild(t *testing.T) {
 		calls, layers, out, log, built, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Provision: "provision.sh"}, false)
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 2)
-		assert.EqualArrays(t, layers, []string{"pats-img-1"})
+		assert.EqualArrays(t, layers, []string{"fp-1"})
 		// the base the bottom layer keyed on, for the upstream check.
 		assert.EqualMaps(t, lastUpstream, map[string]string{lxdSandboxBase: "fp-" + lxdSandboxBase})
 		assert.Equal(t, calls[0].base, lxdSandboxBase)
@@ -127,4 +122,14 @@ func TestLXDImageBuild(t *testing.T) {
 		require.Equal(t, len(calls), 1) // no empty project layer on top
 		assert.Len(t, layers, 0)
 	})
+}
+
+// buildingHost builds with build.
+type buildingHost struct {
+	*fakeHost
+	build func(spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error)
+}
+
+func (h *buildingHost) Build(_ context.Context, spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
+	return h.build(spec, log)
 }

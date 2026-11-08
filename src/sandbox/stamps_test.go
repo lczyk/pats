@@ -62,7 +62,7 @@ func TestStampScript(t *testing.T) {
 }
 
 // a provisioned lxd image is published with the harness versions inside it
-// as properties, which LXDImageStamps reads back.
+// as properties, which the driver's Stamps reads back.
 func TestLXDImageStampsOnServer(t *testing.T) {
 	f := newFakeServer(t)
 	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
@@ -72,7 +72,7 @@ func TestLXDImageStampsOnServer(t *testing.T) {
 		return nil
 	}
 	l := lxdOn(t, f, Options{})
-	alias, _, err := l.image(context.Background(), LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
+	alias, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
 	require.NoError(t, err)
 	fp, err := l.fingerprint(context.Background(), alias)
 	require.NoError(t, err)
@@ -129,7 +129,7 @@ func TestLXDStampTimeoutOnServer(t *testing.T) {
 		return nil
 	}
 	l := lxdOn(t, f, Options{})
-	_, _, err := l.image(context.Background(), LXDImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
+	_, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
 	assert.Error(t, err, "stamping the harness versions took over")
 	assert.Len(t, f.insts, 0) // the builder went with the failed build
 }

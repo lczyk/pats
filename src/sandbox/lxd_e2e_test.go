@@ -26,7 +26,7 @@ func TestLXDE2E(t *testing.T) {
 		t.Skip("set PATS_LXD_E2E=1 to drive a real lxd server")
 	}
 	ctx := context.Background()
-	defer ShutdownLXD()
+	defer Shutdown()
 	bin := filepath.Join(t.TempDir(), "pats")
 	build := exec.Command("go", "build", "-o", bin, "../../cmd/pats")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
@@ -37,11 +37,12 @@ func TestLXDE2E(t *testing.T) {
 	require.NoError(t, err, "%v\n%s", err, out)
 	o := Options{Driver: "lxd", ProxyBin: bin}.WithEnv()
 
+	d, err := Open(o)
+	require.NoError(t, err)
 	var log bytes.Buffer
-	img, _, err := LXDImage(ctx, o, LXDImageSpec{Base: "ubuntu:24.04"}, &log)
+	img, _, _, err := d.Build(ctx, BuildSpec{Base: "ubuntu:24.04"}, &log)
 	require.NoError(t, err, "%v\n%s", err, log.String())
-	o.Image = img
-	sb, err := New(o)
+	sb, err := d.Sandbox(SandboxOptions{Image: img.Name})
 	require.NoError(t, err)
 
 	run := func(t *testing.T, sess Session, root bool, script string) (int, string) {

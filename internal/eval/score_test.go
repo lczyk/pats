@@ -10,6 +10,8 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/internal/config"
 )
 
 // score phase, no docker: an exec scorer reads each pair's stdout.log and emits
@@ -97,14 +99,13 @@ su: {kind: suite, items: {su: {agents: a, tasks: [t], scorers: [check-harness]}}
 	assert.Equal(t, rep.PerPair["a/t"], 1.0)
 }
 
-// COVER: -j-1 during scoring must not shell out to `docker info` -- the score
-// phase never runs a container. fails against the old resolveJobs, which
-// hard-wired dockerNCPU for every caller.
+// COVER: -j-1 during scoring must not ask a driver for its cpus -- the score
+// phase never runs a container.
 func TestScoreAutoJobsSkipsDocker(t *testing.T) {
 	probed := false
-	old := dockerNCPU
-	dockerNCPU = func() int { probed = true; return 4 }
-	defer func() { dockerNCPU = old }()
+	old := hostFor
+	hostFor = func(config.Sandbox) (host, error) { probed = true; return newFakeHost(), nil }
+	defer func() { hostFor = old }()
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))

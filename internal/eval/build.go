@@ -2,11 +2,9 @@ package eval
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -36,34 +34,27 @@ func provisions(sb config.Sandbox) bool {
 	return sb.Base != "" || sb.Provision != "" || sb.ProvisionCmd != ""
 }
 
-// lxdImageFn is sandbox.LXDImage, a var like newSandbox, so the build's
-// progress, warnings and errors are tested without a server.
-var lxdImageFn = sandbox.LXDImage
-
-// lxdImage provisions an lxd sandbox's image: with no base, the pats
+// lxdImage provisions an lxd sandbox's image on h: with no base, the pats
 // sandbox's tools on ubuntu first, then the sandbox's own provision on top --
 // two cached images in a chain, the first's alias in the second's key. the
-// builds log to logPath. layers are the aliases under the image, bottom
-// first.
-func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath string, force bool) (alias string, layers []string, built bool, upstream map[string]string, err error) {
-	// the bottom layer's base on an image remote, and the fingerprint the
-	// build keyed on: what a run later checks upstream.
+// builds log to logPath. layers are the fingerprints under the image, bottom
+// first. upstream is each base on an image remote, and the fingerprint the
+// build keyed on: what a run later checks upstream.
+func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, logPath string, force bool) (img sandbox.Image, layers []string, built bool, upstream map[string]string, err error) {
 	upstream = map[string]string{}
-	based := func(ref string) func(string) {
-		if !strings.Contains(ref, ":") || strings.HasPrefix(ref, "pats-img-") {
-			return nil
+	based := func(ref, fp string) {
+		if strings.Contains(ref, ":") && !strings.HasPrefix(ref, "pats-img-") {
+			upstream[ref] = fp
 		}
-		return func(fp string) { upstream[ref] = fp }
 	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return "", nil, false, nil, err
+		return img, nil, false, nil, err
 	}
 	logF, err := os.Create(logPath)
 	if err != nil {
-		return "", nil, false, nil, err
+		return img, nil, false, nil, err
 	}
 	defer logF.Close()
-	o := sandbox.Options{Driver: "lxd", Remote: sb.Remote, VM: sb.VM}.WithEnv()
 	lg := logw{opts.Out, opts.Color}
 	progress := func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
 	warn := func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
@@ -74,38 +65,42 @@ func lxdImage(ctx context.Context, sb config.Sandbox, opts Options, logPath stri
 	if base == "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, images.ProvisionSandbox, "", sandbox.ProvisionMount)
 		if err != nil {
-			return "", nil, false, nil, err
+			return img, nil, false, nil, err
 		}
 		defer sandbox.RemoveTemp(material)
 		// the script reads its pins from beside itself; in the material they
 		// are also in the image key, so a pin bump reprovisions.
 		if err := os.WriteFile(filepath.Join(material, "harness-versions"), []byte(images.HarnessVersions), 0o644); err != nil {
-			return "", nil, false, nil, err
+			return img, nil, false, nil, err
 		}
-		base, anyBuilt, err = lxdImageFn(ctx, o, sandbox.LXDImageSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn, Based: based(lxdSandboxBase),
+		layer, fp, b, err := h.Build(ctx, sandbox.BuildSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn,
 			Role: "sandbox", Sandbox: sb.ID, Force: force}, logF)
 		if err != nil {
-			return "", nil, false, nil, fail(err)
+			return img, nil, false, nil, fail(err)
 		}
-		layers = append(layers, base)
+		based(lxdSandboxBase, fp)
+		base, anyBuilt = layer.Name, b
+		layers = append(layers, layer.ID)
+		img = layer
 	}
-	spec := sandbox.LXDImageSpec{Base: base, Progress: progress, Warn: warn, Based: based(base), Role: "project", Sandbox: sb.ID, Force: force}
+	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.ID, Force: force}
 	if sb.Provision != "" || sb.ProvisionCmd != "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount)
 		if err != nil {
-			return "", nil, false, nil, err
+			return img, nil, false, nil, err
 		}
 		defer sandbox.RemoveTemp(material)
 		spec.Material, spec.Argv = material, argv
 	} else if len(layers) > 0 {
 		// no project layer: the pats sandbox layer is the image.
-		return base, nil, anyBuilt, upstream, nil
+		return img, nil, anyBuilt, upstream, nil
 	}
-	alias, built, err = lxdImageFn(ctx, o, spec, logF)
+	img, fp, built, err := h.Build(ctx, spec, logF)
 	if err != nil {
-		return "", nil, false, nil, fail(err)
+		return img, nil, false, nil, fail(err)
 	}
-	return alias, layers, built || anyBuilt, upstream, nil
+	based(base, fp)
+	return img, layers, built || anyBuilt, upstream, nil
 }
 
 // fileTail is up to n bytes off the end of a file, "" when it can't be read.
@@ -127,51 +122,6 @@ func fileTail(path string, n int64) string {
 // lxdSandboxBase is what the pats sandbox is provisioned on under lxd: the
 // release the published docker sandbox image is built from.
 const lxdSandboxBase = "ubuntu:26.04"
-
-// provisionedContainerImage builds base / provision for docker or podman: a
-// generated dockerfile running the provision step on base (the pats sandbox
-// when empty), through the same cached build as build:.
-func provisionedContainerImage(ctx context.Context, sb config.Sandbox, opts Options, base func() string, force bool, log io.Writer) (string, bool, error) {
-	provision := sb.Provision != "" || sb.ProvisionCmd != ""
-	var material string
-	var argv []string
-	if provision {
-		var err error
-		if material, argv, err = stageMaterial(opts.ConfigDir, opts.ConfigDir, sb.Provision, sb.ProvisionCmd, sandbox.ProvisionMount); err != nil {
-			return "", false, err
-		}
-		defer sandbox.RemoveTemp(material)
-	}
-	from := sb.Base
-	if from == "" {
-		from = "${PATS_SANDBOX}"
-	}
-	var df strings.Builder
-	df.WriteString("ARG PATS_SANDBOX\n")
-	fmt.Fprintf(&df, "FROM %s\n", from)
-	df.WriteString("USER root\n")
-	if provision {
-		fmt.Fprintf(&df, "COPY material %s\n", sandbox.ProvisionMount)
-		run, _ := json.Marshal(inPath(sandbox.ProvisionMount, argv))
-		fmt.Fprintf(&df, "RUN %s\n", run)
-		fmt.Fprintf(&df, "RUN rm -rf %s\n", sandbox.ProvisionMount)
-	}
-	ctxDir, err := sandbox.MkTemp("pats-build-")
-	if err != nil {
-		return "", false, err
-	}
-	defer sandbox.RemoveTemp(ctxDir)
-	if provision {
-		if err := os.Rename(material, filepath.Join(ctxDir, "material")); err != nil {
-			return "", false, err
-		}
-	}
-	dockerfile := filepath.Join(ctxDir, "Dockerfile")
-	if err := os.WriteFile(dockerfile, []byte(df.String()), 0o644); err != nil {
-		return "", false, err
-	}
-	return sandbox.BuildContainerImage(ctx, sb.Driver, sandbox.ContainerBuild{Dir: ctxDir, Dockerfile: dockerfile, Force: force, Log: log}, base)
-}
 
 // resolveBuildSpec turns a sandbox `build:` value into (context dir,
 // dockerfile). spec is a dir (context, with a Dockerfile inside) or a
@@ -198,16 +148,16 @@ func proxyImageID(ctx context.Context, sb config.Sandbox) string {
 	if !sb.IsContainer() {
 		return ""
 	}
-	img := sb.ProxyImage
-	// docker and podman both expose RepoDigests and Id on `image inspect`.
-	out, err := exec.CommandContext(ctx, sb.Driver, "image", "inspect", "--format",
-		"{{range .RepoDigests}}{{.}} {{end}}|{{.Id}}", img).Output()
+	h, err := hostFor(sb)
 	if err != nil {
 		return ""
 	}
-	digests, id, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
-	if fields := strings.Fields(digests); len(fields) > 0 {
-		return fields[0]
+	img, err := h.Resolve(ctx, sb.ProxyImage)
+	switch {
+	case err != nil:
+		return ""
+	case img.Digest != "":
+		return img.Repo + "@" + img.Digest
 	}
-	return strings.TrimSpace(id)
+	return img.ID
 }

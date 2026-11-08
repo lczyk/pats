@@ -33,7 +33,7 @@ func TestContainerRunMountsAndEnv(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("hi"), 0o644))
 
-	sb, err := New(Options{Driver: "docker", Image: testImage})
+	sb, err := openSandbox(Options{Driver: "docker"}, testImage)
 	require.NoError(t, err)
 
 	var out, errb bytes.Buffer
@@ -52,7 +52,7 @@ func TestContainerRunMountsAndEnv(t *testing.T) {
 
 func TestContainerExitCode(t *testing.T) {
 	dockerOrSkip(t)
-	sb, err := New(Options{Driver: "docker", Image: testImage})
+	sb, err := openSandbox(Options{Driver: "docker"}, testImage)
 	require.NoError(t, err)
 
 	var out, errb bytes.Buffer
@@ -82,15 +82,31 @@ func TestAsExitErrorUnwrapsWrapped(t *testing.T) {
 	assert.Equal(t, ok, false)
 }
 
-func TestNewErrors(t *testing.T) {
-	_, err := New(Options{Driver: "bwrap", Image: ""})
+func TestOpenErrors(t *testing.T) {
+	_, err := Open(Options{Driver: "bwrap"})
 	assert.Error(t, err, "not implemented")
 
-	_, err = New(Options{Driver: "docker", Image: ""})
-	assert.Error(t, err, "needs an image")
-
-	_, err = New(Options{Driver: "nonsense", Image: "x"})
+	_, err = Open(Options{Driver: "nonsense"})
 	assert.Error(t, err, "unknown driver")
+
+	_, err = Open(Options{})
+	assert.Error(t, err, "empty driver")
+
+	for _, driver := range []string{"docker", "lxd"} {
+		d, err := Open(Options{Driver: driver})
+		assert.NoError(t, err)
+		_, err = d.Sandbox(SandboxOptions{})
+		assert.Error(t, err, "needs an image")
+	}
+}
+
+// openSandbox is a sandbox of image on the driver o names.
+func openSandbox(o Options, image string) (Sandbox, error) {
+	d, err := Open(o)
+	if err != nil {
+		return nil, err
+	}
+	return d.Sandbox(SandboxOptions{Image: image})
 }
 
 func TestSortedEnvStable(t *testing.T) {
@@ -103,7 +119,7 @@ func TestSortedEnvStable(t *testing.T) {
 // rather than leaving the process running.
 func TestContainerSession(t *testing.T) {
 	dockerOrSkip(t)
-	sb, err := New(Options{Driver: "docker", Image: testImage})
+	sb, err := openSandbox(Options{Driver: "docker"}, testImage)
 	require.NoError(t, err)
 	work := t.TempDir()
 	sess, err := sb.Start(context.Background(), Spec{Workdir: work})
@@ -151,7 +167,7 @@ func TestContainerCopyRules(t *testing.T) {
 			}
 			// qualified: podman with short-name enforcement will not pull
 			// an unqualified name.
-			sb, err := New(Options{Driver: driver, Image: "docker.io/library/" + testImage})
+			sb, err := openSandbox(Options{Driver: driver}, "docker.io/library/"+testImage)
 			require.NoError(t, err)
 			sess, err := sb.Start(context.Background(), Spec{Workdir: t.TempDir()})
 			require.NoError(t, err)
