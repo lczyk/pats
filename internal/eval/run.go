@@ -520,12 +520,11 @@ func runPair(
 		}
 	}
 
+	// only what no rule anticipated is news; the policy's own refusals are
+	// in metadata.json.
 	ea := readEgressAudit(filepath.Join(outDir, "egress.log"))
 	if len(ea.Denied) > 0 {
 		lg.warn("[%s x %s] egress denied (no rule): %s", p.Agent, p.Task, strings.Join(ea.Denied, ", "))
-	}
-	if len(ea.Blocked) > 0 {
-		lg.warn("[%s x %s] egress blocked (by policy): %s", p.Agent, p.Task, strings.Join(ea.Blocked, ", "))
 	}
 
 	meta := pairMeta{

@@ -122,8 +122,9 @@ the proxy writes one json line per event to the pair's `egress.log`:
   (`reason: url-not-allowed`), a private target, a tls hello naming another host.
 - `failed_egress` -- upstream trouble: a dial failure, a revoked certificate.
 
-the first two are warned about at the end of each pair. `metadata.json` also records the effective policy, the
-sidecar image (its registry digest when pulled), and the requests and bytes that crossed the proxy.
+only `denied_egress` is warned about at the end of each pair, the other two are in `metadata.json` alone. it also
+records the effective policy, the sidecar image (its registry digest when pulled), and the requests and bytes that
+crossed the proxy.
 
 ## commands
 
