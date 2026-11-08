@@ -25,7 +25,7 @@ type ScoreOptions struct {
 	ConfigDir string   // dir holding pats.yaml -- scorer paths resolve against it
 	RunDir    string   // explicit run dir, or "" for the latest under .pats/runs
 	Jobs      int      // max concurrent scorer cells; 0 -> serial (1), negative -> auto (see resolveJobs)
-	Agentic   bool     // also run agent scorers
+	Judge     bool     // also run agent scorers
 	Suites    []string // only expand these suites (empty -> all)
 	Agents    []string // filter the scored pairs to these agents (empty -> all)
 	Tasks     []string // filter the scored pairs to these tasks (empty -> all)
@@ -125,9 +125,9 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}
 		for _, sp := range byTask[tp.Task] {
 			sc := scorers[sp.Scorer]
-			if sc.IsAgent() && !opts.Agentic {
+			if sc.IsAgent() && !opts.Judge {
 				gated++
-				continue // agentic scorers gated behind --agentic
+				continue // agent scorers gated behind --judge
 			}
 			jobs = append(jobs, scoreJob{tp.Agent, tp.Task, outDir, filepath.Join(opts.ConfigDir, tasks[tp.Task].Dir), sc})
 		}
@@ -137,7 +137,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if len(jobs) == 0 && narrowed {
 		hint := ""
 		if gated > 0 {
-			hint = fmt.Sprintf(" (%d agent scorer cell(s) need --agentic)", gated)
+			hint = fmt.Sprintf(" (%d agent scorer cell(s) need --judge)", gated)
 		}
 		return nil, fmt.Errorf("%w: no pair with output in this run has a selected scorer%s", errNothingToScore, hint)
 	}
