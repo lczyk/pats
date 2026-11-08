@@ -133,7 +133,7 @@ pats egress suggest [--run <run>]
 pats egress log [--denied] [--method POST,PUT,PATCH,DELETE] <pair-dir>
 pats egress run --policy <file> | --sandbox <id> [--task <id>] [--agent <id>] [flags]
 pats egress ca --out <dir>
-pats clean [--dry-run] [--older-than 24h] [--force]
+pats clean [--dry-run] [--older-than 24h] [--force] [--run <token>]
 ```
 
 - `check` prints the verdict, the deciding entry, and whether the host would be a tunnel or mitm'd. it exits 1 on a
@@ -141,10 +141,12 @@ pats clean [--dry-run] [--older-than 24h] [--force]
 - `suggest` folds a run's audits into an `allow:` block for review. run once under `default: allow` to discover what
   a task reaches, then lock it down. requests are grouped by user agent; tunnels hide theirs and are listed apart.
 - `log` is the audit as a table.
-- `clean` removes agent containers, sidecars and networks whose pats process is gone (a killed run leaves its agent
-  running), and temp dirs older than `--older-than` whose process is gone too. it judges only what this user on this
-  host made (pats labels everything `pats.owner=<host>/<uid>`); another user's on a shared daemon, or a remote one's,
-  is counted and left, and `--force` removes it.
+- `clean` removes what dead runs left: agent containers, sidecars, networks, lxd instances, bridges and acls (a
+  killed run leaves its agent running), and temp dirs older than `--older-than`. a run is alive while its lease is
+  fresh: a file in the pats cache dir for docker and podman, renewed every two minutes, the run's marker for lxd.
+  pats labels everything it makes `pats.run=<token>` and `pats.owner=<host>/<uid>/<client>`; a run this host cannot
+  judge (another user's or machine's on a shared daemon) is counted and left, and `--force` removes it. a fresh lease
+  is never removed by `--force`, only by `--run <token>`.
 
 ## standalone
 

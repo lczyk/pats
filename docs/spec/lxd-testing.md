@@ -206,7 +206,8 @@ progress, warnings and log-tail errors are tested without a server.
   it; its verdict is a function with a table test.
 - seam 7: `registry` on the process; `registry_test.go` serves the fetch from an `httptest` registry.
 - seam 8: `lxd_contract_test.go`, against the fake in unit tests and the runner's lxd in the ci job.
-- seam 9: `lxdImageFn` in `internal/eval/build.go`.
+- seam 9: `lxdImageFn` in `internal/eval/build.go`. since superseded by the drivers (`sandbox-seams.md`): eval's
+  build test fakes the driver's `Build`, and `ShutdownLXD` is `sandbox.Shutdown`.
 - the lease: `manualClock` in `fake_test.go`, and the requirements of `fizz/lxd_lease.fizz` with its accepted gap
   pinned.
 

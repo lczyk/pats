@@ -179,13 +179,15 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
   `ipv4.address=auto`, nat on, ipv6 off. `PATS_LXD_UPLINK` names an existing bridge to use instead, for a server
   where a new bridge cannot forward and the admin rule below is not in place (on the target server, `lxdbr0`). a
   builder runs the sandbox author's own script, trusted as a dockerfile is, so it gets no egress policy. `patsup` is
-  shared by every run, carries no run token and is left by `pats clean`; `--force` takes it with the rest. egress
+  shared by every run, carries no run token and is left by `pats clean`; `--force` takes it (lxd refuses while an
+  instance is on it). egress
   proxies use it as their way out too.
 - a miss: launch the base as a builder, push the script and `bin/`, run it as root, stop, `lxc publish` under a
   run-private alias `pats-img-<hash>-<token>`, delete the builder, then create the real alias. an alias carries no
   config, so the image itself gets the run token and `user.pats.created` as properties. if another run made the real
   alias first (two laptops, one miss) its image is used and this one deleted: same key, same inputs. cleanup removes
-  a stale run-private alias and then its image, unless the real alias points at that image. never
+  a dead run's private alias; an image left under that alias alone goes once nothing used it for 30 days
+  (`sandbox-seams.md`, clean). never
   `lxc publish --reuse`, which could swap an image out from under a running pair. output goes to
   `<run>/images/<hash>.log`, so the run dir is made before images are resolved (`internal/eval/run.go` builds first
   today); only a generous fixed time cap.
@@ -256,19 +258,21 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
 
 ## cleanup
 
-the owner-pid liveness `pats clean` uses for docker cannot be asked of a remote server. instead the first thing a
-run creates is a marker, an empty acl `pats-run-<token>` -- nothing of the run's exists before it -- and pats renews
-`user.pats.lease=<unix time>` on it every two minutes while the run lives. everything else the run makes (builders,
+`pats clean` judges every run by its lease (`sandbox-seams.md`, clean). an lxd run keeps its lease on the server,
+which any cleaner reads: the first thing a run creates is a marker, an empty acl `pats-run-<token>` -- nothing of the
+run's exists before it -- and pats renews `user.pats.lease=<unix time>` on it every two minutes while the run lives
+(a loop that wakes every 30s, so a machine waking from sleep renews at once). everything else the run makes (builders,
 workers, proxies, bridges, acls, run-private images) carries the token and `user.pats.created=<unix time>` (images
 as properties), since lxd records no creation time for networks or acls. run-private aliases carry the token in
 their name. the marker, not an instance, holds the lease: a run has resources before any instance of it exists, and
 between instances too.
 
-`pats clean` groups what it finds by token. a group whose marker's lease is more than ten minutes old goes, agents
-before proxies before networks before the marker, as for docker. a group whose marker is gone (a clean that died
-halfway, a hand deletion) is judged by its resources' `user.pats.created` against the same ten minutes. a fresh lease
-is left alone whoever owns it; `--force` takes everything in the project, for a laptop that is gone. a run that ends,
-or is interrupted, removes its own.
+`pats clean` groups what it finds by token. a group whose marker's lease is more than ten minutes old goes,
+instances before networks and acls before aliases and images before the marker, as for docker. a group whose marker
+is gone (a clean that died halfway, a hand deletion) is judged by its resources' `user.pats.created` against the same
+ten minutes. a fresh lease is left alone whoever owns it, `--force` included; `pats clean --run <token>` takes one
+run whatever its lease, for a wedged process (a laptop that is gone needs nothing: its lease goes stale in ten
+minutes). a run that ends, or is interrupted, removes its own.
 
 clean acts at once, with no wait: the lease is a time on the run's clock read against the cleaner's, so the two
 clocks must roughly agree. known gap, accepted: with renewals on time a cleaner may run up to about seven and a half
@@ -335,7 +339,7 @@ whether the agent had sudo.
   server's lan, another pair's bridge and the proxy's outbound address are all unreachable; from the outbound bridge
   the proxy's port is closed.
 - cleanup: `kill -9` of pats mid-run, then `pats clean` after the lease lapses, leaves nothing run-owned (`patsup`
-  and cached images stay; `pats clean --force` empties the project); two runs
+  and cached images stay; `pats clean --force` takes `patsup` too); two runs
   from two laptops on one server do not sweep each other, including a container run between pairs; two runs
   missing the same image build it once or reuse each other's.
 - checked on the target server: stateful vm snapshots (they do not complete, see above), `lxc publish` of a vm

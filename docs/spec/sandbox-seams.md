@@ -119,8 +119,8 @@ contract.
 
 ## drivers
 
-status: proposed. sessions have one shape (the rule above); everything else pats does with a daemon or a server has
-none, and it grew two ways:
+status: implemented (as built, below). sessions have one shape (the rule above); everything else pats does with a daemon
+or a server has none, and it grew two ways:
 
 - lxd-specific exports in `src/sandbox`, which `internal/eval` picks by driver name: `LXDImage`, `LXDFingerprint`,
   `LXDCopyImage`, `LXDRemote`, `LXDProxyImage`, `LXDRemoteFingerprint`, `LXDImageStamps`, `LXDImageUsage`,
@@ -237,12 +237,35 @@ two option levels land together with docker and podman's argv moving into `conta
 `Runs` and `Remove`, and with it the docker sweep's bar for a faulted removal (above, "tests") becomes the new clean's.
 `src/sandbox`'s exported surface is then `Open`, `Shutdown`, the types and the pure helpers.
 
+### as built
+
+- the implementations are the `container` and `lxd` types that already made the sessions: `Sandbox` returns a copy
+  carrying the `SandboxOptions`, and there are no separate `containerDriver` / `lxdDriver` types. every lxd method
+  works on a copy it prepares (`ready`), so one driver serves concurrent callers.
+- lxd's proxy image build reports its steps as the `==> ` lines of the log it is given (warnings as
+  `==> warning: `); eval turns them into progress lines (`stepLog`). `BuildSpec` keeps `Progress` and `Warn`.
+- a container base / provision build generates its dockerfile outside the context and uses the material dir as the
+  context (`COPY . /pats-provision`), so nothing is copied to build it. `BuildSpec.SandboxImage` gives the pats
+  sandbox, asked for only when the build uses `PATS_SANDBOX`.
+- `Target.Version` is docker's `ServerVersion` and lxd's `server_version`; podman gives none. `CPUs` reads the
+  engine table's info template (`{{.NCPU}}`, podman's `{{.Host.CPUs}}`). podman's `CONTAINER_HOST` and
+  `CONTAINER_CONNECTION`, set in `Options`, reach the cli as its environment as well as naming the target.
+- a container `Resolve` of an image id gives its first registry digest, with the repository it belongs to
+  (`Image.Repo`), for the proxy image a pair's metadata records. lxd's `Pull` of a ref on the server itself only
+  resolves it. a remote image not listed for the server's arch and type is `ErrNoImage`.
+- eval's interfaces are `imageHost`, `puller`, `builder` and `host` (`internal/eval/hosts.go`); `hostFor`,
+  `hostForTarget`, `newSandbox` and clean's `openDriver` are its seams.
+- tests: `TestDriverConformance` (pull then resolve, a second and a forced pull, a missing ref, remove, an image in
+  use, build then resolve, the target) on the lxd, docker and podman fakes; `TestContainerTarget`,
+  `TestContainerResolveDigest`, `TestProvisionDockerfile`, `TestEngineRunnerEnv`. `fakeDaemon` learned images,
+  pulls, builds and the target commands (`dockerimages_test.go`).
+
 ## clean
 
-status: proposed. `pats clean` removes what dead runs left, on every driver, by one rule: a run is alive while its
-lease is fresh, wherever the lease is kept. today lxd judges by a lease and docker and podman by an owner file's pid;
-both are liveness records, kept in different places. images are not clean's but `pats init`'s (`init.md`), with one
-exception below.
+status: implemented (as built, below). `pats clean` removes what dead runs left, on every driver, by one rule: a run is
+alive while its lease is fresh, wherever the lease is kept. before it, lxd judged by a lease and docker and podman by
+an owner file's pid; both are liveness records, kept in different places. images are not clean's but `pats init`'s
+(`init.md`), with one exception below.
 
 - **stamps.** everything a run makes carries its run token and its owner: lxd's `user.pats.run` and
   `user.pats.owner` (as today), `pats.run` and `pats.owner` labels on docker and podman containers and networks (set
@@ -302,6 +325,25 @@ exception below.
   notes say to remove `sbx-*` containers and networks by hand once, after upgrading.
 - **a gap closed.** a docker agent whose workdir is outside the temp root has no `sbx-` name; it carries the token and
   the owner label, so this clean finds it by label, which today's clean, filtering by name, does not.
+
+### as built
+
+- a resource's kind is `sandbox` (a container or an instance: builders, stamp containers and the egress helpers that
+  read the ca bundle and run the probes included), `network`, `acl`, `alias`, `image` or `marker`. an lxd run is
+  `Held`: the server holds its record, so it is never unknown. what no run owns (lxd's uplink) goes after every run,
+  so its users go first.
+- the lease file is `run-<token>.lease` in the pats cache dir, beside the temp root, holding `<host> <pid>`. it is made
+  before a run's first container and before its first temp dir (`MkTemp`), so `pats init` holds one too, and every
+  command ends its leases on exit (`main` calls `sandbox.Shutdown`). a temp dir's owner file holds the token; one from
+  before holds a pid (anything not shaped like a token), judged by it alone. lxd's marker renewal wakes every 30s like
+  the file's.
+- a removal that fails keeps the run's record (the marker, the lease file), so the next clean judges the run again.
+  an unknown run is printed, with why, before `--force` takes it.
+- `CleanTemp` leaves every lease file when a place could not be listed (a daemon down may still hold the run).
+- tests: `TestJudge`, `TestHostLease`, `TestCleanTemp`; the container sweeps run a real clean after a faulted
+  removal, and `TestContainerSweepClean` faults every call of one; the docker fake fails any container run without
+  the run labels; `TestLXDClean` covers the image rules, `--force` and `--run`; eval's `TestCleanAcrossPlaces` runs
+  the whole clean on fake places.
 
 ## not in this
 

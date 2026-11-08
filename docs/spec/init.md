@@ -222,7 +222,8 @@ follows from it. a `driver: container` plus `engine:` would add a key without ad
 candidates are images pats itself built or pulled (the pin entry says which: `built` or `pulled`; an image that was
 already there, say an `image:` sandbox's the user pulled, is never one) that this project's own pins pointed at until
 this init moved them (a new base, an edited provision, a pats upgrade) or dropped them (a sandbox gone from the
-config). plain `pats clean` stays as it is (runs' leftovers) and never touches images.
+config). plain `pats clean` removes runs' leftovers, and of images only one a dead run left under its private alias
+alone, once unused for 30 days, by the rule init applies to a superseded lxd image (`sandbox-seams.md`, clean).
 
 a candidate that is not removed yet goes on the pin file's `superseded` list (target, id, since when), and every later
 `pats init` tries the list again, on every driver.
