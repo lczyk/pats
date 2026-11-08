@@ -357,67 +357,6 @@ func TestParseScore(t *testing.T) {
 	}
 }
 
-func TestReportPivot(t *testing.T) {
-	r := &ScoreReport{
-		Scores: []ScoreResult{
-			{Agent: "a1", Task: "t1", Scorer: "s1", Score: 1.0},
-			{Agent: "a1", Task: "t2", Scorer: "s1", Score: 0.5},
-			{Agent: "a1", Task: "t2", Scorer: "s2", Score: 0.0},
-			{Agent: "a2", Task: "t1", Scorer: "s1", Score: 0.9},
-			// a2/t2 missing -> dim dash cell
-		},
-		PerPair:  map[string]float64{"a1/t1": 1.0, "a1/t2": 0.25, "a2/t1": 0.9},
-		PerAgent: map[string]float64{"a1": 0.625, "a2": 0.9},
-		Overall:  0.7625,
-	}
-	var buf bytes.Buffer
-	report(&buf, r, false)
-	out := buf.String()
-
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	assert.ContainsString(t, lines[0], "a1")
-	assert.ContainsString(t, lines[0], "a2")
-	// worst-first: t2 (0.25) row before t1.
-	assert.ContainsString(t, lines[1], "t2")
-	assert.ContainsString(t, lines[1], "0.25 [##-----]")
-	assert.ContainsString(t, lines[1], "-") // missing a2/t2 cell
-	assert.ContainsString(t, lines[2], "t1")
-	assert.ContainsString(t, lines[2], "1.00 [#######]")
-	assert.ContainsString(t, lines[2], "0.90 [######-]")
-	assert.ContainsString(t, lines[3], "avg")
-	assert.ContainsString(t, lines[4], "overall")
-	assert.ContainsString(t, lines[4], "0.76")
-
-	// breakdown covers the pairs below 1, worst first; deviants indented per
-	// line, worst first (no mode tally here -- each pair's scores are distinct).
-	_, breakdown, _ := strings.Cut(out, "scorer breakdown:")
-	assert.ContainsString(t, breakdown, "a1/t2")
-	assert.ContainsString(t, breakdown, "\n    s2=0.00\n    s1=0.50\n")
-	assert.ContainsString(t, breakdown, "a2/t1")
-	assert.That(t, !strings.Contains(breakdown, "a1/t1"), "a pair at 1 is not in the breakdown")
-
-	// no ansi when color off; ansi present when on.
-	assert.That(t, !strings.Contains(out, "\033["), "no ansi in plain output")
-	buf.Reset()
-	report(&buf, r, true)
-	assert.ContainsString(t, buf.String(), "\033[32m")
-	assert.ContainsString(t, buf.String(), "\033[31m")
-}
-
-// a report whose every pair is at 1 says so in one line instead of a breakdown.
-func TestReportAllPerfect(t *testing.T) {
-	r := &ScoreReport{
-		Scores:   []ScoreResult{{Agent: "a", Task: "t1", Scorer: "s", Score: 1}, {Agent: "a", Task: "t2", Scorer: "s", Score: 1}},
-		PerPair:  map[string]float64{"a/t1": 1, "a/t2": 1},
-		PerAgent: map[string]float64{"a": 1},
-		Overall:  1,
-	}
-	var buf bytes.Buffer
-	report(&buf, r, false)
-	assert.ContainsString(t, buf.String(), "\nall 2 pairs at 1.00\n")
-	assert.That(t, !strings.Contains(buf.String(), "scorer breakdown"), "no breakdown")
-}
-
 // numeric -r selectors: positive = run number, 0 = latest, negative = from
 // the latest backwards; out-of-range and missing numbers are errors.
 func TestResolveRunNumber(t *testing.T) {

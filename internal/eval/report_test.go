@@ -10,6 +10,8 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/internal/config"
 )
 
 // scoredRun lays out a scored run: a claude pair with a full summary, a codex
@@ -131,35 +133,77 @@ func TestReportErrors(t *testing.T) {
 	assert.Equal(t, out.Len(), 0)
 }
 
-func TestStatsReport(t *testing.T) {
+func TestReportPivot(t *testing.T) {
 	_, runDir := scoredRun(t)
 	rep, err := readScores(runDir)
 	require.NoError(t, err)
 	var buf, warn bytes.Buffer
-	statsReport(&buf, runDir, rep, &warn)
+	report(&buf, runDir, rep, false, &warn)
 	out := buf.String()
 	assert.ContainsString(t, warn.String(), filepath.Join("claude", "t2", "metadata.json"))
-	assert.ContainsString(t, out, "PAIR")
-	for _, gone := range []string{"LINES", "BYTES", "BLOCKED"} {
-		assert.That(t, !strings.Contains(out, gone), "%s column dropped", gone)
-	}
-	line := func(prefix string) []string {
-		for _, l := range strings.Split(out, "\n") {
-			if f := strings.Fields(l); len(f) > 0 && f[0] == prefix {
-				return f
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	row := func(label string) string {
+		for _, l := range lines {
+			if f := strings.Fields(l); len(f) > 0 && f[0] == label {
+				return l
 			}
 		}
-		t.Fatalf("no %s row in:\n%s", prefix, out)
-		return nil
+		t.Fatalf("no %s row in:\n%s", label, out)
+		return ""
 	}
-	// PAIR STATUS TIME TURNS IN OUT COST TOOLS NET DENIED
-	assert.EqualArrays(t, line("claude/t1"), []string{"claude/t1", "ok", "12.5s", "4", "10", "20", "$0.250", "3", "0", "1"})
-	assert.EqualArrays(t, line("claude/t2"), []string{"claude/t2", "?", "-", "-", "-", "-", "-", "-", "-", "-"})
-	assert.EqualArrays(t, line("codex/t1"), []string{"codex/t1", "nonzero", "3.0s", "-", "7", "9", "-", "0", "0", "0"})
-	assert.EqualArrays(t, line("broken/t1"), []string{"broken/t1", "error", "1.0s", "-", "-", "-", "-", "-", "0", "0"})
-	assert.EqualArrays(t, line("gone/t1"), []string{"gone/t1", "?", "-", "-", "-", "-", "-", "-", "-", "-"})
-	// totals sum the known values only.
-	assert.EqualArrays(t, line("total"), []string{"total", "18.5s", "4", "17", "29", "$0.250", "3", "0", "1"})
+	// agents are the columns, every agent with a pair, sorted.
+	assert.EqualArrays(t, strings.Fields(lines[0]), []string{".base", "broken", "claude", "codex", "gone"})
+	// worst task first: t1 has codex's 0.5, t2 nothing scored.
+	assert.ContainsString(t, lines[1], "t1")
+	assert.ContainsString(t, lines[2], "t2")
+	// a pair that did not end ok carries its mark; a scored pair with no
+	// readable metadata is "?"; an unscored pair is "-".
+	assert.EqualArrays(t, strings.Fields(row("t1")),
+		[]string{"t1", "-", "-", "E", "0.75", "[#####--]", "0.50", "[####---]", "!", "1.00", "[#######]", "?"})
+	assert.EqualArrays(t, strings.Fields(row("t2")), []string{"t2", "-", "-", "-", "?", "-", "-"})
+	assert.EqualArrays(t, strings.Fields(row("avg")),
+		[]string{"avg", "-", "-", "0.75", "[#####--]", "0.50", "[####---]", "1.00", "[#######]"})
+	// cost sums known dollar costs; codex reports none.
+	assert.EqualArrays(t, strings.Fields(row("cost")), []string{"cost", "-", "-", "$0.25", "-", "-"})
+	assert.EqualArrays(t, strings.Fields(row("time")), []string{"time", "0:02", "0:01", "0:13", "0:03", "-"})
+	assert.ContainsString(t, row("overall"), "0.75 [#####--]")
+	// the legend names only the marks shown.
+	assert.Equal(t, lines[len(lines)-1], "! nonzero  E error  ? no metadata")
+	for _, gone := range []string{"breakdown", "run stats"} {
+		assert.That(t, !strings.Contains(out, gone), "no %s section", gone)
+	}
+
+	assert.That(t, !strings.Contains(out, "\033["), "no ansi in plain output")
+	buf.Reset()
+	report(&buf, runDir, rep, true, &bytes.Buffer{})
+	assert.ContainsString(t, buf.String(), "\033[32m")
+	assert.ContainsString(t, buf.String(), "\033[33m")
+}
+
+// one task: no avg or overall rows, and with every pair ok no legend.
+func TestReportOneTask(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+	d := filepath.Join(runDir, "a", "t")
+	require.NoError(t, os.MkdirAll(d, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(d, "metadata.json"),
+		[]byte(`{"agent":"a","task":"t","status":"ok","duration_s":3725}`), 0o644))
+	rep := aggregate(runDir, []ScoreResult{{Agent: "a", Task: "t", Scorer: "s", Score: 1}},
+		[]config.TestPair{{Agent: "a", Task: "t"}})
+	var buf bytes.Buffer
+	report(&buf, runDir, rep, false, nil)
+	out := buf.String()
+	assert.That(t, !strings.Contains(out, "avg"), "no avg row")
+	assert.That(t, !strings.Contains(out, "overall"), "no overall row")
+	assert.That(t, !strings.Contains(out, "nonzero"), "no legend")
+	assert.ContainsString(t, out, "1:02:05") // over an hour
+}
+
+func TestScoreBar(t *testing.T) {
+	assert.Equal(t, scoreBar(1), "[#######]")
+	assert.Equal(t, scoreBar(0.94), "[######-]") // only a 1 fills it
+	assert.Equal(t, scoreBar(0.5), "[####---]")
+	assert.Equal(t, scoreBar(0), "[-------]")
 }
 
 // a pair dir that cannot be listed is warned about, not dropped silently.

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // reportVersion is `pats report --json`'s format: the interface scripts read.
@@ -262,7 +264,219 @@ func Report(configDir, runArg string, asJSON bool, out, errOut io.Writer) error 
 		return err
 	}
 	logw{out, useColor(out)}.info("report: %s", relToCwd(runDir))
-	report(out, rep, useColor(out))
-	statsReport(out, runDir, rep, errOut)
+	report(out, runDir, rep, useColor(out), errOut)
 	return nil
+}
+
+const scoreBarW = 7
+
+// scoreBar renders "[####---]" with s in [0,1] filling the width; only a 1
+// fills it, so a 0.94 never looks like a pass.
+func scoreBar(s float64) string {
+	filled := max(0, int(s*scoreBarW+0.5))
+	if s < 1 {
+		filled = min(filled, scoreBarW-1)
+	}
+	filled = min(filled, scoreBarW)
+	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", scoreBarW-filled) + "]"
+}
+
+// scoreColor picks red/yellow/green ansi by score threshold.
+func scoreColor(s float64) string {
+	switch {
+	case s < 0.5:
+		return "\033[31m"
+	case s < 0.8:
+		return "\033[33m"
+	default:
+		return "\033[32m"
+	}
+}
+
+// statusMarks marks a pair that did not end ok; "?" is a pair with scores
+// but no readable metadata.json.
+var statusMarks = map[string]string{"nonzero": "!", "timeout": "T", "error": "E"}
+
+// markLegend is the legend's order; it names only the marks a report shows.
+var markLegend = []struct{ mark, status string }{{"!", "nonzero"}, {"T", "timeout"}, {"E", "error"}, {"?", "no metadata"}}
+
+// statusMark is a pair's mark, "" when it ended ok.
+func statusMark(r pairRecord) string {
+	if r.meta == nil {
+		return "?"
+	}
+	if r.meta.Status == "ok" {
+		return ""
+	}
+	if m, ok := statusMarks[r.meta.Status]; ok {
+		return m
+	}
+	return "?"
+}
+
+// hms renders seconds as m:ss, or h:mm:ss from an hour.
+func hms(sec float64) string {
+	s := int(sec + 0.5)
+	if s >= 3600 {
+		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+	}
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
+}
+
+// report prints the human report: a tasks x agents pivot, each cell a
+// coloured "0.85 [######-]" and a mark when the pair did not end ok, then
+// per-agent avg, cost and time rows and the overall score. the rest is in
+// `pats report --json`. warn gets the warnings of unreadable pair dirs.
+func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writer) {
+	pairs := readPairs(runDir, r, warn)
+	agentSet, taskSet := map[string]bool{}, map[string]bool{}
+	marks := map[string]string{}
+	cost, costKnown, secs, secsKnown := map[string]float64{}, map[string]bool{}, map[string]float64{}, map[string]bool{}
+	for _, p := range pairs {
+		agentSet[p.agent], taskSet[p.task] = true, true
+		marks[p.agent+"/"+p.task] = statusMark(p)
+		if p.meta == nil {
+			continue
+		}
+		secs[p.agent] += p.meta.DurationS
+		secsKnown[p.agent] = true
+		if s := p.meta.Summary; s != nil && s.HasCost {
+			cost[p.agent] += s.CostUSD
+			costKnown[p.agent] = true
+		}
+	}
+	for k := range r.PerPair {
+		agent, task, _ := strings.Cut(k, "/")
+		agentSet[agent], taskSet[task] = true, true
+	}
+	agents, tasks := sortedSet(agentSet), sortedSet(taskSet)
+	if len(agents) == 0 {
+		return
+	}
+	// worst-first: min score across agents, ascending; a task nobody scored
+	// last; name breaks ties.
+	minOf := func(task string) float64 {
+		m := math.Inf(1)
+		for _, a := range agents {
+			if s, ok := r.PerPair[a+"/"+task]; ok && s < m {
+				m = s
+			}
+		}
+		return m
+	}
+	sort.SliceStable(tasks, func(i, j int) bool { return minOf(tasks[i]) < minOf(tasks[j]) })
+
+	anyMark := false
+	for _, m := range marks {
+		anyMark = anyMark || m != ""
+	}
+	labelW := len("overall")
+	for _, t := range tasks {
+		labelW = max(labelW, len(t))
+	}
+	cellW := len("0.00 ") + scoreBarW + len("[]")
+	if anyMark {
+		cellW += len(" X")
+	}
+	colW := make([]int, len(agents))
+	for i, a := range agents {
+		colW[i] = max(cellW, len(a))
+	}
+
+	fmt.Fprintf(w, "%-*s", labelW, "")
+	for i, a := range agents {
+		if i < len(agents)-1 {
+			fmt.Fprintf(w, "  %-*s", colW[i], a)
+		} else {
+			fmt.Fprintf(w, "  %s", a)
+		}
+	}
+	fmt.Fprintln(w)
+
+	// each cell is (plain text, ansi colour); colours go on after padding so
+	// their bytes don't skew the alignment.
+	type cell struct{ text, color string }
+	row := func(label string, get func(agent string) []cell) {
+		fmt.Fprintf(w, "%-*s", labelW, label)
+		for i, a := range agents {
+			parts := get(a)
+			n := 0
+			for j, p := range parts {
+				if j > 0 {
+					n++
+				}
+				n += len(p.text)
+			}
+			fmt.Fprint(w, "  ")
+			for j, p := range parts {
+				if j > 0 {
+					fmt.Fprint(w, " ")
+				}
+				if color && p.color != "" {
+					fmt.Fprint(w, p.color+p.text+"\033[0m")
+				} else {
+					fmt.Fprint(w, p.text)
+				}
+			}
+			if i < len(agents)-1 {
+				fmt.Fprint(w, strings.Repeat(" ", colW[i]-n))
+			}
+		}
+		fmt.Fprintln(w)
+	}
+	scoreCell := func(s float64, ok bool) cell {
+		if !ok {
+			return cell{"-", "\033[2m"}
+		}
+		return cell{fmt.Sprintf("%.2f %s", s, scoreBar(s)), scoreColor(s)}
+	}
+	markColor := map[string]string{"!": "\033[31m", "E": "\033[31m", "T": "\033[33m", "?": "\033[2m"}
+
+	for _, t := range tasks {
+		row(t, func(a string) []cell {
+			s, ok := r.PerPair[a+"/"+t]
+			c := []cell{scoreCell(s, ok)}
+			if m := marks[a+"/"+t]; m != "" {
+				c = append(c, cell{m, markColor[m]})
+			}
+			return c
+		})
+	}
+	if len(tasks) > 1 {
+		row("avg", func(a string) []cell {
+			s, ok := r.PerAgent[a]
+			return []cell{scoreCell(s, ok)}
+		})
+	}
+	row("cost", func(a string) []cell {
+		if !costKnown[a] {
+			return []cell{{"-", "\033[2m"}}
+		}
+		return []cell{{fmt.Sprintf("$%.2f", cost[a]), ""}}
+	})
+	row("time", func(a string) []cell {
+		if !secsKnown[a] {
+			return []cell{{"-", "\033[2m"}}
+		}
+		return []cell{{hms(secs[a]), ""}}
+	})
+	if len(tasks) > 1 && len(r.PerAgent) > 0 {
+		overall := fmt.Sprintf("%.2f %s", r.Overall, scoreBar(r.Overall))
+		if color {
+			overall = scoreColor(r.Overall) + overall + "\033[0m"
+		}
+		fmt.Fprintf(w, "%-*s  %s\n", labelW, "overall", overall)
+	}
+	if anyMark {
+		var legend []string
+		for _, l := range markLegend {
+			for _, m := range marks {
+				if m == l.mark {
+					legend = append(legend, l.mark+" "+l.status)
+					break
+				}
+			}
+		}
+		fmt.Fprintln(w, strings.Join(legend, "  "))
+	}
 }
