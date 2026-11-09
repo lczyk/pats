@@ -127,3 +127,8 @@ per-agent `avg`, `cost` and `time` rows. it replaced the breakdown and run stats
   place; anything else is a script over it.
 - the per-pair breakdown in the document beyond `scores`: a consumer groups them itself.
 - a stable `scores.json` or `metadata.json`.
+
+## several runs
+
+`pats report -N <n>` reports the latest n runs together, as document version 2: `runs`, and per pair `mean`, `sd`,
+`n` and one `samples` entry per run it ran in. a single run keeps version 1. see `repeats.md`.

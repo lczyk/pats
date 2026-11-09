@@ -1,6 +1,6 @@
 # repeats
 
-status: proposed.
+status: implemented.
 
 ## problem
 

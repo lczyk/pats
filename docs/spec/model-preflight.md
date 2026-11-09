@@ -1,6 +1,6 @@
 # model preflight
 
-status: proposed.
+status: implemented, but for the provider pins check, which waits on `provider-pinning.md`.
 
 ## problem
 

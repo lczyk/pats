@@ -1,6 +1,6 @@
 # run dry run
 
-status: proposed.
+status: implemented, but for the provider block in the match and in metadata, which waits on `provider-pinning.md`.
 
 ## problem
 

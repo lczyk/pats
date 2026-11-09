@@ -1,6 +1,6 @@
 # budget
 
-status: proposed.
+status: implemented.
 
 ## problem
 
