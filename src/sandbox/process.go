@@ -217,11 +217,11 @@ func output(ctx context.Context, r runner, args ...string) ([]byte, error) {
 // grace. a process that finished as ctx ended keeps its result. after a
 // cancel an exit status wins and a clean exit reports ctx's error, as
 // os/exec's Wait does.
-func (p *process) execCancellable(ctx context.Context, r runner, stdout, stderr io.Writer, cancel func(), args ...string) error {
+func (p *process) execCancellable(ctx context.Context, r runner, stdin io.Reader, stdout, stderr io.Writer, cancel func(), args ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	x, err := r.Start(nil, stdout, stderr, args...)
+	x, err := r.Start(stdin, stdout, stderr, args...)
 	if err != nil {
 		return err
 	}
@@ -283,9 +283,9 @@ type follower struct {
 	stderr *io.PipeReader
 }
 
-func follow(r runner, stdout io.Writer, args ...string) (*follower, error) {
+func follow(r runner, stdin io.Reader, stdout io.Writer, args ...string) (*follower, error) {
 	pr, pw := io.Pipe()
-	x, err := r.Start(nil, stdout, pw, args...)
+	x, err := r.Start(stdin, stdout, pw, args...)
 	if err != nil {
 		pw.Close()
 		return nil, err

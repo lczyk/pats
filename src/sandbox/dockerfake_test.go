@@ -141,7 +141,7 @@ func (f *fakeDaemon) do(ctx context.Context, stdin io.Reader, stdout, stderr io.
 	case args[0] == "run":
 		return f.runCtr(ctx, stdout, stderr, args[1:])
 	case args[0] == "exec":
-		return f.exec(ctx, stdout, stderr, args[1:])
+		return f.exec(ctx, stdin, stdout, stderr, args[1:])
 	case args[0] == "logs" && len(args) == 3 && args[1] == "-f":
 		return f.logs(ctx, stderr, args[2])
 	}
@@ -403,8 +403,8 @@ func (f *fakeDaemon) logs(ctx context.Context, stderr io.Writer, ref string) err
 
 var execValued = map[string]bool{"-u": true, "-w": true, "-e": true}
 
-func (f *fakeDaemon) exec(ctx context.Context, stdout, stderr io.Writer, args []string) error {
-	flags, _, rest, ok := f.dockerArgs(args, execValued, nil)
+func (f *fakeDaemon) exec(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+	flags, bools, rest, ok := f.dockerArgs(args, execValued, map[string]bool{"-i": true})
 	if !ok || len(rest) < 2 || len(flags["-u"]) == 0 || len(flags["-w"]) == 0 {
 		f.t.Errorf("fake %s: exec without -u, -w or a command: %v", f.driver, args)
 		return dockerFail(stderr, "bad exec")
@@ -417,7 +417,20 @@ func (f *fakeDaemon) exec(ctx context.Context, stdout, stderr io.Writer, args []
 	}
 	xctx, kill := context.WithCancel(ctx)
 	defer kill()
-	x := &fakeExec{inst: c.id, user: flags["-u"][0], env: kv(flags["-e"]), kill: kill}
+	env := kv(flags["-e"])
+	// the env wrapper (envArgv): the env comes in on stdin, which -i keeps
+	// open, as a shell would read it.
+	if v := rest[1:]; len(v) >= 5 && v[0] == "/bin/sh" && v[1] == "-c" && v[3] == "pats-env" {
+		if !bools["-i"] {
+			f.t.Errorf("fake %s: env wrapper without -i: %v", f.driver, args)
+		}
+		script, _ := io.ReadAll(stdin)
+		for k, val := range parseEnvScript(string(script)) {
+			env[k] = val
+		}
+		rest = append(rest[:1:1], v[4:]...)
+	}
+	x := &fakeExec{inst: c.id, user: flags["-u"][0], env: env, kill: kill}
 	f.execs[x] = true
 	agent := f.agent
 	f.mu.Unlock()

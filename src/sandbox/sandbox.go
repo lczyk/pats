@@ -351,17 +351,23 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	// workdir are host-owned -- else collect + cleanup hit root-owned files
 	// on linux. harness images must tolerate an arbitrary uid (writable
 	// HOME/tmp).
+	// the env goes in on stdin, read by a shell before the command runs: a
+	// value on the command line is readable by any local process (ps), and
+	// one in the cli's environment would change the cli.
 	args := []string{"exec", "-u", user, "-w", dir}
-	for _, kv := range sortedEnv(cmd.Env) {
-		args = append(args, "-e", kv)
+	argv := cmd.Argv
+	var stdin io.Reader
+	if len(cmd.Env) > 0 {
+		args = append(args, "-i")
+		argv, stdin = envArgv(argv), envScript(cmd.Env)
 	}
 	args = append(args, s.id)
-	args = append(args, cmd.Argv...)
+	args = append(args, argv...)
 
 	// on ctx cancel (ctrl+C, the deadline) kill the container: ending the
 	// exec client leaves the process inside running.
 	kill := func() { _, _ = s.c.docker(context.Background(), "kill", s.id) }
-	return exitResult(s.c.p.execCancellable(ctx, s.c.r, stdout, stderr, kill, args...), s.c.driver+" exec failed")
+	return exitResult(s.c.p.execCancellable(ctx, s.c.r, stdin, stdout, stderr, kill, args...), s.c.driver+" exec failed")
 }
 
 func (s *containerSession) Sync(ctx context.Context) error { return nil }

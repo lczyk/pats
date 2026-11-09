@@ -617,7 +617,12 @@ func (s *lxdSession) exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 	return s.execIn(ctx, nil, cmd, stdout, stderr)
 }
 
-func (s *lxdSession) execArgs(cmd Cmd) []string {
+// execArgs is the lxc exec argv for cmd, and the stdin to give it. with
+// stdin free (nil), the env goes in on stdin as a script the command reads
+// first, so no value is on lxc's command line for ps to read; a step that
+// streams its own stdin (push, pull) carries only the egress env, which
+// holds no secret, as --env flags.
+func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
 	user := s.uid
 	if cmd.Root || user == "" {
 		user = "0"
@@ -637,14 +642,22 @@ func (s *lxdSession) execArgs(cmd Cmd) []string {
 	for k, v := range cmd.Env {
 		env[k] = v
 	}
-	for _, kv := range sortedEnv(env) {
-		args = append(args, "--env", kv)
+	argv := cmd.Argv
+	switch {
+	case len(env) == 0:
+	case stdin == nil:
+		argv, stdin = envArgv(argv), envScript(env)
+	default:
+		for _, kv := range sortedEnv(env) {
+			args = append(args, "--env", kv)
+		}
 	}
-	return append(append(args, "--"), cmd.Argv...)
+	return append(append(args, "--"), argv...), stdin
 }
 
 func (s *lxdSession) execIn(ctx context.Context, stdin io.Reader, cmd Cmd, stdout, stderr io.Writer) (int, error) {
-	return exitResult(s.l.exec(ctx, stdin, stdout, stderr, s.execArgs(cmd)...), "lxc exec")
+	args, in := s.execArgs(cmd, stdin)
+	return exitResult(s.l.exec(ctx, in, stdout, stderr, args...), "lxc exec")
 }
 
 // Exec runs cmd; on ctx cancel the agent's processes are killed and the
@@ -659,7 +672,8 @@ func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 			_, _ = s.exec(bg, Cmd{Argv: []string{"pkill", "-KILL", "-u", s.uid}, Root: true, Dir: "/"}, io.Discard, io.Discard)
 		}
 	}
-	return exitResult(s.l.p.execCancellable(ctx, s.l.r, stdout, stderr, cancel, s.execArgs(cmd)...), "lxc exec")
+	args, in := s.execArgs(cmd, nil)
+	return exitResult(s.l.p.execCancellable(ctx, s.l.r, in, stdout, stderr, cancel, args...), "lxc exec")
 }
 
 // Push streams hostPath into path as a tar over exec. a directory's contents

@@ -371,11 +371,12 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	// on the internal address only: on :8080 any container on the default
 	// network could use this pair's policy and write into its audit.
 	penv["PATS_EGRESS_LISTEN"] = proxyIP.String() + ":" + proxyPort
-	for _, kv := range sortedEnv(penv) {
-		runArgs = append(runArgs, "-e", kv)
-	}
+	// the policy and the ca key ride in the cli's environment, never on its
+	// command line.
+	flags, r := envFlags(c.r, "-e", penv)
+	runArgs = append(runArgs, flags...)
 	runArgs = append(runArgs, img)
-	if out, err := c.docker(ctx, runArgs...); err != nil {
+	if out, err := combined(ctx, r, runArgs...); err != nil {
 		teardown()
 		return nil, nil, fmt.Errorf("egress: start proxy: %w (%s)", err, out)
 	}
@@ -398,7 +399,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		}
 		auditF, audit = f, f
 	}
-	if logs, err = follow(c.r, audit, "logs", "-f", proxyName); err != nil {
+	if logs, err = follow(c.r, nil, audit, "logs", "-f", proxyName); err != nil {
 		teardown()
 		return nil, nil, fmt.Errorf("egress: follow proxy logs: %w", err)
 	}

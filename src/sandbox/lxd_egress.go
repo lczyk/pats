@@ -226,8 +226,8 @@ func (s *lxdSession) runProxy(ctx context.Context, p *lxdSession, auditPath stri
 		}
 		e.auditF, audit = f, f
 	}
-	args := p.execArgs(Cmd{Argv: []string{"/usr/local/bin/pats", "egress", "run"}, Env: penv, Dir: "/"})
-	run, err := follow(s.l.r, audit, args...)
+	args, in := p.execArgs(Cmd{Argv: []string{"/usr/local/bin/pats", "egress", "run"}, Env: penv, Dir: "/"}, nil)
+	run, err := follow(s.l.r, in, audit, args...)
 	if err != nil {
 		return fmt.Errorf("egress: start proxy: %w", err)
 	}

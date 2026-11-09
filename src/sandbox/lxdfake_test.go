@@ -968,7 +968,17 @@ func (f *fakeServer) exec(ctx context.Context, stdin io.Reader, stdout, stderr i
 	_, name := lxcRef(a.pos[1])
 	xctx, kill := context.WithCancel(ctx)
 	defer kill()
-	x := &fakeExec{inst: name, user: a.flag("--user"), env: kv(a.flags["--env"]), kill: kill}
+	env := kv(a.flags["--env"])
+	// the env wrapper (envArgv): the env comes in on stdin, as a shell
+	// would read it, and the command runs with stdin closed.
+	if v := a.argv; len(v) >= 5 && v[0] == "/bin/sh" && v[1] == "-c" && v[3] == "pats-env" {
+		script, _ := io.ReadAll(stdin)
+		for k, val := range parseEnvScript(string(script)) {
+			env[k] = val
+		}
+		a.argv, stdin = v[4:], nil
+	}
+	x := &fakeExec{inst: name, user: a.flag("--user"), env: env, kill: kill}
 	f.execs[x] = true
 	f.mu.Unlock()
 	defer func() {
@@ -1263,4 +1273,20 @@ func (f *fakeServer) has(kind, name string) bool {
 		return f.lookupImage(name) != ""
 	}
 	return false
+}
+
+// parseEnvScript reads envScript's exports back: export K='v' lines,
+// each value single-quoted, a quote inside spelled as close, escaped, reopen.
+func parseEnvScript(s string) map[string]string {
+	env := map[string]string{}
+	for _, line := range strings.Split(s, "\n") {
+		kv, ok := strings.CutPrefix(line, "export ")
+		if !ok {
+			continue
+		}
+		k, v, _ := strings.Cut(kv, "=")
+		v = strings.TrimSuffix(strings.TrimPrefix(v, "'"), "'")
+		env[k] = strings.ReplaceAll(v, `'\''`, "'")
+	}
+	return env
 }

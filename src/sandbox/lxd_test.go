@@ -142,10 +142,20 @@ func TestLXDStartRefusesForeignNic(t *testing.T) {
 // env under their own. a vm carries agent.nic_config.
 func TestLXDExecArgs(t *testing.T) {
 	s := &lxdSession{l: &lxd{o: Options{Remote: "srv"}}, name: "pats-x", uid: "1001", env: map[string]string{"A": "1", "B": "2"}}
-	args := strings.Join(s.execArgs(Cmd{Argv: []string{"run", "it"}, Env: map[string]string{"B": "3"}}), " ")
-	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 1001 --group 1001 --cwd /workspace --env A=1 --env B=3 -- run it")
-	args = strings.Join(s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}), " ")
-	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / --env A=1 --env B=2 -- id")
+	// the env goes in on stdin, never on lxc's command line, where ps reads it.
+	argv, in := s.execArgs(Cmd{Argv: []string{"run", "it"}, Env: map[string]string{"B": "it's 3"}}, nil)
+	args := strings.Join(argv, " ")
+	assert.Equal(t, args, `exec srv:pats-x --project pats --force-noninteractive --user 1001 --group 1001 --cwd /workspace -- /bin/sh -c eval "$(cat)" && exec "$@" </dev/null pats-env run it`)
+	script, _ := io.ReadAll(in)
+	assert.Equal(t, string(script), "export A='1'\nexport B='it'\\''s 3'\n")
+	argv, in = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil)
+	assert.Equal(t, strings.Join(argv, " "), `exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- /bin/sh -c eval "$(cat)" && exec "$@" </dev/null pats-env id`)
+	assert.That(t, in != nil, "no env on stdin")
+	// a step streaming its own stdin carries the egress env as flags.
+	argv, in = s.execArgs(Cmd{Argv: []string{"tar"}, Root: true, Dir: "/"}, strings.NewReader("data"))
+	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / --env A=1 --env B=2 -- tar")
+	b, _ := io.ReadAll(in)
+	assert.Equal(t, string(b), "data")
 
 	l, f := fakeLXD(t, Options{Driver: "lxd", VM: true}, SandboxOptions{Image: "img"})
 	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
@@ -345,8 +355,10 @@ func TestLXDStartProxy(t *testing.T) {
 	assert.ContainsString(t, all, "ip addr replace "+agentIP+"/29 dev pats0")
 	assert.ContainsString(t, all, "network=up0 name=uplink0")
 	assert.ContainsString(t, all, "net.ipv4.ip_forward=0")
-	assert.ContainsString(t, all, "--env PATS_EGRESS_LISTEN="+proxyIP+":8080")
-	assert.ContainsString(t, all, "--user 999 --group 999 --cwd / --env PATS_EGRESS_LISTEN")
+	// the proxy runs as its own user, its policy and ca key in on stdin:
+	// never on lxc's command line, where ps reads it.
+	assert.ContainsString(t, all, "--user 999 --group 999 --cwd / -- /bin/sh -c")
+	assert.That(t, !strings.Contains(all, "PATS_EGRESS_"), "proxy env on the command line:\n%s", all)
 	assert.Equal(t, s.env["HTTP_PROXY"], "http://"+proxyIP+":8080")
 
 	require.NoError(t, sess.Close())
