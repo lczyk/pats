@@ -403,6 +403,9 @@ type pairMeta struct {
 	Summary *runSummary `json:"summary,omitempty"`
 	// the harness versions inside the image, as pats init stamped them.
 	Components map[string]string `json:"components,omitempty"`
+	// a judge's sample: the pair it graded, and which sample it is.
+	Judged *judged `json:"judged,omitempty"`
+	Sample int     `json:"sample,omitempty"`
 }
 
 // filesHome says whether the pair's files came home. a pair written before
@@ -500,6 +503,8 @@ type pairJob struct {
 	hostNames map[string]string
 	// seed fills the fresh workdir before stage; nil leaves it empty.
 	seed func(workDir string) error
+	// footer goes after the resolved prompt.
+	footer string
 	// meta adds the job's own fields to its metadata.json.
 	meta func(*pairMeta)
 }
@@ -593,6 +598,7 @@ func runPair(
 		if err != nil {
 			return fmt.Errorf("prompt: %w", err)
 		}
+		promptData = append(promptData, job.footer...)
 		if err := os.WriteFile(h.promptPath(), promptData, 0o644); err != nil {
 			return err
 		}

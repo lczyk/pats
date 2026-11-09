@@ -146,7 +146,13 @@ func initSandboxes(cfg *config.Config, opts InitOptions) ([]config.Sandbox, erro
 			return nil, err
 		}
 	}
-	used := usedSandboxes(cfg, pairs)
+	// the judges of the selected suites' agent scorers run in sandboxes too;
+	// -a and -t narrow the task pairs, not them.
+	judges, err := judgePairsOf(cfg, opts.Suites)
+	if err != nil {
+		return nil, err
+	}
+	used := usedSandboxes(cfg, append(pairs, judges...))
 	want := map[string]bool{}
 	for _, name := range opts.Sandboxes {
 		if !used[name] {
@@ -163,6 +169,25 @@ func initSandboxes(cfg *config.Config, opts InitOptions) ([]config.Sandbox, erro
 	}
 	if len(out) == 0 {
 		return nil, errors.New("no sandbox to init: the selection uses none")
+	}
+	return out, nil
+}
+
+// judgePairsOf is a pair for each judge agent an agent scorer of the
+// suites names: what a judge's sandbox is used by.
+func judgePairsOf(cfg *config.Config, suites []string) ([]config.TestPair, error) {
+	sps, err := cfg.ExpandScorePairs(suites...)
+	if err != nil {
+		return nil, err
+	}
+	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.Name })
+	seen := map[string]bool{}
+	var out []config.TestPair
+	for _, sp := range sps {
+		if sc := scorers[sp.Scorer]; sc.IsAgent() && !seen[sc.Agent] {
+			seen[sc.Agent] = true
+			out = append(out, config.TestPair{Agent: sc.Agent})
+		}
 	}
 	return out, nil
 }

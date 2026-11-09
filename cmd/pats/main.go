@@ -32,7 +32,8 @@ type Options struct {
 
 	Init   InitCommand   `command:"init" description:"make and pin the images the suites' sandboxes need"`
 	Run    RunCommand    `command:"run" description:"run the suites (agents x tasks)"`
-	Score  ScoreCommand  `command:"score" description:"score the most recent run (tasks x scorers)"`
+	Score  ScoreCommand  `command:"score" description:"score the most recent run with its script scorers (tasks x scorers)"`
+	Judge  JudgeCommand  `command:"judge" description:"judge the most recent run with its agent scorers, each judge an agent in a sandbox"`
 	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
 	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
 	Egress EgressCommand `command:"egress" description:"the egress proxy: check a policy, read an audit, serve it"`
@@ -166,6 +167,53 @@ func (s *ScoreCommand) Execute(args []string) error {
 		Verbose:   len(opts.Verbose),
 	})
 	return err
+}
+
+// JudgeCommand runs the agent scorers over a run (the latest by default).
+type JudgeCommand struct {
+	Run     string   `long:"run" short:"r" description:"run to judge: a dir, a friendly name like fluffy-bunny, or a number (1 = run 001; 0 = latest, -1 = second to last; default: latest)"`
+	Runs    int      `long:"runs" description:"judge the latest this many runs, one after another"`
+	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max judge jobs in parallel; -1 for auto"`
+	Repeat  int      `long:"repeat" short:"N" default:"1" description:"judge each score this many times; the score is the mean of the samples"`
+	Agents  []string `long:"agent" short:"a" description:"only judge these agents' pairs, or agent vectors' (repeatable); default: all"`
+	Tasks   []string `long:"task" short:"t" description:"only judge these tasks' pairs, or task vectors' (repeatable); default: all"`
+	Scorers []string `long:"scorer" short:"s" description:"only run these agent scorers or scorer vectors (repeatable); default: all"`
+	Suites  []string `long:"suite" short:"S" description:"only judge these suites or suite vectors (repeatable); default: all"`
+	MaxCost float64  `long:"max-cost" value-name:"<usd>" description:"stop starting judge jobs once their reported spend reaches this many us dollars, across every run"`
+	Offline bool     `long:"offline" description:"skip checking for newer upstream images and the openrouter model check"`
+}
+
+func (c *JudgeCommand) Execute(args []string) error {
+	if err := checkRuns("judge", c.Runs, c.Run); err != nil {
+		return err
+	}
+	if c.Repeat < 1 {
+		return errors.New("--repeat must be at least 1")
+	}
+	if c.MaxCost != 0 || flagSet("judge", "max-cost") {
+		if err := config.CheckCost(c.MaxCost); err != nil {
+			return fmt.Errorf("--max-cost: %w", err)
+		}
+	}
+	cfg, err := load(opts.Config)
+	if err != nil {
+		return err
+	}
+	return eval.Judge(cfg, eval.JudgeOptions{
+		ConfigDir: filepath.Dir(opts.Config),
+		RunDir:    c.Run,
+		Runs:      c.Runs,
+		Jobs:      c.Jobs,
+		Repeat:    c.Repeat,
+		MaxCost:   c.MaxCost,
+		Offline:   c.Offline,
+		Suites:    c.Suites,
+		Agents:    c.Agents,
+		Tasks:     c.Tasks,
+		Scorers:   c.Scorers,
+		Out:       os.Stdout,
+		Verbose:   len(opts.Verbose),
+	})
 }
 
 // ReportCommand reprints a run's report from its scores.json (the latest run
