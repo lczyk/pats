@@ -20,7 +20,7 @@ func TestScoreExec(t *testing.T) {
 	dir := t.TempDir()
 	// scorer: 1.0 if the output contains "good", else 0.0.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "has-good.sh"),
-		[]byte("#!/bin/sh\ngrep -q good \"$PATS_OUTPUT_DIR/stdout.log\" && echo 1.0 || echo 0.0\n"), 0o755))
+		[]byte("#!/bin/sh\ngrep -q good \"$PATS_SCORED_DIR/stdout.log\" && echo 1.0 || echo 0.0\n"), 0o755))
 
 	// fake run dir: agent a ran two tasks, one good one bad.
 	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
@@ -74,11 +74,11 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: [t1x], scorers: [run-env]}}
 	assert.Equal(t, rep.PerPair["axx/t1x"], 1.0)
 }
 
-// scorers get PATS_AGENT_HARNESS alongside PATS_MODEL (README documents both).
+// scorers get PATS_SCORED_HARNESS alongside PATS_SCORED_MODEL, and none of the unprefixed names.
 func TestScorerEnvIncludesAgentKind(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "check-harness.sh"),
-		[]byte("#!/bin/sh\n[ \"$PATS_AGENT_HARNESS\" = \"opencode-openrouter\" ] && echo 1.0 || echo 0.0\n"), 0o755))
+		[]byte("#!/bin/sh\n[ \"$PATS_SCORED_HARNESS\" = \"opencode-openrouter\" ] && [ -z \"$PATS_AGENT_HARNESS$PATS_OUTPUT_DIR$PATS_TASK_NAME\" ] && echo 1.0 || echo 0.0\n"), 0o755))
 
 	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
 	od := filepath.Join(run, "axx", "txx")

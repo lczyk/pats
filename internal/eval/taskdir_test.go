@@ -15,7 +15,7 @@ import (
 
 // a task from a task.yaml: its scripts run in its own dir with bin/ on PATH,
 // its env and PATS_TASK_DIR exported, its inline prompt staged verbatim; a
-// scorer of it sees PATS_TASK_DIR too.
+// scorer of it sees PATS_SCORED_TASK_DIR too.
 func TestRunTaskDir(t *testing.T) {
 	var staged string
 	fake := &fakeSandbox{onRun: func(spec sandbox.Spec) {
@@ -40,7 +40,7 @@ collect: ./collect.sh
 			"cp truth.yaml \"$PATS_OUTPUT_DIR/expected.yaml\"\n" +
 			"printf '%s %s %s\\n' \"$(basename \"$PWD\")\" \"$BRANCH\" \"$PATS_TASK_DIR\" > \"$PATS_OUTPUT_DIR/prepare-env\"\n",
 		"cases/knockout/curl/collect.sh": "#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n",
-		"score-dir.sh":                   "#!/bin/sh\n[ \"$PATS_TASK_DIR\" = \"$PWD/cases/knockout/curl\" ] && [ -f \"$PATS_TASK_DIR/truth.yaml\" ] && echo 1.0 || echo 0.0\n",
+		"score-dir.sh":                   "#!/bin/sh\n[ \"$PATS_SCORED_TASK_DIR\" = \"$PWD/cases/knockout/curl\" ] && [ -f \"$PATS_SCORED_TASK_DIR/truth.yaml\" ] && echo 1.0 || echo 0.0\n",
 	})
 	for _, f := range []string{"bin/stage-truth", "cases/knockout/curl/collect.sh", "score-dir.sh"} {
 		require.NoError(t, os.Chmod(filepath.Join(root, f), 0o755))

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -306,22 +307,33 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 		defer ls.flush()
 		tee = ls
 	}
-	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.outputTee(ctx, opts.ConfigDir, map[string]string{
+	env := scoredEnv(outDir, taskDir, agent, task, info)
+	maps.Copy(env, map[string]string{
 		"PATS_RUN_NAME":      filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
-		"PATS_OUTPUT_DIR":    outDir,
-		"PATS_TASK_DIR":      taskDir,
-		"PATS_AGENT_NAME":    agent,
-		"PATS_TASK_NAME":     task,
 		"PATS_SCORER_NAME":   sc.Name,
 		"PATS_SCORER_VECTOR": sc.Vector,
-		"PATS_MODEL":         info.model,
-		"PATS_AGENT_HARNESS": info.harness,
-	}, tee)
+	})
+	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.outputTee(ctx, opts.ConfigDir, env, tee)
 	if err != nil { // non-zero exit = failure
 		return 0, fmt.Errorf("run: %w", err)
 	}
 	return parseScore(string(out))
+}
+
+// scoredEnv names the pair a scorer grades, for every scorer, script or
+// agent. the unprefixed names (PATS_OUTPUT_DIR, PATS_AGENT_NAME, ...) are
+// left to the run of the agent a step belongs to: a judge's, not the
+// graded one's.
+func scoredEnv(outDir, taskDir, agent, task string, info agentInfo) map[string]string {
+	return map[string]string{
+		"PATS_SCORED_DIR":        outDir,
+		"PATS_SCORED_AGENT_NAME": agent,
+		"PATS_SCORED_TASK_NAME":  task,
+		"PATS_SCORED_TASK_DIR":   taskDir,
+		"PATS_SCORED_MODEL":      info.model,
+		"PATS_SCORED_HARNESS":    info.harness,
+	}
 }
 
 // parseScore reads a scorer's verdict from the first non-empty stdout line: a
