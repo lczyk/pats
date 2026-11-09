@@ -91,6 +91,15 @@ var RequiredHosts = map[string][]string{
 	},
 }
 
+// HarnessCLIs is the cli each harness runs, for a host that has to have it
+// on its PATH.
+var HarnessCLIs = map[string]string{
+	"claude-cli-keyless":  "claude",
+	"codex-cli-keyless":   "codex",
+	"copilot-cli-keyless": "copilot",
+	"opencode-openrouter": "opencode",
+}
+
 // Spec builds the sandboxed execution for a task-running agent.
 func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, error) {
 	cmd, ok := HarnessCmds[a.Harness]

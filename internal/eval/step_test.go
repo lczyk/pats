@@ -16,6 +16,7 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // stepRoot makes a pats root with a bin/ helper and a task dir under it.
@@ -227,9 +228,9 @@ func TestStepEscapedChildCutOff(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 makes the escaping child")
 	}
-	old := stepWaitDelay
-	stepWaitDelay = 200 * time.Millisecond
-	defer func() { stepWaitDelay = old }()
+	old := sandbox.GroupWaitDelay
+	sandbox.GroupWaitDelay = 200 * time.Millisecond
+	defer func() { sandbox.GroupWaitDelay = old }()
 	dir := t.TempDir()
 	// the script waits until the child has left the group, so the kill at
 	// its exit cannot reach it.

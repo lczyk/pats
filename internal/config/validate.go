@@ -167,8 +167,13 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 			}
 		case "bwrap":
 			add("sandbox %q: bwrap driver not implemented yet", s.Name)
+		case "host":
+			validateHost(add, s)
 		default:
-			add("sandbox %q: unknown driver %q (docker|podman|lxd|bwrap)", s.Name, s.Driver)
+			add("sandbox %q: unknown driver %q (docker|podman|lxd|bwrap|host)", s.Name, s.Driver)
+		}
+		if s.SandNotBoxed && !s.IsHost() {
+			add("sandbox %q: sand-not-boxed is the host driver's (driver %q)", s.Name, s.Driver)
 		}
 		if s.MaxParallel < 0 {
 			add("sandbox %q: max-parallel must be positive", s.Name)
@@ -193,6 +198,27 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 			case shellReadonly[k]:
 				add("sandbox %q: env %s is read-only in a shell, which hands the env to the command", s.Name, k)
 			}
+		}
+	}
+}
+
+// validateHost refuses what a host cannot honour, each key by name, and asks
+// for the acknowledgement that the agent runs unboxed.
+func validateHost(add func(string, ...any), s Sandbox) {
+	if !s.SandNotBoxed {
+		add("sandbox %q: the host driver runs the agent on this machine, as you, with no isolation; set sand-not-boxed: true to accept that", s.Name)
+	}
+	refused := []struct {
+		key string
+		set bool
+	}{
+		{"image", s.Image != ""}, {"build", s.Build != ""}, {"base", s.Base != ""}, {"provision", s.Provision != ""},
+		{"limits", s.Limits != (Limits{})}, {"sudo", s.Sudo}, {"vm", s.VM}, {"remote", s.Remote != ""},
+		{"profiles", len(s.Profiles) > 0}, {"config", len(s.Config) > 0}, {"egress: none", s.Egress.None},
+	}
+	for _, r := range refused {
+		if r.set {
+			add("sandbox %q: %s is refused under the host driver: the agent runs on this machine as it is", s.Name, r.key)
 		}
 	}
 }

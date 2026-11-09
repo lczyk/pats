@@ -58,6 +58,11 @@ func (c *EgressCheckCommand) Execute(args []string) error {
 	if err != nil {
 		return err
 	}
+	for _, sb := range cfg.Sandboxes {
+		if sb.Name == c.Args.Sandbox && sb.IsHost() {
+			fmt.Println("note: egress is advisory under the host driver; the verdict holds only for traffic that goes through the proxy")
+		}
+	}
 	if !allowed {
 		os.Exit(1)
 	}

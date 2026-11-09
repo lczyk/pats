@@ -249,6 +249,7 @@ func judgeSelection(cfg *config.Config, jo JudgeOptions, runDirs []string) (map[
 // judgeSetup does for the judge agents what Run does for its agents, with
 // the same code: their pins, the model check, the credential preflight.
 func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs []config.TestPair, lg logw) error {
+	warnUnboxed(cfg, judgePairs, lg)
 	checks, err := usePins(ctx, cfg, ro, judgePairs)
 	if err != nil {
 		return err

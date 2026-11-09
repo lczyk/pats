@@ -112,6 +112,7 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	if mp != nil {
 		lg.info("egress via upstream %s", mp.Chain.Describe())
 	}
+	warnUnboxed(cfg, pairs, lg)
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -388,6 +389,16 @@ type egressRecord struct {
 	Requests int          `json:"requests"`
 	BytesIn  int64        `json:"bytes_in"`
 	BytesOut int64        `json:"bytes_out"`
+	// Enforced is whether nothing but the proxy could reach out: false under
+	// the host driver, where egress is advisory. nil on a pair from before.
+	Enforced *bool `json:"enforced,omitempty"`
+}
+
+// advisoryEgress says whether the pair's egress policy was advisory: what
+// went around the proxy left no audit line, so an empty denied list there
+// is not clean.
+func (m *pairMeta) advisoryEgress() bool {
+	return m != nil && m.Egress != nil && m.Egress.Enforced != nil && !*m.Egress.Enforced
 }
 
 type pairMeta struct {
@@ -400,8 +411,12 @@ type pairMeta struct {
 	Effort  string `json:"effort,omitempty"`
 	Task    string `json:"task"`
 	Sandbox string `json:"sandbox"`
-	Image   string `json:"image"`
-	Sudo    bool   `json:"sudo,omitempty"` // the agent could sudo (lxd)
+	// Driver ran the pair; SandNotBoxed says it ran on the machine itself
+	// (the host driver), with no isolation.
+	Driver       string `json:"driver,omitempty"`
+	SandNotBoxed bool   `json:"sand_not_boxed,omitempty"`
+	Image        string `json:"image"`
+	Sudo         bool   `json:"sudo,omitempty"` // the agent could sudo (lxd)
 	// the lxd server and image the pair ran on.
 	LXD       *lxdProvenance `json:"lxd,omitempty"`
 	ExitCode  int            `json:"exit_code"`
@@ -672,16 +687,16 @@ func runPair(
 		default:
 			defer sess.Close()
 			if t.Prepare != "" {
-				env := prepareEnv(job, filepath.Base(runDir))
+				env := prepareEnv(job, filepath.Base(runDir), h.paths)
 				if err := runLogged(filepath.Join(outDir, "prepare.log"), opts.stream(), func(w io.Writer) error {
-					return runPrepare(sctx, sess, opts.ConfigDir, taskDir, t, env, w)
+					return runPrepare(sctx, sess, opts.ConfigDir, taskDir, t, env, h.paths.Prepare, w)
 				}); err != nil {
 					setupErr = fmt.Errorf("prepare: %w", err)
 				}
 			}
 			// root is done: the agent gets what it left, and its sudo.
 			if setupErr == nil {
-				if err := sess.HandOver(sctx, sandbox.WorkMount, homeMount); err != nil {
+				if err := sess.HandOver(sctx, h.paths.Work, h.paths.Home); err != nil {
 					setupErr = fmt.Errorf("start: %w", err)
 				}
 			}
@@ -775,7 +790,7 @@ func runPair(
 
 	meta := pairMeta{
 		Agent: job.agentName, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: t.Name,
-		Sandbox: sbID, Image: sb.Image, Sudo: h.spec.Sudo,
+		Sandbox: sbID, Driver: sb.Driver, SandNotBoxed: sb.IsHost(), Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, Synced: &synced,
 		PatsVersion:  version.Info.Version,
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
@@ -786,10 +801,12 @@ func runPair(
 		meta.LXD = lxdProvenanceOf(ctx, sb)
 	}
 	if h.spec.Egress.Set {
+		enforced := !sb.IsHost()
 		meta.Egress = &egressRecord{
 			Policy:   h.spec.Egress.Policy,
 			Image:    proxyImageID(ctx, sb),
 			Requests: ea.Requests, BytesIn: ea.In, BytesOut: ea.Out,
+			Enforced: &enforced,
 		}
 	}
 	// the ledger reads the summary's cost when the pair ends: set before
@@ -936,8 +953,9 @@ func runLogged(logPath string, tee io.Writer, f func(io.Writer) error) error {
 }
 
 // homeMount is the in-sandbox HOME for a harness -- a writable dir the agent
-// (running as an arbitrary uid) owns, where its creds + cache live.
-const homeMount = "/pats-home"
+// (running as an arbitrary uid) owns, where its creds + cache live. under
+// the host driver the agent is told the dir itself (sandbox.PathsOf).
+const homeMount = sandbox.HomeMount
 
 type harnessSetup struct {
 	dir     string // host side of homeMount
@@ -950,13 +968,20 @@ type harnessSetup struct {
 // credential source is available. copies are writable for token refreshes but
 // discarded after the invocation; pats never modifies the host credential file.
 // label ("agent/task") prefixes the warning.
-func harnessHome(opts Options, label, harness string, env map[string]string, hasToken bool) (harnessSetup, error) {
+//
+// inBox names the home as the agent is told it, given its host dir; nil is
+// homeMount.
+func harnessHome(opts Options, label, harness string, env map[string]string, hasToken bool, inBox func(string) string) (harnessSetup, error) {
 	homeDir, err := sandbox.MkTemp("pats-home-")
 	if err != nil {
 		return harnessSetup{}, err
 	}
-	env["HOME"] = homeMount
-	maps.Copy(env, agent.HomeEnv(harness, homeMount))
+	home := homeMount
+	if inBox != nil {
+		home = inBox(homeDir)
+	}
+	env["HOME"] = home
+	maps.Copy(env, agent.HomeEnv(harness, home))
 
 	hasCreds := hasToken
 	if cf, rel := agent.HostCredsFile(harness); cf != "" {
@@ -976,7 +1001,7 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 	}
 	return harnessSetup{
 		dir:     homeDir,
-		mounts:  []sandbox.Mount{{Host: homeDir, Container: homeMount}},
+		mounts:  []sandbox.Mount{{Host: homeDir, Container: home}},
 		cleanup: func() { sandbox.RemoveTemp(homeDir) },
 	}, nil
 }

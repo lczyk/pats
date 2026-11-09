@@ -38,6 +38,9 @@ type reportJudge struct {
 	CostUSD      *float64 `json:"cost_usd"`
 	OutputTokens int      `json:"output_tokens"`
 	DurationS    float64  `json:"duration_s"`
+	// AdvisorySamples are the samples whose egress was advisory (the host
+	// driver).
+	AdvisorySamples int `json:"advisory_samples"`
 }
 
 type reportRun struct {
@@ -72,6 +75,9 @@ type reportPair struct {
 	PremiumRequests     *int     `json:"premium_requests"`
 	DeniedEgress        []string `json:"denied_egress"`
 	BlockedEgress       []string `json:"blocked_egress"`
+	// EgressEnforced is false when the pair's egress was advisory (the host
+	// driver), null when unknown or no policy ran.
+	EgressEnforced *bool `json:"egress_enforced"`
 }
 
 // pairRecord is one pair and its metadata.json: meta nil when there is none
@@ -168,6 +174,10 @@ func (p *reportPair) summaryFields(pm *pairMeta) {
 	}
 	p.DeniedEgress = append([]string{}, pm.DeniedEgress...)
 	p.BlockedEgress = append([]string{}, pm.BlockedEgress...)
+	if pm.Egress != nil && pm.Egress.Enforced != nil {
+		e := *pm.Egress.Enforced
+		p.EgressEnforced = &e
+	}
 	s := pm.Summary
 	if s == nil {
 		return
@@ -323,6 +333,9 @@ func readJudges(runDir string, warn io.Writer) []reportJudge {
 					}
 					j.Samples++
 					j.DurationS += m.DurationS
+					if m.advisoryEgress() {
+						j.AdvisorySamples++
+					}
 					if s := m.Summary; s != nil {
 						j.OutputTokens += s.OutputTokens
 						if s.HasCost {
@@ -605,11 +618,23 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 		}
 		fmt.Fprintln(w, strings.Join(legend, "  "))
 	}
+	var advisory []string
+	for _, p := range pairs {
+		if p.meta.advisoryEgress() {
+			advisory = append(advisory, p.agent+"/"+p.task)
+		}
+	}
+	if len(advisory) > 0 {
+		fmt.Fprintf(w, "egress advisory (host driver, unsandboxed; an empty denied list is not clean): %s\n", strings.Join(advisory, ", "))
+	}
 	for _, j := range readJudges(runDir, warn) {
 		line := fmt.Sprintf("judge %s: %d judged, %d failed, %d na, %d samples, %s tok, %s", j.Name,
 			j.Judgements, j.Failed, j.NA, j.Samples, humanK(j.OutputTokens), hms(j.DurationS))
 		if j.CostUSD != nil {
 			line += fmt.Sprintf(", $%.2f", *j.CostUSD)
+		}
+		if j.AdvisorySamples > 0 {
+			line += fmt.Sprintf(", %d with advisory egress", j.AdvisorySamples)
 		}
 		fmt.Fprintln(w, line)
 	}

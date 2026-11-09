@@ -25,19 +25,20 @@ const syncTimeout = 10 * time.Minute
 // prepareMount is where the prepare step's material lives inside the sandbox
 // while it runs: the script and the pats root's bin/. it is
 // removed before the agent starts, since the agent can read everything else.
-const prepareMount = "/pats-prepare"
+// under the host driver it is a dir in the harness home (sandbox.PathsOf).
+const prepareMount = sandbox.PrepareMount
 
 // prepareEnv is the env an in-sandbox prepare runs with: the task's own, and
 // PATS_* naming in-sandbox paths. no PATS_OUTPUT_DIR or PATS_TASK_DIR -- those
 // are host paths, and anything secret stays in stage.
-func prepareEnv(job pairJob, runID string) map[string]string {
+func prepareEnv(job pairJob, runID string, paths sandbox.Paths) map[string]string {
 	env := map[string]string{
 		"PATS_AGENT_NAME":    job.agentName,
 		"PATS_AGENT_HARNESS": job.agent.Harness,
 		"PATS_MODEL":         job.agent.Model,
 		"PATS_RUN_NAME":      runID,
-		"PATS_WORKDIR":       sandbox.WorkMount,
-		"PATS_AGENT_HOME":    homeMount,
+		"PATS_WORKDIR":       paths.Work,
+		"PATS_AGENT_HOME":    paths.Home,
 	}
 	maps.Copy(env, job.names)
 	maps.Copy(env, job.task.Env)
@@ -75,15 +76,16 @@ func stageMaterial(root, script, mount string) (material string, argv []string, 
 }
 
 // inPath wraps argv so mount/bin is first on the sandbox's PATH, which is not
-// known from the host.
+// known from the host. mount is an argument, never shell source: under the
+// host driver it is a host path, which may hold anything a dir name may.
 func inPath(mount string, argv []string) []string {
-	return append([]string{"/bin/sh", "-c", `PATH="` + mount + `/bin:$PATH"; export PATH; exec "$@"`, "step"}, argv...)
+	return append([]string{"/bin/sh", "-c", `PATH="$1/bin:$PATH"; export PATH; shift; exec "$@"`, "step", mount}, argv...)
 }
 
 // runPrepare runs the task's prepare inside the started sandbox as root: its
-// material is pushed to prepareMount, run with prepareMount/bin first on PATH
-// and the workdir as cwd, then removed. output goes to log.
-func runPrepare(ctx context.Context, sess sandbox.Session, root, taskDir string, t config.Task, env map[string]string, log io.Writer) error {
+// material is pushed to mount, run with mount/bin first on PATH and the
+// workdir as cwd, then removed. output goes to log.
+func runPrepare(ctx context.Context, sess sandbox.Session, root, taskDir string, t config.Task, env map[string]string, prepareMount string, log io.Writer) error {
 	material, argv, err := stageMaterial(root, t.Prepare, prepareMount)
 	if err != nil {
 		return err

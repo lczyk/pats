@@ -37,9 +37,12 @@ type Config struct {
 type Sandbox struct {
 	Name   string `yaml:"-"`
 	Vector string `yaml:"-"`
-	Driver string `yaml:"driver"` // docker (default) | podman | lxd | bwrap
-	Image  string `yaml:"image"`  // existing image to run, in the driver's own namespace; "" -> built or the pats sandbox
-	Build  string `yaml:"build"`  // build context -- a dir (with a Dockerfile) or a Dockerfile path, relative to the config dir
+	Driver string `yaml:"driver"` // docker (default) | podman | lxd | bwrap | host
+	// SandNotBoxed is the host driver's acknowledgement: the agent runs on
+	// this machine, as the user, with no isolation. host only, and required.
+	SandNotBoxed bool   `yaml:"sand-not-boxed"`
+	Image        string `yaml:"image"` // existing image to run, in the driver's own namespace; "" -> built or the pats sandbox
+	Build        string `yaml:"build"` // build context -- a dir (with a Dockerfile) or a Dockerfile path, relative to the config dir
 	// Base and Provision are the driver-neutral way to make an image: the
 	// provision script runs once per image, as root, on top of base (the pats
 	// sandbox when base is empty). docker compiles them to a dockerfile, lxd
@@ -132,6 +135,9 @@ func (e *Egress) UnmarshalYAML(node *yaml.Node) error {
 
 // IsContainer reports whether the sandbox runs under a container driver.
 func (s Sandbox) IsContainer() bool { return s.Driver == "docker" || s.Driver == "podman" }
+
+// IsHost reports whether the sandbox runs its agent on this machine, unboxed.
+func (s Sandbox) IsHost() bool { return s.Driver == "host" }
 
 // Limits caps a sandbox's resources. docker maps cpu and memory to --cpus and
 // --memory; lxd maps all three to limits.cpu, limits.memory and the root

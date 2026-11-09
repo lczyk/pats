@@ -61,6 +61,10 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	var done []pinned
 	var failed []string
 	for _, sb := range sbs {
+		if sb.IsHost() {
+			lg.info("sandbox %q: host driver, nothing to make: its agents run this machine's own clis", sb.Name)
+			continue
+		}
 		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir))
 		target, e, err := initSandbox(ctx, sb, ro, opts)
 		if err != nil {
@@ -421,6 +425,14 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		if !used[sb.Name] {
 			continue
 		}
+		if sb.IsHost() {
+			comps, err := hostComponents(ctx, sb, lg)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Sandboxes[i].Components = comps
+			continue
+		}
 		h, err := hostFor(sb)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
@@ -510,4 +522,23 @@ func short(id string) string {
 		return h[:12]
 	}
 	return h
+}
+
+// hostComponents are the harness versions on this machine's PATH, as a host
+// sandbox's agents find them: what the run saw, not a guarantee of what each
+// pair ran. a version other than this pats pins is a warning, never a
+// refusal: host tools are the caller's.
+func hostComponents(ctx context.Context, sb config.Sandbox, lg logw) (map[string]string, error) {
+	h, err := hostFor(sb)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
+	}
+	comps, err := h.Stamps(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
+	}
+	if drift := staleComponents(comps); len(drift) > 0 {
+		lg.warn("sandbox %q: this machine's harnesses differ from what this pats pins: %s", sb.Name, strings.Join(drift, ", "))
+	}
+	return comps, nil
 }

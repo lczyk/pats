@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
@@ -48,6 +49,19 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	sb := sandboxes[sbID]
+	if sb.IsHost() {
+		// no image carries the cli: the machine's PATH must.
+		if cli, ok := agent.HarnessCLIs[a.Harness]; ok {
+			if _, err := sandbox.HostLookPath(cli); err != nil {
+				return fmt.Errorf("its harness cli %s is not on this machine's PATH; install it", cli)
+			}
+		}
+	}
+	if sb.IsHost() && sb.Egress.Set {
+		// no fail-closed self-test to run: nothing stops what goes around
+		// the proxy.
+		logw{opts.Out, opts.Color, opts.Verbose}.info("preflight: %s: egress is advisory under the host driver", a.Name)
+	}
 
 	workDir, err := sandbox.MkTemp("pats-preflight-")
 	if err != nil {
@@ -69,7 +83,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	sess, err := h.box.Start(sctx, h.spec)
 	if err == nil {
 		defer sess.Close()
-		err = sess.HandOver(sctx, sandbox.WorkMount, homeMount)
+		err = sess.HandOver(sctx, h.paths.Work, h.paths.Home)
 	}
 	scancel()
 	if err != nil {

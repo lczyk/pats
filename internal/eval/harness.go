@@ -20,7 +20,8 @@ import (
 type harness struct {
 	box     sandbox.Sandbox
 	spec    sandbox.Spec
-	homeDir string // host side of homeMount
+	homeDir string        // host side of paths.Home
+	paths   sandbox.Paths // what the agent is told: the in-sandbox paths, or under host the dirs themselves
 	cleanup func()
 }
 
@@ -46,14 +47,18 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskE
 	if env == nil {
 		env = map[string]string{}
 	}
-	maps.Copy(env, agent.Env(a, homeMount+"/"+promptName, sandbox.WorkMount, runID))
 	cenv, hasToken := agent.CredEnv(a.Harness)
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 
-	hs, err := harnessHome(opts, label, a.Harness, env, hasToken)
+	var paths sandbox.Paths
+	hs, err := harnessHome(opts, label, a.Harness, env, hasToken, func(dir string) string {
+		paths = sandbox.PathsOf(box, workDir, dir)
+		return paths.Home
+	})
 	if err != nil {
 		return nil, err
 	}
+	maps.Copy(env, agent.Env(a, paths.Home+"/"+promptName, paths.Work, runID))
 	spec, err := agent.Spec(a, workDir, env)
 	if err != nil {
 		hs.cleanup()
@@ -62,7 +67,7 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskE
 	spec.Mounts = hs.mounts
 	spec.Egress = egressFor(sb, te, a.Harness, auditPath, runID == "")
 	spec.Sudo = sb.Sudo
-	return &harness{box: box, spec: spec, homeDir: hs.dir, cleanup: hs.cleanup}, nil
+	return &harness{box: box, spec: spec, homeDir: hs.dir, paths: paths, cleanup: hs.cleanup}, nil
 }
 
 // promptPath is the host path the prompt must be written to before run.

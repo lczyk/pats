@@ -47,6 +47,9 @@ type multiSample struct {
 	CostUSD   *float64           `json:"cost_usd"`
 	DurationS *float64           `json:"duration_s"`
 	Scores    map[string]float64 `json:"scores"`
+	// EgressEnforced is false when the attempt's egress was advisory (the
+	// host driver), null when unknown or no policy ran.
+	EgressEnforced *bool `json:"egress_enforced"`
 }
 
 // latestRuns is the last n run dirs under base, in run order.
@@ -161,6 +164,10 @@ func buildMulti(runDirs []string, warn io.Writer) (*multiDoc, map[string][]strin
 				if sm := r.meta.Summary; sm != nil && sm.HasCost {
 					c := sm.CostUSD
 					s.CostUSD = &c
+				}
+				if eg := r.meta.Egress; eg != nil && eg.Enforced != nil {
+					e := *eg.Enforced
+					s.EgressEnforced = &e
 				}
 			}
 			p.Samples = append(p.Samples, s)
@@ -382,5 +389,17 @@ func pivotMulti(w io.Writer, doc *multiDoc, statuses map[string][]string, color 
 			o = scoreColor(*doc.Overall) + o + "\033[0m"
 		}
 		fmt.Fprintf(w, "%-*s  %s\n", widths[0], "overall", o)
+	}
+	var advisory []string
+	for _, p := range doc.Pairs {
+		for _, s := range p.Samples {
+			if s.EgressEnforced != nil && !*s.EgressEnforced {
+				advisory = append(advisory, p.Agent+"/"+p.Task)
+				break
+			}
+		}
+	}
+	if len(advisory) > 0 {
+		fmt.Fprintf(w, "egress advisory (host driver, unsandboxed; an empty denied list is not clean): %s\n", strings.Join(advisory, ", "))
 	}
 }

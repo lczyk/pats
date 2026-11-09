@@ -93,3 +93,14 @@ func (s *stepLog) Write(p []byte) (int, error) {
 	}
 	return n, err
 }
+
+// warnUnboxed says, once per sandbox and before the first pair, which of
+// the pairs' sandboxes run their agents on this machine itself.
+func warnUnboxed(cfg *config.Config, pairs []config.TestPair, lg logw) {
+	used := usedSandboxes(cfg, pairs)
+	for _, sb := range cfg.Sandboxes {
+		if used[sb.Name] && sb.IsHost() {
+			lg.warn("sandbox %q runs agents on this machine, unsandboxed (sand-not-boxed); egress is advisory", sb.Name)
+		}
+	}
+}

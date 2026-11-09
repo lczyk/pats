@@ -269,6 +269,20 @@ func TestValidateErrors(t *testing.T) {
 		{"image and build", "sxx: {kind: sandbox, items: {sxx: {image: img, build: .}}}\n", "mutually exclusive"},
 		{"bwrap not implemented", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap}}}\n", "bwrap driver not implemented"},
 		{"unknown driver", "sxx: {kind: sandbox, items: {sxx: {driver: lxc, image: i}}}\n", "unknown driver \"lxc\""},
+		{"host without the key", "sxx: {kind: sandbox, items: {sxx: {driver: host}}}\n", "the host driver runs the agent on this machine, as you, with no isolation; set sand-not-boxed: true"},
+		{"the key elsewhere", "sxx: {kind: sandbox, items: {sxx: {image: i, sand-not-boxed: true}}}\n", "sand-not-boxed is the host driver's (driver \"docker\")"},
+		{"host image", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, image: i}}}\n", "image is refused under the host driver"},
+		{"host build", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, build: .}}}\n", "build is refused under the host driver"},
+		{"host base", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, base: b}}}\n", "base is refused under the host driver"},
+		{"host provision", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, provision: p}}}\n", "provision is refused under the host driver"},
+		{"host limits", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, limits: {cpu: 2}}}}\n", "limits is refused under the host driver"},
+		{"host sudo", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, sudo: true}}}\n", "sudo is refused under the host driver"},
+		{"host vm", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, vm: true}}}\n", "vm is refused under the host driver"},
+		{"host remote", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, remote: r}}}\n", "remote is refused under the host driver"},
+		{"host profiles", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, profiles: [p]}}}\n", "profiles is refused under the host driver"},
+		{"host config", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, config: {a: b}}}}\n", "config is refused under the host driver"},
+		{"host egress none", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, egress: none}}}\n", "egress: none is refused under the host driver"},
+		{"host egress image", "sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, egress: {allow: [a.test], image: i}}}}\n", "egress image needs a container driver"},
 		{"scorer needs a source", "xxx: {kind: scorer, items: {xxx: {}}}\n", "needs score or agent"},
 		{"scorer with both", "xxx: {kind: scorer, items: {xxx: {score: ./s.py, agent: axx, prompt: p}}}\n", "mutually exclusive"},
 		{"script scorer with prompt", "xxx: {kind: scorer, items: {xxx: {score: ./s.py, prompt: p}}}\n", "a prompt is an agent-scorer field"},
@@ -368,6 +382,14 @@ su2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}
 	assert.Equal(t, lx.Limits.Memory, "8GiB")
 	assert.Equal(t, lx.Config["security.nesting"], "true")
 	assert.Equal(t, lx.VM, true)
+}
+
+func TestValidateHostSandbox(t *testing.T) {
+	c := parseT(t, base+`hxx: {kind: sandbox, items: {hxx: {driver: host, sand-not-boxed: true, max-parallel: 2, env: {A: b}, egress: {allow: [.ubuntu.com]}}}}
+hax: {kind: agent, items: {hax: {harness: opencode-openrouter, model: m, sandbox: hxx}}}
+su2: {kind: suite, items: {su2: {agents: hax, tasks: txx, scorers: scx}}}
+`)
+	require.NoError(t, c.Validate())
 }
 
 func TestValidateAccepts(t *testing.T) {

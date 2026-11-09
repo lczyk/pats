@@ -143,6 +143,8 @@ func newDriver(p *process, r runner, o Options) (Driver, error) {
 			r = lxcCLI
 		}
 		return newLXD(p, r, o), nil
+	case o.Driver == HostDriver:
+		return newHost(p, o), nil
 	case o.Driver == "bwrap":
 		return nil, errors.New("sandbox driver bwrap not implemented yet")
 	case o.Driver == "":

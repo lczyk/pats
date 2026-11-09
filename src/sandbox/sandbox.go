@@ -150,6 +150,9 @@ type Options struct {
 	ContainerHost, ContainerConnection string
 	// Machine is the machine's own proxy, nil when pats runs without one.
 	Machine *MachineProxy
+	// TrustFile is SSL_CERT_FILE: host only, the bundle tls inspection
+	// trusts there.
+	TrustFile string
 	// machineErr is a machine proxy env WithEnv could not use: a start error.
 	machineErr error
 }
@@ -172,6 +175,7 @@ func (o Options) WithEnv() Options {
 	if o.Machine == nil {
 		o.Machine, o.machineErr = Machine()
 	}
+	set(&o.TrustFile, "SSL_CERT_FILE")
 	return o
 }
 

@@ -840,7 +840,7 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 
 	var out bytes.Buffer
 	env := map[string]string{}
-	hs, err := harnessHome(Options{Out: &out}, "codex x txx", "codex-cli-keyless", env, false)
+	hs, err := harnessHome(Options{Out: &out}, "codex x txx", "codex-cli-keyless", env, false, nil)
 	require.NoError(t, err)
 	defer hs.cleanup()
 	require.Equal(t, len(hs.mounts), 1)
@@ -997,7 +997,8 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	require.That(t, len(fake.rootCmds) >= 2, "root cmds: %v", fake.rootCmds)
 	prep := fake.rootCmds[0]
 	assert.Equal(t, strings.Join(prep.Argv[len(prep.Argv)-3:], " "), "/bin/sh -e "+prepareMount+"/script")
-	assert.ContainsString(t, prep.Argv[2], prepareMount+"/bin:$PATH")
+	assert.Equal(t, prep.Argv[2], `PATH="$1/bin:$PATH"; export PATH; shift; exec "$@"`)
+	assert.Equal(t, prep.Argv[4], prepareMount) // the mount is an argument, never shell source
 	assert.Equal(t, prep.Env["PATS_WORKDIR"], sandbox.WorkMount)
 	assert.Equal(t, prep.Env["BRANCH"], "main")
 	assert.Equal(t, prep.Env["PATS_TASK_VECTOR"], "txx")

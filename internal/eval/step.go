@@ -3,16 +3,15 @@ package eval
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
-	"time"
+
+	"github.com/lczyk/pats/src/sandbox"
 )
 
 // binDir is the directory under the pats root put on every host script's PATH,
@@ -77,7 +76,7 @@ func (s step) run(ctx context.Context, root string, env map[string]string, out i
 	}
 	defer cleanup()
 	cmd.Stdout, cmd.Stderr = out, out
-	return runGroup(ctx, cmd)
+	return sandbox.RunGroup(ctx, cmd)
 }
 
 // output executes the step and returns its stdout. a failure carries the tail
@@ -98,117 +97,11 @@ func (s step) outputTee(ctx context.Context, root string, env map[string]string,
 	if tee != nil {
 		cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, tee), io.MultiWriter(&stderr, tee)
 	}
-	if err := runGroup(ctx, cmd); err != nil {
+	if err := sandbox.RunGroup(ctx, cmd); err != nil {
 		return nil, fmt.Errorf("%w%s", err, stderrTail(&stderr))
 	}
 	return stdout.Bytes(), nil
 }
-
-// runGroup runs cmd in its own process group, and a step's processes end
-// with it: the group is killed when ctx ends while it runs, and when the
-// script exits, so nothing it started in the background outlives it. the
-// output goes through pipes runGroup owns, drained only after that kill: a
-// child left holding the output cannot keep the step waiting.
-func runGroup(ctx context.Context, cmd *exec.Cmd) error {
-	var ours []*os.File // the child's ends, closed in this process once it has them
-	var reads []*os.File
-	var drains []chan struct{}
-	var copyMu sync.Mutex
-	var copyErr error // the first output that could not be written
-	piped := map[io.Writer]*os.File{}
-	wire := func(dst io.Writer) (io.Writer, error) {
-		if _, isFile := dst.(*os.File); isFile || dst == nil {
-			return dst, nil
-		}
-		if w, ok := piped[dst]; ok { // stdout and stderr to one writer: one pipe
-			return w, nil
-		}
-		r, w, err := os.Pipe()
-		if err != nil {
-			return nil, err
-		}
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			if _, err := io.Copy(dst, r); err != nil {
-				// closed, the pipe fails the child's next write rather than
-				// filling up and stalling it.
-				r.Close()
-				copyMu.Lock()
-				if copyErr == nil {
-					copyErr = fmt.Errorf("output: %w", err)
-				}
-				copyMu.Unlock()
-			}
-		}()
-		piped[dst], ours, reads, drains = w, append(ours, w), append(reads, r), append(drains, done)
-		return w, nil
-	}
-	// finish closes every pipe and joins every drain. with waitDrains it
-	// first lets them end on their own: the group is gone, so the pipes'
-	// other ends are closed. once the delay passes, those still open (a
-	// child that left the group holds them) are cut off, and it says so.
-	finish := func(waitDrains bool) (cut bool) {
-		for _, w := range ours {
-			w.Close()
-		}
-		if waitDrains {
-			timeout := time.After(stepWaitDelay)
-		wait:
-			for _, d := range drains {
-				select {
-				case <-d:
-				case <-timeout:
-					cut = true
-					break wait
-				}
-			}
-		}
-		for _, r := range reads {
-			r.Close()
-		}
-		for _, d := range drains {
-			<-d
-		}
-		return cut
-	}
-	var err error
-	if cmd.Stdout, err = wire(cmd.Stdout); err == nil {
-		cmd.Stderr, err = wire(cmd.Stderr)
-	}
-	if err == nil {
-		err = cmd.Start()
-	}
-	if err != nil {
-		finish(false)
-		return err
-	}
-	for _, w := range ours {
-		w.Close()
-	}
-	ours = nil
-	pid := cmd.Process.Pid
-	kill := func() { syscall.Kill(-pid, syscall.SIGKILL) }
-	stop := context.AfterFunc(ctx, kill)
-	defer stop()
-	err = cmd.Wait()
-	kill()
-	cut := finish(true)
-	copyMu.Lock()
-	defer copyMu.Unlock()
-	switch {
-	case err != nil:
-	case cut:
-		err = errors.New("output cut off: a process that left the step's process group still held it")
-	default:
-		err = copyErr
-	}
-	return err
-}
-
-// stepWaitDelay bounds the wait for a finished step's output to drain,
-// should something outside its group still hold the pipe.
-var stepWaitDelay = 10 * time.Second
 
 // stepNames is every name pats sets in some host step's env. an inherited
 // one is dropped before a step's own map goes on, so a pats started from
