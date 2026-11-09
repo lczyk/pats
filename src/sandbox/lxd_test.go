@@ -145,11 +145,12 @@ func TestLXDExecArgs(t *testing.T) {
 	// the env goes in on stdin, never on lxc's command line, where ps reads it.
 	argv, in := s.execArgs(Cmd{Argv: []string{"run", "it"}, Env: map[string]string{"B": "it's 3"}}, nil)
 	args := strings.Join(argv, " ")
-	assert.Equal(t, args, `exec srv:pats-x --project pats --force-noninteractive --user 1001 --group 1001 --cwd /workspace -- /bin/sh -c eval "$(cat)" && exec "$@" </dev/null pats-env run it`)
+	wrap := strings.Join(envArgv(nil), " ")
+	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 1001 --group 1001 --cwd /workspace -- "+wrap+" run it")
 	script, _ := io.ReadAll(in)
 	assert.Equal(t, string(script), "export A='1'\nexport B='it'\\''s 3'\n")
 	argv, in = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil)
-	assert.Equal(t, strings.Join(argv, " "), `exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- /bin/sh -c eval "$(cat)" && exec "$@" </dev/null pats-env id`)
+	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- "+wrap+" id")
 	assert.That(t, in != nil, "no env on stdin")
 	// a step streaming its own stdin carries the egress env as flags.
 	argv, in = s.execArgs(Cmd{Argv: []string{"tar"}, Root: true, Dir: "/"}, strings.NewReader("data"))

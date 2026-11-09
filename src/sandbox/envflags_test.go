@@ -70,3 +70,14 @@ func TestExecEnvOnDaemon(t *testing.T) {
 		})
 	}
 }
+
+// an env script that does not apply stops the command, which never runs
+// without its env; the wrapper needs no cat.
+func TestEnvArgvFailsClosed(t *testing.T) {
+	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", "echo ran"})[1:]...)
+	cmd.Stdin = strings.NewReader("export A='unterminated\n")
+	cmd.Env = []string{"PATH=/nonexistent"} // no cat, no sh on PATH: only the shell's own builtins
+	out, err := cmd.CombinedOutput()
+	require.That(t, err != nil, "the wrapper exited 0: %s", out)
+	assert.That(t, !strings.Contains(string(out), "ran"), "the command ran: %s", out)
+}

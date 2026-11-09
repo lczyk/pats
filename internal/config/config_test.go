@@ -264,6 +264,7 @@ func TestValidateErrors(t *testing.T) {
 		{"agent unknown sandbox", base + "b: {kind: agent, items: {b: {harness: claude-cli-keyless, model: m, sandbox: ghost}}}\n", "unknown sandbox \"ghost\""},
 		{"effort on an unknown harness", base + "b: {kind: agent, items: {b: {harness: bogus, model: m, effort: high}}}\n", "effort is not supported"},
 		{"max-cost on a harness without live cost", base + "b: {kind: agent, items: {b: {harness: claude-cli-keyless, model: m, max-cost: 2}}}\n", "max-cost needs a harness that reports cost as it runs"},
+		{"env a shell will not set", base + "s2: {kind: sandbox, items: {s2: {image: img, env: {UID: '1'}}}}\n", "read-only in a shell"},
 		{"max-cost zero", base + "b: {kind: agent, items: {b: {harness: opencode-openrouter, model: m, max-cost: 0}}}\n", "is not a cost cap"},
 		{"max-cost negative", base + "b: {kind: agent, items: {b: {harness: opencode-openrouter, model: m, max-cost: -1}}}\n", "is not a cost cap"},
 		{"image and build", "s: {kind: sandbox, items: {s: {image: img, build: .}}}\n", "mutually exclusive"},

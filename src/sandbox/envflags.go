@@ -74,7 +74,11 @@ func envScript(env map[string]string) io.Reader {
 }
 
 // envArgv wraps argv to read its env from stdin first, then run with
-// stdin closed (/dev/null), as an exec with no stdin had it.
+// stdin closed (/dev/null), as an exec with no stdin had it. the script is
+// read with the shell's own read, so the image needs no cat, and a script
+// that does not apply stops the command rather than running it without.
 func envArgv(argv []string) []string {
-	return append([]string{"/bin/sh", "-c", `eval "$(cat)" && exec "$@" </dev/null`, "pats-env"}, argv...)
+	const read = `s=; while IFS= read -r l || [ -n "$l" ]; do s="$s$l
+"; done; eval "$s" || exit 126; exec "$@" </dev/null`
+	return append([]string{"/bin/sh", "-c", read, "pats-env"}, argv...)
 }

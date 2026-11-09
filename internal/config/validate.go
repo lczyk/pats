@@ -178,6 +178,8 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 				add("sandbox %q: env %q: PATS_* is reserved for pats", s.ID, k)
 			case k == "PATH" || k == "HOME":
 				add("sandbox %q: env %s is set by pats", s.ID, k)
+			case shellReadonly[k]:
+				add("sandbox %q: env %s is read-only in a shell, which hands the env to the command", s.ID, k)
 			}
 		}
 	}
@@ -364,12 +366,18 @@ func (c *Config) validateTasks(add func(string, ...any)) {
 				add("task %q: env %q: PATS_* is reserved for pats", t.ID, k)
 			case k == "PATH":
 				add("task %q: env PATH is set by pats (bin/ is prepended to it)", t.ID)
+			case shellReadonly[k]:
+				add("task %q: env %s is read-only in a shell, which hands the env to prepare", t.ID, k)
 			}
 		}
 	}
 }
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// shellReadonly are names a shell (bash as sh) will not let a script set:
+// the env reaches a sandboxed command through one, so they cannot be passed.
+var shellReadonly = map[string]bool{"UID": true, "EUID": true, "PPID": true, "SHELLOPTS": true, "BASHOPTS": true, "BASH_VERSINFO": true}
 
 // sizeRe is a size as lxd and docker both read it: a number and a binary or
 // decimal unit.
