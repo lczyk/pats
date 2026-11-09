@@ -302,16 +302,29 @@ an owner file's pid; both are liveness records, kept in different places. images
   elsewhere may name it. a removal that fails is left for the next clean (the bar the sweeps test). orphan lease files
   (stale, naming no run any driver lists and no temp dir) go with the temp dirs, matched as `run-*.lease` exactly: the
   client id and init's project registry sit beside them.
-- **`--force`.** also removes unknown runs. an unknown run may be alive on another machine or under another user, and
-  the output says so before force takes it; a run whose fresh lease clean can read is never removed by force. what
-  force loses of lxd's today (live runs) comes back named: `pats clean --run <token>` removes that one run whatever
-  its lease, for a wedged process whose renewal still ticks or an admin clearing a shared server. force still removes
+- **`--all`.** also removes unknown runs. an unknown run may be alive on another machine or under another user, and
+  the output says so before `--all` takes it; a run whose fresh lease clean can read is never removed by it. what
+  `--all` loses of lxd's today (live runs) comes back named: `pats clean --run <token>` removes that one run whatever
+  its lease, for a wedged process whose renewal still ticks or an admin clearing a shared server. `--all` also removes
   shared resources no run uses (lxd's `patsup`), which the daemon refuses while an instance is on it, and an init
-  build holds a live marker while it uses one.
+  build holds a live marker while it uses one. and it removes every image pats made on a place, which a driver lists
+  apart from the runs: on docker and podman the built ones by their `pats.context-hash` label and those pulled from
+  pats's registry, plus whatever the registered projects' pins say pats pulled or built on that daemon (an `image:`
+  ref pats pulled has no mark of its own), on lxd every image in the pats project but a run's under its private
+  alias. the label is inherited, so a labelled image whose layers start with another's of the same label (or equal
+  them: a `FROM` that only sets metadata) is someone's own, and neither of two such twins is taken by label. an
+  image that an image outside the removal set is built on (a layer prefix) stays, as does one a container uses
+  unless forced; both are decided up front, so a dry run says what a real one does. images go in passes,
+  so a parent goes once the children built on it have; one a container uses stays, and is said. a run's own image
+  goes however recently used. pins naming a removed image are left for `pats run` to report. `--older-than` does not
+  apply. `--force` is `--all` and also live runs, the containers using an image it removes, and every temp dir and
+  lease file. clean says what it does as events (`CleanEvent`) its caller renders as log lines or, with `--json`,
+  json lines; a dry run makes the same events, an image in use kept up front and the images said in listing order
+  once every pass is done.
 - **where it lives.** each driver lists what it holds of each run, unjudged (`Driver.Runs`: token, owner,
   resources with their creation times, and for lxd the marker's lease) and removes a resource (`Driver.Remove`).
   the verdict is the shared clean's, in `src/sandbox`: it reads the docker lease files from this host's cache dir,
-  which a driver on a remote daemon could not, and the order and `--force` are shared with it.
+  which a driver on a remote daemon could not, and the order and `--all` are shared with it.
   `internal/eval`'s clean loops over the drivers and the temp dirs, with no cli calls of its own. it takes `pats
   init`'s machine lock while it removes, so the two never act on one daemon at once. the docker clean gets the
   fake-daemon sweep lxd's has.
@@ -338,11 +351,11 @@ an owner file's pid; both are liveness records, kept in different places. images
   before holds a pid (anything not shaped like a token), judged by it alone. lxd's marker renewal wakes every 30s like
   the file's.
 - a removal that fails keeps the run's record (the marker, the lease file), so the next clean judges the run again.
-  an unknown run is printed, with why, before `--force` takes it.
+  an unknown run is printed, with why, before `--all` takes it.
 - `CleanTemp` leaves every lease file when a place could not be listed (a daemon down may still hold the run).
 - tests: `TestJudge`, `TestHostLease`, `TestCleanTemp`; the container sweeps run a real clean after a faulted
   removal, and `TestContainerSweepClean` faults every call of one; the docker fake fails any container run without
-  the run labels; `TestLXDClean` covers the image rules, `--force` and `--run`; eval's `TestCleanAcrossPlaces` runs
+  the run labels; `TestLXDClean` covers the image rules, `--all` and `--run`, `TestCleanCachedContainerImages` the cached images; eval's `TestCleanAcrossPlaces` runs
   the whole clean on fake places.
 
 ## not in this

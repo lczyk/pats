@@ -134,7 +134,7 @@ pats egress suggest [--run <run>]
 pats egress log [--denied] [--method POST,PUT,PATCH,DELETE] <pair-dir>
 pats egress run --policy <file> | --sandbox <id> [--task <id>] [--agent <id>] [flags]
 pats egress ca --out <dir>
-pats clean [--dry-run] [--older-than 24h] [--force] [--run <token>]
+pats clean [-n|--dry-run] [--older-than 24h] [-a|--all] [-f|--force] [--run <token>] [--json]
 ```
 
 - `check` prints the verdict, the deciding entry, and whether the host would be a tunnel or mitm'd. it exits 1 on a
@@ -146,8 +146,14 @@ pats clean [--dry-run] [--older-than 24h] [--force] [--run <token>]
   killed run leaves its agent running), and temp dirs older than `--older-than`. a run is alive while its lease is
   fresh: a file in the pats cache dir for docker and podman, renewed every two minutes, the run's marker for lxd.
   pats labels everything it makes `pats.run=<token>` and `pats.owner=<host>/<uid>/<client>`; a run this host cannot
-  judge (another user's or machine's on a shared daemon) is counted and left, and `--force` removes it. a fresh lease
-  is never removed by `--force`, only by `--run <token>`.
+  judge (another user's or machine's on a shared daemon) is counted and left, and `--all` removes it. `--all` also
+  takes lxd's shared uplink (unless a run it leaves on the server may use it), every image pats built or pulled (a pin naming one makes the next `pats run` ask for
+  `pats init`), and dead runs' temp dirs of any age. a fresh lease is never removed by `--all`, only by
+  `--run <token>`, though its images may go. `-f` / `--force` is `--all` and also live runs, containers using a
+  pats image, and every temp dir and lease file: everything pats left. each thing removed, kept or left is a log
+  line; `--json` makes it one json object a line instead (`action`, `dry_run`, `place`, `kind`, `name`, `label`,
+  `run`, `owner`, `why`, `count`), with the same things in it. `-n` says exactly what the same flags without it
+  would do, an image a container uses included: it is kept, unless forced.
 
 ## standalone
 

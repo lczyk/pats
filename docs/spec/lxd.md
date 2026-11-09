@@ -179,7 +179,7 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
   `ipv4.address=auto`, nat on, ipv6 off. `PATS_LXD_UPLINK` names an existing bridge to use instead, for a server
   where a new bridge cannot forward and the admin rule below is not in place (on the target server, `lxdbr0`). a
   builder runs the sandbox author's own script, trusted as a dockerfile is, so it gets no egress policy. `patsup` is
-  shared by every run, carries no run token and is left by `pats clean`; `--force` takes it (lxd refuses while an
+  shared by every run, carries no run token and is left by `pats clean`; `--all` takes it (lxd refuses while an
   instance is on it). egress
   proxies use it as their way out too.
 - a miss: launch the base as a builder, push the script and `bin/`, run it as root, stop, `lxc publish` under a
@@ -270,7 +270,7 @@ between instances too.
 `pats clean` groups what it finds by token. a group whose marker's lease is more than ten minutes old goes,
 instances before networks and acls before aliases and images before the marker, as for docker. a group whose marker
 is gone (a clean that died halfway, a hand deletion) is judged by its resources' `user.pats.created` against the same
-ten minutes. a fresh lease is left alone whoever owns it, `--force` included; `pats clean --run <token>` takes one
+ten minutes. a fresh lease is left alone whoever owns it, `--all` included; `pats clean --run <token>` takes one
 run whatever its lease, for a wedged process (a laptop that is gone needs nothing: its lease goes stale in ten
 minutes). a run that ends, or is interrupted, removes its own.
 
@@ -340,7 +340,7 @@ whether the agent had sudo.
   server's lan, another pair's bridge and the proxy's outbound address are all unreachable; from the outbound bridge
   the proxy's port is closed.
 - cleanup: `kill -9` of pats mid-run, then `pats clean` after the lease lapses, leaves nothing run-owned (`patsup`
-  and cached images stay; `pats clean --force` takes `patsup` too); two runs
+  and cached images stay; `pats clean --all` takes `patsup` and the images too); two runs
   from two laptops on one server do not sweep each other, including a container run between pairs; two runs
   missing the same image build it once or reuse each other's.
 - checked on the target server: stateful vm snapshots (they do not complete, see above), `lxc publish` of a vm
