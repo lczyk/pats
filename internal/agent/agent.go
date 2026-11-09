@@ -86,6 +86,7 @@ var RequiredHosts = map[string][]string{
 	"opencode-openrouter": {
 		"openrouter.ai",      // inference
 		"models.dev",         // opencode model catalog
+		"models.opencode.ai", // opencode model catalog, newer releases
 		"registry.npmjs.org", // opencode runtime plugin/dep fetch
 	},
 }
