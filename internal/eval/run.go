@@ -541,6 +541,12 @@ func runPair(
 		}
 	}
 
+	// closing removes the proxy, and its log follower drains the audit's
+	// tail (denied hosts included) only then. Close is idempotent; the
+	// deferred one is a no-op after this.
+	if sess != nil {
+		_ = sess.Close()
+	}
 	// only what no rule anticipated is news; the policy's own refusals are
 	// in metadata.json.
 	ea := readEgressAudit(filepath.Join(outDir, "egress.log"))

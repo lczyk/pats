@@ -234,6 +234,8 @@ type fakeSandbox struct {
 	blockUntilDone bool
 	// onRun, if set, sees the pair run's spec while its mounts still exist.
 	onRun func(spec sandbox.Spec)
+	// onClose, if set, sees the pair's spec as its session closes.
+	onClose func(spec sandbox.Spec)
 	// startErr fails the session start; onRoot answers root execs.
 	startErr error
 	onRoot   func(cmd sandbox.Cmd, stdout io.Writer) (int, error)
@@ -275,7 +277,12 @@ func (s *fakeSession) HandOver(ctx context.Context, paths ...string) error { ret
 
 func (s *fakeSession) Sync(ctx context.Context) error { return nil }
 
-func (s *fakeSession) Close() error { return nil }
+func (s *fakeSession) Close() error {
+	if s.f.onClose != nil && !s.preflight {
+		s.f.onClose(s.spec)
+	}
+	return nil
+}
 
 func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr io.Writer) (int, error) {
 	f := s.f
@@ -349,6 +356,38 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	stdout, err := os.ReadFile(filepath.Join(runDir, "ok", "t", "stdout.log"))
 	require.NoError(t, err)
 	assert.Equal(t, string(stdout), "fine\n")
+}
+
+// the proxy's audit tail lands only once the session closes (its log
+// follower drains then): metadata is folded after that, so a denied host
+// logged last is still in it.
+func TestRunFoldsAuditAfterClose(t *testing.T) {
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{onClose: func(spec sandbox.Spec) {
+			f, err := os.OpenFile(spec.Egress.AuditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			require.NoError(t, err)
+			defer f.Close()
+			_, _ = f.WriteString(`{"ev":"open","host":"late.example","rule":"default"}` + "\n")
+		}}, nil
+	}
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(meta), `"late.example"`)
+	assert.ContainsString(t, out.String(), "egress denied (no rule): late.example")
 }
 
 // the default is the verdict per pair; -v adds the detail lines and the
