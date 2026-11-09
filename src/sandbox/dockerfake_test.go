@@ -44,6 +44,10 @@ type fakeDaemon struct {
 	builds   int
 
 	canary string // the canary's output
+	// upstream is the machine's proxy, ip:port, reached from the default
+	// network.
+	upstream     string
+	upstreamDown bool // a proxy behind an upstream exits, unable to reach it
 	// agent, when set, runs an exec the fake does not claim (the agent's
 	// command, a root step). ctx ends when the container is killed.
 	agent func(ctx context.Context, ctr string, argv []string, stdout, stderr io.Writer) error
@@ -230,7 +234,7 @@ func (f *fakeDaemon) remove(c *fakeCtr) {
 var runValued = map[string]bool{"--cap-drop": true, "--security-opt": true, "-w": true, "-v": true, "--name": true,
 	"--label": true, "--network": true, "--dns": true, "--ip": true, "--sysctl": true, "-e": true, "--cpus": true,
 	"--memory": true, "--cidfile": true, "--entrypoint": true}
-var runBool = map[string]bool{"-d": true, "--rm": true, "--init": true}
+var runBool = map[string]bool{"-d": true, "--rm": true, "--init": true, "--http-proxy=false": true}
 
 func (f *fakeDaemon) runCtr(ctx context.Context, stdout, stderr io.Writer, args []string) error {
 	flags, bools, rest, ok := f.dockerArgs(args, runValued, runBool)
@@ -326,7 +330,7 @@ func (f *fakeDaemon) oneShot(stdout, stderr io.Writer, entrypoint, net string, a
 			return nil
 		case probeReach.name:
 			ok := 0
-			if f.listening(net, argv[3], argv[4]) {
+			if f.listening(net, argv[3], argv[4]) || (net == engines[f.driver].defaultNetwork && f.upstream == argv[3]+":"+argv[4]) {
 				ok = 1
 			}
 			fmt.Fprintf(stdout, "egress-reach ok=%d\n", ok)
@@ -391,6 +395,10 @@ func (f *fakeDaemon) logs(ctx context.Context, stderr io.Writer, ref string) err
 	f.mu.Unlock()
 	if c == nil {
 		return dockerFail(stderr, "No such container: %s", ref)
+	}
+	if u := c.env["PATS_EGRESS_UPSTREAM_HTTPS"]; u != "" && f.upstreamDown {
+		fmt.Fprintf(stderr, "error: upstream %s unreachable: connection refused\n", u)
+		return nil
 	}
 	fmt.Fprintf(stderr, "listening %s\n", c.env["PATS_EGRESS_LISTEN"])
 	select {

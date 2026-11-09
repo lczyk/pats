@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lczyk/pats/internal/version"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // the proxy topology under lxd is fail-closed by construction, not by acl:
@@ -120,14 +122,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 		}
 	}
 
-	m, err := prepare(spec.Egress, func() ([]byte, error) {
-		var out, errb bytes.Buffer
-		code, err := s.exec(ctx, Cmd{Argv: []string{"cat", caBundlePath}, Root: true, Dir: "/"}, &out, &errb)
-		if err == nil && code != 0 {
-			err = fmt.Errorf("%s", strings.TrimSpace(errb.String()))
-		}
-		return out.Bytes(), err
-	})
+	m, err := prepare(spec.Egress, l.o.Machine.trust(), s.readBundle(ctx))
 	if err != nil {
 		return err
 	}
@@ -166,14 +161,11 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 	if code, err := p.exec(ctx, Cmd{Argv: []string{"sh", "-c", "sysctl -qw net.ipv4.ip_forward=0 net.ipv6.conf.all.forwarding=0"}, Root: true, Dir: "/"}, &out, &out); err != nil || code != 0 {
 		return fmt.Errorf("egress proxy forwarding off: %v %s", err, strings.TrimSpace(out.String()))
 	}
-	if m.caCert != "" {
+	if m.bundlePath != "" {
 		if err := p.Push(ctx, m.bundlePath, lxdProxyRoots); err != nil {
 			return err
 		}
-		if err := s.Push(ctx, m.bundlePath, agentBundlePath); err != nil {
-			return err
-		}
-		if err := s.Push(ctx, m.certPath, agentCertPath); err != nil {
+		if err := s.pushTrust(ctx, m); err != nil {
 			return err
 		}
 	}
@@ -203,10 +195,10 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 func (s *lxdSession) runProxy(ctx context.Context, p *lxdSession, auditPath string) error {
 	e := s.egress
 	roots := ""
-	if e.m.caCert != "" {
+	if e.m.bundlePath != "" {
 		roots = lxdProxyRoots
 	}
-	penv := e.m.proxyEnv(roots)
+	penv := mergeEnv(e.m.proxyEnv(roots), s.l.o.Machine.chain().Env())
 	penv["PATS_EGRESS_REFUSE"] = e.refuse.String()
 	penv["PATS_EGRESS_LISTEN"] = e.ip.String() + ":" + proxyPort
 	var uid bytes.Buffer
@@ -233,9 +225,116 @@ func (s *lxdSession) runProxy(ctx context.Context, p *lxdSession, auditPath stri
 	}
 	e.run = run
 	if err := run.ready(s.l.p.clock, s.l.p.t.proxyReady); err != nil {
+		if up := s.l.o.Machine.chain(); up != nil {
+			return fmt.Errorf("egress: proxy %s, on the uplink, behind the upstream %s: %w", e.proxy, up.Describe(), err)
+		}
 		return fmt.Errorf("egress: proxy %s: %w", e.proxy, err)
 	}
 	return nil
+}
+
+// readBundle reads the image's trust bundle out of the instance.
+func (s *lxdSession) readBundle(ctx context.Context) func() ([]byte, error) {
+	return func() ([]byte, error) {
+		var out, errb bytes.Buffer
+		code, err := s.exec(ctx, Cmd{Argv: []string{"cat", caBundlePath}, Root: true, Dir: "/"}, &out, &errb)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("%s", strings.TrimSpace(errb.String()))
+		}
+		return out.Bytes(), err
+	}
+}
+
+// pushTrust puts the merged bundle and the added certificates where the
+// trust env points.
+func (s *lxdSession) pushTrust(ctx context.Context, m *material) error {
+	if err := s.Push(ctx, m.bundlePath, agentBundlePath); err != nil {
+		return err
+	}
+	return s.Push(ctx, m.certPath, agentCertPath)
+}
+
+// openBehindProxy hands an open sandbox the machine's proxy env and, with
+// SSL_CERT_FILE, the merged bundle and the trust env pointing at it.
+func (s *lxdSession) openBehindProxy(ctx context.Context) error {
+	mp := s.l.o.Machine
+	if mp.chain() == nil {
+		return nil
+	}
+	env := mp.Chain.AgentEnv()
+	if mp.trust() != nil {
+		m, err := prepare(Egress{}, mp.trust(), s.readBundle(ctx))
+		if err != nil {
+			return err
+		}
+		defer m.cleanup()
+		if err := s.pushTrust(ctx, m); err != nil {
+			return err
+		}
+		env = mergeEnv(env, m.trustEnv())
+	}
+	s.machineEnv = env
+	return nil
+}
+
+// openRejects are openRanges less the upstream's addresses: an open sandbox
+// behind a proxy on the lan must reach it. a name is resolved here, on
+// pats's host.
+func (l *lxd) openRejects(ctx context.Context) ([]string, error) {
+	c := l.o.Machine.chain()
+	if c == nil {
+		return openRanges, nil
+	}
+	var addrs []netip.Addr
+	for _, u := range c.Upstreams() {
+		if a, err := netip.ParseAddr(u.Hostname()); err == nil {
+			addrs = append(addrs, a.Unmap())
+			continue
+		}
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", u.Hostname())
+		if err != nil {
+			return nil, fmt.Errorf("lxd: resolve the upstream %s: %w", proxy.Redact(u), err)
+		}
+		for _, ip := range ips {
+			addrs = append(addrs, ip.Unmap())
+		}
+	}
+	return carve(openRanges, addrs), nil
+}
+
+// carve is ranges with each of addrs cut out, as the fewest prefixes.
+func carve(ranges []string, addrs []netip.Addr) []string {
+	var out []string
+	for _, r := range ranges {
+		ps := []netip.Prefix{netip.MustParsePrefix(r)}
+		for _, a := range addrs {
+			var next []netip.Prefix
+			for _, p := range ps {
+				next = append(next, cutAddr(p, a)...)
+			}
+			ps = next
+		}
+		for _, p := range ps {
+			out = append(out, p.String())
+		}
+	}
+	return out
+}
+
+// cutAddr is p less a: p's halves down to a's own, each but a's whole.
+func cutAddr(p netip.Prefix, a netip.Addr) []netip.Prefix {
+	if !p.Contains(a) {
+		return []netip.Prefix{p}
+	}
+	if p.Bits() == a.BitLen() {
+		return nil
+	}
+	lo := netip.PrefixFrom(p.Addr(), p.Bits()+1)
+	b := p.Addr().AsSlice()
+	b[p.Bits()/8] |= 0x80 >> (p.Bits() % 8)
+	hiAddr, _ := netip.AddrFromSlice(b)
+	hi := netip.PrefixFrom(hiAddr, p.Bits()+1)
+	return append(cutAddr(lo, a), cutAddr(hi, a)...)
 }
 
 // hostileProbe is the self-test of a sandbox whose agent may sudo: as root,

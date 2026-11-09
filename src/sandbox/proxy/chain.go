@@ -276,18 +276,36 @@ func basicAuth(u *url.URL) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(u.User.Username()+":"+pw))
 }
 
-// Reach dials every upstream's host:port, bounded by timeout: a route, not
-// the credential or the upstream's policy.
+// Reach dials every upstream's host:port until it connects or timeout ends:
+// a route, not the credential or the upstream's policy. it retries, since a
+// sidecar's way out may be attached just after it starts.
 func (c *Chain) Reach(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for _, u := range c.Upstreams() {
-		conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", u.Host)
-		if err != nil {
-			return fmt.Errorf("upstream %s unreachable: %w", Redact(u), unwrapOp(err))
+		for {
+			left := time.Until(deadline)
+			if left <= 0 {
+				left = time.Millisecond
+			}
+			conn, err := (&net.Dialer{Timeout: left}).DialContext(ctx, "tcp", u.Host)
+			if err == nil {
+				conn.Close()
+				break
+			}
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				return fmt.Errorf("upstream %s unreachable: %w", Redact(u), unwrapOp(err))
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(reachRetry):
+			}
 		}
-		conn.Close()
 	}
 	return nil
 }
+
+// reachRetry is the pause between Reach's dials.
+const reachRetry = 250 * time.Millisecond
 
 // unwrapOp drops net.OpError's "dial tcp a:b:" prefix, which repeats the
 // upstream already named.

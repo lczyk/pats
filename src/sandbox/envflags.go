@@ -82,3 +82,18 @@ func envArgv(argv []string) []string {
 "; done; eval "$s" || exit 126; exec "$@" </dev/null`
 	return append([]string{"/bin/sh", "-c", read, "pats-env"}, argv...)
 }
+
+// mergeEnv is base with over on top, base itself when over adds nothing.
+func mergeEnv(base, over map[string]string) map[string]string {
+	if len(over) == 0 {
+		return base
+	}
+	out := make(map[string]string, len(base)+len(over))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range over {
+		out[k] = v
+	}
+	return out
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -64,7 +65,10 @@ func EffectivePolicy(cfg *config.Config, sandboxID, taskID, agentID string) (pro
 // CheckURL prints the verdict a policy gives target -- a url, or a bare host
 // taken as https -- and the entry that decided it. merged says whether the
 // harness hosts are in the policy (an agent was named).
-func CheckURL(pol proxy.Policy, target, method string, merged bool, out io.Writer) (bool, error) {
+//
+// behind the machine's proxy (chain non-nil) the verdict also says whether
+// the url would go through it or direct (NO_PROXY).
+func CheckURL(pol proxy.Policy, target, method string, merged bool, chain *proxy.Chain, out io.Writer) (bool, error) {
 	r, err := pol.Rule()
 	if err != nil {
 		return false, err
@@ -129,6 +133,17 @@ func CheckURL(pol proxy.Policy, target, method string, merged bool, out io.Write
 			m = "methods " + strings.Join(pol.Methods, ",") + " under default: allow inspect every host reached but the harness's"
 		}
 		notes = append(notes, m)
+	}
+	if chain != nil {
+		scheme := "https"
+		if u.Scheme == "http" {
+			scheme = "http"
+		}
+		if up := chain.For(scheme, net.JoinHostPort(u.Hostname(), strconv.Itoa(int(port)))); up != nil {
+			notes = append(notes, "via upstream "+proxy.Redact(up))
+		} else {
+			notes = append(notes, "direct, not via the upstream")
+		}
 	}
 	if !merged {
 		notes = append(notes, "sandbox and task only, harness hosts not merged (pass --agent)")

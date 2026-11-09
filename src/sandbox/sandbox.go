@@ -148,11 +148,16 @@ type Options struct {
 	// podman only: the cli's own overrides, CONTAINER_HOST (a service uri)
 	// and CONTAINER_CONNECTION (a named connection).
 	ContainerHost, ContainerConnection string
+	// Machine is the machine's own proxy, nil when pats runs without one.
+	Machine *MachineProxy
+	// machineErr is a machine proxy env WithEnv could not use: a start error.
+	machineErr error
 }
 
 // WithEnv fills what o leaves unset from the environment: EgressPoolEnv,
-// LXDUplinkEnv, LXDProxyBinEnv, and podman's CONTAINER_HOST and
-// CONTAINER_CONNECTION. the drivers themselves read none of it.
+// LXDUplinkEnv, LXDProxyBinEnv, podman's CONTAINER_HOST and
+// CONTAINER_CONNECTION, and the machine's proxy. the drivers themselves read
+// none of it.
 func (o Options) WithEnv() Options {
 	set := func(f *string, env string) {
 		if *f == "" {
@@ -164,6 +169,9 @@ func (o Options) WithEnv() Options {
 	set(&o.ProxyBin, LXDProxyBinEnv)
 	set(&o.ContainerHost, "CONTAINER_HOST")
 	set(&o.ContainerConnection, "CONTAINER_CONNECTION")
+	if o.Machine == nil {
+		o.Machine, o.machineErr = Machine()
+	}
 	return o
 }
 
@@ -234,8 +242,13 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	if err := c.p.holdLease(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
+	if !spec.Egress.None {
+		if err := c.o.machineCheck(c.driver); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+		}
+	}
 	// egress policy: none -> no network; proxy -> sidecar on an internal net.
-	netArgs, teardown, err := c.setupEgress(ctx, spec)
+	netArgs, env, teardown, err := c.setupEgress(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
@@ -255,6 +268,7 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	// the run's labels go on every agent, named or not: they are what says
 	// the container is pats's, and whose.
 	args = append(args, c.p.runLabels()...)
+	args = append(args, engines[c.driver].runFlags...)
 	if name := agentName(abs); name != "" {
 		args = append(args, "--name", name)
 	}
@@ -304,14 +318,15 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	if i := strings.LastIndexByte(id, '\n'); i >= 0 {
 		id = id[i+1:] // a pull's progress may precede the id
 	}
-	return &containerSession{c: c, id: id, teardown: teardown}, nil
+	return &containerSession{c: c, id: id, env: env, teardown: teardown}, nil
 }
 
 // containerSession is a started container, addressed by id.
 type containerSession struct {
 	c        *container
 	id       string
-	teardown func() // the egress sidecar and network
+	env      map[string]string // under every exec's own: the machine's proxy, in an open sandbox
+	teardown func()            // the egress sidecar and network
 	once     sync.Once
 	rootRan  bool // a root exec happened, so HandOver has work to do
 }
@@ -357,9 +372,9 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	args := []string{"exec", "-u", user, "-w", dir}
 	argv := cmd.Argv
 	var stdin io.Reader
-	if len(cmd.Env) > 0 {
+	if env := mergeEnv(s.env, cmd.Env); len(env) > 0 {
 		args = append(args, "-i")
-		argv, stdin = envArgv(argv), envScript(cmd.Env)
+		argv, stdin = envArgv(argv), envScript(env)
 	}
 	args = append(args, s.id)
 	args = append(args, argv...)

@@ -46,7 +46,15 @@ func (c *EgressCheckCommand) Execute(args []string) error {
 	if err != nil {
 		return err
 	}
-	allowed, err := eval.CheckURL(pol, c.Args.URL, c.Method, c.Agent != "", os.Stdout)
+	mp, err := sandbox.Machine()
+	if err != nil {
+		return err
+	}
+	var chain *proxy.Chain
+	if mp != nil {
+		chain = mp.Chain
+	}
+	allowed, err := eval.CheckURL(pol, c.Args.URL, c.Method, c.Agent != "", chain, os.Stdout)
 	if err != nil {
 		return err
 	}

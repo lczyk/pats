@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"path"
 	"sort"
@@ -51,9 +52,12 @@ type fakeServer struct {
 	seq      int
 
 	// probe answers.
-	offline bool   // the online probe fails
-	canary  string // the canary's output
-	hostile string // the hostile probe's output
+	offline bool // the online probe fails
+	// upstream is the machine's proxy, ip:port: an open bridge reaches it
+	// unless its acl rejects the address.
+	upstream string
+	canary   string // the canary's output
+	hostile  string // the hostile probe's output
 
 	// agent, when set, runs an exec no probe or file op claims: the agent's
 	// command, a provisioning script. ctx ends when the exec is killed.
@@ -1012,6 +1016,10 @@ func (f *fakeServer) exec(ctx context.Context, stdin io.Reader, stdout, stderr i
 		f.mu.Unlock()
 		return nil
 	case argv[0] == "/usr/local/bin/pats" && len(argv) == 3 && argv[1] == "egress" && argv[2] == "run":
+		if u := x.env["PATS_EGRESS_UPSTREAM_HTTPS"]; u != "" && f.upstream == "" {
+			fmt.Fprintf(stderr, "error: upstream %s unreachable: connection refused\n", u)
+			return exitStatus(1)
+		}
 		fmt.Fprintf(stderr, "listening %s\n", x.env["PATS_EGRESS_LISTEN"])
 		<-xctx.Done()
 		return exitStatus(-1)
@@ -1055,7 +1063,7 @@ func (f *fakeServer) probe(ctx context.Context, inst *fakeInst, name, probeName 
 		return nil
 	case probeReach.name:
 		ok := 0
-		if f.reaches(inst, args[0], args[1]) {
+		if f.reaches(inst, args[0], args[1]) || f.reachesUpstream(inst, args[0], args[1]) {
 			ok = 1
 		}
 		fmt.Fprintf(stdout, "egress-reach ok=%d\n", ok)
@@ -1129,6 +1137,35 @@ func (f *fakeServer) reaches(inst *fakeInst, ip, port string) bool {
 		}
 	}
 	return false
+}
+
+// reachesUpstream says whether inst reaches the machine's proxy at ip:port:
+// it is f.upstream, and no reject rule on inst's bridges covers it. f.mu is
+// held.
+func (f *fakeServer) reachesUpstream(inst *fakeInst, ip, port string) bool {
+	if f.upstream == "" || f.upstream != ip+":"+port {
+		return false
+	}
+	a := netip.MustParseAddr(ip)
+	for _, d := range inst.devices {
+		n := f.nets[d["network"]]
+		if d["type"] != "nic" || n == nil {
+			continue
+		}
+		if acl := f.acls[n.config["security.acls"]]; acl != nil {
+			for _, r := range acl.rules {
+				if r["action"] != "reject" {
+					continue
+				}
+				for _, dst := range strings.Split(r["destination"], ",") {
+					if p, err := netip.ParsePrefix(dst); err == nil && p.Contains(a) {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return true
 }
 
 // readFakeTar extracts a pushed tar into dest; a single file lands at want.

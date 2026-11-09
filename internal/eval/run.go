@@ -103,6 +103,15 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	// first output up front: the slow startup steps (image build, preflight) are
 	// otherwise silent, so a bare `pats run` looks hung until the first pair logs.
 	lg.detail("%d pair(s) to run", len(pairs))
+	// behind the machine's own proxy every sandbox goes through it: said
+	// before the first pair, so a run behind a proxy is never a surprise.
+	mp, err := machineProxy()
+	if err != nil {
+		return "", fmt.Errorf("the machine's proxy env: %w", err)
+	}
+	if mp != nil {
+		lg.info("egress via upstream %s", mp.Chain.Describe())
+	}
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -427,6 +436,10 @@ func (m *pairMeta) filesHome() bool {
 	}
 	return m.Status == "ok" || m.Status == "nonzero"
 }
+
+// machineProxy is the machine's proxy as pats found it; a var so tests set
+// one.
+var machineProxy = sandbox.Machine
 
 // egressAudit is a pair's egress.log folded into what the run reports: the
 // three refusal lists, each a unique target (the url when the proxy saw one,

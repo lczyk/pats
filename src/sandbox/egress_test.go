@@ -91,11 +91,12 @@ func (f *fakeDocker) run(ctx context.Context, stdin io.Reader, stdout, stderr io
 
 func TestSetupEgressModes(t *testing.T) {
 	c := &container{driver: "docker", image: "img"}
-	args, td, err := c.setupEgress(context.Background(), Spec{})
+	args, env, td, err := c.setupEgress(context.Background(), Spec{})
 	require.NoError(t, err)
 	assert.Nil(t, args)
+	assert.Nil(t, env)
 	assert.Nil(t, td)
-	args, _, err = c.setupEgress(context.Background(), Spec{Egress: Egress{None: true}})
+	args, _, _, err = c.setupEgress(context.Background(), Spec{Egress: Egress{None: true}})
 	require.NoError(t, err)
 	assert.EqualArrays(t, args, []string{"--network", "none"})
 }
@@ -323,7 +324,7 @@ func TestPrepareCleansUpOnError(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", cache)
 	t.Setenv("HOME", cache)
 	eg := Egress{Set: true, Policy: proxy.Policy{Deny: []string{"a.test/x*"}}}
-	_, err := prepare(eg, func() ([]byte, error) { return nil, errors.New("no bundle") })
+	_, err := prepare(eg, nil, func() ([]byte, error) { return nil, errors.New("no bundle") })
 	assert.Error(t, err, "trust bundle")
 	var left []string
 	_ = filepath.WalkDir(cache, func(p string, d os.DirEntry, err error) error {
@@ -413,7 +414,9 @@ func TestEgressCanary(t *testing.T) {
 
 func TestWaitReady(t *testing.T) {
 	assert.NoError(t, waitReady(strings.NewReader("warming up\nlistening [::]:8080\nmore\n"), wallClock{}, time.Second))
-	assert.Error(t, waitReady(strings.NewReader("Error: No such container\n"), wallClock{}, time.Second), "exited before listening")
+	assert.Error(t, waitReady(strings.NewReader("Error: No such container\n"), wallClock{}, time.Second), "exited before listening: Error: No such container")
+	// the last line said, not the empty read after it.
+	assert.Error(t, waitReady(strings.NewReader("error: upstream http://p:1 unreachable\n\n"), wallClock{}, time.Second), "exited before listening: error: upstream http://p:1 unreachable")
 	r, w := io.Pipe()
 	defer w.Close()
 	assert.Error(t, waitReady(r, wallClock{}, 50*time.Millisecond), "not listening")

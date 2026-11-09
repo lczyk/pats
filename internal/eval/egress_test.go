@@ -14,6 +14,7 @@ import (
 	"github.com/lczyk/assert/require"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 const egressCfg = `box: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [a.test, '.ubuntu.com'], deny: ['a.test/secret**']}}, open: {image: img}}}
@@ -69,7 +70,7 @@ func TestCheckURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		var out bytes.Buffer
-		ok, err := CheckURL(pol, tc.url, "GET", true, &out)
+		ok, err := CheckURL(pol, tc.url, "GET", true, nil, &out)
 		require.NoError(t, err)
 		assert.Equal(t, ok, tc.ok, tc.url)
 		assert.ContainsString(t, out.String(), tc.want)
@@ -78,13 +79,25 @@ func TestCheckURL(t *testing.T) {
 
 	pol, _ = EffectivePolicy(c, "sxx", "", "")
 	var out bytes.Buffer
-	ok, err := CheckURL(pol, "https://api.anthropic.com/", "", false, &out)
+	ok, err := CheckURL(pol, "https://api.anthropic.com/", "", false, nil, &out)
 	require.NoError(t, err)
 	assert.Equal(t, ok, false)
 	assert.ContainsString(t, out.String(), "harness hosts not merged")
 
-	_, err = CheckURL(pol, "https://", "GET", false, &out)
+	_, err = CheckURL(pol, "https://", "GET", false, nil, &out)
 	assert.Error(t, err, "bad url")
+
+	// behind the machine's proxy: upstream or direct, the credential redacted.
+	chain, err := proxy.NewChain("http://u:secret@proxy.corp:3128", "", ".ubuntu.com")
+	require.NoError(t, err)
+	out.Reset()
+	_, err = CheckURL(pol, "https://evil.test/", "GET", false, chain, &out)
+	require.NoError(t, err)
+	assert.ContainsString(t, out.String(), "via upstream http://u:xxxxx@proxy.corp:3128")
+	out.Reset()
+	_, err = CheckURL(pol, "https://archive.ubuntu.com/", "GET", false, chain, &out)
+	require.NoError(t, err)
+	assert.ContainsString(t, out.String(), "direct, not via the upstream")
 }
 
 const sampleAudit = `{"ts":"2026-11-06T10:00:00Z","ev":"open","host":"archive.ubuntu.com","port":"443","kind":"tunnel","allowed":true,"rule":"default"}

@@ -174,8 +174,9 @@ func New(o Options) (*Proxy, error) {
 	return p, nil
 }
 
-// readyTimeout bounds the start's dial to each upstream.
-const readyTimeout = 5 * time.Second
+// readyTimeout bounds the start's dials to the upstream, under the 15s pats
+// waits for the listening line.
+var readyTimeout = 10 * time.Second
 
 // Serve runs the proxy until ctx is done.
 func Serve(ctx context.Context, o Options) error {

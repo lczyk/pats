@@ -133,3 +133,35 @@ func TestLedger(t *testing.T) {
 	assert.Equal(t, spent, 1.0)
 	assert.Equal(t, not, 1)
 }
+
+// behind the machine's proxy the run names the upstream, redacted, before
+// its first pair.
+func TestRunNamesUpstream(t *testing.T) {
+	fake := &fakeSandbox{}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	oldMP := machineProxy
+	machineProxy = func() (*sandbox.MachineProxy, error) {
+		return sandbox.ReadMachineProxy(func(k string) string {
+			return map[string]string{"HTTPS_PROXY": "http://u:secret@proxy.corp:3128"}[k]
+		})
+	}
+	defer func() { machineProxy = oldMP }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tvx: {kind: task, items: {t1x: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1})
+	require.NoError(t, err)
+	text := out.String()
+	i := strings.Index(text, "egress via upstream http://u:xxxxx@proxy.corp:3128 (https only)")
+	assert.That(t, i >= 0, "no start line in %q", text)
+	assert.That(t, i < strings.Index(text, "axx/t1x"), "start line after the first pair: %q", text)
+	assert.That(t, !strings.Contains(text, "secret"), "credential in the output: %q", text)
+}

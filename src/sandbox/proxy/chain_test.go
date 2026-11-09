@@ -356,6 +356,9 @@ func flatten(m map[string]string) []string {
 }
 
 func TestServeUnreachableUpstream(t *testing.T) {
+	old := readyTimeout
+	readyTimeout = 600 * time.Millisecond
+	defer func() { readyTimeout = old }()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	addr := ln.Addr().String()

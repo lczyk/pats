@@ -3,7 +3,7 @@ package sandbox
 import "sort"
 
 // engine is what pats needs of a container engine's cli where engines
-// differ, all of it in egress network setup: one entry per engine, so a new
+// differ, nearly all of it in egress network setup: one entry per engine, so a new
 // one (nerdctl) is an entry and a ci job.
 type engine struct {
 	// defaultNetwork is the engine's network with a way out.
@@ -13,6 +13,9 @@ type engine struct {
 	internalNet []string
 	// agentNet are the run flags a container on that network needs.
 	agentNet []string
+	// runFlags go on every agent and sidecar run: what keeps the engine from
+	// adding env of its own.
+	runFlags []string
 	// cpus is the info template for the daemon's cpu count.
 	cpus string
 }
@@ -35,7 +38,10 @@ var engines = map[string]engine{
 		// and the sidecar would inherit it as its only nameserver: it could
 		// then resolve nothing upstream. nothing here needs peer names.
 		internalNet: []string{"--disable-dns"},
-		cpus:        "{{.Host.CPUs}}",
+		// podman copies the host's proxy variables into every container; the
+		// proxy env a sandbox gets is pats's to set.
+		runFlags: []string{"--http-proxy=false"},
+		cpus:     "{{.Host.CPUs}}",
 	},
 }
 

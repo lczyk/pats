@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // the lxd driver drives a (usually remote) lxd server through the lxc cli and
@@ -299,6 +301,11 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: resolve workdir: %w", ErrLaunch, err)
 	}
+	if !spec.Egress.None {
+		if err := l.o.machineCheck("lxd"); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+		}
+	}
 	s := &lxdSession{l: l, name: lxdName(abs), workdir: abs, sudo: spec.Sudo}
 	fail := func(err error) (Session, error) {
 		s.Close()
@@ -370,6 +377,11 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 	if err := s.ensureAgentUser(ctx); err != nil {
 		return fail(err)
 	}
+	if !spec.Egress.None && !spec.Egress.Set {
+		if err := s.openBehindProxy(ctx); err != nil {
+			return fail(err)
+		}
+	}
 	if spec.Egress.Set {
 		if err := s.startProxy(ctx, spec); err != nil {
 			return fail(err)
@@ -408,11 +420,14 @@ type lxdSession struct {
 	sudo    bool
 	binds   []bind
 	env     map[string]string // the egress env (proxy, tls), set under a proxy policy
-	created bool
-	bridge  string // the pair's bridge and its acl, "" under egress none
-	egress  *lxdEgress
-	uid     string
-	once    sync.Once
+	// machineEnv is the machine's proxy env, in an open sandbox behind one.
+	// it holds the upstream's credential, so it rides only on stdin.
+	machineEnv map[string]string
+	created    bool
+	bridge     string // the pair's bridge and its acl, "" under egress none
+	egress     *lxdEgress
+	uid        string
+	once       sync.Once
 }
 
 func (s *lxdSession) inst() string { return s.l.ref(s.name) }
@@ -428,8 +443,12 @@ func (s *lxdSession) openNetwork(ctx context.Context) error {
 	if _, err := l.lxc(ctx, aclArgs...); err != nil {
 		return err
 	}
+	ranges, err := l.openRejects(ctx)
+	if err != nil {
+		return err
+	}
 	if _, err := l.lxc(ctx, "network", "acl", "rule", "add", l.ref(acl), "egress", "--project", "default",
-		"action=reject", "destination="+strings.Join(openRanges, ",")); err != nil {
+		"action=reject", "destination="+strings.Join(ranges, ",")); err != nil {
 		return err
 	}
 	netArgs := []string{"network", "create", l.ref(s.bridge), "--project", "default",
@@ -441,7 +460,7 @@ func (s *lxdSession) openNetwork(ctx context.Context) error {
 	if _, err := l.lxc(ctx, netArgs...); err != nil {
 		return err
 	}
-	_, err := l.lxc(ctx, "config", "device", "add", s.inst(), "eth0", "nic", "--project", lxdProject,
+	_, err = l.lxc(ctx, "config", "device", "add", s.inst(), "eth0", "nic", "--project", lxdProject,
 		"network="+s.bridge, "name=eth0")
 	return err
 }
@@ -513,6 +532,19 @@ func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
 // not told about (its FORWARD policy, with br_netfilter), which fails every
 // pair in its own words unless caught here.
 func (s *lxdSession) reachesInternet(ctx context.Context) error {
+	if c := s.l.o.Machine.chain(); c != nil {
+		// behind a proxy there is no direct route to find: the upstream is
+		// the way out.
+		for _, u := range c.Upstreams() {
+			var out bytes.Buffer
+			_, _ = s.exec(ctx, Cmd{Argv: probeReach.argv(u.Hostname(), u.Port()), Root: true, Dir: "/"}, &out, &out)
+			if reached, _ := reachVerdict(out.String()); !reached {
+				return fmt.Errorf("lxd: the sandbox on bridge %s cannot reach the upstream %s. %s",
+					s.bridge, proxy.Redact(u), dockerBridgeHint)
+			}
+		}
+		return nil
+	}
 	if s.online(ctx) {
 		return nil
 	}
@@ -635,13 +667,11 @@ func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
 		"--user", user, "--group", user, "--cwd", dir}
 	// the egress env reaches every step, root ones included: prepare runs
 	// under the sandbox's policy too.
-	env := map[string]string{}
-	for k, v := range s.env {
-		env[k] = v
+	env := mergeEnv(s.env, nil)
+	if stdin == nil {
+		env = mergeEnv(env, s.machineEnv)
 	}
-	for k, v := range cmd.Env {
-		env[k] = v
-	}
+	env = mergeEnv(env, cmd.Env)
 	argv := cmd.Argv
 	switch {
 	case len(env) == 0:
