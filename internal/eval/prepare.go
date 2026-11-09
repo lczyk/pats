@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,20 +30,17 @@ const prepareMount = "/pats-prepare"
 // prepareEnv is the env an in-sandbox prepare runs with: the task's own, and
 // PATS_* naming in-sandbox paths. no PATS_OUTPUT_DIR or PATS_TASK_DIR -- those
 // are host paths, and anything secret stays in stage.
-func prepareEnv(t config.Task, a config.Agent, agentID, runID string) map[string]string {
+func prepareEnv(job pairJob, runID string) map[string]string {
 	env := map[string]string{
-		"PATS_TASK_NAME":     t.Name,
-		"PATS_TASK_VECTOR":   t.Vector,
-		"PATS_AGENT_NAME":    agentID,
-		"PATS_AGENT_HARNESS": a.Harness,
-		"PATS_MODEL":         a.Model,
+		"PATS_AGENT_NAME":    job.agentName,
+		"PATS_AGENT_HARNESS": job.agent.Harness,
+		"PATS_MODEL":         job.agent.Model,
 		"PATS_RUN_NAME":      runID,
 		"PATS_WORKDIR":       sandbox.WorkMount,
 		"PATS_AGENT_HOME":    homeMount,
 	}
-	for k, v := range t.Env {
-		env[k] = v
-	}
+	maps.Copy(env, job.names)
+	maps.Copy(env, job.task.Env)
 	return env
 }
 

@@ -292,7 +292,7 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
 				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Harness) != nil)
 			}
-			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes, stat); err != nil {
+			if err := runPair(ctx, cfg, po, runDir, taskJob(runDir, p, agents[p.Agent], tasks[p.Task]), sandboxes, stat); err != nil {
 				logw{po.Out, opts.Color, opts.Verbose}.error("%s/%s %v", p.Agent, p.Task, err)
 			}
 			switch {
@@ -472,15 +472,45 @@ func readEgressAudit(auditPath string) egressAudit {
 	return a
 }
 
-// runPair prepares, runs, and collects one (agent, task) pair. stat must be
+// pairJob is one agent call: an agent on a task, a suite's own or one an
+// agent scorer synthesises, and where its files go.
+type pairJob struct {
+	agentName string
+	agent     config.Agent
+	task      config.Task
+	outDir    string
+	label     string // the job in log lines: agent/task
+	// names is what names the task to its steps, host and in-sandbox: a
+	// task's PATS_TASK_*, or a judge's PATS_SCORER_*.
+	names map[string]string
+	// hostNames go to the host steps only (a judge's PATS_SCORED_*: host paths,
+	// and nothing the sandbox may know).
+	hostNames map[string]string
+	// seed fills the fresh workdir before stage; nil leaves it empty.
+	seed func(workDir string) error
+	// meta adds the job's own fields to its metadata.json.
+	meta func(*pairMeta)
+}
+
+// taskJob is pair p of a run: its agent on its task, into the pair dir.
+func taskJob(runDir string, p config.TestPair, a config.Agent, t config.Task) pairJob {
+	return pairJob{
+		agentName: p.Agent, agent: a, task: t,
+		outDir: filepath.Join(runDir, p.Agent, p.Task),
+		label:  p.Agent + "/" + p.Task,
+		names:  map[string]string{"PATS_TASK_NAME": p.Task, "PATS_TASK_VECTOR": t.Vector},
+	}
+}
+
+// runPair prepares, runs, and collects one agent call. stat must be
 // non-nil (every caller passes a fresh &pairStat{}) -- it's dereferenced
 // unconditionally below, both to tap live counters and to record the final
 // net count.
 func runPair(
-	ctx context.Context, cfg *config.Config, opts Options, runDir string, p config.TestPair,
-	a config.Agent, t config.Task, sandboxes map[string]config.Sandbox, stat *pairStat,
+	ctx context.Context, cfg *config.Config, opts Options, runDir string, job pairJob,
+	sandboxes map[string]config.Sandbox, stat *pairStat,
 ) error {
-	outDir := filepath.Join(runDir, p.Agent, p.Task)
+	a, t, outDir := job.agent, job.task, job.outDir
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
@@ -489,6 +519,11 @@ func runPair(
 		return err
 	}
 	defer sandbox.RemoveTemp(workDir) // safe: agent runs as host uid, files are host-owned
+	if job.seed != nil {
+		if err := job.seed(workDir); err != nil {
+			return fmt.Errorf("seed workdir: %w", err)
+		}
+	}
 
 	sbID, err := cfg.ResolveSandbox(a)
 	if err != nil {
@@ -501,21 +536,23 @@ func runPair(
 	// the task's own env goes on top (Validate keeps it off PATS_*).
 	taskDir := filepath.Join(opts.ConfigDir, t.Dir)
 	hostEnv := map[string]string{
-		"PATS_TASK_DIR":      taskDir,
 		"PATS_RUN_NAME":      filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
-		"PATS_AGENT_NAME":    p.Agent,
+		"PATS_AGENT_NAME":    job.agentName,
 		"PATS_AGENT_HARNESS": a.Harness,
-		"PATS_TASK_NAME":     p.Task,
-		"PATS_TASK_VECTOR":   t.Vector,
 		"PATS_MODEL":         a.Model,
 		"PATS_WORKDIR":       workDir,
 		"PATS_OUTPUT_DIR":    outDir,
 	}
+	if _, ok := job.names["PATS_TASK_NAME"]; ok {
+		hostEnv["PATS_TASK_DIR"] = taskDir
+	}
+	maps.Copy(hostEnv, job.names)
+	maps.Copy(hostEnv, job.hostNames)
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
 	// precedes stage so stage can seed harness config into it.
-	h, err := newHarness(opts, a, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), p.Agent+"/"+p.Task)
+	h, err := newHarness(opts, a, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), job.label)
 	if err != nil {
 		return err
 	}
@@ -584,7 +621,7 @@ func runPair(
 		default:
 			defer sess.Close()
 			if t.Prepare != "" {
-				env := prepareEnv(t, a, p.Agent, filepath.Base(runDir))
+				env := prepareEnv(job, filepath.Base(runDir))
 				if err := runLogged(filepath.Join(outDir, "prepare.log"), opts.stream(), func(w io.Writer) error {
 					return runPrepare(sctx, sess, opts.ConfigDir, taskDir, t, env, w)
 				}); err != nil {
@@ -665,7 +702,7 @@ func runPair(
 		if err := runLogged(filepath.Join(outDir, "collect.log"), opts.stream(), func(w io.Writer) error {
 			return collect.run(opts.ConfigDir, hostEnv, w)
 		}); err != nil {
-			lg.warn("%s/%s collect: %v", p.Agent, p.Task, err)
+			lg.warn("%s collect: %v", job.label, err)
 		}
 	}
 	if ctx.Err() != nil {
@@ -682,11 +719,11 @@ func runPair(
 	// in metadata.json.
 	ea := readEgressAudit(filepath.Join(outDir, "egress.log"))
 	if len(ea.Denied) > 0 {
-		lg.warn("%s/%s egress denied (no rule): %s", p.Agent, p.Task, strings.Join(ea.Denied, ", "))
+		lg.warn("%s egress denied (no rule): %s", job.label, strings.Join(ea.Denied, ", "))
 	}
 
 	meta := pairMeta{
-		Agent: p.Agent, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: p.Task,
+		Agent: job.agentName, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: t.Name,
 		Sandbox: sbID, Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
 		PatsVersion:  version.Info.Version,
@@ -714,6 +751,9 @@ func runPair(
 	if ctx.Err() != nil {
 		meta.Status, meta.Error = "error", "interrupted"
 	}
+	if job.meta != nil {
+		job.meta(&meta)
+	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err
 	}
@@ -724,7 +764,7 @@ func runPair(
 		atomic.StoreInt32(&stat.netSeen, 1)
 	}
 	// line 1: the verdict (level by status). line 2: the stats, indented under it.
-	statusLine := fmt.Sprintf("%s/%s %s (exit %d, %.1fs)", p.Agent, p.Task, status, r.code, r.dur)
+	statusLine := fmt.Sprintf("%s %s (exit %d, %.1fs)", job.label, status, r.code, r.dur)
 	switch status {
 	case "ok":
 		lg.info("%s", statusLine)
@@ -745,7 +785,7 @@ func runPair(
 			stats += fmt.Sprintf("  %d turns", s.NumTurns)
 		}
 	}
-	lg.detail("%s/%s %s", p.Agent, p.Task, stats)
+	lg.detail("%s %s", job.label, stats)
 	return nil
 }
 
