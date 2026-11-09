@@ -158,12 +158,9 @@ a judge is a pair run through `runPair`, not a parallel code path:
 - the output dir is `<run>/.judge/<scorer>/<agent>/<task>/`, holding what any pair dir holds (`stdout.log`,
   `stderr.log`, `egress.log`, `metadata.json` with cost and tokens) plus `verdict.json`. `metadata.json` gains
   `judged: {agent, task}`.
-- agent names starting with `.` become a validation error, so no agent's pair dirs can collide with `.judge/`. the
-  existing globs (`<run>/*/*/metadata.json`) never reach four levels down, so run stats and status tallies stay
-  pair-only.
-- a name of `.` or `..` becomes a validation error for every kind (`badID` refuses only `/`, `$` and whitespace
-  today): agent, task and scorer names are path components, and a scorer `..` would put a judge's dir on the judged
-  pair's own, which `runPair` truncates.
+- no agent's pair dirs can collide with `.judge/`: a name starts with a letter (the slice-name rule `badName`
+  enforces), so none starts with `.`, and none is `.` or `..`. the existing globs (`<run>/*/*/metadata.json`) never
+  reach four levels down, so run stats and status tallies stay pair-only.
 
 `runPair` today computes its output dir from the pair; the refactor makes the output dir and the workdir seed inputs,
 with task runs passing what they compute now. sessions, lxd, egress, the setup budget, cost parsing and teardown are
