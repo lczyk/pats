@@ -169,3 +169,28 @@ func TestLegacyLeaseUnreadable(t *testing.T) {
 	v, _ := p.judge(RunRecord{Token: run, Owner: "me", Resources: []Resource{{Kind: "sandbox", Created: old}}}, time.Now())
 	assert.Equal(t, v, unknown)
 }
+
+// a temp dir whose run's lease cannot be read stays, unless forced.
+func TestCleanTempUnreadableLease(t *testing.T) {
+	p := testProcess(t)
+	run := testProcess(t)
+	run.home = p.home
+	dir, err := run.mkTemp("pats-work-")
+	require.NoError(t, err)
+	old := time.Now().Add(-48 * time.Hour)
+	require.NoError(t, os.Chtimes(dir, old, old))
+	legacy := filepath.Join(t.TempDir(), "legacy")
+	require.NoError(t, os.MkdirAll(legacy, 0o755))
+	p.legacy = func() string { return legacy }
+	crashLease(run) // no lease in the new root: the legacy one is looked at
+	require.NoError(t, os.Chmod(legacy, 0))
+	defer os.Chmod(legacy, 0o755)
+	// the legacy dir's own sweep fails on it, and says so; the new root's
+	// sweep still runs.
+	_ = p.cleanTemp(map[string]bool{}, nil, 24*time.Hour, false, false, nil)
+	_, err = os.Stat(dir)
+	assert.NoError(t, err) // unknown: kept
+	_ = p.cleanTemp(map[string]bool{}, nil, 24*time.Hour, false, true, nil)
+	_, err = os.Stat(dir)
+	assert.That(t, os.IsNotExist(err), "force left it")
+}

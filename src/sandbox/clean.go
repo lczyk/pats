@@ -614,6 +614,7 @@ func (p *process) tempAlive(dir string, now time.Time) (token string, live bool)
 		pid, err := strconv.Atoi(token)
 		return "", err == nil && pid > 0 && processAlive(pid)
 	}
+	// a run that cannot be judged (its lease unreadable) keeps its dirs.
 	v, _ := p.judge(RunRecord{Token: token, Owner: p.knownOwner()}, now)
-	return token, v == alive
+	return token, v != dead
 }
