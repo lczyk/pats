@@ -44,22 +44,22 @@ func TestAgentMaxCost(t *testing.T) {
 	defer func() { newSandbox = old }()
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s, max-cost: 2.5}}}
-t: {kind: task, items: {t: {prompt: p, collect: echo collected, timeout: 1m}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx, max-cost: 2.5}}}
+txx: {kind: task, items: {txx: {prompt: p, collect: echo collected, timeout: 1m}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
-	m := readMeta(t, runDir, "a", "t")
+	m := readMeta(t, runDir, "axx", "txx")
 	assert.Equal(t, m.Status, "budget")
 	assert.Equal(t, m.Error, "cost $3.00 passed max-cost $2.50")
-	b, err := os.ReadFile(filepath.Join(runDir, "a", "t", "collect.log"))
+	b, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "collect.log"))
 	require.NoError(t, err)
 	assert.Equal(t, string(b), "collected\n")
-	assert.ContainsString(t, out.String(), "a/t budget")
+	assert.ContainsString(t, out.String(), "axx/txx budget")
 }
 
 // with --max-cost no pair starts once the spend reached it: the rest are
@@ -71,10 +71,10 @@ func TestRunMaxCost(t *testing.T) {
 	defer func() { newSandbox = old }()
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-tv: {kind: task, items: {t1: {prompt: p}, t2: {prompt: p}, t3: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: a, tasks: tv}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tvx: {kind: task, items: {t1x: {prompt: p}, t2x: {prompt: p}, t3x: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
@@ -82,8 +82,8 @@ su: {kind: suite, items: {su: {agents: a, tasks: tv}}}
 	assert.ErrorIs(t, err, ErrBudget)
 	assert.ContainsString(t, out.String(), "WARN budget $1.50 reached at $2.00: 1 pair(s) not started")
 	ran := 0
-	for _, task := range []string{"t1", "t2", "t3"} {
-		if _, err := os.Stat(filepath.Join(runDir, "a", task)); err == nil {
+	for _, task := range []string{"t1x", "t2x", "t3x"} {
+		if _, err := os.Stat(filepath.Join(runDir, "axx", task)); err == nil {
 			ran++
 		}
 	}

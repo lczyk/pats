@@ -31,12 +31,12 @@ const prepareMount = "/pats-prepare"
 // are host paths, and anything secret stays in stage.
 func prepareEnv(t config.Task, a config.Agent, agentID, runID string) map[string]string {
 	env := map[string]string{
-		"PATS_TASK_ID":       t.ID,
+		"PATS_TASK_NAME":     t.Name,
 		"PATS_TASK_VECTOR":   t.Vector,
-		"PATS_AGENT_ID":      agentID,
+		"PATS_AGENT_NAME":    agentID,
 		"PATS_AGENT_HARNESS": a.Harness,
 		"PATS_MODEL":         a.Model,
-		"PATS_RUN_ID":        runID,
+		"PATS_RUN_NAME":      runID,
 		"PATS_WORKDIR":       sandbox.WorkMount,
 		"PATS_AGENT_HOME":    homeMount,
 	}

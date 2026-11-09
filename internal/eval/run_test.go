@@ -50,10 +50,10 @@ func TestRunE2E(t *testing.T) {
 	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, collect: ./collect.sh}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 
 	var out bytes.Buffer
@@ -66,7 +66,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	assertNoBuildOrPull(t, calls)
 	require.NoError(t, err)
 
-	outDir := filepath.Join(runDir, "a", "t")
+	outDir := filepath.Join(runDir, "axx", "txx")
 
 	stdout, err := os.ReadFile(filepath.Join(outDir, "stdout.log"))
 	require.NoError(t, err)
@@ -139,11 +139,11 @@ func TestResolveJobs(t *testing.T) {
 
 func TestTaskPrompt(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "cases", "a")
+	dir := filepath.Join(root, "cases", "axx")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.md"), []byte("from file\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gen.sh"),
-		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_ID $1 $(basename \"$PWD\")\"\n"), 0o755))
+		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_NAME $1 $(basename \"$PWD\")\"\n"), 0o755))
 
 	// literal text, verbatim -- quotes, apostrophes and ${...} included.
 	got, err := taskPrompt(root, dir, config.Task{Prompt: "it's ${not} a template"}, nil)
@@ -156,9 +156,9 @@ func TestTaskPrompt(t *testing.T) {
 	assert.Equal(t, string(got), "from file\n")
 
 	// prompt-cmd: stdout, run in the task's dir with env + args passed through.
-	got, err = taskPrompt(root, dir, config.Task{PromptCmd: "./gen.sh --flavour"}, map[string]string{"PATS_TASK_ID": "t1"})
+	got, err = taskPrompt(root, dir, config.Task{PromptCmd: "./gen.sh --flavour"}, map[string]string{"PATS_TASK_NAME": "t1x"})
 	require.NoError(t, err)
-	assert.Equal(t, string(got), "gen t1 --flavour a\n")
+	assert.Equal(t, string(got), "gen t1x --flavour axx\n")
 
 	// a missing prompt-file is an error, never a literal fallback.
 	_, err = taskPrompt(root, dir, config.Task{PromptFile: "nope.md"}, nil)
@@ -327,7 +327,7 @@ func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr 
 // -- exercised against a fake sandbox, no docker needed.
 func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	fakes := map[string]*fakeSandbox{
-		"ok":   {code: 0, stdout: "fine\n"},
+		"okx":  {code: 0, stdout: "fine\n"},
 		"bad":  {code: 3},
 		"boom": {err: errors.New("launch failed")},
 	}
@@ -348,8 +348,8 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	for id := range fakes {
 		src += id + ": {sandbox: " + id + "}, "
 	}
-	src += "}}\nt: {kind: task, items: {t: {prompt-file: prompt.txt}}}\n"
-	src += "su: {kind: suite, items: {su: {agents: agents, tasks: t}}}\n"
+	src += "}}\ntxx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}\n"
+	src += "sux: {kind: suite, items: {sux: {agents: agents, tasks: txx}}}\n"
 	cfg := parseCfg(t, src)
 
 	var out bytes.Buffer
@@ -357,13 +357,13 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err) // a failing pair is logged, not fatal
 
-	wantStatus := map[string]string{"ok": "ok", "bad": "nonzero", "boom": "error"}
+	wantStatus := map[string]string{"okx": "ok", "bad": "nonzero", "boom": "error"}
 	for id, want := range wantStatus {
-		meta, err := os.ReadFile(filepath.Join(runDir, id, "t", "metadata.json"))
+		meta, err := os.ReadFile(filepath.Join(runDir, id, "txx", "metadata.json"))
 		require.NoError(t, err)
 		assert.ContainsString(t, string(meta), `"status": "`+want+`"`)
 	}
-	stdout, err := os.ReadFile(filepath.Join(runDir, "ok", "t", "stdout.log"))
+	stdout, err := os.ReadFile(filepath.Join(runDir, "okx", "txx", "stdout.log"))
 	require.NoError(t, err)
 	assert.Equal(t, string(stdout), "fine\n")
 }
@@ -378,10 +378,10 @@ func TestRunRepeat(t *testing.T) {
 	defer func() { newSandbox = old }()
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
@@ -393,7 +393,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	assert.Equal(t, fake.preflights, 1)
 	assert.ContainsString(t, out.String(), "INFO run 3/3: "+runs[2])
 	for _, r := range runs {
-		_, err := os.Stat(filepath.Join(dir, runsSubdir, r, "a", "t", "metadata.json"))
+		_, err := os.Stat(filepath.Join(dir, runsSubdir, r, "axx", "txx", "metadata.json"))
 		assert.NoError(t, err, r)
 	}
 
@@ -408,7 +408,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	runs, err = sortedRunNames(filepath.Join(dir2, runsSubdir))
 	require.NoError(t, err)
 	assert.Len(t, runs, 1)
-	m, err := os.ReadFile(filepath.Join(dir2, runsSubdir, runs[0], "a", "t", "metadata.json"))
+	m, err := os.ReadFile(filepath.Join(dir2, runsSubdir, runs[0], "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(m), `"error": "interrupted"`)
 
@@ -436,16 +436,16 @@ func TestRunFoldsAuditAfterClose(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
-	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"late.example"`)
 	assert.ContainsString(t, out.String(), "egress denied (no rule): late.example")
@@ -462,16 +462,16 @@ func TestRunVerbosity(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, stage: echo staged, collect: echo collected}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, stage: echo staged, collect: echo collected}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	for v, c := range []struct{ has, hasnt []string }{
-		{[]string{"INFO a/t ok (exit 0"}, []string{"run dir", "1 ok", "staged", "collected"}},
-		{[]string{"INFO a/t ok (exit 0", "INFO run dir", "INFO 1 ok"}, []string{"staged", "collected"}},
-		{[]string{"INFO a/t ok (exit 0", "INFO 1 ok", "staged", "collected"}, nil},
+		{[]string{"INFO axx/txx ok (exit 0"}, []string{"run dir", "1 ok", "staged", "collected"}},
+		{[]string{"INFO axx/txx ok (exit 0", "INFO run dir", "INFO 1 ok"}, []string{"staged", "collected"}},
+		{[]string{"INFO axx/txx ok (exit 0", "INFO 1 ok", "staged", "collected"}, nil},
 	} {
 		var out bytes.Buffer
 		runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Verbose: v})
@@ -483,7 +483,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 			assert.That(t, !strings.Contains(out.String(), w), "-v x%d printed %q:\n%s", v, w, out.String())
 		}
 		for name, want := range map[string]string{"stage.log": "staged\n", "collect.log": "collected\n"} {
-			b, err := os.ReadFile(filepath.Join(runDir, "a", "t", name))
+			b, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", name))
 			require.NoError(t, err)
 			assert.Equal(t, string(b), want)
 		}
@@ -506,10 +506,10 @@ func TestRunPairTimeoutStatus(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, timeout: 30ms}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 
 	var out bytes.Buffer
@@ -517,7 +517,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
-	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "timeout"`)
 	assert.ContainsString(t, string(meta), `"error": "timed out after`)
@@ -540,13 +540,13 @@ func TestRunPairCollectsOnTimeout(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
-		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\nprintf '%s\\n%s\\n' \"$PATS_RUN_DIR\" \"$PATS_RUN_ID\" > \"$PATS_OUTPUT_DIR/run-env\"\n"), 0o755))
+		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\nprintf '%s\\n%s\\n' \"$PATS_RUN_DIR\" \"$PATS_RUN_NAME\" > \"$PATS_OUTPUT_DIR/run-env\"\n"), 0o755))
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 
 	var out bytes.Buffer
@@ -554,18 +554,18 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
-	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "timeout"`)
 
-	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+	_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 	assert.NoError(t, err) // collect ran despite runErr != nil, because the pair timed out
 
 	// host scripts see the run dir and its basename; the sandbox gets the id only.
-	runEnv, err := os.ReadFile(filepath.Join(runDir, "a", "t", "run-env"))
+	runEnv, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "run-env"))
 	require.NoError(t, err)
 	assert.Equal(t, string(runEnv), runDir+"\n"+filepath.Base(runDir)+"\n")
-	assert.Equal(t, sbEnv["PATS_RUN_ID"], filepath.Base(runDir))
+	assert.Equal(t, sbEnv["PATS_RUN_NAME"], filepath.Base(runDir))
 	assert.Equal(t, sbEnv["PATS_RUN_DIR"], "")
 }
 
@@ -590,10 +590,10 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n"), 0o755))
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 
 	var out bytes.Buffer
@@ -601,12 +601,12 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
-	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "error"`)
 	assert.ContainsString(t, string(meta), "create network") // the real cause, not "timed out after"
 
-	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+	_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 	assert.That(t, os.IsNotExist(err), "collect must not run when the sandbox never launched")
 }
 
@@ -642,10 +642,10 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 		[]byte("#!/bin/sh\ncp \"$PATS_AGENT_HOME/agent-wrote\" \"$PATS_OUTPUT_DIR/\"\n"), 0o755))
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, stage: ./prepare.sh, collect: ./collect.sh}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, stage: ./prepare.sh, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 
 	var out bytes.Buffer
@@ -655,7 +655,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 
 	require.That(t, home != "", "pair run has no HOME mount")
 	assert.Equal(t, string(seeded), "seeded\n")
-	_, err = os.Stat(filepath.Join(runDir, "a", "t", "agent-wrote"))
+	_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "agent-wrote"))
 	assert.NoError(t, err)
 	_, err = os.Stat(home)
 	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after the pair")
@@ -675,10 +675,10 @@ func TestRunDefaultSandboxImage(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	h := newFakeHost()
 	useHost(t, h)
@@ -721,10 +721,10 @@ func TestRunPairPromptOutsideWorkdir(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("do the thing"), 0o644))
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 
 	var out bytes.Buffer
@@ -749,17 +749,17 @@ func TestRunPairStageFailureCleansHome(t *testing.T) {
 		[]byte("#!/bin/sh\nprintf %s \"$PATS_AGENT_HOME\" > \"$PATS_OUTPUT_DIR/home-path\"\nexit 1\n"), 0o755))
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt-file: prompt.txt, stage: ./prepare.sh}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, stage: ./prepare.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 
 	var out bytes.Buffer
 	pinAll(t, dir, cfg)
 	runDir, _ := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 
-	home, err := os.ReadFile(filepath.Join(runDir, "a", "t", "home-path"))
+	home, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "home-path"))
 	require.NoError(t, err)
 	require.That(t, len(home) > 0, "prepare saw an empty PATS_AGENT_HOME")
 	_, err = os.Stat(string(home))
@@ -773,7 +773,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 func TestZeroPairsRunErrors(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
+sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
 `)
 
 	var out bytes.Buffer
@@ -819,7 +819,7 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 
 	var out bytes.Buffer
 	env := map[string]string{}
-	hs, err := harnessHome(Options{Out: &out}, "codex x t", "codex-cli-keyless", env, false)
+	hs, err := harnessHome(Options{Out: &out}, "codex x txx", "codex-cli-keyless", env, false)
 	require.NoError(t, err)
 	defer hs.cleanup()
 	require.Equal(t, len(hs.mounts), 1)
@@ -858,10 +858,10 @@ func TestEgressForIncludesCodexHosts(t *testing.T) {
 // sandbox env reaches the agent, under what pats sets itself.
 func TestNewHarnessSandboxEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	sb := config.Sandbox{ID: "s", Driver: "docker", Image: "img", Env: map[string]string{"DENO_CERT": "/sbx-ca/bundle.pem", "PATS_PROMPT_FILE": "mine"}}
-	a := config.Agent{ID: "a", Harness: "opencode-openrouter", Model: "m"}
+	sb := config.Sandbox{Name: "sxx", Driver: "docker", Image: "img", Env: map[string]string{"DENO_CERT": "/sbx-ca/bundle.pem", "PATS_PROMPT_FILE": "mine"}}
+	a := config.Agent{Name: "axx", Harness: "opencode-openrouter", Model: "m"}
 	var out bytes.Buffer
-	h, err := newHarness(Options{Out: &out}, a, sb, config.TaskEgress{}, t.TempDir(), "r", "", "a x t")
+	h, err := newHarness(Options{Out: &out}, a, sb, config.TaskEgress{}, t.TempDir(), "r", "", "axx x txx")
 	require.NoError(t, err)
 	defer h.cleanup()
 	assert.Equal(t, h.spec.Env["DENO_CERT"], "/sbx-ca/bundle.pem")
@@ -921,26 +921,26 @@ func TestRunPairSetupFailureMetadata(t *testing.T) {
 			defer func() { newSandbox = old }()
 			dir := t.TempDir()
 			cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p, `+c.task+`, collect: "touch $PATS_OUTPUT_DIR/collected"}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, `+c.task+`, collect: "touch $PATS_OUTPUT_DIR/collected"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 			var out bytes.Buffer
 			pinAll(t, dir, cfg)
 			runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 			require.NoError(t, err)
 			var pm pairMeta
-			b, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+			b, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 			require.NoError(t, err)
 			require.NoError(t, json.Unmarshal(b, &pm))
 			assert.Equal(t, pm.Status, "error")
 			assert.ContainsString(t, pm.Error, c.want)
 			assert.Equal(t, c.fake.calls, 1) // the preflight only, never the pair's agent
-			_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+			_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 			assert.That(t, os.IsNotExist(err), "collected after a failed setup")
 			if c.name == "prepare" {
-				log, _ := os.ReadFile(filepath.Join(runDir, "a", "t", "prepare.log"))
+				log, _ := os.ReadFile(filepath.Join(runDir, "axx", "txx", "prepare.log"))
 				assert.ContainsString(t, string(log), "apt said no")
 			}
 		})
@@ -959,18 +959,18 @@ func TestRunPairPrepareInSandbox(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "helper"), []byte("#!/bin/sh\n"), 0o755))
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p, prepare: helper --fast, env: {BRANCH: main}, stage: 'echo "$PATS_TASK_VECTOR" > "$PATS_OUTPUT_DIR/vector"'}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, prepare: helper --fast, env: {BRANCH: main}, stage: 'echo "$PATS_TASK_VECTOR" > "$PATS_OUTPUT_DIR/vector"'}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	var out bytes.Buffer
 	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
-	vector, err := os.ReadFile(filepath.Join(runDir, "a", "t", "vector"))
+	vector, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "vector"))
 	require.NoError(t, err)
-	assert.Equal(t, string(vector), "t\n") // a host step knows its task's vector
+	assert.Equal(t, string(vector), "txx\n") // a host step knows its task's vector
 	assert.Equal(t, strings.Join(fake.pushed, " "), prepareMount)
 	require.That(t, len(fake.rootCmds) >= 2, "root cmds: %v", fake.rootCmds)
 	prep := fake.rootCmds[0]
@@ -978,7 +978,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	assert.ContainsString(t, prep.Argv[2], prepareMount+"/bin:$PATH")
 	assert.Equal(t, prep.Env["PATS_WORKDIR"], sandbox.WorkMount)
 	assert.Equal(t, prep.Env["BRANCH"], "main")
-	assert.Equal(t, prep.Env["PATS_TASK_VECTOR"], "t")
+	assert.Equal(t, prep.Env["PATS_TASK_VECTOR"], "txx")
 	_, hasOut := prep.Env["PATS_OUTPUT_DIR"]
 	assert.Equal(t, hasOut, false)
 	assert.Equal(t, strings.Join(fake.rootCmds[1].Argv, " "), "rm -rf "+prepareMount)
@@ -992,25 +992,25 @@ func TestRunE2EPrepare(t *testing.T) {
 	dockerOrSkip(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "seed"), []byte("#!/bin/sh\necho \"seeded by $(id -u) for $PATS_TASK_ID\" > \"$PATS_WORKDIR/prepared.txt\"\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "seed"), []byte("#!/bin/sh\necho \"seeded by $(id -u) for $PATS_TASK_NAME\" > \"$PATS_WORKDIR/prepared.txt\"\n"), 0o755))
 
 	old := agent.HarnessCmds["opencode-openrouter"]
 	agent.HarnessCmds["opencode-openrouter"] = `echo agent >> prepared.txt && test ! -e /pats-prepare && echo material-gone >> prepared.txt`
 	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: ubuntu:26.04}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p, prepare: seed, collect: "cp $PATS_WORKDIR/prepared.txt $PATS_OUTPUT_DIR/"}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, prepare: seed, collect: "cp $PATS_WORKDIR/prepared.txt $PATS_OUTPUT_DIR/"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
-	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "prepared.txt"))
+	got, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "prepared.txt"))
 	require.NoError(t, err, "%s", out.String())
-	assert.Equal(t, string(got), "seeded by 0 for t\nagent\nmaterial-gone\n")
+	assert.Equal(t, string(got), "seeded by 0 for txx\nagent\nmaterial-gone\n")
 }
 
 // e2e of base / provision on docker: the provision step runs once into a
@@ -1026,10 +1026,10 @@ func TestRunE2EProvision(t *testing.T) {
 	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
 
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {base: ubuntu:26.04, provision: "mark once"}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m1, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $PATS_OUTPUT_DIR/"}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {base: ubuntu:26.04, provision: "mark once"}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $PATS_OUTPUT_DIR/"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
@@ -1040,11 +1040,11 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	assertNoBuildOrPull(t, calls)
 	require.NoError(t, err)
-	got, err := os.ReadFile(filepath.Join(runDir, "a", "t", "got.txt"))
+	got, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "got.txt"))
 	require.NoError(t, err, "%s", out.String())
 	assert.Equal(t, string(got), "provisioned once\n")
 	// init kept the build's whole output.
-	log, err := os.ReadFile(filepath.Join(dir, ".pats", "init", "s.log"))
+	log, err := os.ReadFile(filepath.Join(dir, ".pats", "init", "sxx.log"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(log), "load build definition from Dockerfile")
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", cfg.Sandboxes[0].Image).Run() })

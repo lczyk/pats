@@ -118,15 +118,15 @@ func buildMulti(runDirs []string, warn io.Writer) (*multiDoc, map[string][]strin
 		if err != nil {
 			abs = dir
 		}
-		id := filepath.Base(abs)
+		name := filepath.Base(abs)
 		rep, err := readScores(dir)
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil, fmt.Errorf("run %s is not scored (pats score -N %d)", id, len(runDirs))
+			return nil, nil, fmt.Errorf("run %s is not scored (pats score -N %d)", name, len(runDirs))
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("run %s: %w", id, err)
+			return nil, nil, fmt.Errorf("run %s: %w", name, err)
 		}
-		doc.Runs = append(doc.Runs, reportRun{ID: id, Dir: abs})
+		doc.Runs = append(doc.Runs, reportRun{Name: name, Dir: abs})
 		scores := map[string]map[string]float64{}
 		for _, s := range rep.Scores {
 			k := s.Agent + "/" + s.Task
@@ -142,7 +142,7 @@ func buildMulti(runDirs []string, warn io.Writer) (*multiDoc, map[string][]strin
 				p = &multiPair{Agent: r.agent, Task: r.task, Samples: []multiSample{}}
 				pairs[k] = p
 			}
-			s := multiSample{Run: id, Scores: scores[k]}
+			s := multiSample{Run: name, Scores: scores[k]}
 			if s.Scores == nil {
 				s.Scores = map[string]float64{}
 			}
@@ -201,10 +201,10 @@ func buildMulti(runDirs []string, warn io.Writer) (*multiDoc, map[string][]strin
 		agentSet[p.Agent] = true
 	}
 	osum := 0.0
-	for _, id := range sortedSet(agentSet) {
-		a := reportAgent{ID: id}
-		if agentN[id] > 0 {
-			m := agentSum[id] / float64(agentN[id])
+	for _, name := range sortedSet(agentSet) {
+		a := reportAgent{Name: name}
+		if agentN[name] > 0 {
+			m := agentSum[name] / float64(agentN[name])
 			a.Mean = &m
 			osum += m
 		}
@@ -251,7 +251,7 @@ func reportMulti(runDirs []string, asJSON bool, out, errOut io.Writer) error {
 		return err
 	}
 	color := useColor(out)
-	logw{out, color, 0}.info("report: the latest %d runs, %s to %s", len(doc.Runs), doc.Runs[0].ID, doc.Runs[len(doc.Runs)-1].ID)
+	logw{out, color, 0}.info("report: the latest %d runs, %s to %s", len(doc.Runs), doc.Runs[0].Name, doc.Runs[len(doc.Runs)-1].Name)
 	pivotMulti(out, doc, statuses, color)
 	return nil
 }
@@ -315,7 +315,7 @@ func pivotMulti(w io.Writer, doc *multiDoc, statuses map[string][]string, color 
 	for _, a := range agents {
 		m := "-"
 		for _, ra := range doc.Agents {
-			if ra.ID == a && ra.Mean != nil {
+			if ra.Name == a && ra.Mean != nil {
 				m = fmt.Sprintf("%.2f", *ra.Mean)
 			}
 		}

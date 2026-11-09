@@ -22,14 +22,14 @@ func TestLocalInputs(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ctx", "Dockerfile"), []byte("FROM scratch\nCOPY x /x\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ctx", "x"), []byte("1"), 0o644))
 	cfg := parseCfg(t, `
-sb:
+sbx:
   kind: sandbox
   items:
     prov: {base: ubuntu:26.04, provision: provision-box}
     built: {build: ctx}
-ag: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {a: {sandbox: prov}, b: {sandbox: built}}}
-t: {kind: task, items: {t: {prompt: p}}}
-suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
+agx: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {axx: {sandbox: prov}, bxx: {sandbox: built}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+suites: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 `)
 	inputs := func(i int) map[string]string {
 		t.Helper()

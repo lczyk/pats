@@ -125,9 +125,9 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	if opts.DryRun {
 		return "", dryRun(cfg, opts, pairs, lg)
 	}
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
-	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
-	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
+	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 
 	// newer upstream images, looked up while preflight runs: a warning
 	// each, never a stop.
@@ -155,7 +155,7 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 		var uncapped []string
 		for _, a := range pairAgents(cfg, pairs) {
 			if noCostHarnesses[a.Harness] {
-				uncapped = append(uncapped, a.ID)
+				uncapped = append(uncapped, a.Name)
 			}
 		}
 		if len(uncapped) > 0 {
@@ -241,7 +241,7 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 	sbSem := map[string]chan struct{}{}
 	for _, sb := range cfg.Sandboxes {
 		if sb.MaxParallel > 0 {
-			sbSem[sb.ID] = make(chan struct{}, sb.MaxParallel)
+			sbSem[sb.Name] = make(chan struct{}, sb.MaxParallel)
 		}
 	}
 	var wg sync.WaitGroup
@@ -346,7 +346,7 @@ func autoCPUs(ctx context.Context, cfg *config.Config, pairs []config.TestPair) 
 	used := usedSandboxes(cfg, pairs)
 	var pick *config.Sandbox
 	for i, sb := range cfg.Sandboxes {
-		if used[sb.ID] && (pick == nil || (sb.Driver == "lxd" && pick.Driver != "lxd")) {
+		if used[sb.Name] && (pick == nil || (sb.Driver == "lxd" && pick.Driver != "lxd")) {
 			pick = &cfg.Sandboxes[i]
 		}
 	}
@@ -502,11 +502,11 @@ func runPair(
 	taskDir := filepath.Join(opts.ConfigDir, t.Dir)
 	hostEnv := map[string]string{
 		"PATS_TASK_DIR":      taskDir,
-		"PATS_RUN_ID":        filepath.Base(runDir),
+		"PATS_RUN_NAME":      filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
-		"PATS_AGENT_ID":      p.Agent,
+		"PATS_AGENT_NAME":    p.Agent,
 		"PATS_AGENT_HARNESS": a.Harness,
-		"PATS_TASK_ID":       p.Task,
+		"PATS_TASK_NAME":     p.Task,
 		"PATS_TASK_VECTOR":   t.Vector,
 		"PATS_MODEL":         a.Model,
 		"PATS_WORKDIR":       workDir,
@@ -763,7 +763,7 @@ type lxdProvenance struct {
 var lxdProvenances sync.Map
 
 func lxdProvenanceOf(ctx context.Context, sb config.Sandbox) *lxdProvenance {
-	if v, ok := lxdProvenances.Load(sb.ID + "\x00" + sb.Image); ok {
+	if v, ok := lxdProvenances.Load(sb.Name + "\x00" + sb.Image); ok {
 		return v.(*lxdProvenance)
 	}
 	h, err := hostFor(sb)
@@ -781,7 +781,7 @@ func lxdProvenanceOf(ctx context.Context, sb config.Sandbox) *lxdProvenance {
 	if img, err := h.Resolve(ctx, sb.Image); err == nil {
 		p.ImageFingerprint = img.ID
 	}
-	lxdProvenances.Store(sb.ID+"\x00"+sb.Image, p)
+	lxdProvenances.Store(sb.Name+"\x00"+sb.Image, p)
 	return p
 }
 

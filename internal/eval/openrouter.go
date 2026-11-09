@@ -91,13 +91,13 @@ func checkOpenrouterModels(ctx context.Context, agents []config.Agent, client *h
 		m, ok := byID[id]
 		switch {
 		case !ok:
-			msg := fmt.Sprintf("agent %q: model %q is not on openrouter", a.ID, a.Model)
+			msg := fmt.Sprintf("agent %q: model %q is not on openrouter", a.Name, a.Model)
 			if near := closestIDs(id, models, 3); len(near) > 0 {
 				msg += "; closest: " + strings.Join(near, ", ")
 			}
 			errs = append(errs, msg)
 		case !slices.Contains(m.SupportedParameters, "tools"):
-			errs = append(errs, fmt.Sprintf("agent %q: model %q does not take tools, which opencode drives the agent with", a.ID, a.Model))
+			errs = append(errs, fmt.Sprintf("agent %q: model %q does not take tools, which opencode drives the agent with", a.Name, a.Model))
 		}
 	}
 	if len(errs) > 0 {
@@ -182,7 +182,7 @@ func pairAgents(cfg *config.Config, pairs []config.TestPair) []config.Agent {
 	}
 	var out []config.Agent
 	for _, a := range cfg.Agents {
-		if used[a.ID] {
+		if used[a.Name] {
 			out = append(out, a)
 		}
 	}

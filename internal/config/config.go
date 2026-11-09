@@ -1,8 +1,8 @@
 // Package config loads, validates, and expands a pats.yaml.
 //
-// the file is a mapping of vectors. the key is the vector's id; a vector has a
+// the file is a mapping of vectors. the key is the vector's name; a vector has a
 // `kind` (sandbox | agent | task | scorer | suite), optional `defaults` and
-// non-empty `items` keyed by id. an item inherits every default it does not
+// non-empty `items` keyed by name. an item inherits every default it does not
 // set; an explicit null unsets a field. a task vector may instead name a `dir`
 // whose task.yaml files are its items. see load.go for the merge and
 // pats.example.yaml for the shape.
@@ -35,7 +35,7 @@ type Config struct {
 // as-is) or `build` (a docker build context pats builds at run start) -- at
 // most one. neither means the published pats sandbox pinned to this version.
 type Sandbox struct {
-	ID     string `yaml:"-"`
+	Name   string `yaml:"-"`
 	Vector string `yaml:"-"`
 	Driver string `yaml:"driver"` // docker (default) | podman | lxd | bwrap
 	Image  string `yaml:"image"`  // existing image to run, in the driver's own namespace; "" -> built or the pats sandbox
@@ -150,11 +150,11 @@ type Limits struct {
 //	codex-cli-keyless   -- codex cli, keyless chatgpt creds (~/.codex/auth.json)
 //	copilot-cli-keyless -- copilot cli, keyless github token (COPILOT_GITHUB_TOKEN)
 type Agent struct {
-	ID      string `yaml:"-"`
+	Name    string `yaml:"-"`
 	Vector  string `yaml:"-"`
 	Harness string `yaml:"harness"`
 	Model   string `yaml:"model"`
-	Sandbox string `yaml:"sandbox"` // a sandbox id; omitted -> the only sandbox defined
+	Sandbox string `yaml:"sandbox"` // a sandbox name; omitted -> the only sandbox defined
 	Effort  string `yaml:"effort"`  // optional reasoning effort (claude/copilot --effort; codex model_reasoning_effort; opencode --variant)
 	// MaxCost stops a pair once its reported spend passes it, in us dollars;
 	// nil is no cap. only a harness that reports cost as it runs takes one.
@@ -167,7 +167,7 @@ type Agent struct {
 // "" for pats.yaml, the task's directory for a task.yaml. its paths resolve
 // and its scripts run there.
 type Task struct {
-	ID         string            `yaml:"-"`
+	Name       string            `yaml:"-"`
 	Vector     string            `yaml:"-"`
 	Dir        string            `yaml:"-"`
 	Prompt     string            `yaml:"prompt" text:"free"` // the instruction, literal
@@ -238,7 +238,7 @@ func (t Task) TimeoutDuration() time.Duration {
 // float [0,1] or "na" (skip), exit != 0 = failure. an agent scorer sets
 // `agent` plus one of the prompt keys instead: an agent judges the output.
 type Scorer struct {
-	ID         string `yaml:"-"`
+	Name       string `yaml:"-"`
 	Vector     string `yaml:"-"`
 	Dir        string `yaml:"-"`
 	Score      string `yaml:"score"` // scoring script
@@ -253,10 +253,10 @@ func (s Scorer) IsAgent() bool { return s.Agent != "" }
 
 // Suite is a named (agents, tasks, scorers) selection. both cross-products are
 // implied within it: run = agents x tasks, score = tasks x scorers. each axis
-// lists vector or item ids of that kind; a vector id expands to its items.
+// lists vector or item names of that kind; a vector name expands to its items.
 // scorers may be empty (a run-only suite); agents and tasks may not.
 type Suite struct {
-	ID      string  `yaml:"-"`
+	Name    string  `yaml:"-"`
 	Vector  string  `yaml:"-"`
 	Agents  StrList `yaml:"agents"`
 	Tasks   StrList `yaml:"tasks"`

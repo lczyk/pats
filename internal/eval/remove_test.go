@@ -60,13 +60,13 @@ func TestRemoveSupersededContainers(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	me, other := t.TempDir(), t.TempDir()
 	require.NoError(t, updatePins(other, func(f *pinFile) error {
-		f.setPin("docker:default", "x", &pinEntry{Image: pinImage{ID: "shared"}}, now)
+		f.setPin("docker:default", "xxx", &pinEntry{Image: pinImage{ID: "shared"}}, now)
 		return nil
 	}))
 	h := &removingHost{fakeHost: newFakeHost(), inUse: map[string]bool{"busy": true}}
 	useTargets(t, map[string]imageHost{"docker:default": h})
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{
-		"docker:default": {"sb": {Image: pinImage{ID: "current"}}},
+		"docker:default": {"sbx": {Image: pinImage{ID: "current"}}},
 	}, Superseded: []superseded{
 		{Target: "docker:default", ID: "old"},
 		{Target: "docker:default", ID: "shared"},
@@ -171,13 +171,13 @@ func TestInitRemovesWhatItReplaces(t *testing.T) {
 func TestPinsReclaimOwnership(t *testing.T) {
 	now := time.Now()
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
-	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "x", Pulled: true}}, now)
-	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "y", Pulled: true}}, now)
+	f.setPin("t", "axx", &pinEntry{Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("t", "axx", &pinEntry{Image: pinImage{ID: "y", Pulled: true}}, now)
 	assert.Len(t, f.Superseded, 1)
-	f.setPin("t", "b", &pinEntry{Image: pinImage{ID: "x"}}, now)
+	f.setPin("t", "bxx", &pinEntry{Image: pinImage{ID: "x"}}, now)
 	assert.Len(t, f.Superseded, 0)
-	assert.That(t, f.entry("t", "b").Image.Pulled, "the re-pinned image lost its ownership")
-	f.dropMissing(map[string]bool{"a": true}, now)
+	assert.That(t, f.entry("t", "bxx").Image.Pulled, "the re-pinned image lost its ownership")
+	f.dropMissing(map[string]bool{"axx": true}, now)
 	assert.Len(t, f.Superseded, 1) // and goes back on the list when b drops it
 }
 
@@ -244,15 +244,15 @@ func (h *lxdErrHost) Usage(context.Context, string) (sandbox.ImageUse, error) {
 func TestRemoveHandsOwnershipToTheOtherPin(t *testing.T) {
 	now := time.Now()
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
-	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "x", Pulled: true}}, now)
-	f.setPin("t", "b", &pinEntry{Image: pinImage{ID: "x"}}, now)
-	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "y", Pulled: true}}, now)
+	f.setPin("t", "axx", &pinEntry{Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("t", "bxx", &pinEntry{Image: pinImage{ID: "x"}}, now)
+	f.setPin("t", "axx", &pinEntry{Image: pinImage{ID: "y", Pulled: true}}, now)
 	useTargets(t, map[string]imageHost{"t": &removingHost{fakeHost: newFakeHost()}})
 	var out bytes.Buffer
 	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false, 0})
 	assert.Len(t, f.Superseded, 0)
-	assert.That(t, f.entry("t", "b").Image.Pulled, "b's pin did not take the ownership")
-	f.dropMissing(map[string]bool{"a": true}, now)
+	assert.That(t, f.entry("t", "bxx").Image.Pulled, "b's pin did not take the ownership")
+	f.dropMissing(map[string]bool{"axx": true}, now)
 	assert.Len(t, f.Superseded, 1)
 }
 
@@ -282,9 +282,9 @@ func TestRemoveAcrossTargetsAndDaemons(t *testing.T) {
 	h := &removingHost{fakeHost: newFakeHost()}
 	useTargets(t, map[string]imageHost{"docker:a": h, "docker:b": h})
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
-	f.setPin("docker:a", "s1", &pinEntry{Daemon: "d", Image: pinImage{ID: "x", Pulled: true}}, now)
-	f.setPin("docker:b", "s2", &pinEntry{Daemon: "d", Image: pinImage{ID: "x"}}, now)
-	f.setPin("docker:a", "s1", &pinEntry{Daemon: "d", Image: pinImage{ID: "y", Pulled: true}}, now)
+	f.setPin("docker:a", "s1x", &pinEntry{Daemon: "d", Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("docker:b", "s2x", &pinEntry{Daemon: "d", Image: pinImage{ID: "x"}}, now)
+	f.setPin("docker:a", "s1x", &pinEntry{Daemon: "d", Image: pinImage{ID: "y", Pulled: true}}, now)
 	var out bytes.Buffer
 	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false, 0})
 	assert.Len(t, h.removed, 0)
@@ -293,9 +293,9 @@ func TestRemoveAcrossTargetsAndDaemons(t *testing.T) {
 	// the same target, another daemon: no ownership moves.
 	g := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{},
 		Superseded: []superseded{{Target: "docker:a", Daemon: "old", ID: "x", Pulled: true}}}
-	g.setPin("docker:a", "s", &pinEntry{Daemon: "new", Image: pinImage{ID: "x"}}, now)
+	g.setPin("docker:a", "sxx", &pinEntry{Daemon: "new", Image: pinImage{ID: "x"}}, now)
 	assert.Len(t, g.Superseded, 1)
-	assert.That(t, !g.entry("docker:a", "s").Image.Pulled, "another daemon's image took the ownership")
+	assert.That(t, !g.entry("docker:a", "sxx").Image.Pulled, "another daemon's image took the ownership")
 }
 
 // a pin re-made against another daemon inherits nothing from the old one,
@@ -303,9 +303,9 @@ func TestRemoveAcrossTargetsAndDaemons(t *testing.T) {
 func TestRepinOnAnotherDaemon(t *testing.T) {
 	now := time.Now()
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
-	f.setPin("docker:a", "s", &pinEntry{Daemon: "A", Image: pinImage{ID: "x", Pulled: true}}, now)
-	f.setPin("docker:a", "s", &pinEntry{Daemon: "B", Image: pinImage{ID: "x"}}, now)
-	assert.That(t, !f.entry("docker:a", "s").Image.Pulled, "B's image inherited A's ownership")
+	f.setPin("docker:a", "sxx", &pinEntry{Daemon: "A", Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("docker:a", "sxx", &pinEntry{Daemon: "B", Image: pinImage{ID: "x"}}, now)
+	assert.That(t, !f.entry("docker:a", "sxx").Image.Pulled, "B's image inherited A's ownership")
 	require.Equal(t, len(f.Superseded), 1)
 	assert.Equal(t, f.Superseded[0].Daemon, "A")
 }
@@ -315,8 +315,8 @@ func TestSupersedePerDaemon(t *testing.T) {
 	now := time.Now()
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{},
 		Superseded: []superseded{{Target: "docker:a", Daemon: "A", ID: "x", Pulled: true}}}
-	f.setPin("docker:a", "s", &pinEntry{Daemon: "B", Image: pinImage{ID: "x", Pulled: true}}, now)
-	f.setPin("docker:a", "s", &pinEntry{Daemon: "B", Image: pinImage{ID: "y", Pulled: true}}, now)
+	f.setPin("docker:a", "sxx", &pinEntry{Daemon: "B", Image: pinImage{ID: "x", Pulled: true}}, now)
+	f.setPin("docker:a", "sxx", &pinEntry{Daemon: "B", Image: pinImage{ID: "y", Pulled: true}}, now)
 	require.Equal(t, len(f.Superseded), 2)
 	assert.Equal(t, f.Superseded[1].Daemon, "B")
 }

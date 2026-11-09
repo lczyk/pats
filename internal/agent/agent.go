@@ -95,7 +95,7 @@ var RequiredHosts = map[string][]string{
 func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, error) {
 	cmd, ok := HarnessCmds[a.Harness]
 	if !ok {
-		return sandbox.Spec{}, fmt.Errorf("agent %q: unsupported harness %q", a.ID, a.Harness)
+		return sandbox.Spec{}, fmt.Errorf("agent %q: unsupported harness %q", a.Name, a.Harness)
 	}
 	return sandbox.Spec{Argv: []string{"sh", "-c", cmd}, Workdir: workdir, Env: env}, nil
 }
@@ -112,7 +112,7 @@ func Env(a config.Agent, promptFile, outputDir, runID string) map[string]string 
 		"PATS_EFFORT":        a.Effort,
 	}
 	if runID != "" {
-		env["PATS_RUN_ID"] = runID
+		env["PATS_RUN_NAME"] = runID
 	}
 	return env
 }

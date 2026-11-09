@@ -52,10 +52,10 @@ func TestPreflightBudgets(t *testing.T) {
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
-	cfg := parseCfg(t, "boxes: {kind: sandbox, items: {b: {image: x}}}\n"+
-		"agents: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {a: {sandbox: b}}}\n")
+	cfg := parseCfg(t, "boxes: {kind: sandbox, items: {bxx: {image: x}}}\n"+
+		"agents: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {axx: {sandbox: bxx}}}\n")
 	var out bytes.Buffer
-	require.NoError(t, Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "a"}}))
+	require.NoError(t, Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}}))
 	assert.That(t, box.start > preflightTimeout && box.start <= setupTimeout, "start budget %s", box.start)
 	assert.That(t, box.exec > 0 && box.exec <= preflightTimeout, "exec budget %s", box.exec)
 }

@@ -36,8 +36,8 @@ func ParseIn(root string, data []byte) (*Config, error) {
 	}
 	var errs errList
 	for i := 0; i < len(top.Content); i += 2 {
-		id, node := top.Content[i].Value, top.Content[i+1]
-		if err := c.loadVector(root, id, node); err != nil {
+		name, node := top.Content[i].Value, top.Content[i+1]
+		if err := c.loadVector(root, name, node); err != nil {
 			errs.errs = append(errs.errs, err)
 		}
 	}
@@ -51,42 +51,42 @@ var vectorKeys = map[string]bool{"kind": true, "defaults": true, "items": true, 
 const taskFile = "task.yaml"
 
 // loadVector decodes one top-level entry and appends its items to c.
-func (c *Config) loadVector(root, id string, node *yaml.Node) error {
+func (c *Config) loadVector(root, name string, node *yaml.Node) error {
 	var errs errList
-	fields, err := mappingOf(node, "vector "+id)
+	fields, err := mappingOf(node, "vector "+name)
 	if err != nil {
 		return err
 	}
 	for k, v := range fields {
 		if !vectorKeys[k] {
-			errs.add("line %d: vector %q: unknown key %q (kind, defaults, items, dir)", v.Line, id, k)
+			errs.add("line %d: vector %q: unknown key %q (kind, defaults, items, dir)", v.Line, name, k)
 		}
 	}
 	kindNode, ok := fields["kind"]
 	if !ok {
-		return fmt.Errorf("line %d: vector %q: missing kind (%s)", node.Line, id, strings.Join(Kinds, "|"))
+		return fmt.Errorf("line %d: vector %q: missing kind (%s)", node.Line, name, strings.Join(Kinds, "|"))
 	}
 	kind := kindNode.Value
 	proto := prototype(kind)
 	if proto == nil {
-		return fmt.Errorf("line %d: vector %q: unknown kind %q (%s)", kindNode.Line, id, kind, strings.Join(Kinds, "|"))
+		return fmt.Errorf("line %d: vector %q: unknown kind %q (%s)", kindNode.Line, name, kind, strings.Join(Kinds, "|"))
 	}
 
 	if dirNode, ok := fields["dir"]; ok {
 		if kind != "task" {
-			errs.add("line %d: vector %q: dir is only supported on task vectors", dirNode.Line, id)
+			errs.add("line %d: vector %q: dir is only supported on task vectors", dirNode.Line, name)
 			return errs.err()
 		}
 		for _, k := range []string{"items", "defaults"} {
 			if v, ok := fields[k]; ok {
-				errs.add("line %d: vector %q: %s and dir are mutually exclusive -- a task in a directory is configured by its own %s", v.Line, id, k, taskFile)
+				errs.add("line %d: vector %q: %s and dir are mutually exclusive -- a task in a directory is configured by its own %s", v.Line, name, k, taskFile)
 			}
 		}
 		if m := templateVar.FindStringSubmatch(dirNode.Value); m != nil {
-			errs.add("line %d: vector %q: dir: ${%s}: pats.yaml is not templated", dirNode.Line, id, m[1])
+			errs.add("line %d: vector %q: dir: ${%s}: pats.yaml is not templated", dirNode.Line, name, m[1])
 			return errs.err()
 		}
-		if err := c.loadDir(root, id, dirNode); err != nil {
+		if err := c.loadDir(root, name, dirNode); err != nil {
 			errs.errs = append(errs.errs, err)
 		}
 		return errs.err()
@@ -95,7 +95,7 @@ func (c *Config) loadVector(root, id string, node *yaml.Node) error {
 	known := yamlKeys(reflect.TypeOf(proto).Elem())
 	defaults := map[string]*yaml.Node{}
 	if d, ok := fields["defaults"]; ok && !isNull(d) {
-		what := fmt.Sprintf("vector %q defaults", id)
+		what := fmt.Sprintf("vector %q defaults", name)
 		defaults, err = fieldsOf(d, known, what)
 		if err == nil {
 			err = checkSlots(defaults, kind, what)
@@ -115,19 +115,19 @@ func (c *Config) loadVector(root, id string, node *yaml.Node) error {
 
 	itemsNode, ok := fields["items"]
 	if !ok || isNull(itemsNode) {
-		errs.add("line %d: vector %q: items or dir is required", node.Line, id)
+		errs.add("line %d: vector %q: items or dir is required", node.Line, name)
 		return errs.err()
 	}
-	items, err := mappingOf(itemsNode, fmt.Sprintf("vector %q items", id))
+	items, err := mappingOf(itemsNode, fmt.Sprintf("vector %q items", name))
 	if err != nil {
 		errs.errs = append(errs.errs, err)
 		return errs.err()
 	}
 	if len(items) == 0 {
-		errs.add("line %d: vector %q: items is empty", itemsNode.Line, id)
+		errs.add("line %d: vector %q: items is empty", itemsNode.Line, name)
 	}
-	for _, itemID := range orderedKeys(itemsNode) {
-		if err := c.loadItem(kind, id, itemID, "", items[itemID], defaults); err != nil {
+	for _, itemName := range orderedKeys(itemsNode) {
+		if err := c.loadItem(kind, name, itemName, "", items[itemName], defaults); err != nil {
 			errs.errs = append(errs.errs, err)
 		}
 	}
@@ -136,10 +136,10 @@ func (c *Config) loadVector(root, id string, node *yaml.Node) error {
 
 // loadItem decodes one item node, merges it over defaults, checks it holds no
 // placeholder and appends it to c. dir is where it was defined, relative to the pats root.
-func (c *Config) loadItem(kind, vector, id, dir string, node *yaml.Node, defaults map[string]*yaml.Node) error {
+func (c *Config) loadItem(kind, vector, name, dir string, node *yaml.Node, defaults map[string]*yaml.Node) error {
 	proto := prototype(kind)
 	known := yamlKeys(reflect.TypeOf(proto).Elem())
-	what := fmt.Sprintf("%s %q", kind, id)
+	what := fmt.Sprintf("%s %q", kind, name)
 	own := map[string]*yaml.Node{}
 	if !isNull(node) {
 		var err error
@@ -157,12 +157,12 @@ func (c *Config) loadItem(kind, vector, id, dir string, node *yaml.Node, default
 	if err := checkTemplates(item, kind); err != nil {
 		return fmt.Errorf("line %d: %s: %w", node.Line, what, err)
 	}
-	c.append(kind, id, vector, dir, item)
+	c.append(kind, name, vector, dir, item)
 	return nil
 }
 
 // loadDir reads a task vector's `dir`: every directory under it holding a
-// task.yaml is one task, its id the directory's name, in lexical path order.
+// task.yaml is one task, its name the directory's name, in lexical path order.
 // directories starting with "." are skipped; a task.yaml below another
 // task's directory is an error.
 func (c *Config) loadDir(root, vector string, dirNode *yaml.Node) error {
@@ -252,26 +252,26 @@ func prototype(kind string) any {
 	return nil
 }
 
-// append stores a merged item under its kind, stamping id, vector and dir.
-func (c *Config) append(kind, id, vector, dir string, item any) {
+// append stores a merged item under its kind, stamping name, vector and dir.
+func (c *Config) append(kind, name, vector, dir string, item any) {
 	switch v := item.(type) {
 	case *Sandbox:
-		v.ID, v.Vector = id, vector
+		v.Name, v.Vector = name, vector
 		if v.Driver == "" {
 			v.Driver = "docker"
 		}
 		c.Sandboxes = append(c.Sandboxes, *v)
 	case *Agent:
-		v.ID, v.Vector = id, vector
+		v.Name, v.Vector = name, vector
 		c.Agents = append(c.Agents, *v)
 	case *Task:
-		v.ID, v.Vector, v.Dir = id, vector, dir
+		v.Name, v.Vector, v.Dir = name, vector, dir
 		c.Tasks = append(c.Tasks, *v)
 	case *Scorer:
-		v.ID, v.Vector, v.Dir = id, vector, dir
+		v.Name, v.Vector, v.Dir = name, vector, dir
 		c.Scorers = append(c.Scorers, *v)
 	case *Suite:
-		v.ID, v.Vector = id, vector
+		v.Name, v.Vector = name, vector
 		c.Suites = append(c.Suites, *v)
 	}
 }
@@ -493,11 +493,11 @@ func templateEnv(name, kind string) string {
 	}
 	switch name {
 	case "task":
-		return "PATS_TASK_ID"
+		return "PATS_TASK_NAME"
 	case "agent":
-		return "PATS_AGENT_ID"
+		return "PATS_AGENT_NAME"
 	case "scorer":
-		return "PATS_SCORER_ID"
+		return "PATS_SCORER_NAME"
 	case "vector":
 		switch kind {
 		case "task":
@@ -532,7 +532,7 @@ func checkTemplates(item any, kind string) error {
 				}
 				seen[m[1]] = true
 				if env := templateEnv(m[1], kind); env != "" {
-					errs.add("${%s}: pats.yaml is not templated; a step reads the id from $%s", m[1], env)
+					errs.add("${%s}: pats.yaml is not templated; a step reads the name from $%s", m[1], env)
 				} else {
 					errs.add("${%s}: pats.yaml is not templated, and no step env var carries it", m[1])
 				}

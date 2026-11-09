@@ -73,7 +73,7 @@ func TestLXDImageBuild(t *testing.T) {
 		var out bytes.Buffer
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
-		logPath := filepath.Join(t.TempDir(), "init", sb.ID+".log")
+		logPath := filepath.Join(t.TempDir(), "init", sb.Name+".log")
 		_, layers, built, upstream, err := lxdImage(context.Background(), h, sb, Options{ConfigDir: dir, Out: &out, Verbose: 1}, logPath, false)
 		b, _ := os.ReadFile(logPath)
 		lastUpstream = upstream
@@ -81,7 +81,7 @@ func TestLXDImageBuild(t *testing.T) {
 	}
 
 	t.Run("the pats sandbox, then the provision", func(t *testing.T) {
-		calls, layers, out, log, built, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Provision: "provision.sh"}, false)
+		calls, layers, out, log, built, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Provision: "provision.sh"}, false)
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 2)
 		assert.EqualArrays(t, layers, []string{"fp-1"})
@@ -101,7 +101,7 @@ func TestLXDImageBuild(t *testing.T) {
 		assert.ContainsString(t, log, "build output of pats-img-1")
 	})
 	t.Run("a base of its own", func(t *testing.T) {
-		calls, layers, _, _, built, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Base: "ubuntu:24.04"}, false)
+		calls, layers, _, _, built, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Base: "ubuntu:24.04"}, false)
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 1)
 		assert.Len(t, layers, 0)
@@ -110,14 +110,14 @@ func TestLXDImageBuild(t *testing.T) {
 		assert.That(t, built, "built is false")
 	})
 	t.Run("a failed build", func(t *testing.T) {
-		_, _, _, _, _, err := run(t, config.Sandbox{ID: "box", Driver: "lxd", Provision: "provision.sh"}, true)
+		_, _, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Provision: "provision.sh"}, true)
 		require.Error(t, err, "provisioning exited 1")
 		assert.ContainsString(t, err.Error(), "build output of pats-img-1")
 		assert.ContainsString(t, err.Error(), "(full log: ")
 		assert.ContainsString(t, err.Error(), filepath.Join("init", "box.log"))
 	})
 	t.Run("the pats sandbox alone", func(t *testing.T) {
-		calls, layers, _, _, _, err := run(t, config.Sandbox{ID: "box", Driver: "lxd"}, false)
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd"}, false)
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 1) // no empty project layer on top
 		assert.Len(t, layers, 0)

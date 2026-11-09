@@ -36,11 +36,11 @@ func parseT(t *testing.T, src string) *Config {
 
 // base is a minimal valid config the error cases below extend.
 const base = `
-s: {kind: sandbox, items: {s: {image: img}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p.txt}}}
-sc: {kind: scorer, items: {sc: {score: ./sc.py}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t, scorers: sc}}}
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p.txt}}}
+scx: {kind: scorer, items: {scx: {score: ./sc.py}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx, scorers: scx}}}
 `
 
 func TestParseVectors(t *testing.T) {
@@ -63,7 +63,7 @@ misc:
 	bp, curl, help := c.Tasks[0], c.Tasks[1], c.Tasks[2]
 
 	// file order, vector stamped.
-	assert.Equal(t, bp.ID, "base-passwd")
+	assert.Equal(t, bp.Name, "base-passwd")
 	assert.Equal(t, bp.Vector, "slicer")
 	assert.Equal(t, help.Vector, "misc")
 
@@ -88,7 +88,7 @@ misc:
 // on any key clears it. a step is one key, merged like any other.
 func TestParseSlotsMergeAsUnits(t *testing.T) {
 	c := parseT(t, `
-v:
+vxx:
   kind: task
   defaults:
     prompt-file: p.txt
@@ -100,7 +100,7 @@ v:
     inline:
       prompt: literal
       stage: |
-        echo hi "$PATS_TASK_ID"
+        echo hi "$PATS_TASK_NAME"
     cleared:
       collect: ~
       prompt-cmd: ~
@@ -112,7 +112,7 @@ v:
 
 	assert.Equal(t, inline.Prompt, "literal")
 	assert.Equal(t, inline.PromptFile, "")
-	assert.Equal(t, inline.Stage, "echo hi \"$PATS_TASK_ID\"\n")
+	assert.Equal(t, inline.Stage, "echo hi \"$PATS_TASK_NAME\"\n")
 
 	assert.Equal(t, cleared.Collect, "")
 	assert.Equal(t, cleared.Stage, "./prep.sh")
@@ -123,7 +123,7 @@ v:
 // are content, not templates.
 func TestParseEnvMergesPerKey(t *testing.T) {
 	c := parseT(t, `
-v:
+vxx:
   kind: task
   defaults:
     prompt: p
@@ -131,14 +131,14 @@ v:
       MODE: knockout
       KEEP: "1"
   items:
-    a:
+    axx:
       env:
         BRANCH: ubuntu-26.04
         KEEP: ~
-    b:
+    bxx:
       env:
         MODE: denovo
-        RAW: $PATS_TASK_ID
+        RAW: $PATS_TASK_NAME
 `)
 	a, b := c.Tasks[0], c.Tasks[1]
 	assert.Equal(t, len(a.Env), 2)
@@ -146,16 +146,16 @@ v:
 	assert.Equal(t, a.Env["BRANCH"], "ubuntu-26.04")
 	assert.Equal(t, b.Env["MODE"], "denovo")
 	assert.Equal(t, b.Env["KEEP"], "1")
-	assert.Equal(t, b.Env["RAW"], "$PATS_TASK_ID")
+	assert.Equal(t, b.Env["RAW"], "$PATS_TASK_NAME")
 }
 
 func TestParseSandboxDriverDefault(t *testing.T) {
 	c := parseT(t, `
-s:
+sxx:
   kind: sandbox
   items:
-    d: {image: img}
-    p: {driver: podman, image: img}
+    dxx: {image: img}
+    pxx: {driver: podman, image: img}
 `)
 	assert.Equal(t, c.Sandboxes[0].Driver, "docker")
 	assert.Equal(t, c.Sandboxes[1].Driver, "podman")
@@ -166,7 +166,7 @@ func TestParseDefaultsViaAnchors(t *testing.T) {
 	c := parseT(t, `
 sdf:
   kind: scorer
-  defaults: &py {score: "scorers/scorer_$PATS_SCORER_ID.py"}
+  defaults: &py {score: "scorers/scorer_$PATS_SCORER_NAME.py"}
   items: {one: ~, two: ~}
 transcript:
   kind: scorer
@@ -175,13 +175,13 @@ transcript:
 misc:
   kind: task
   defaults: &td {prompt-file: p.txt, collect: ./c.sh}
-  items: {x: ~}
+  items: {xxx: ~}
 misc2:
   kind: task
   defaults: {<<: *td, collect: ~, timeout: 5m}
-  items: {y: ~, z: {collect: ./z.sh}}
+  items: {yxx: ~, zxx: {collect: ./z.sh}}
 `)
-	assert.Equal(t, c.Scorers[2].Score, "scorers/scorer_$PATS_SCORER_ID.py")
+	assert.Equal(t, c.Scorers[2].Score, "scorers/scorer_$PATS_SCORER_NAME.py")
 	assert.Equal(t, c.Scorers[2].Vector, "transcript")
 	y, z := c.Tasks[1], c.Tasks[2]
 	assert.Equal(t, y.PromptFile, "p.txt")
@@ -194,16 +194,16 @@ func TestParseSuiteDefaults(t *testing.T) {
 	c := parseT(t, `
 suites:
   kind: suite
-  defaults: {agents: all, scorers: [x, y]}
+  defaults: {agents: all, scorers: [xxx, yxx]}
   items:
-    one: {tasks: t1}
-    two: {tasks: [t2, t3], scorers: z}
+    one: {tasks: t1x}
+    two: {tasks: [t2x, t3x], scorers: zxx}
 `)
 	assert.EqualArrays(t, []string(c.Suites[0].Agents), []string{"all"})
-	assert.EqualArrays(t, []string(c.Suites[0].Tasks), []string{"t1"})
-	assert.EqualArrays(t, []string(c.Suites[0].Scorers), []string{"x", "y"})
-	assert.EqualArrays(t, []string(c.Suites[1].Tasks), []string{"t2", "t3"})
-	assert.EqualArrays(t, []string(c.Suites[1].Scorers), []string{"z"})
+	assert.EqualArrays(t, []string(c.Suites[0].Tasks), []string{"t1x"})
+	assert.EqualArrays(t, []string(c.Suites[0].Scorers), []string{"xxx", "yxx"})
+	assert.EqualArrays(t, []string(c.Suites[1].Tasks), []string{"t2x", "t3x"})
+	assert.EqualArrays(t, []string(c.Suites[1].Scorers), []string{"zxx"})
 }
 
 func TestParseErrors(t *testing.T) {
@@ -211,32 +211,32 @@ func TestParseErrors(t *testing.T) {
 		name, src, want string
 	}{
 		{"top level not a mapping", "- a\n", "top level must be a mapping"},
-		{"vector not a mapping", "x: [1]\n", "vector x: must be a mapping"},
-		{"missing kind", "x: {items: {a: ~}}\n", "vector \"x\": missing kind"},
-		{"unknown kind", "x: {kind: tasks, items: {a: ~}}\n", "unknown kind \"tasks\""},
-		{"unknown vector key", "x: {kind: task, item: {a:}}\n", "unknown key \"item\""},
-		{"missing items", "x: {kind: task, defaults: {prompt: p}}\n", "items or dir is required"},
-		{"empty items", "x: {kind: task, items: {}}\n", "items is empty"},
-		{"items not a mapping", "x: {kind: task, items: [a, b]}\n", "items: must be a mapping"},
-		{"item not a mapping", "x: {kind: task, items: {a: [1]}}\n", "task \"a\": must be a mapping"},
-		{"unknown field on item", "x: {kind: task, items: {a: {bogus: 1}}}\n", "task \"a\": unknown field \"bogus\""},
-		{"unknown field in defaults", "x: {kind: agent, defaults: {kind: claude-cli-keyless}, items: {a: ~}}\n", "defaults: unknown field \"kind\""},
-		{"a template in a path", "x: {kind: task, items: {a: {prompt-file: \"p/${task}.txt\"}}}\n", "${task}: pats.yaml is not templated; a step reads the id from $PATS_TASK_ID"},
-		{"a template in a script", "x: {kind: scorer, items: {a: {score: \"p/${scorer}.py\"}}}\n", "${scorer}: pats.yaml is not templated; a step reads the id from $PATS_SCORER_ID"},
-		{"a vector template in a task", "x: {kind: task, defaults: {prompt-cmd: \"cat ${vector}.txt\"}, items: {a: ~}}\n", "a step reads the id from $PATS_TASK_VECTOR"},
-		{"a template in env", "x: {kind: task, items: {a: {prompt: p, env: {X: \"${agent}\"}}}}\n", "${agent}: pats.yaml is not templated"},
-		{"a template in egress", "x: {kind: task, items: {a: {prompt: p, egress: {allow: [\"${task}.example.com\"]}}}}\n", "${task}: pats.yaml is not templated"},
-		{"a template on a sandbox", "x: {kind: sandbox, items: {s: {image: \"img-${sandbox}\"}}}\n", "${sandbox}: pats.yaml is not templated, and no step env var carries it"},
-		{"a vector template on an agent", "x: {kind: agent, items: {a: {sandbox: \"${vector}\"}}}\n", "${vector}: pats.yaml is not templated, and no step env var carries it"},
-		{"a template in defaults every item overrides", "x: {kind: task, defaults: {prompt-file: \"p/${task}.txt\"}, items: {a: {prompt: hello}}}\n", "defaults: ${task}: pats.yaml is not templated"},
-		{"a template in a dir", "x: {kind: task, dir: \"cases/${vector}\"}\n", "dir: ${vector}: pats.yaml is not templated"},
-		{"stage-cmd is gone", "x: {kind: task, items: {a: {prompt: p, stage-cmd: ./s.sh}}}\n", "stage-cmd is gone: use stage, a shell script"},
-		{"score-cmd is gone, in defaults", "x: {kind: scorer, defaults: {score-cmd: ./s.py}, items: {a: ~}}\n", "score-cmd is gone: use score"},
-		{"provision-cmd is gone", "x: {kind: sandbox, items: {s: {provision-cmd: ./p.sh}}}\n", "provision-cmd is gone: use provision"},
-		{"two keys of one slot", "x: {kind: task, items: {a: {prompt: p, prompt-file: f}}}\n", "prompt, prompt-file are mutually exclusive"},
-		{"two keys of one slot in defaults", "x: {kind: task, defaults: {prompt: a, prompt-cmd: b}, items: {a: ~}}\n", "prompt, prompt-cmd are mutually exclusive"},
-		{"agent-id is renamed agent", "x: {kind: scorer, items: {a: {agent-id: j}}}\n", "unknown field \"agent-id\""},
-		{"dir on a scorer vector", "x: {kind: scorer, dir: scorers}\n", "dir is only supported on task vectors"},
+		{"vector not a mapping", "xxx: [1]\n", "vector xxx: must be a mapping"},
+		{"missing kind", "xxx: {items: {axx: ~}}\n", "vector \"xxx\": missing kind"},
+		{"unknown kind", "xxx: {kind: tasks, items: {axx: ~}}\n", "unknown kind \"tasks\""},
+		{"unknown vector key", "xxx: {kind: task, item: {axx:}}\n", "unknown key \"item\""},
+		{"missing items", "xxx: {kind: task, defaults: {prompt: p}}\n", "items or dir is required"},
+		{"empty items", "xxx: {kind: task, items: {}}\n", "items is empty"},
+		{"items not a mapping", "xxx: {kind: task, items: [axx, bxx]}\n", "items: must be a mapping"},
+		{"item not a mapping", "xxx: {kind: task, items: {axx: [1]}}\n", "task \"axx\": must be a mapping"},
+		{"unknown field on item", "xxx: {kind: task, items: {axx: {bogus: 1}}}\n", "task \"axx\": unknown field \"bogus\""},
+		{"unknown field in defaults", "xxx: {kind: agent, defaults: {kind: claude-cli-keyless}, items: {axx: ~}}\n", "defaults: unknown field \"kind\""},
+		{"a template in a path", "xxx: {kind: task, items: {axx: {prompt-file: \"p/${task}.txt\"}}}\n", "${task}: pats.yaml is not templated; a step reads the name from $PATS_TASK_NAME"},
+		{"a template in a script", "xxx: {kind: scorer, items: {axx: {score: \"p/${scorer}.py\"}}}\n", "${scorer}: pats.yaml is not templated; a step reads the name from $PATS_SCORER_NAME"},
+		{"a vector template in a task", "xxx: {kind: task, defaults: {prompt-cmd: \"cat ${vector}.txt\"}, items: {axx: ~}}\n", "a step reads the name from $PATS_TASK_VECTOR"},
+		{"a template in env", "xxx: {kind: task, items: {axx: {prompt: p, env: {X: \"${agent}\"}}}}\n", "${agent}: pats.yaml is not templated"},
+		{"a template in egress", "xxx: {kind: task, items: {axx: {prompt: p, egress: {allow: [\"${task}.example.com\"]}}}}\n", "${task}: pats.yaml is not templated"},
+		{"a template on a sandbox", "xxx: {kind: sandbox, items: {sxx: {image: \"img-${sandbox}\"}}}\n", "${sandbox}: pats.yaml is not templated, and no step env var carries it"},
+		{"a vector template on an agent", "xxx: {kind: agent, items: {axx: {sandbox: \"${vector}\"}}}\n", "${vector}: pats.yaml is not templated, and no step env var carries it"},
+		{"a template in defaults every item overrides", "xxx: {kind: task, defaults: {prompt-file: \"p/${task}.txt\"}, items: {axx: {prompt: hello}}}\n", "defaults: ${task}: pats.yaml is not templated"},
+		{"a template in a dir", "xxx: {kind: task, dir: \"cases/${vector}\"}\n", "dir: ${vector}: pats.yaml is not templated"},
+		{"stage-cmd is gone", "xxx: {kind: task, items: {axx: {prompt: p, stage-cmd: ./s.sh}}}\n", "stage-cmd is gone: use stage, a shell script"},
+		{"score-cmd is gone, in defaults", "xxx: {kind: scorer, defaults: {score-cmd: ./s.py}, items: {axx: ~}}\n", "score-cmd is gone: use score"},
+		{"provision-cmd is gone", "xxx: {kind: sandbox, items: {sxx: {provision-cmd: ./p.sh}}}\n", "provision-cmd is gone: use provision"},
+		{"two keys of one slot", "xxx: {kind: task, items: {axx: {prompt: p, prompt-file: f}}}\n", "prompt, prompt-file are mutually exclusive"},
+		{"two keys of one slot in defaults", "xxx: {kind: task, defaults: {prompt: a, prompt-cmd: b}, items: {axx: ~}}\n", "prompt, prompt-cmd are mutually exclusive"},
+		{"agent-id is renamed agent", "xxx: {kind: scorer, items: {axx: {agent-id: j}}}\n", "unknown field \"agent-id\""},
+		{"dir on a scorer vector", "xxx: {kind: scorer, dir: scorers}\n", "dir is only supported on task vectors"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,7 +248,7 @@ func TestParseErrors(t *testing.T) {
 
 // structural errors carry the line they came from.
 func TestParseErrorLine(t *testing.T) {
-	_, err := Parse([]byte("x:\n  kind: task\n  items:\n    a:\n      bogus: 1\n"))
+	_, err := Parse([]byte("xxx:\n  kind: task\n  items:\n    axx:\n      bogus: 1\n"))
 	assert.Error(t, err, "line 5:")
 }
 
@@ -256,67 +256,67 @@ func TestValidateErrors(t *testing.T) {
 	cases := []struct {
 		name, src, want string
 	}{
-		{"unknown harness", base + "b: {kind: agent, items: {b: {harness: bogus, model: m}}}\n", "unknown harness \"bogus\""},
-		{"missing harness", base + "b: {kind: agent, items: {b: {model: m}}}\n", "missing harness"},
-		{"agent missing model", base + "b: {kind: agent, items: {b: {harness: opencode-openrouter}}}\n", "model is required"},
-		{"agent missing sandbox, many defined", base + "s2: {kind: sandbox, items: {s2: {image: img}}}\nb: {kind: agent, items: {b: {harness: claude-cli-keyless, model: m}}}\n", "no sandbox set"},
-		{"agent sandbox names a vector of two", base + "boxes: {kind: sandbox, items: {b1: {image: i}, b2: {image: i}}}\nb: {kind: agent, items: {b: {harness: claude-cli-keyless, model: m, sandbox: boxes}}}\n", "names 2 items"},
-		{"agent unknown sandbox", base + "b: {kind: agent, items: {b: {harness: claude-cli-keyless, model: m, sandbox: ghost}}}\n", "unknown sandbox \"ghost\""},
-		{"effort on an unknown harness", base + "b: {kind: agent, items: {b: {harness: bogus, model: m, effort: high}}}\n", "effort is not supported"},
-		{"max-cost on a harness without live cost", base + "b: {kind: agent, items: {b: {harness: claude-cli-keyless, model: m, max-cost: 2}}}\n", "max-cost needs a harness that reports cost as it runs"},
-		{"env a shell will not set", base + "s2: {kind: sandbox, items: {s2: {image: img, env: {UID: '1'}}}}\n", "read-only in a shell"},
-		{"max-cost zero", base + "b: {kind: agent, items: {b: {harness: opencode-openrouter, model: m, max-cost: 0}}}\n", "is not a cost cap"},
-		{"max-cost negative", base + "b: {kind: agent, items: {b: {harness: opencode-openrouter, model: m, max-cost: -1}}}\n", "is not a cost cap"},
-		{"image and build", "s: {kind: sandbox, items: {s: {image: img, build: .}}}\n", "mutually exclusive"},
-		{"bwrap not implemented", "s: {kind: sandbox, items: {s: {driver: bwrap}}}\n", "bwrap driver not implemented"},
-		{"unknown driver", "s: {kind: sandbox, items: {s: {driver: lxc, image: i}}}\n", "unknown driver \"lxc\""},
-		{"scorer needs a source", "x: {kind: scorer, items: {x: {}}}\n", "needs score or agent"},
-		{"scorer with both", "x: {kind: scorer, items: {x: {score: ./s.py, agent: a, prompt: p}}}\n", "mutually exclusive"},
-		{"script scorer with prompt", "x: {kind: scorer, items: {x: {score: ./s.py, prompt: p}}}\n", "a prompt is an agent-scorer field"},
-		{"agent scorer not implemented", "x: {kind: scorer, items: {x: {agent: ghost, prompt: p}}}\n", "agent scorers are not implemented"},
-		{"dangling scorer agent", "x: {kind: scorer, items: {x: {agent: ghost, prompt: p}}}\n", "unknown agent \"ghost\""},
-		{"agent scorer without prompt", "x: {kind: scorer, items: {x: {agent: ghost}}}\n", "needs one of prompt, prompt-file or prompt-cmd"},
-		{"task missing prompt", "x: {kind: task, items: {x: {}}}\n", "needs one of prompt, prompt-file or prompt-cmd"},
-		{"bad env name", "x: {kind: task, items: {x: {prompt: p, env: {1BAD: v}}}}\n", "not a valid variable name"},
-		{"env in the PATS_ namespace", "x: {kind: task, items: {x: {prompt: p, env: {PATS_TASK_ID: v}}}}\n", "PATS_* is reserved"},
-		{"env PATH", "x: {kind: task, items: {x: {prompt: p, env: {PATH: /x}}}}\n", "PATH is set by pats"},
-		{"bad timeout", "x: {kind: task, items: {x: {prompt: p, timeout: soon}}}\n", "bad timeout"},
-		{"egress wildcard host", "s: {kind: sandbox, items: {s: {image: img, egress: {deny: [\"*/chisel-releases*\"]}}}}\n", "literal hostname"},
-		{"egress bad default", "s: {kind: sandbox, items: {s: {image: img, egress: {default: maybe}}}}\n", "want deny or allow"},
-		{"egress bad deny-response", "s: {kind: sandbox, items: {s: {image: img, egress: {deny-response: 500}}}}\n", "want 403, 404, reset or timeout"},
-		{"egress bad regexp", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: ['a.test ~(']}}}}\n", "regexp"},
-		{"egress empty methods", "s: {kind: sandbox, items: {s: {image: img, egress: {methods: []}}}}\n", "an empty list would refuse every request"},
-		{"egress bad method", "s: {kind: sandbox, items: {s: {image: img, egress: {methods: [get]}}}}\n", "not an upper-case http method"},
-		{"egress harness set by hand", "s: {kind: sandbox, items: {s: {image: img, egress: {harness: [x.test]}}}}\n", "harness is set by pats"},
-		{"egress method on a bare host", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: ['GET a.test']}}}}\n", "a method needs a url entry"},
-		{"egress dead allow under default allow", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, allow: [good.com]}}}}\n", "is dead under default: allow"},
-		{"egress image under bwrap", "s: {kind: sandbox, items: {s: {driver: bwrap, egress: {image: p}}}}\n", "needs a container driver"},
-		{"sandbox env bad name", "s: {kind: sandbox, items: {s: {image: img, env: {1X: v}}}}\n", "not a valid variable name"},
-		{"sandbox env PATS_", "s: {kind: sandbox, items: {s: {image: img, env: {PATS_X: v}}}}\n", "PATS_* is reserved"},
-		{"sandbox env HOME", "s: {kind: sandbox, items: {s: {image: img, env: {HOME: /x}}}}\n", "env HOME is set by pats"},
-		{"task egress bad entry", "s: {kind: sandbox, items: {s: {image: img, egress: {}}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p, egress: {deny: ['*/x']}}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n", "literal hostname"},
-		{"task egress under an open sandbox", base + "x: {kind: task, items: {x: {prompt: p, egress: {deny: ['a.test/x*']}}}}\nsu2: {kind: suite, items: {su2: {agents: a, tasks: x}}}\n", "whose egress is open"},
-		{"task egress dead under a denylist", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow}}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p, egress: {allow: [pypi.org]}}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n", "is dead under sandbox"},
-		{"egress none under an agent", "s: {kind: sandbox, items: {s: {image: img, egress: none}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n", "needs the network"},
-		{"duplicate id within a suite axis", base + "su2: {kind: suite, items: {su2: {agents: [a, a], tasks: t}}}\n", "duplicate agent \"a\" in agents"},
-		{"duplicate after vector expansion", base + "su2: {kind: suite, items: {su2: {agents: [a, a], tasks: t}}}\n", "duplicate agent"},
-		{"unknown axis ref", base + "su2: {kind: suite, items: {su2: {agents: a, tasks: ghost}}}\n", "unknown task \"ghost\" in tasks"},
-		{"axis ref of the wrong kind", base + "su2: {kind: suite, items: {su2: {agents: t, tasks: t}}}\n", "unknown agent \"t\""},
-		{"suite missing agents", base + "su2: {kind: suite, items: {su2: {tasks: t}}}\n", "agents is required"},
-		{"suite missing tasks", base + "su2: {kind: suite, items: {su2: {agents: a}}}\n", "tasks is required"},
-		{"duplicate item id across vectors", base + "t2: {kind: task, items: {t: {prompt: p}}}\n", "duplicate task id: t"},
-		{"vector id shadows an item of its kind", base + "t2: {kind: task, items: {x: {prompt: p}, y: {prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: a, tasks: t2}}}\nt3: {kind: task, items: {t2: {prompt: p}}}\n", "share an id but name different things"},
-		{"slash in id", "x: {kind: task, items: {a/b: {prompt: p}}}\n", "may not contain"},
-		{"orphaned task", base + "t2: {kind: task, items: {forgotten: {prompt: p}}}\n", "task \"forgotten\" is in no suite"},
+		{"unknown harness", base + "bxx: {kind: agent, items: {bxx: {harness: bogus, model: m}}}\n", "unknown harness \"bogus\""},
+		{"missing harness", base + "bxx: {kind: agent, items: {bxx: {model: m}}}\n", "missing harness"},
+		{"agent missing model", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter}}}\n", "model is required"},
+		{"agent missing sandbox, many defined", base + "s2x: {kind: sandbox, items: {s2x: {image: img}}}\nbxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m}}}\n", "no sandbox set"},
+		{"agent sandbox names a vector of two", base + "boxes: {kind: sandbox, items: {b1x: {image: i}, b2x: {image: i}}}\nbxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: boxes}}}\n", "names 2 items"},
+		{"agent unknown sandbox", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: ghost}}}\n", "unknown sandbox \"ghost\""},
+		{"effort on an unknown harness", base + "bxx: {kind: agent, items: {bxx: {harness: bogus, model: m, effort: high}}}\n", "effort is not supported"},
+		{"max-cost on a harness without live cost", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, max-cost: 2}}}\n", "max-cost needs a harness that reports cost as it runs"},
+		{"env a shell will not set", base + "s2x: {kind: sandbox, items: {s2x: {image: img, env: {UID: '1'}}}}\n", "read-only in a shell"},
+		{"max-cost zero", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: 0}}}\n", "is not a cost cap"},
+		{"max-cost negative", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: -1}}}\n", "is not a cost cap"},
+		{"image and build", "sxx: {kind: sandbox, items: {sxx: {image: img, build: .}}}\n", "mutually exclusive"},
+		{"bwrap not implemented", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap}}}\n", "bwrap driver not implemented"},
+		{"unknown driver", "sxx: {kind: sandbox, items: {sxx: {driver: lxc, image: i}}}\n", "unknown driver \"lxc\""},
+		{"scorer needs a source", "xxx: {kind: scorer, items: {xxx: {}}}\n", "needs score or agent"},
+		{"scorer with both", "xxx: {kind: scorer, items: {xxx: {score: ./s.py, agent: axx, prompt: p}}}\n", "mutually exclusive"},
+		{"script scorer with prompt", "xxx: {kind: scorer, items: {xxx: {score: ./s.py, prompt: p}}}\n", "a prompt is an agent-scorer field"},
+		{"agent scorer not implemented", "xxx: {kind: scorer, items: {xxx: {agent: ghost, prompt: p}}}\n", "agent scorers are not implemented"},
+		{"dangling scorer agent", "xxx: {kind: scorer, items: {xxx: {agent: ghost, prompt: p}}}\n", "unknown agent \"ghost\""},
+		{"agent scorer without prompt", "xxx: {kind: scorer, items: {xxx: {agent: ghost}}}\n", "needs one of prompt, prompt-file or prompt-cmd"},
+		{"task missing prompt", "xxx: {kind: task, items: {xxx: {}}}\n", "needs one of prompt, prompt-file or prompt-cmd"},
+		{"bad env name", "xxx: {kind: task, items: {xxx: {prompt: p, env: {1BAD: v}}}}\n", "not a valid variable name"},
+		{"env in the PATS_ namespace", "xxx: {kind: task, items: {xxx: {prompt: p, env: {PATS_TASK_NAME: v}}}}\n", "PATS_* is reserved"},
+		{"env PATH", "xxx: {kind: task, items: {xxx: {prompt: p, env: {PATH: /x}}}}\n", "PATH is set by pats"},
+		{"bad timeout", "xxx: {kind: task, items: {xxx: {prompt: p, timeout: soon}}}\n", "bad timeout"},
+		{"egress wildcard host", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny: [\"*/chisel-releases*\"]}}}}\n", "literal hostname"},
+		{"egress bad default", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {default: maybe}}}}\n", "want deny or allow"},
+		{"egress bad deny-response", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-response: 500}}}}\n", "want 403, 404, reset or timeout"},
+		{"egress bad regexp", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: ['a.test ~(']}}}}\n", "regexp"},
+		{"egress empty methods", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {methods: []}}}}\n", "an empty list would refuse every request"},
+		{"egress bad method", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {methods: [get]}}}}\n", "not an upper-case http method"},
+		{"egress harness set by hand", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {harness: [x.test]}}}}\n", "harness is set by pats"},
+		{"egress method on a bare host", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: ['GET a.test']}}}}\n", "a method needs a url entry"},
+		{"egress dead allow under default allow", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {default: allow, allow: [good.com]}}}}\n", "is dead under default: allow"},
+		{"egress image under bwrap", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, egress: {image: p}}}}\n", "needs a container driver"},
+		{"sandbox env bad name", "sxx: {kind: sandbox, items: {sxx: {image: img, env: {1X: v}}}}\n", "not a valid variable name"},
+		{"sandbox env PATS_", "sxx: {kind: sandbox, items: {sxx: {image: img, env: {PATS_X: v}}}}\n", "PATS_* is reserved"},
+		{"sandbox env HOME", "sxx: {kind: sandbox, items: {sxx: {image: img, env: {HOME: /x}}}}\n", "env HOME is set by pats"},
+		{"task egress bad entry", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {}}}}\naxx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}}}\ntxx: {kind: task, items: {txx: {prompt: p, egress: {deny: ['*/x']}}}}\nsux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n", "literal hostname"},
+		{"task egress under an open sandbox", base + "xxx: {kind: task, items: {xxx: {prompt: p, egress: {deny: ['a.test/x*']}}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: xxx}}}\n", "whose egress is open"},
+		{"task egress dead under a denylist", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {default: allow}}}}\naxx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}}}\ntxx: {kind: task, items: {txx: {prompt: p, egress: {allow: [pypi.org]}}}}\nsux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n", "is dead under sandbox"},
+		{"egress none under an agent", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: none}}}\naxx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}}}\ntxx: {kind: task, items: {txx: {prompt: p}}}\nsux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n", "needs the network"},
+		{"duplicate id within a suite axis", base + "su2: {kind: suite, items: {su2: {agents: [axx, axx], tasks: txx}}}\n", "duplicate agent \"axx\" in agents"},
+		{"duplicate after vector expansion", base + "su2: {kind: suite, items: {su2: {agents: [axx, axx], tasks: txx}}}\n", "duplicate agent"},
+		{"unknown axis ref", base + "su2: {kind: suite, items: {su2: {agents: axx, tasks: ghost}}}\n", "unknown task \"ghost\" in tasks"},
+		{"axis ref of the wrong kind", base + "su2: {kind: suite, items: {su2: {agents: txx, tasks: txx}}}\n", "unknown agent \"txx\""},
+		{"suite missing agents", base + "su2: {kind: suite, items: {su2: {tasks: txx}}}\n", "agents is required"},
+		{"suite missing tasks", base + "su2: {kind: suite, items: {su2: {agents: axx}}}\n", "tasks is required"},
+		{"duplicate item name across vectors", base + "t2x: {kind: task, items: {txx: {prompt: p}}}\n", "duplicate task name: txx"},
+		{"vector name shadows an item of its kind", base + "t2x: {kind: task, items: {xxx: {prompt: p}, yxx: {prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: t2x}}}\nt3x: {kind: task, items: {t2x: {prompt: p}}}\n", "share a name but are different things"},
+		{"slash in name", "xxx: {kind: task, items: {a/b: {prompt: p}}}\n", "task \"a/b\" is not a name: lowercase letters, digits and single hyphens, a letter first, no hyphen last, at least 3 long"},
+		{"orphaned task", base + "t2x: {kind: task, items: {forgotten: {prompt: p}}}\n", "task \"forgotten\" is in no suite"},
 		{"orphaned scorer", base + "sc2: {kind: scorer, items: {lost: {score: ./s.py}}}\n", "scorer \"lost\" is in no suite"},
-		{"orphaned agent", base + "b: {kind: agent, items: {idle: {harness: opencode-openrouter, model: m}}}\n", "agent \"idle\" is in no suite"},
-		{"lxd key under docker", base + "d: {kind: sandbox, items: {d: {vm: true}}}\n", "vm is lxd-only"},
-		{"sudo under docker", base + "d: {kind: sandbox, items: {d: {sudo: true}}}\n", "sudo is lxd-only"},
-		{"image and base", base + "d: {kind: sandbox, items: {d: {image: i, base: ubuntu:26.04}}}\n", "image and base / provision are mutually exclusive"},
-		{"build under lxd", base + "lx: {kind: sandbox, items: {lx: {driver: lxd, build: .}}}\nla: {kind: agent, items: {la: {harness: opencode-openrouter, model: m, sandbox: lx}}}\nsu2: {kind: suite, items: {su2: {agents: la, tasks: t, scorers: sc}}}\n", "build is a dockerfile"},
-		{"raw config under lxd", base + "lx: {kind: sandbox, items: {lx: {driver: lxd, config: {raw.lxc: x}}}}\nla: {kind: agent, items: {la: {harness: opencode-openrouter, model: m, sandbox: lx}}}\nsu2: {kind: suite, items: {su2: {agents: la, tasks: t, scorers: sc}}}\n", "config raw.lxc is refused"},
-		{"bad size", base + "d: {kind: sandbox, items: {d: {limits: {memory: lots}}}}\n", "limits.memory \"lots\" is not a size"},
-		{"task sudo under docker", base + "t3: {kind: task, items: {t3: {prompt: p, sudo: true}}}\nsu3: {kind: suite, items: {su3: {agents: a, tasks: t3, scorers: sc}}}\n", "task \"t3\" sets sudo"},
+		{"orphaned agent", base + "bxx: {kind: agent, items: {idle: {harness: opencode-openrouter, model: m}}}\n", "agent \"idle\" is in no suite"},
+		{"lxd key under docker", base + "dxx: {kind: sandbox, items: {dxx: {vm: true}}}\n", "vm is lxd-only"},
+		{"sudo under docker", base + "dxx: {kind: sandbox, items: {dxx: {sudo: true}}}\n", "sudo is lxd-only"},
+		{"image and base", base + "dxx: {kind: sandbox, items: {dxx: {image: i, base: ubuntu:26.04}}}\n", "image and base / provision are mutually exclusive"},
+		{"build under lxd", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, build: .}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "build is a dockerfile"},
+		{"raw config under lxd", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, config: {raw.lxc: x}}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "config raw.lxc is refused"},
+		{"bad size", base + "dxx: {kind: sandbox, items: {dxx: {limits: {memory: lots}}}}\n", "limits.memory \"lots\" is not a size"},
+		{"task sudo under docker", base + "t3x: {kind: task, items: {t3x: {prompt: p, sudo: true}}}\nsu3: {kind: suite, items: {su3: {agents: axx, tasks: t3x, scorers: scx}}}\n", "task \"t3x\" sets sudo"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -328,14 +328,14 @@ func TestValidateErrors(t *testing.T) {
 
 // an lxd sandbox takes its own keys, and the driver-neutral ones.
 func TestValidateLXDSandbox(t *testing.T) {
-	c := parseT(t, base+`lx: {kind: sandbox, items: {lx: {driver: lxd, remote: armstrong, vm: true, base: ubuntu:26.04, provision: "echo hi", sudo: true, max-parallel: 2, limits: {cpu: 4, memory: 8GiB, disk: 20GiB}, profiles: [default], config: {security.nesting: "true"}}}}
-la: {kind: agent, items: {la: {harness: opencode-openrouter, model: m, sandbox: lx}}}
-su2: {kind: suite, items: {su2: {agents: la, tasks: t, scorers: sc}}}
+	c := parseT(t, base+`lxx: {kind: sandbox, items: {lxx: {driver: lxd, remote: armstrong, vm: true, base: ubuntu:26.04, provision: "echo hi", sudo: true, max-parallel: 2, limits: {cpu: 4, memory: 8GiB, disk: 20GiB}, profiles: [default], config: {security.nesting: "true"}}}}
+lax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}
+su2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}
 `)
 	require.NoError(t, c.Validate())
 	var lx Sandbox
 	for _, sb := range c.Sandboxes {
-		if sb.ID == "lx" {
+		if sb.Name == "lxx" {
 			lx = sb
 		}
 	}
@@ -347,23 +347,23 @@ su2: {kind: suite, items: {su2: {agents: la, tasks: t, scorers: sc}}}
 func TestValidateAccepts(t *testing.T) {
 	cases := []struct{ name, src string }{
 		{"base", base},
-		{"task and scorer share an id (different kinds)", base + "x: {kind: task, items: {same: {prompt: p}}}\nsc2: {kind: scorer, items: {same: {score: \"echo 1\"}}}\nsu2: {kind: suite, items: {su2: {agents: a, tasks: same, scorers: same}}}\n"},
-		{"singleton vector named after its item", base + "lone: {kind: task, items: {lone: {prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: a, tasks: lone}}}\n"},
-		{"sandbox via a vector of one", base + "b: {kind: agent, items: {b: {harness: claude-cli-keyless, model: m, sandbox: s}}}\nsu2: {kind: suite, items: {su2: {agents: b, tasks: t}}}\n"},
-		{"codex with effort", base + "b: {kind: agent, items: {b: {harness: codex-cli-keyless, model: m, effort: high}}}\nsu2: {kind: suite, items: {su2: {agents: b, tasks: t}}}\n"},
-		{"copilot with effort", base + "b: {kind: agent, items: {b: {harness: copilot-cli-keyless, model: m, effort: high}}}\nsu2: {kind: suite, items: {su2: {agents: b, tasks: t}}}\n"},
-		{"sandbox with neither image nor build (the published default)", "s: {kind: sandbox, items: {s: {driver: docker}}}\n"},
-		{"egress allowlist", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: [good.com, 'github.com:22', '10.0.0.5:5432']}}}}\n"},
-		{"egress denylist", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, deny: [evil.com]}}}}\n"},
-		{"egress url allow under default allow", "s: {kind: sandbox, items: {s: {image: img, egress: {default: allow, allow: ['a.test/public*']}}}}\n"},
-		{"egress url entries and a regexp", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: ['.githubusercontent.com/canonical/*', 'api.github.com ~^/repos/'], deny: ['github.com/*/x*']}}}}\n"},
-		{"task egress under a proxy sandbox", "s: {kind: sandbox, items: {s: {image: img, egress: {allow: [a.test]}}}}\na: {kind: agent, items: {a: {harness: opencode-openrouter, model: m}}}\nt: {kind: task, items: {t: {prompt: p, egress: {allow: [pypi.org], deny: ['github.com/*/answer*']}}}}\nsu: {kind: suite, items: {su: {agents: a, tasks: t}}}\n"},
-		{"egress image under podman", "s: {kind: sandbox, items: {s: {driver: podman, image: img, egress: {image: p}}}}\n"},
-		{"sandbox env", "s: {kind: sandbox, items: {s: {image: img, env: {DENO_CERT: /sbx-ca/bundle.pem}}}}\n"},
-		{"egress methods posture", "s: {kind: sandbox, items: {s: {image: img, egress: {methods: [GET, HEAD], allow: [a.test, 'POST a.test/graphql'], deny: ['PUT,PATCH a.test/*']}}}}\n"},
-		{"egress none with no agents", "s: {kind: sandbox, items: {s: {image: img, egress: none}}}\n"},
-		{"egress empty mapping is a proxy", "s: {kind: sandbox, items: {s: {image: img, egress: {}}}}\n"},
-		{"run-only suite", base + "su2: {kind: suite, items: {su2: {agents: a, tasks: t}}}\n"},
+		{"task and scorer share an id (different kinds)", base + "xxx: {kind: task, items: {same: {prompt: p}}}\nsc2: {kind: scorer, items: {same: {score: \"echo 1\"}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: same, scorers: same}}}\n"},
+		{"singleton vector named after its item", base + "lone: {kind: task, items: {lone: {prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: lone}}}\n"},
+		{"sandbox via a vector of one", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: sxx}}}\nsu2: {kind: suite, items: {su2: {agents: bxx, tasks: txx}}}\n"},
+		{"codex with effort", base + "bxx: {kind: agent, items: {bxx: {harness: codex-cli-keyless, model: m, effort: high}}}\nsu2: {kind: suite, items: {su2: {agents: bxx, tasks: txx}}}\n"},
+		{"copilot with effort", base + "bxx: {kind: agent, items: {bxx: {harness: copilot-cli-keyless, model: m, effort: high}}}\nsu2: {kind: suite, items: {su2: {agents: bxx, tasks: txx}}}\n"},
+		{"sandbox with neither image nor build (the published default)", "sxx: {kind: sandbox, items: {sxx: {driver: docker}}}\n"},
+		{"egress allowlist", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [good.com, 'github.com:22', '10.0.0.5:5432']}}}}\n"},
+		{"egress denylist", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {default: allow, deny: [evil.com]}}}}\n"},
+		{"egress url allow under default allow", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {default: allow, allow: ['a.test/public*']}}}}\n"},
+		{"egress url entries and a regexp", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: ['.githubusercontent.com/canonical/*', 'api.github.com ~^/repos/'], deny: ['github.com/*/x*']}}}}\n"},
+		{"task egress under a proxy sandbox", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [a.test]}}}}\naxx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}}}\ntxx: {kind: task, items: {txx: {prompt: p, egress: {allow: [pypi.org], deny: ['github.com/*/answer*']}}}}\nsux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n"},
+		{"egress image under podman", "sxx: {kind: sandbox, items: {sxx: {driver: podman, image: img, egress: {image: p}}}}\n"},
+		{"sandbox env", "sxx: {kind: sandbox, items: {sxx: {image: img, env: {DENO_CERT: /sbx-ca/bundle.pem}}}}\n"},
+		{"egress methods posture", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {methods: [GET, HEAD], allow: [a.test, 'POST a.test/graphql'], deny: ['PUT,PATCH a.test/*']}}}}\n"},
+		{"egress none with no agents", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: none}}}\n"},
+		{"egress empty mapping is a proxy", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {}}}}\n"},
+		{"run-only suite", base + "su2: {kind: suite, items: {su2: {agents: axx, tasks: txx}}}\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -376,28 +376,28 @@ func TestValidateAccepts(t *testing.T) {
 // an egress mapping's keys are checked by its own unmarshal (the loader's
 // unknown-field check stops at the item), and the only scalar is none.
 func TestEgressParseErrors(t *testing.T) {
-	_, err := Parse([]byte("s: {kind: sandbox, items: {s: {image: img, egress: {mode: proxy}}}}\n"))
+	_, err := Parse([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, egress: {mode: proxy}}}}\n"))
 	assert.Error(t, err, "egress: unknown field \"mode\"")
-	_, err = Parse([]byte("s: {kind: sandbox, items: {s: {image: img, egress: open}}}\n"))
+	_, err = Parse([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, egress: open}}}\n"))
 	assert.Error(t, err, "want none or a mapping")
 	// a task carries no posture: that is the sandbox's.
-	_, err = Parse([]byte("x: {kind: task, items: {x: {prompt: p, egress: {default: allow}}}}\n"))
+	_, err = Parse([]byte("xxx: {kind: task, items: {xxx: {prompt: p, egress: {default: allow}}}}\n"))
 	assert.Error(t, err, "unknown field \"default\"")
-	_, err = Parse([]byte("x: {kind: task, items: {x: {prompt: p, egress: none}}}\n"))
+	_, err = Parse([]byte("xxx: {kind: task, items: {xxx: {prompt: p, egress: none}}}\n"))
 	assert.Error(t, err, "a task takes a mapping")
 }
 
 // the three shapes of `egress`: absent is open, the scalar none is no
 // network, a mapping (even empty) is the proxy.
 func TestEgressShapes(t *testing.T) {
-	c := parseT(t, "s: {kind: sandbox, items: {open: {image: i}, off: {image: i, egress: none}, p: {image: i, egress: {allow: [a.test]}}, nulled: {image: i, egress: ~}}}\n")
+	c := parseT(t, "sxx: {kind: sandbox, items: {open: {image: i}, off: {image: i, egress: none}, pxx: {image: i, egress: {allow: [a.test]}}, nulled: {image: i, egress: ~}}}\n")
 	modes := map[string]string{}
 	for _, sb := range c.Sandboxes {
-		modes[sb.ID] = sb.Egress.Mode()
+		modes[sb.Name] = sb.Egress.Mode()
 	}
 	assert.Equal(t, modes["open"], "open")
 	assert.Equal(t, modes["off"], "none")
-	assert.Equal(t, modes["p"], "proxy")
+	assert.Equal(t, modes["pxx"], "proxy")
 	assert.Equal(t, modes["nulled"], "open")
 }
 
@@ -416,7 +416,7 @@ func FuzzParse(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Add([]byte("agents: [foo\n"))
-	f.Add([]byte("x: {kind: task, items: {a: {prompt-file: \"${nope}\"}}}\n"))
+	f.Add([]byte("xxx: {kind: task, items: {axx: {prompt-file: \"${nope}\"}}}\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c, err := Parse(data)
 		if err == nil {
@@ -428,7 +428,7 @@ func FuzzParse(f *testing.F) {
 // task egress follows the vectors rule: an item's block replaces the
 // defaults' whole, and a null drops it.
 func TestTaskEgressDefaults(t *testing.T) {
-	c := parseT(t, `x:
+	c := parseT(t, `xxx:
   kind: task
   defaults: {prompt: p, egress: {deny: ['a.test/x*'], allow: [b.test]}}
   items:
@@ -438,7 +438,7 @@ func TestTaskEgressDefaults(t *testing.T) {
 `)
 	got := map[string]TaskEgress{}
 	for _, tk := range c.Tasks {
-		got[tk.ID] = tk.Egress
+		got[tk.Name] = tk.Egress
 	}
 	assert.EqualArrays(t, got["inherits"].Deny, []string{"a.test/x*"})
 	assert.EqualArrays(t, got["replaces"].Allow, []string{"c.test"})

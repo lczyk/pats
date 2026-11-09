@@ -41,40 +41,40 @@ func TestDryRun(t *testing.T) {
 	defer func() { newSandbox = old }()
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-av: {kind: agent, items: {or: {harness: opencode-openrouter, model: m, sandbox: s}, cx: {harness: codex-cli-keyless, model: g, sandbox: s}}}
-tv: {kind: task, items: {t: {prompt: p}, u: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: av, tasks: tv}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+avx: {kind: agent, items: {orx: {harness: opencode-openrouter, model: m, sandbox: sxx}, cxx: {harness: codex-cli-keyless, model: g, sandbox: sxx}}}
+tvx: {kind: task, items: {txx: {prompt: p}, uxx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 `)
 	pinAll(t, dir, cfg)
-	writeMeta(t, dir, "001-20261101-a-b", costMeta("or", "t", "m", 1, true))
-	writeMeta(t, dir, "002-20261102-c-d", costMeta("or", "t", "m", 3, true))
-	writeMeta(t, dir, "003-20261103-e-f", costMeta("or", "t", "m", 2, true))
-	writeMeta(t, dir, "003-20261103-e-f", costMeta("or", "u", "m", 9, true))              // another task
-	writeMeta(t, dir, "004-20261104-g-h", costMeta("or", "t", "other", 50, true))         // another model
-	writeMeta(t, dir, "005-20261105-i-j", costMeta("or", "t", "m", 70, false))            // no cost
-	bad := filepath.Join(dir, runsSubdir, "006-20261106-k-l", "or", "u", "metadata.json") // outside the selection
+	writeMeta(t, dir, "001-20261101-a-b", costMeta("orx", "txx", "m", 1, true))
+	writeMeta(t, dir, "002-20261102-c-d", costMeta("orx", "txx", "m", 3, true))
+	writeMeta(t, dir, "003-20261103-e-f", costMeta("orx", "txx", "m", 2, true))
+	writeMeta(t, dir, "003-20261103-e-f", costMeta("orx", "uxx", "m", 9, true))              // another task
+	writeMeta(t, dir, "004-20261104-g-h", costMeta("orx", "txx", "other", 50, true))         // another model
+	writeMeta(t, dir, "005-20261105-i-j", costMeta("orx", "txx", "m", 70, false))            // no cost
+	bad := filepath.Join(dir, runsSubdir, "006-20261106-k-l", "orx", "uxx", "metadata.json") // outside the selection
 	require.NoError(t, os.MkdirAll(filepath.Dir(bad), 0o755))
 	require.NoError(t, os.WriteFile(bad, []byte("{"), 0o644))
 	require.NoError(t, os.Symlink("003-20261103-e-f", filepath.Join(dir, runsSubdir, "latest")))
 	runs, _ := os.ReadDir(filepath.Join(dir, runsSubdir))
 
 	var out bytes.Buffer
-	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, DryRun: true, Tasks: []string{"t"}})
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, DryRun: true, Tasks: []string{"txx"}})
 	require.NoError(t, err)
-	assert.ContainsString(t, out.String(), "INFO or/t  sandbox s  est $2.00 (median of 3)\n")
-	assert.ContainsString(t, out.String(), "INFO cx/t  sandbox s  est unknown (no cost reported)\n")
+	assert.ContainsString(t, out.String(), "INFO orx/txx  sandbox sxx  est $2.00 (median of 3)\n")
+	assert.ContainsString(t, out.String(), "INFO cxx/txx  sandbox sxx  est unknown (no cost reported)\n")
 	assert.ContainsString(t, out.String(), "INFO 2 pair(s), est $2.00 + 1 unknown\n")
 	assert.ContainsString(t, out.String(), "WARN skipping ")
 	after, _ := os.ReadDir(filepath.Join(dir, runsSubdir))
 	assert.Equal(t, len(after), len(runs)) // no run dir made
 
 	var js, log bytes.Buffer
-	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"t"}, Repeat: 5, MaxCost: 20})
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Repeat: 5, MaxCost: 20})
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(js.String()), "\n")
 	require.Len(t, lines, 3)
-	assert.ContainsString(t, lines[0], `"agent":"or","task":"t","sandbox":"s","estimate_usd":2,"samples":3,"unknown":null,"repeat":5,"estimate_total_usd":10`)
+	assert.ContainsString(t, lines[0], `"agent":"orx","task":"txx","sandbox":"sxx","estimate_usd":2,"samples":3,"unknown":null,"repeat":5,"estimate_total_usd":10`)
 	assert.ContainsString(t, lines[1], `"unknown":"no cost reported"`)
 	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":10,"known_usd":10,"unknown_pairs":1,"max_cost_usd":20,"fits":true}`)
 	assert.ContainsString(t, log.String(), "WARN skipping ") // warnings go to the log, never into the json
@@ -84,10 +84,10 @@ su: {kind: suite, items: {su: {agents: av, tasks: tv}}}
 func TestDryRunNoHistory(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {or: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {orx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
@@ -100,10 +100,10 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 func TestDryRunUnreadableHistory(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {or: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {orx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	writeMeta(t, dir, "001-20261101-a-b", costMeta("x", "y", "m", 1, true)) // another pair

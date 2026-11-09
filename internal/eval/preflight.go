@@ -25,8 +25,8 @@ const preflightTimeout = 90 * time.Second
 // authenticate. catches expired/missing creds up front instead of after a
 // per-pair clone + container spin. returns the first failing agent's error.
 func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
-	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
+	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 
 	seen := map[string]bool{}
 	for _, p := range pairs {
@@ -56,7 +56,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	defer sandbox.RemoveTemp(workDir)
 
 	// same egress policy as real runs (no audit).
-	h, err := newHarness(opts, a, sb, config.TaskEgress{}, workDir, "", "", a.ID+" x preflight")
+	h, err := newHarness(opts, a, sb, config.TaskEgress{}, workDir, "", "", a.Name+" x preflight")
 	if err != nil {
 		return err
 	}

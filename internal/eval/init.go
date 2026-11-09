@@ -26,7 +26,7 @@ type InitOptions struct {
 	Suites    []string // run's selectors: the sandboxes these pairs use
 	Agents    []string
 	Tasks     []string
-	Sandboxes []string // narrow to these sandbox ids
+	Sandboxes []string // narrow to these sandbox names
 	Driver    string   // narrow to sandboxes of this driver
 	Force     bool     // rebuild and re-pull what exists
 	Verbose   int      // -v count: 1 adds build steps, 2 streams the builds
@@ -61,24 +61,24 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	var done []pinned
 	var failed []string
 	for _, sb := range sbs {
-		lg.info("sandbox %q: %s", sb.ID, initWhat(sb, opts.ConfigDir))
+		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir))
 		target, e, err := initSandbox(ctx, sb, ro, opts)
 		if err != nil {
-			failed = append(failed, sb.ID)
+			failed = append(failed, sb.Name)
 			if ctx.Err() != nil {
-				lg.error("sandbox %q: interrupted", sb.ID)
+				lg.error("sandbox %q: interrupted", sb.Name)
 				break
 			}
-			lg.error("sandbox %q: %v", sb.ID, err)
+			lg.error("sandbox %q: %v", sb.Name, err)
 			continue
 		}
-		lg.info("sandbox %q: pinned %s under %s", sb.ID, short(e.Image.ID), target)
+		lg.info("sandbox %q: pinned %s under %s", sb.Name, short(e.Image.ID), target)
 		done = append(done, pinned{target, sb, e})
 	}
 
 	keep := map[string]bool{}
 	for _, sb := range cfg.Sandboxes {
-		keep[sb.ID] = true
+		keep[sb.Name] = true
 	}
 	// another project's init may remove an image this one found or made
 	// before it is pinned; under the lock, what is still there is pinned
@@ -103,11 +103,11 @@ func Init(cfg *config.Config, opts InitOptions) error {
 				gone = missingImage(ctx, h, p.e)
 			}
 			if gone != "" {
-				lg.error("sandbox %q: %s was removed since this init made it, by another project's init; run pats init again", p.sb.ID, short(gone))
-				failed = append(failed, p.sb.ID)
+				lg.error("sandbox %q: %s was removed since this init made it, by another project's init; run pats init again", p.sb.Name, short(gone))
+				failed = append(failed, p.sb.Name)
 				continue
 			}
-			f.setPin(p.target, p.sb.ID, p.e, opts.Now)
+			f.setPin(p.target, p.sb.Name, p.e, opts.Now)
 		}
 		f.dropMissing(keep, opts.Now)
 		return nil
@@ -148,15 +148,15 @@ func initSandboxes(cfg *config.Config, opts InitOptions) ([]config.Sandbox, erro
 	}
 	used := usedSandboxes(cfg, pairs)
 	want := map[string]bool{}
-	for _, id := range opts.Sandboxes {
-		if !used[id] {
-			return nil, fmt.Errorf("--sandbox %q: no selected pair uses it", id)
+	for _, name := range opts.Sandboxes {
+		if !used[name] {
+			return nil, fmt.Errorf("--sandbox %q: no selected pair uses it", name)
 		}
-		want[id] = true
+		want[name] = true
 	}
 	var out []config.Sandbox
 	for _, sb := range cfg.Sandboxes {
-		if !used[sb.ID] || (len(want) > 0 && !want[sb.ID]) || (opts.Driver != "" && sb.Driver != opts.Driver) {
+		if !used[sb.Name] || (len(want) > 0 && !want[sb.Name]) || (opts.Driver != "" && sb.Driver != opts.Driver) {
 			continue
 		}
 		out = append(out, sb)
@@ -179,7 +179,7 @@ func initWhat(sb config.Sandbox, configDir string) string {
 	if !build {
 		return "pulling images"
 	}
-	return "building images (log: " + relToCwd(initLogPath(configDir, sb.ID)) + ")"
+	return "building images (log: " + relToCwd(initLogPath(configDir, sb.Name)) + ")"
 }
 
 // initSandbox makes one sandbox's images and returns its pin.
@@ -222,7 +222,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 // --force).
 func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h builder, e *pinEntry) error {
 	lg := logw{ro.Out, ro.Color, ro.Verbose}
-	logPath := initLogPath(ro.ConfigDir, sb.ID)
+	logPath := initLogPath(ro.ConfigDir, sb.Name)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}
@@ -254,10 +254,10 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 			e.Inputs[upstreamPrefix+ref] = digest
 		}
 		for _, ref := range moved {
-			lg.warn("sandbox %q: its base %s moved while init built on it; its upstream is not tracked until the next pats init", sb.ID, ref)
+			lg.warn("sandbox %q: its base %s moved while init built on it; its upstream is not tracked until the next pats init", sb.Name, ref)
 		}
 	}()
-	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.ID, msg) }
+	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.Name, msg) }
 	switch {
 	case provisions(sb):
 		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force, Progress: progress}
@@ -355,7 +355,7 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 		}
 		e.Image = pinImage{ID: img.ID, Name: sb.Image}
 	default:
-		logPath := initLogPath(ro.ConfigDir, sb.ID)
+		logPath := initLogPath(ro.ConfigDir, sb.Name)
 		img, layers, _, upstream, err := lxdImage(ctx, h, sb, ro, logPath, opts.Force)
 		if err != nil {
 			return err
@@ -368,8 +368,8 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 	}
 	if sb.Egress.Set {
 		log := &stepLog{w: ro.buildLog(io.Discard),
-			step: func(msg string) { lg.detail("sandbox %q: egress proxy: %s", sb.ID, msg) },
-			warn: func(msg string) { lg.warn("sandbox %q: egress proxy: %s", sb.ID, msg) }}
+			step: func(msg string) { lg.detail("sandbox %q: egress proxy: %s", sb.Name, msg) },
+			warn: func(msg string) { lg.warn("sandbox %q: egress proxy: %s", sb.Name, msg) }}
 		img, _, err := h.ProxyImage(ctx, "", opts.Force, log)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)
@@ -393,19 +393,19 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 	var missing []string
 	var reasons []string
 	for i, sb := range cfg.Sandboxes {
-		if !used[sb.ID] {
+		if !used[sb.Name] {
 			continue
 		}
 		h, err := hostFor(sb)
 		if err != nil {
-			return nil, fmt.Errorf("sandbox %q: %w", sb.ID, err)
+			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 		}
 		t, err := h.Target(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("sandbox %q: %w", sb.ID, err)
+			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 		}
 		target, daemon := t.Key, t.Daemon
-		e := pins.entry(target, sb.ID)
+		e := pins.entry(target, sb.Name)
 		reason := ""
 		switch {
 		case e == nil:
@@ -422,23 +422,23 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reason = proxyMismatch(e)
 		}
 		if reason != "" {
-			missing = append(missing, sb.ID)
-			reasons = append(reasons, fmt.Sprintf("  %s: %s", sb.ID, reason))
+			missing = append(missing, sb.Name)
+			reasons = append(reasons, fmt.Sprintf("  %s: %s", sb.Name, reason))
 			continue
 		}
 		if now, err := localInputs(sb, opts.ConfigDir); err != nil {
-			lg.warn("sandbox %q: cannot tell whether its image is current: %v", sb.ID, err)
+			lg.warn("sandbox %q: cannot tell whether its image is current: %v", sb.Name, err)
 		} else if changed := staleLocal(e, now); len(changed) > 0 {
 			lg.warn("sandbox %q: changed since its pats init: %s; running the pinned image (pats init --sandbox %s to rebuild)",
-				sb.ID, strings.Join(changed, ", "), sb.ID)
+				sb.Name, strings.Join(changed, ", "), sb.Name)
 		}
 		if drift := staleComponents(e.Components); len(drift) > 0 {
 			lg.warn("sandbox %q: its harnesses differ from what this pats pins: %s (pats init --sandbox %s to rebuild)",
-				sb.ID, strings.Join(drift, ", "), sb.ID)
+				sb.Name, strings.Join(drift, ", "), sb.Name)
 		}
 		cfg.Sandboxes[i].Image = e.Image.ID
 		cfg.Sandboxes[i].Components = e.Components
-		checks = append(checks, upstreamCheck{sb: sb.ID, up: h.Upstream, inputs: e.Inputs})
+		checks = append(checks, upstreamCheck{sb: sb.Name, up: h.Upstream, inputs: e.Inputs})
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
 		}
@@ -449,8 +449,8 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 	cmd := "pats init"
 	if len(missing) < len(used) {
 		sort.Strings(missing)
-		for _, id := range missing {
-			cmd += " --sandbox " + id
+		for _, name := range missing {
+			cmd += " --sandbox " + name
 		}
 	}
 	return nil, fmt.Errorf("images missing for %d sandbox(es):\n%s\nrun `%s` first", len(missing), strings.Join(reasons, "\n"), cmd)

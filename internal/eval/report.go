@@ -27,12 +27,12 @@ type reportDoc struct {
 }
 
 type reportRun struct {
-	ID  string `json:"id"`
-	Dir string `json:"dir"`
+	Name string `json:"name"`
+	Dir  string `json:"dir"`
 }
 
 type reportAgent struct {
-	ID   string   `json:"id"`
+	Name string   `json:"name"`
 	Mean *float64 `json:"mean"`
 }
 
@@ -176,7 +176,7 @@ func buildReport(runDir string, rep *ScoreReport, warn io.Writer) *reportDoc {
 	}
 	doc := &reportDoc{
 		Version: reportVersion,
-		Run:     reportRun{ID: filepath.Base(abs), Dir: abs},
+		Run:     reportRun{Name: filepath.Base(abs), Dir: abs},
 		Agents:  []reportAgent{},
 		Pairs:   []reportPair{},
 		Scores:  append([]ScoreResult{}, rep.Scores...),
@@ -218,14 +218,14 @@ func buildReport(runDir string, rep *ScoreReport, warn io.Writer) *reportDoc {
 		}
 		return a.Task < b.Task
 	})
-	for id := range agents {
-		a := reportAgent{ID: id}
-		if m, ok := rep.PerAgent[id]; ok {
+	for name := range agents {
+		a := reportAgent{Name: name}
+		if m, ok := rep.PerAgent[name]; ok {
 			a.Mean = &m
 		}
 		doc.Agents = append(doc.Agents, a)
 	}
-	sort.Slice(doc.Agents, func(i, j int) bool { return doc.Agents[i].ID < doc.Agents[j].ID })
+	sort.Slice(doc.Agents, func(i, j int) bool { return doc.Agents[i].Name < doc.Agents[j].Name })
 	sort.Slice(doc.Scores, func(i, j int) bool {
 		a, b := doc.Scores[i], doc.Scores[j]
 		if a.Agent != b.Agent {

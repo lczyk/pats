@@ -75,7 +75,7 @@ type superseded struct {
 }
 
 // pinFile is .pats/images.json: a version, the superseded list, and one
-// object per target, sandbox id -> entry.
+// object per target, sandbox name -> entry.
 type pinFile struct {
 	Version    int
 	Superseded []superseded

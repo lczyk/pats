@@ -110,11 +110,11 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if scorePairs, err = cfg.FilterScorePairs(scorePairs, opts.Scorers); err != nil {
 		return nil, err
 	}
-	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.ID })
-	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
+	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.Name })
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
 	agents := map[string]agentInfo{}
 	for _, a := range cfg.Agents {
-		agents[a.ID] = agentInfo{model: a.Model, harness: a.Harness}
+		agents[a.Name] = agentInfo{model: a.Model, harness: a.Harness}
 	}
 	// task -> scorers to run on it.
 	byTask := map[string][]config.ScorePair{}
@@ -160,7 +160,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if isProgressTTY(opts.Out) {
 		labelW := 0
 		for _, j := range jobs {
-			if w := len(j.agent) + len("/") + len(j.task) + len("/") + len(j.sc.ID); w > labelW {
+			if w := len(j.agent) + len("/") + len(j.task) + len("/") + len(j.sc.Name); w > labelW {
 				labelW = w
 			}
 		}
@@ -192,7 +192,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			label := j.agent + "/" + j.task + " " + j.sc.ID
+			label := j.agent + "/" + j.task + " " + j.sc.Name
 			po := opts
 			var buf bytes.Buffer
 			if bar != nil || njobs > 1 {
@@ -211,13 +211,13 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.taskDir, j.agent, j.task, agents[j.agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
-				jlg.detail("%s/%s %s = n/a", j.agent, j.task, j.sc.ID)
+				jlg.detail("%s/%s %s = n/a", j.agent, j.task, j.sc.Name)
 			case serr != nil:
-				jlg.error("%s/%s %s: %v", j.agent, j.task, j.sc.ID, serr)
+				jlg.error("%s/%s %s: %v", j.agent, j.task, j.sc.Name, serr)
 			default:
-				jlg.detail("%s/%s %s = %.4f", j.agent, j.task, j.sc.ID, score)
+				jlg.detail("%s/%s %s = %.4f", j.agent, j.task, j.sc.Name, score)
 				mu.Lock()
-				results = append(results, ScoreResult{j.agent, j.task, j.sc.ID, score})
+				results = append(results, ScoreResult{j.agent, j.task, j.sc.Name, score})
 				mu.Unlock()
 			}
 
@@ -237,7 +237,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if narrowed {
 		scope := map[ScoreResult]bool{}
 		for _, j := range jobs {
-			scope[ScoreResult{Agent: j.agent, Task: j.task, Scorer: j.sc.ID}] = true
+			scope[ScoreResult{Agent: j.agent, Task: j.task, Scorer: j.sc.Name}] = true
 		}
 		if rep, err = mergeScores(cfg, runDir, results, scope); err != nil {
 			return nil, err
@@ -282,7 +282,7 @@ var errScorerNA = errors.New("scorer reported n/a")
 var errNothingToScore = errors.New("nothing to score")
 
 // agentInfo carries the per-agent fields a scorer's env needs, keyed by agent
-// id in Score's agents map -- one small struct beats a second parallel map
+// name in Score's agents map -- one small struct beats a second parallel map
 // alongside runScorer's already-long argument list.
 type agentInfo struct {
 	model   string
@@ -307,13 +307,13 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 		tee = ls
 	}
 	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.outputTee(opts.ConfigDir, map[string]string{
-		"PATS_RUN_ID":        filepath.Base(runDir),
+		"PATS_RUN_NAME":      filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
 		"PATS_OUTPUT_DIR":    outDir,
 		"PATS_TASK_DIR":      taskDir,
-		"PATS_AGENT_ID":      agent,
-		"PATS_TASK_ID":       task,
-		"PATS_SCORER_ID":     sc.ID,
+		"PATS_AGENT_NAME":    agent,
+		"PATS_TASK_NAME":     task,
+		"PATS_SCORER_NAME":   sc.Name,
 		"PATS_SCORER_VECTOR": sc.Vector,
 		"PATS_MODEL":         info.model,
 		"PATS_AGENT_HARNESS": info.harness,
@@ -392,10 +392,10 @@ func aggregate(runDir string, results []ScoreResult, testPairs []config.TestPair
 	}
 	perAgent := map[string]float64{}
 	var osum float64
-	for id, a := range agent {
+	for name, a := range agent {
 		if a.n > 0 {
-			perAgent[id] = a.sum / float64(a.n)
-			osum += perAgent[id]
+			perAgent[name] = a.sum / float64(a.n)
+			osum += perAgent[name]
 		}
 	}
 	overall := 0.0

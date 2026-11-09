@@ -40,7 +40,7 @@ func TestParseDirVector(t *testing.T) {
 
 	var ids, dirs []string
 	for _, tk := range c.Tasks {
-		ids = append(ids, tk.ID)
+		ids = append(ids, tk.Name)
 		dirs = append(dirs, tk.Dir)
 		assert.Equal(t, tk.Vector, "cases")
 	}
@@ -63,8 +63,8 @@ func TestParseDirVector(t *testing.T) {
 // an empty task.yaml is a task with nothing set -- Parse accepts it, Validate
 // then asks for a prompt.
 func TestParseDirEmptyTaskFile(t *testing.T) {
-	root := tree(t, map[string]string{"cases/a/task.yaml": ""})
-	c, err := ParseIn(root, []byte("v:\n  kind: task\n  dir: cases\n"))
+	root := tree(t, map[string]string{"cases/axx/task.yaml": ""})
+	c, err := ParseIn(root, []byte("vxx:\n  kind: task\n  dir: cases\n"))
 	require.NoError(t, err)
 	require.Len(t, c.Tasks, 1)
 	assert.Error(t, c.Validate(), "needs one of prompt, prompt-file or prompt-cmd")
@@ -79,55 +79,55 @@ func TestParseDirErrors(t *testing.T) {
 	}{
 		{
 			name:  "nested task.yaml",
-			files: map[string]string{"cases/a/task.yaml": "prompt: a\n", "cases/a/inner/task.yaml": "prompt: b\n"},
-			yaml:  "v:\n  kind: task\n  dir: cases\n",
-			want:  "nested in task cases/a/task.yaml",
+			files: map[string]string{"cases/axx/task.yaml": "prompt: a\n", "cases/axx/inner/task.yaml": "prompt: b\n"},
+			yaml:  "vxx:\n  kind: task\n  dir: cases\n",
+			want:  "nested in task cases/axx/task.yaml",
 		},
 		{
 			name:  "unknown field names the file and line",
-			files: map[string]string{"cases/a/task.yaml": "prompt: a\nbogus: 1\n"},
-			yaml:  "v:\n  kind: task\n  dir: cases\n",
-			want:  "cases/a/task.yaml: line 2: task \"a\": unknown field \"bogus\"",
+			files: map[string]string{"cases/axx/task.yaml": "prompt: a\nbogus: 1\n"},
+			yaml:  "vxx:\n  kind: task\n  dir: cases\n",
+			want:  "cases/axx/task.yaml: line 2: task \"axx\": unknown field \"bogus\"",
 		},
 		{
 			name:  "two keys of one slot",
-			files: map[string]string{"cases/a/task.yaml": "prompt: a\nprompt-cmd: b\n"},
-			yaml:  "v:\n  kind: task\n  dir: cases\n",
+			files: map[string]string{"cases/axx/task.yaml": "prompt: a\nprompt-cmd: b\n"},
+			yaml:  "vxx:\n  kind: task\n  dir: cases\n",
 			want:  "prompt, prompt-cmd are mutually exclusive",
 		},
 		{
 			name:  "dir and items",
-			files: map[string]string{"cases/a/task.yaml": "prompt: a\n"},
-			yaml:  "v:\n  kind: task\n  dir: cases\n  items:\n    b:\n",
+			files: map[string]string{"cases/axx/task.yaml": "prompt: a\n"},
+			yaml:  "vxx:\n  kind: task\n  dir: cases\n  items:\n    bxx:\n",
 			want:  "items and dir are mutually exclusive",
 		},
 		{
 			name:  "dir and defaults",
-			files: map[string]string{"cases/a/task.yaml": "prompt: a\n"},
-			yaml:  "v:\n  kind: task\n  dir: cases\n  defaults:\n    timeout: 5m\n",
+			files: map[string]string{"cases/axx/task.yaml": "prompt: a\n"},
+			yaml:  "vxx:\n  kind: task\n  dir: cases\n  defaults:\n    timeout: 5m\n",
 			want:  "defaults and dir are mutually exclusive",
 		},
 		{
 			name: "missing dir",
-			yaml: "v:\n  kind: task\n  dir: nope\n",
+			yaml: "vxx:\n  kind: task\n  dir: nope\n",
 			want: "dir \"nope\" is not a directory",
 		},
 		{
 			name: "dir outside the root",
-			yaml: "v:\n  kind: task\n  dir: ../up\n",
+			yaml: "vxx:\n  kind: task\n  dir: ../up\n",
 			want: "must be a path inside the pats root",
 		},
 		{
 			name:  "dir with no tasks",
 			files: map[string]string{"cases/readme.txt": "x"},
-			yaml:  "v:\n  kind: task\n  dir: cases\n",
+			yaml:  "vxx:\n  kind: task\n  dir: cases\n",
 			want:  "holds no task.yaml",
 		},
 		{
 			name:  "broken yaml in a task file",
-			files: map[string]string{"cases/a/task.yaml": "prompt: [\n"},
-			yaml:  "v:\n  kind: task\n  dir: cases\n",
-			want:  "cases/a/task.yaml:",
+			files: map[string]string{"cases/axx/task.yaml": "prompt: [\n"},
+			yaml:  "vxx:\n  kind: task\n  dir: cases\n",
+			want:  "cases/axx/task.yaml:",
 		},
 	}
 	for _, tc := range cases {
@@ -141,26 +141,26 @@ func TestParseDirErrors(t *testing.T) {
 
 // task ids come from directory names alone, so two dirs with one name collide
 // like any other duplicate id.
-func TestParseDirDuplicateID(t *testing.T) {
+func TestParseDirDuplicateName(t *testing.T) {
 	root := tree(t, map[string]string{
-		"cases/a/curl/task.yaml": "prompt: a\n",
-		"cases/b/curl/task.yaml": "prompt: b\n",
+		"cases/axx/curl/task.yaml": "prompt: a\n",
+		"cases/bxx/curl/task.yaml": "prompt: b\n",
 	})
-	c, err := ParseIn(root, []byte("v:\n  kind: task\n  dir: cases\n"))
+	c, err := ParseIn(root, []byte("vxx:\n  kind: task\n  dir: cases\n"))
 	require.NoError(t, err)
-	assert.Error(t, c.Validate(), "duplicate task id: curl")
+	assert.Error(t, c.Validate(), "duplicate task name: curl")
 }
 
 // Load resolves dir against the config file's directory, not the cwd.
 func TestLoadResolvesDirFromConfigFile(t *testing.T) {
 	root := tree(t, map[string]string{
-		"pats.yaml":         "v:\n  kind: task\n  dir: cases\n",
-		"cases/a/task.yaml": "prompt: a\n",
+		"pats.yaml":           "vxx:\n  kind: task\n  dir: cases\n",
+		"cases/axx/task.yaml": "prompt: a\n",
 	})
 	c, err := Load(filepath.Join(root, "pats.yaml"))
 	require.NoError(t, err)
 	require.Len(t, c.Tasks, 1)
-	assert.Equal(t, c.Tasks[0].Dir, filepath.Join("cases", "a"))
+	assert.Equal(t, c.Tasks[0].Dir, filepath.Join("cases", "axx"))
 }
 
 // a task directory's task.yaml carries its own egress additions.

@@ -111,10 +111,10 @@ func TestScoreLatestTooMany(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(cfgDir, runsSubdir, n), 0o755))
 	}
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	var out bytes.Buffer
 	_, err := Score(cfg, ScoreOptions{ConfigDir: cfgDir, Runs: 4, Out: &out})

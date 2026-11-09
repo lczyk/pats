@@ -12,7 +12,7 @@ import (
 	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
-// Validate checks a parsed config: ids, per-kind fields, cross-references,
+// Validate checks a parsed config: names, per-kind fields, cross-references,
 // and that the suites expand cleanly. all problems are collected and returned
 // together so one run surfaces every error.
 func (c *Config) Validate() error {
@@ -28,7 +28,7 @@ func (c *Config) Validate() error {
 	c.validateTaskEgress(add)
 
 	// suite expansion doubles as referential validation (dangling refs,
-	// duplicate ids after expansion).
+	// duplicate names after expansion).
 	if _, err := c.ExpandTestPairs(); err != nil {
 		errs = append(errs, err)
 	}
@@ -39,71 +39,74 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// validateNames enforces the namespace per kind: item ids unique, no id
-// naming two different sets (a vector id equal to an item id is fine only
-// when that item is the vector's sole member), no characters that would
-// break a run dir, env var or template.
+// validateNames enforces the namespace per kind: item names unique, no name
+// naming two different sets (a vector named as an item is fine only when
+// that item is the vector's sole member), and every name of nameRe's shape.
 func (c *Config) validateNames(add func(string, ...any)) {
 	for _, kind := range Kinds {
 		items := map[string]bool{}
 		vectors := map[string][]string{}
 		for _, m := range c.members(kind) {
-			if bad := badID(m.id); bad != "" {
-				add("%s %q: id %s", kind, m.id, bad)
+			if bad := badName(m.name); bad != "" {
+				add("%s %q %s", kind, m.name, bad)
 			}
-			if items[m.id] {
-				add("duplicate %s id: %s", kind, m.id)
+			if items[m.name] {
+				add("duplicate %s name: %s", kind, m.name)
 			}
-			items[m.id] = true
-			vectors[m.vector] = append(vectors[m.vector], m.id)
+			items[m.name] = true
+			vectors[m.vector] = append(vectors[m.vector], m.name)
 		}
-		for vec, ids := range vectors {
-			if bad := badID(vec); bad != "" {
-				add("vector %q: id %s", vec, bad)
+		for vec, names := range vectors {
+			if bad := badName(vec); bad != "" {
+				add("vector %q %s", vec, bad)
 			}
-			if items[vec] && !(len(ids) == 1 && ids[0] == vec) {
-				add("%s vector %q and %s %q share an id but name different things -- rename one", kind, vec, kind, vec)
+			if items[vec] && !(len(names) == 1 && names[0] == vec) {
+				add("%s vector %q and %s %q share a name but are different things -- rename one", kind, vec, kind, vec)
 			}
 		}
 	}
 }
 
-// badID says what is wrong with an id, or "".
-func badID(id string) string {
+// nameRe is a name's shape, chisel's for a slice: lowercase letters, digits
+// and single hyphens, a letter first, no hyphen last, at least 3 long.
+var nameRe = regexp.MustCompile(`^[a-z](?:-?[a-z0-9]){2,}$`)
+
+// badName says what is wrong with a name, or "".
+func badName(name string) string {
 	switch {
-	case id == "":
+	case name == "":
 		return "is empty"
-	case strings.ContainsAny(id, "/$ \t\n"):
-		return "may not contain /, $ or whitespace"
+	case !nameRe.MatchString(name):
+		return "is not a name: lowercase letters, digits and single hyphens, a letter first, no hyphen last, at least 3 long"
 	}
 	return ""
 }
 
-type member struct{ id, vector string }
+type member struct{ name, vector string }
 
-// members lists (id, vector) for every item of the kind, in file order.
+// members lists (name, vector) for every item of the kind, in file order.
 func (c *Config) members(kind string) []member {
 	var out []member
 	switch kind {
 	case "sandbox":
 		for _, x := range c.Sandboxes {
-			out = append(out, member{x.ID, x.Vector})
+			out = append(out, member{x.Name, x.Vector})
 		}
 	case "agent":
 		for _, x := range c.Agents {
-			out = append(out, member{x.ID, x.Vector})
+			out = append(out, member{x.Name, x.Vector})
 		}
 	case "task":
 		for _, x := range c.Tasks {
-			out = append(out, member{x.ID, x.Vector})
+			out = append(out, member{x.Name, x.Vector})
 		}
 	case "scorer":
 		for _, x := range c.Scorers {
-			out = append(out, member{x.ID, x.Vector})
+			out = append(out, member{x.Name, x.Vector})
 		}
 	case "suite":
 		for _, x := range c.Suites {
-			out = append(out, member{x.ID, x.Vector})
+			out = append(out, member{x.Name, x.Vector})
 		}
 	}
 	return out
@@ -124,62 +127,62 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 			ways = append(ways, "base / provision")
 		}
 		if len(ways) > 1 {
-			add("sandbox %q: %s are mutually exclusive", s.ID, strings.Join(ways, " and "))
+			add("sandbox %q: %s are mutually exclusive", s.Name, strings.Join(ways, " and "))
 		}
 		lxdOnly := map[string]bool{"remote": s.Remote != "", "vm": s.VM, "profiles": len(s.Profiles) > 0, "config": len(s.Config) > 0}
 		switch s.Driver {
 		case "docker", "podman":
 			for _, k := range []string{"remote", "vm", "profiles", "config"} {
 				if lxdOnly[k] {
-					add("sandbox %q: %s is lxd-only (driver %q)", s.ID, k, s.Driver)
+					add("sandbox %q: %s is lxd-only (driver %q)", s.Name, k, s.Driver)
 				}
 			}
 			// the docker agent runs as the host uid, with no passwd entry
 			// for sudo to work from.
 			if s.Sudo {
-				add("sandbox %q: sudo is lxd-only for now (driver %q runs the agent as the host uid)", s.ID, s.Driver)
+				add("sandbox %q: sudo is lxd-only for now (driver %q runs the agent as the host uid)", s.Name, s.Driver)
 			}
 			if s.Limits.Disk != "" {
-				add("sandbox %q: limits.disk is lxd-only (driver %q)", s.ID, s.Driver)
+				add("sandbox %q: limits.disk is lxd-only (driver %q)", s.Name, s.Driver)
 			}
 		case "lxd":
 			if s.Build != "" {
-				add("sandbox %q: build is a dockerfile, docker / podman only; lxd takes base and provision", s.ID)
+				add("sandbox %q: build is a dockerfile, docker / podman only; lxd takes base and provision", s.Name)
 			}
 			for _, k := range sortedKeys(s.Config) {
 				// these add devices the expanded config does not show, which
 				// would void the egress topology.
 				if strings.HasPrefix(k, "raw.") {
-					add("sandbox %q: config %s is refused: raw config can add devices pats cannot check", s.ID, k)
+					add("sandbox %q: config %s is refused: raw config can add devices pats cannot check", s.Name, k)
 				}
 			}
 		case "bwrap":
-			add("sandbox %q: bwrap driver not implemented yet", s.ID)
+			add("sandbox %q: bwrap driver not implemented yet", s.Name)
 		default:
-			add("sandbox %q: unknown driver %q (docker|podman|lxd|bwrap)", s.ID, s.Driver)
+			add("sandbox %q: unknown driver %q (docker|podman|lxd|bwrap)", s.Name, s.Driver)
 		}
 		if s.MaxParallel < 0 {
-			add("sandbox %q: max-parallel must be positive", s.ID)
+			add("sandbox %q: max-parallel must be positive", s.Name)
 		}
 		if s.Limits.CPU < 0 {
-			add("sandbox %q: limits.cpu must be positive", s.ID)
+			add("sandbox %q: limits.cpu must be positive", s.Name)
 		}
 		for _, f := range [][2]string{{"memory", s.Limits.Memory}, {"disk", s.Limits.Disk}} {
 			if f[1] != "" && !sizeRe.MatchString(f[1]) {
-				add("sandbox %q: limits.%s %q is not a size (e.g. 8GiB)", s.ID, f[0], f[1])
+				add("sandbox %q: limits.%s %q is not a size (e.g. 8GiB)", s.Name, f[0], f[1])
 			}
 		}
 		validateEgress(add, s)
 		for _, k := range sortedKeys(s.Env) {
 			switch {
 			case !envName.MatchString(k):
-				add("sandbox %q: env %q is not a valid variable name", s.ID, k)
+				add("sandbox %q: env %q is not a valid variable name", s.Name, k)
 			case strings.HasPrefix(k, "PATS_"):
-				add("sandbox %q: env %q: PATS_* is reserved for pats", s.ID, k)
+				add("sandbox %q: env %q: PATS_* is reserved for pats", s.Name, k)
 			case k == "PATH" || k == "HOME":
-				add("sandbox %q: env %s is set by pats", s.ID, k)
+				add("sandbox %q: env %s is set by pats", s.Name, k)
 			case shellReadonly[k]:
-				add("sandbox %q: env %s is read-only in a shell, which hands the env to the command", s.ID, k)
+				add("sandbox %q: env %s is read-only in a shell, which hands the env to the command", s.Name, k)
 			}
 		}
 	}
@@ -202,11 +205,11 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 		return
 	}
 	if len(s.Egress.Harness) > 0 {
-		add("sandbox %q: egress harness is set by pats, per agent", s.ID)
+		add("sandbox %q: egress harness is set by pats, per agent", s.Name)
 	}
 	r, err := s.Egress.Policy.Rule()
 	if err != nil {
-		add("sandbox %q: egress: %v", s.ID, err)
+		add("sandbox %q: egress: %v", s.Name, err)
 		return
 	}
 	// under a denylist a bare allow entry can never matter: deny wins, and
@@ -215,12 +218,12 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 	if s.Egress.Default == "allow" {
 		for _, e := range r.Allow {
 			if !e.URL() {
-				add("sandbox %q: egress allow %q is dead under default: allow -- a bare host passes anyway", s.ID, e.Raw)
+				add("sandbox %q: egress allow %q is dead under default: allow -- a bare host passes anyway", s.Name, e.Raw)
 			}
 		}
 	}
 	if s.Egress.Image != "" && !s.IsContainer() {
-		add("sandbox %q: egress image needs a container driver (driver %q runs the proxy in-process)", s.ID, s.Driver)
+		add("sandbox %q: egress image needs a container driver (driver %q runs the proxy in-process)", s.Name, s.Driver)
 	}
 }
 
@@ -230,12 +233,12 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 func (c *Config) validateTaskEgress(add func(string, ...any)) {
 	tasks := map[string]Task{}
 	for _, t := range c.Tasks {
-		tasks[t.ID] = t
+		tasks[t.Name] = t
 		if !t.Egress.Set {
 			continue
 		}
 		if _, err := (proxy.Policy{Allow: t.Egress.Allow, Deny: t.Egress.Deny}).Rule(); err != nil {
-			add("task %q: egress: %v", t.ID, err)
+			add("task %q: egress: %v", t.Name, err)
 		}
 	}
 	pairs, err := c.ExpandTestPairs()
@@ -244,11 +247,11 @@ func (c *Config) validateTaskEgress(add func(string, ...any)) {
 	}
 	sandboxes := map[string]Sandbox{}
 	for _, s := range c.Sandboxes {
-		sandboxes[s.ID] = s
+		sandboxes[s.Name] = s
 	}
 	agents := map[string]Agent{}
 	for _, a := range c.Agents {
-		agents[a.ID] = a
+		agents[a.Name] = a
 	}
 	seen := map[[2]string]bool{}
 	for _, p := range pairs {
@@ -285,21 +288,21 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 	for _, a := range c.Agents {
 		switch {
 		case a.Harness == "":
-			add("agent %q: missing harness (%s)", a.ID, harnessList)
+			add("agent %q: missing harness (%s)", a.Name, harnessList)
 		case !Harnesses[a.Harness]:
-			add("agent %q: unknown harness %q", a.ID, a.Harness)
+			add("agent %q: unknown harness %q", a.Name, a.Harness)
 		}
 		if a.Model == "" {
-			add("agent %q: model is required", a.ID)
+			add("agent %q: model is required", a.Name)
 		}
 		if a.Effort != "" && !effortHarnesses[a.Harness] {
-			add("agent %q: effort is not supported by harness %q", a.ID, a.Harness)
+			add("agent %q: effort is not supported by harness %q", a.Name, a.Harness)
 		}
 		if a.MaxCost != nil {
 			if err := CheckCost(*a.MaxCost); err != nil {
-				add("agent %q: max-cost: %v", a.ID, err)
+				add("agent %q: max-cost: %v", a.Name, err)
 			} else if !LiveCostHarnesses[a.Harness] {
-				add("agent %q: max-cost needs a harness that reports cost as it runs (opencode-openrouter), not %q", a.ID, a.Harness)
+				add("agent %q: max-cost needs a harness that reports cost as it runs (opencode-openrouter), not %q", a.Name, a.Harness)
 			}
 		}
 		sbID, err := c.ResolveSandbox(a)
@@ -310,8 +313,8 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 		// every harness reaches an inference api (agent.RequiredHosts), so a
 		// sandbox with no network at all cannot run one.
 		for _, s := range c.Sandboxes {
-			if s.ID == sbID && s.Egress.None {
-				add("agent %q: harness %q needs the network, but sandbox %q has egress: none", a.ID, a.Harness, s.ID)
+			if s.Name == sbID && s.Egress.None {
+				add("agent %q: harness %q needs the network, but sandbox %q has egress: none", a.Name, a.Harness, s.Name)
 			}
 		}
 	}
@@ -327,30 +330,30 @@ var effortHarnesses = map[string]bool{
 	"opencode-openrouter": true,
 }
 
-// ResolveSandbox returns the sandbox id an agent runs in: its `sandbox` (an
-// item id, or a vector of one), or the only sandbox defined when omitted.
+// ResolveSandbox returns the sandbox name an agent runs in: its `sandbox` (an
+// item name, or a vector of one), or the only sandbox defined when omitted.
 func (c *Config) ResolveSandbox(a Agent) (string, error) {
 	if a.Sandbox != "" {
-		id, err := c.One("sandbox", a.Sandbox)
+		name, err := c.One("sandbox", a.Sandbox)
 		if err != nil {
-			return "", fmt.Errorf("agent %q: %w", a.ID, err)
+			return "", fmt.Errorf("agent %q: %w", a.Name, err)
 		}
-		return id, nil
+		return name, nil
 	}
 	if len(c.Sandboxes) == 1 {
-		return c.Sandboxes[0].ID, nil
+		return c.Sandboxes[0].Name, nil
 	}
-	return "", fmt.Errorf("agent %q: no sandbox set and %d defined -- name one with `sandbox:`", a.ID, len(c.Sandboxes))
+	return "", fmt.Errorf("agent %q: no sandbox set and %d defined -- name one with `sandbox:`", a.Name, len(c.Sandboxes))
 }
 
 func (c *Config) validateTasks(add func(string, ...any)) {
 	for _, t := range c.Tasks {
 		if t.Prompt == "" && t.PromptFile == "" && t.PromptCmd == "" {
-			add("task %q: needs one of prompt, prompt-file or prompt-cmd", t.ID)
+			add("task %q: needs one of prompt, prompt-file or prompt-cmd", t.Name)
 		}
 		if t.Timeout != "" {
 			if _, err := time.ParseDuration(t.Timeout); err != nil {
-				add("task %q: bad timeout %q (use e.g. 10m, 300s)", t.ID, t.Timeout)
+				add("task %q: bad timeout %q (use e.g. 10m, 300s)", t.Name, t.Timeout)
 			}
 		}
 		names := make([]string, 0, len(t.Env))
@@ -361,13 +364,13 @@ func (c *Config) validateTasks(add func(string, ...any)) {
 		for _, k := range names {
 			switch {
 			case !envName.MatchString(k):
-				add("task %q: env %q is not a valid variable name", t.ID, k)
+				add("task %q: env %q is not a valid variable name", t.Name, k)
 			case strings.HasPrefix(k, "PATS_"):
-				add("task %q: env %q: PATS_* is reserved for pats", t.ID, k)
+				add("task %q: env %q: PATS_* is reserved for pats", t.Name, k)
 			case k == "PATH":
-				add("task %q: env PATH is set by pats (bin/ is prepended to it)", t.ID)
+				add("task %q: env PATH is set by pats (bin/ is prepended to it)", t.Name)
 			case shellReadonly[k]:
-				add("task %q: env %s is read-only in a shell, which hands the env to prepare", t.ID, k)
+				add("task %q: env %s is read-only in a shell, which hands the env to prepare", t.Name, k)
 			}
 		}
 	}
@@ -389,21 +392,21 @@ func (c *Config) validateScorers(add func(string, ...any)) {
 		prompt := s.Prompt != "" || s.PromptFile != "" || s.PromptCmd != ""
 		switch {
 		case script && s.IsAgent():
-			add("scorer %q: score and agent are mutually exclusive (a script scorer or an agent scorer, not both)", s.ID)
+			add("scorer %q: score and agent are mutually exclusive (a script scorer or an agent scorer, not both)", s.Name)
 		case script:
 			if prompt {
-				add("scorer %q: a prompt is an agent-scorer field -- remove it, or replace the score with agent", s.ID)
+				add("scorer %q: a prompt is an agent-scorer field -- remove it, or replace the score with agent", s.Name)
 			}
 		case s.IsAgent():
-			add("scorer %q: agent scorers are not implemented yet", s.ID)
+			add("scorer %q: agent scorers are not implemented yet", s.Name)
 			if _, err := c.One("agent", s.Agent); err != nil {
-				add("scorer %q: agent: %v", s.ID, err)
+				add("scorer %q: agent: %v", s.Name, err)
 			}
 			if !prompt {
-				add("scorer %q: an agent scorer needs one of prompt, prompt-file or prompt-cmd", s.ID)
+				add("scorer %q: an agent scorer needs one of prompt, prompt-file or prompt-cmd", s.Name)
 			}
 		default:
-			add("scorer %q: needs score or agent", s.ID)
+			add("scorer %q: needs score or agent", s.Name)
 		}
 	}
 }
@@ -418,10 +421,10 @@ func (c *Config) validateSuites(add func(string, ...any)) {
 	inAgents, inTasks, inScorers := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range c.Suites {
 		if len(s.Agents) == 0 {
-			add("suite %q: agents is required", s.ID)
+			add("suite %q: agents is required", s.Name)
 		}
 		if len(s.Tasks) == 0 {
-			add("suite %q: tasks is required", s.ID)
+			add("suite %q: tasks is required", s.Name)
 		}
 		// scorers may be empty: a run-only suite, scored elsewhere or not at all.
 		mark(inAgents, s.Agents, agentSets)
@@ -434,32 +437,32 @@ func (c *Config) validateSuites(add func(string, ...any)) {
 
 	judges := map[string]bool{}
 	for _, sc := range c.Scorers {
-		for _, id := range agentSets[sc.Agent] {
-			judges[id] = true
+		for _, name := range agentSets[sc.Agent] {
+			judges[name] = true
 		}
 	}
 	for _, a := range c.Agents {
-		if !inAgents[a.ID] && !judges[a.ID] {
-			add("agent %q is in no suite -- it would never run (add it to a suite, or reference it from a scorer's agent)", a.ID)
+		if !inAgents[a.Name] && !judges[a.Name] {
+			add("agent %q is in no suite -- it would never run (add it to a suite, or reference it from a scorer's agent)", a.Name)
 		}
 	}
 	for _, t := range c.Tasks {
-		if !inTasks[t.ID] {
-			add("task %q is in no suite -- it would never run", t.ID)
+		if !inTasks[t.Name] {
+			add("task %q is in no suite -- it would never run", t.Name)
 		}
 	}
 	for _, s := range c.Scorers {
-		if !inScorers[s.ID] {
-			add("scorer %q is in no suite -- it would never run", s.ID)
+		if !inScorers[s.Name] {
+			add("scorer %q is in no suite -- it would never run", s.Name)
 		}
 	}
 }
 
-// mark records every item id an axis reaches through sets.
+// mark records every item name an axis reaches through sets.
 func mark(m map[string]bool, xs StrList, sets map[string][]string) {
 	for _, x := range xs {
-		for _, id := range sets[x] {
-			m[id] = true
+		for _, name := range sets[x] {
+			m[name] = true
 		}
 	}
 }

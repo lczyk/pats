@@ -31,7 +31,7 @@ const promptName = "prompt.txt"
 
 // newHarness resolves agent a into sandbox sb, with te (the task's egress
 // additions; zero for preflight) folded into the policy. the caller writes the prompt to
-// promptPath() before run; runID "" (preflight) leaves PATS_RUN_ID unset and
+// promptPath() before run; runID "" (preflight) leaves PATS_RUN_NAME unset and
 // turns on the egress self-test; auditPath "" turns the egress audit log off;
 // label prefixes the no-creds warning.
 func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskEgress, workDir, runID, auditPath, label string) (*harness, error) {

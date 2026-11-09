@@ -34,17 +34,17 @@ func TestCheckUpstream(t *testing.T) {
 	}
 	lxd := func(ctx context.Context, ref string) (string, error) { return "fp-new", nil }
 	checks := []upstreamCheck{
-		{sb: "c", up: registry, inputs: map[string]string{
+		{sb: "cxx", up: registry, inputs: map[string]string{
 			"upstream:moved:1": "sha256:old", "upstream:same:1": "sha256:same",
 			"upstream:broken:1": "sha256:x", "upstream:slow:1": "sha256:x", "provision": "h"}},
-		{sb: "l", up: lxd, inputs: map[string]string{"upstream:ubuntu:26.04": "fp-old"}},
+		{sb: "lxx", up: lxd, inputs: map[string]string{"upstream:ubuntu:26.04": "fp-old"}},
 	}
 	start := time.Now()
 	warns := checkUpstream(context.Background(), checks, 200*time.Millisecond)
 	assert.That(t, time.Since(start) < 2*time.Second, "the check outran its budget")
 	require.Equal(t, len(warns), 2)
-	assert.ContainsString(t, warns[0], `sandbox "c": a newer moved:1 is upstream`)
-	assert.ContainsString(t, warns[1], `sandbox "l": a newer ubuntu:26.04 is upstream`)
+	assert.ContainsString(t, warns[0], `sandbox "cxx": a newer moved:1 is upstream`)
+	assert.ContainsString(t, warns[1], `sandbox "lxx": a newer ubuntu:26.04 is upstream`)
 }
 
 // init records what each sandbox came from upstream: an image: sandbox's
@@ -58,15 +58,15 @@ func TestUpstreamInputs(t *testing.T) {
 	h.refs["python:3"] = "sha256:py"
 	h.digests = map[string]string{"python:3": "sha256:pydigest"}
 	cfg := parseCfg(t, `
-sb:
+sbx:
   kind: sandbox
   items:
     built: {build: ctx}
     img: {image: my/image:1}
     box: {driver: lxd}
-ag: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {a: {sandbox: built}, b: {sandbox: img}, c: {sandbox: box}}}
-t: {kind: task, items: {t: {prompt: p}}}
-suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
+agx: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {axx: {sandbox: built}, bxx: {sandbox: img}, cxx: {sandbox: box}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+suites: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 `)
 	ctx := context.Background()
 	var log bytes.Buffer
@@ -92,10 +92,10 @@ suites: {kind: suite, items: {all: {agents: ag, tasks: t}}}
 	// the default sandbox on a dev build: :latest, which moves, is recorded;
 	// a release's own tag is not.
 	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Name: "ghcr.io/lczyk/pats/sandbox:latest", Digest: "sha256:l"}}
-	upstreamInputs(ctx, config.Sandbox{ID: "d"}, dir, h, e)
+	upstreamInputs(ctx, config.Sandbox{Name: "dxx"}, dir, h, e)
 	assert.EqualMaps(t, e.Inputs, map[string]string{"upstream:ghcr.io/lczyk/pats/sandbox:latest": "sha256:l"})
 	e = &pinEntry{Inputs: map[string]string{}, Image: pinImage{Name: "ghcr.io/lczyk/pats/sandbox:v1.0.0", Digest: "sha256:r"}}
-	upstreamInputs(ctx, config.Sandbox{ID: "d"}, dir, h, e)
+	upstreamInputs(ctx, config.Sandbox{Name: "dxx"}, dir, h, e)
 	assert.Len(t, e.Inputs, 0)
 }
 

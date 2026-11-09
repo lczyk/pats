@@ -14,7 +14,7 @@ import (
 // list helpers print one line per configured item, tab-aligned, with the
 // vector it came from. read-only: no lock, no disk writes.
 
-// ListAgents prints vector, id, harness, model, resolved sandbox, and effort per agent.
+// ListAgents prints vector, name, harness, model, resolved sandbox, and effort per agent.
 func ListAgents(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "VECTOR\tAGENT\tHARNESS\tMODEL\tSANDBOX\tEFFORT")
@@ -23,12 +23,12 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 		if err != nil {
 			sb = "?" // dangling/ambiguous sandbox ref; validate would have caught it
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Vector, a.ID, a.Harness, a.Model, sb, a.Effort)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Vector, a.Name, a.Harness, a.Model, sb, a.Effort)
 	}
 	return w.Flush()
 }
 
-// ListTasks prints vector, id, the directory it was defined in, and where its
+// ListTasks prints vector, name, the directory it was defined in, and where its
 // prompt comes from, per task.
 func ListTasks(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
@@ -45,12 +45,12 @@ func ListTasks(cfg *config.Config, out io.Writer) error {
 		case t.PromptCmd != "":
 			prompt = "cmd: " + t.PromptCmd
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Vector, t.ID, dir, prompt)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Vector, t.Name, dir, prompt)
 	}
 	return w.Flush()
 }
 
-// ListSandboxes prints vector, id, driver, image, and egress mode per sandbox.
+// ListSandboxes prints vector, name, driver, image, and egress mode per sandbox.
 func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "VECTOR\tSANDBOX\tDRIVER\tIMAGE\tEGRESS")
@@ -63,12 +63,12 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 		case image == "":
 			image, _ = sandbox.SandboxImage("") // the published default; a dev build's warning belongs to run, not list
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Vector, s.ID, s.Driver, image, mode)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Vector, s.Name, s.Driver, image, mode)
 	}
 	return w.Flush()
 }
 
-// ListScorers prints vector, id, and the source: inline, the command, or the
+// ListScorers prints vector, name, and the source: inline, the command, or the
 // judging agent.
 func ListScorers(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
@@ -81,19 +81,19 @@ func ListScorers(cfg *config.Config, out io.Writer) error {
 		case !strings.Contains(strings.TrimSpace(s.Score), "\n"):
 			src = strings.TrimSpace(s.Score)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", s.Vector, s.ID, src)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", s.Vector, s.Name, src)
 	}
 	return w.Flush()
 }
 
-// ListSuites prints vector, id and axis sizes per suite after expansion, plus
+// ListSuites prints vector, name and axis sizes per suite after expansion, plus
 // the pair counts its cross-products expand to.
 func ListSuites(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "VECTOR\tSUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS")
 	for _, s := range cfg.Suites {
-		test, _ := cfg.ExpandTestPairs(s.ID)
-		score, _ := cfg.ExpandScorePairs(s.ID)
+		test, _ := cfg.ExpandTestPairs(s.Name)
+		score, _ := cfg.ExpandScorePairs(s.Name)
 		agents, tasks, scorers := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		for _, p := range test {
 			agents[p.Agent], tasks[p.Task] = true, true
@@ -102,7 +102,7 @@ func ListSuites(cfg *config.Config, out io.Writer) error {
 			scorers[p.Scorer] = true
 		}
 		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\n",
-			s.Vector, s.ID, len(agents), len(tasks), len(scorers), len(test), len(score))
+			s.Vector, s.Name, len(agents), len(tasks), len(scorers), len(test), len(score))
 	}
 	return w.Flush()
 }

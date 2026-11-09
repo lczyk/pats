@@ -24,7 +24,7 @@ import (
 func EffectivePolicy(cfg *config.Config, sandboxID, taskID, agentID string) (proxy.Policy, error) {
 	var sb *config.Sandbox
 	for i := range cfg.Sandboxes {
-		if cfg.Sandboxes[i].ID == sandboxID {
+		if cfg.Sandboxes[i].Name == sandboxID {
 			sb = &cfg.Sandboxes[i]
 		}
 	}
@@ -38,7 +38,7 @@ func EffectivePolicy(cfg *config.Config, sandboxID, taskID, agentID string) (pro
 	if taskID != "" {
 		found := false
 		for _, t := range cfg.Tasks {
-			if t.ID == taskID {
+			if t.Name == taskID {
 				te, found = t.Egress, true
 			}
 		}
@@ -50,7 +50,7 @@ func EffectivePolicy(cfg *config.Config, sandboxID, taskID, agentID string) (pro
 	if agentID != "" {
 		found := false
 		for _, a := range cfg.Agents {
-			if a.ID == agentID {
+			if a.Name == agentID {
 				harness, found = a.Harness, true
 			}
 		}

@@ -13,17 +13,17 @@ import (
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-// usedSandboxes resolves each pair's agent to its sandbox id and returns the
+// usedSandboxes resolves each pair's agent to its sandbox name and returns the
 // set actually needed by this run -- shared by buildImages and
 // pullEgressImages so both skip sandboxes no pair references. an agent whose
 // sandbox fails to resolve is silently skipped here; ResolveSandbox's error
 // surfaces later, in runPair, where it can be attributed to that pair.
 func usedSandboxes(cfg *config.Config, pairs []config.TestPair) map[string]bool {
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
 	used := map[string]bool{}
 	for _, p := range pairs {
-		if id, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil {
-			used[id] = true
+		if name, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil {
+			used[name] = true
 		}
 	}
 	return used
@@ -66,8 +66,8 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 	defer logF.Close()
 	log := opts.buildLog(logF)
 	lg := logw{opts.Out, opts.Color, opts.Verbose}
-	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.ID, msg) }
-	warn := func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
+	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.Name, msg) }
+	warn := func(msg string) { lg.warn("sandbox %q: %s", sb.Name, msg) }
 	fail := func(err error) error {
 		return fmt.Errorf("%w%s\n(full log: %s)", err, sandbox.LogTail(fileTail(logPath, 64<<10)), relToCwd(logPath))
 	}
@@ -84,7 +84,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 			return img, nil, false, nil, err
 		}
 		layer, fp, b, err := h.Build(ctx, sandbox.BuildSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn,
-			Role: "sandbox", Sandbox: sb.ID, Force: force}, log)
+			Role: "sandbox", Sandbox: sb.Name, Force: force}, log)
 		if err != nil {
 			return img, nil, false, nil, fail(err)
 		}
@@ -93,7 +93,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 		layers = append(layers, layer.ID)
 		img = layer
 	}
-	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.ID, Force: force}
+	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.Name, Force: force}
 	if sb.Provision != "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 		if err != nil {

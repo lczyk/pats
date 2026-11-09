@@ -48,7 +48,7 @@ type historyKey struct{ agent, task, harness, model, effort string }
 // dryRun lists pairs with their estimates, to the log or, with JSON, as
 // json lines to JSONOut.
 func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) error {
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
 	want := map[historyKey]bool{}
 	for _, p := range pairs {
 		a := agents[p.Agent]

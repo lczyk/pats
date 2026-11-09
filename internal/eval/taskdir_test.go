@@ -46,11 +46,11 @@ collect: ./collect.sh
 		require.NoError(t, os.Chmod(filepath.Join(root, f), 0o755))
 	}
 	cfg, err := config.ParseIn(root, []byte(`
-s: {kind: sandbox, items: {s: {image: img}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
 knockout: {kind: task, dir: cases/knockout}
-sc: {kind: scorer, items: {dir-seen: {score: ./score-dir.sh}}}
-su: {kind: suite, items: {su: {agents: a, tasks: knockout, scorers: sc}}}
+scx: {kind: scorer, items: {dir-seen: {score: ./score-dir.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: knockout, scorers: scx}}}
 `))
 	require.NoError(t, err)
 	require.NoError(t, cfg.Validate())
@@ -59,7 +59,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: knockout, scorers: sc}}}
 	pinAll(t, root, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: root, Now: time.Now(), Out: &out})
 	require.NoError(t, err, out.String())
-	outDir := filepath.Join(runDir, "a", "curl")
+	outDir := filepath.Join(runDir, "axx", "curl")
 
 	assert.Equal(t, staged, "slice ${task} please\n")
 	env, err := os.ReadFile(filepath.Join(outDir, "prepare-env"))
@@ -73,7 +73,7 @@ su: {kind: suite, items: {su: {agents: a, tasks: knockout, scorers: sc}}}
 
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: root, RunDir: runDir, Out: &out})
 	require.NoError(t, err, out.String())
-	assert.Equal(t, rep.PerPair["a/curl"], 1.0)
+	assert.Equal(t, rep.PerPair["axx/curl"], 1.0)
 }
 
 // tree writes files (path -> content) under a fresh temp dir and returns it.

@@ -39,7 +39,7 @@ func catalogueServer(t *testing.T, status int, body string) {
 }
 
 func orAgent(id, model string) config.Agent {
-	return config.Agent{ID: id, Harness: "opencode-openrouter", Model: model}
+	return config.Agent{Name: id, Harness: "opencode-openrouter", Model: model}
 }
 
 // a model is checked by its catalogue id: exact, a catalogue variant only
@@ -49,7 +49,7 @@ func TestCheckOpenrouterModels(t *testing.T) {
 	catalogueServer(t, 200, catalogue)
 	ok := []config.Agent{orAgent("a", "openai/gpt-4o-mini"), orAgent("b", "x/y:free"), orAgent("c", "x/y:nitro:free"),
 		orAgent("d", "x/y:free:floor:nitro"), orAgent("e", "openai/gpt-4o:nitro"),
-		{ID: "claude", Harness: "claude-cli-keyless", Model: "nonsense"}}
+		{Name: "claude", Harness: "claude-cli-keyless", Model: "nonsense"}}
 	warns, err := checkOpenrouterModels(context.Background(), ok, http.DefaultClient)
 	require.NoError(t, err)
 	assert.Len(t, warns, 0)
@@ -99,10 +99,10 @@ func TestRunModelCheckBeforeRunDir(t *testing.T) {
 	catalogueServer(t, 200, catalogue)
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: openai/gpt-4o-mni, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: openai/gpt-4o-mni, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out strings.Builder
@@ -130,10 +130,10 @@ func TestRunModelCheckInterrupted(t *testing.T) {
 	t.Setenv("PATS_OPENROUTER_URL", slow.URL)
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
-s: {kind: sandbox, items: {s: {image: s}}}
-a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	pinAll(t, dir, cfg)
 	go func() { time.Sleep(200 * time.Millisecond); _ = syscall.Kill(os.Getpid(), syscall.SIGINT) }()

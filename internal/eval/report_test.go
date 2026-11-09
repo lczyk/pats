@@ -60,15 +60,15 @@ func TestReportJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out.Bytes(), &doc), "stdout is one json document")
 	assert.Equal(t, doc["version"], any(float64(1)))
 	run := doc["run"].(map[string]any)
-	assert.Equal(t, run["id"], any("003-20260621-fluffy-bunny"))
+	assert.Equal(t, run["name"], any("003-20260621-fluffy-bunny"))
 	assert.That(t, filepath.IsAbs(run["dir"].(string)), "run.dir is absolute")
 	assert.Equal(t, doc["overall"], any(0.75))
 
 	// every agent with a pair, the failed one with a null mean.
 	agents := doc["agents"].([]any)
 	assert.Len(t, agents, 5)
-	assert.Equal(t, agents[0].(map[string]any)["id"], any(".base"))
-	assert.Equal(t, agents[1].(map[string]any)["id"], any("broken"))
+	assert.Equal(t, agents[0].(map[string]any)["name"], any(".base"))
+	assert.Equal(t, agents[1].(map[string]any)["name"], any("broken"))
 	assert.Equal(t, agents[1].(map[string]any)["mean"], any(nil))
 	assert.Equal(t, agents[2].(map[string]any)["mean"], any(0.75))
 

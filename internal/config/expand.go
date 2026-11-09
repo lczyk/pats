@@ -17,59 +17,59 @@ type ScorePair struct {
 	Scorer string
 }
 
-// sets maps every id of a kind to the item ids it names: an item id to
-// itself, a vector id to its items in file order. a vector sharing its id
+// sets maps every name of a kind to the item names it stands for: an item name to
+// itself, a vector name to its items in file order. a vector sharing its name
 // with its sole item maps once (same set either way); validateNames rejects
 // every other overlap.
 func (c *Config) sets(kind string) map[string][]string {
 	out := map[string][]string{}
-	add := func(id, vector string) {
-		out[id] = append(out[id], id)
-		if vector != id {
-			out[vector] = append(out[vector], id)
+	add := func(name, vector string) {
+		out[name] = append(out[name], name)
+		if vector != name {
+			out[vector] = append(out[vector], name)
 		}
 	}
 	switch kind {
 	case "sandbox":
 		for _, x := range c.Sandboxes {
-			add(x.ID, x.Vector)
+			add(x.Name, x.Vector)
 		}
 	case "agent":
 		for _, x := range c.Agents {
-			add(x.ID, x.Vector)
+			add(x.Name, x.Vector)
 		}
 	case "task":
 		for _, x := range c.Tasks {
-			add(x.ID, x.Vector)
+			add(x.Name, x.Vector)
 		}
 	case "scorer":
 		for _, x := range c.Scorers {
-			add(x.ID, x.Vector)
+			add(x.Name, x.Vector)
 		}
 	case "suite":
 		for _, x := range c.Suites {
-			add(x.ID, x.Vector)
+			add(x.Name, x.Vector)
 		}
 	}
 	return out
 }
 
-// One resolves an id that must name exactly one item of the kind (an agent's
-// sandbox, a scorer's agent): the item id, or an error naming the problem.
-func (c *Config) One(kind, id string) (string, error) {
-	ids, ok := c.sets(kind)[id]
+// One resolves an name that must name exactly one item of the kind (an agent's
+// sandbox, a scorer's agent): the item name, or an error naming the problem.
+func (c *Config) One(kind, name string) (string, error) {
+	names, ok := c.sets(kind)[name]
 	switch {
 	case !ok:
-		return "", fmt.Errorf("unknown %s %q", kind, id)
-	case len(ids) != 1:
-		return "", fmt.Errorf("%s %q names %d items, need exactly one", kind, id, len(ids))
+		return "", fmt.Errorf("unknown %s %q", kind, name)
+	case len(names) != 1:
+		return "", fmt.Errorf("%s %q names %d items, need exactly one", kind, name, len(names))
 	}
-	return ids[0], nil
+	return names[0], nil
 }
 
-// SelectSuites resolves a suite-id filter: empty -> all suites, otherwise the
-// named ones (vector or item ids, order preserved from the config). unknown
-// ids are errors.
+// SelectSuites resolves a suite-name filter: empty -> all suites, otherwise the
+// named ones (vector or item names, order preserved from the config). unknown
+// names are errors.
 func (c *Config) SelectSuites(only []string) ([]Suite, error) {
 	if len(only) == 0 {
 		return c.Suites, nil
@@ -77,19 +77,19 @@ func (c *Config) SelectSuites(only []string) ([]Suite, error) {
 	var errs errList
 	sets := c.sets("suite")
 	want := map[string]bool{}
-	for _, id := range only {
-		ids, ok := sets[id]
+	for _, name := range only {
+		names, ok := sets[name]
 		if !ok {
-			errs.add("--suite %q: no such suite", id)
+			errs.add("--suite %q: no such suite", name)
 			continue
 		}
-		for _, x := range ids {
+		for _, x := range names {
 			want[x] = true
 		}
 	}
 	var out []Suite
 	for _, s := range c.Suites {
-		if want[s.ID] {
+		if want[s.Name] {
 			out = append(out, s)
 		}
 	}
@@ -97,7 +97,7 @@ func (c *Config) SelectSuites(only []string) ([]Suite, error) {
 }
 
 // ExpandTestPairs crosses each selected suite's agents x tasks. dangling refs
-// and duplicate ids after expansion within one suite's axis are errors; the
+// and duplicate names after expansion within one suite's axis are errors; the
 // same pair from two suites is fine (suites may overlap deliberately) and
 // deduped.
 func (c *Config) ExpandTestPairs(only ...string) ([]TestPair, error) {
@@ -111,8 +111,8 @@ func (c *Config) ExpandTestPairs(only ...string) ([]TestPair, error) {
 	seen := map[TestPair]bool{}
 	var errs errList
 	for _, s := range suites {
-		agents := expandAxis(&errs, s.ID, "agents", "agent", s.Agents, agentSets)
-		tasks := expandAxis(&errs, s.ID, "tasks", "task", s.Tasks, taskSets)
+		agents := expandAxis(&errs, s.Name, "agents", "agent", s.Agents, agentSets)
+		tasks := expandAxis(&errs, s.Name, "tasks", "task", s.Tasks, taskSets)
 		for _, ag := range agents {
 			for _, tk := range tasks {
 				p := TestPair{Agent: ag, Task: tk}
@@ -140,8 +140,8 @@ func (c *Config) ExpandScorePairs(only ...string) ([]ScorePair, error) {
 	seen := map[ScorePair]bool{}
 	var errs errList
 	for _, s := range suites {
-		tasks := expandAxis(&errs, s.ID, "tasks", "task", s.Tasks, taskSets)
-		scorers := expandAxis(&errs, s.ID, "scorers", "scorer", s.Scorers, scorerSets)
+		tasks := expandAxis(&errs, s.Name, "tasks", "task", s.Tasks, taskSets)
+		scorers := expandAxis(&errs, s.Name, "scorers", "scorer", s.Scorers, scorerSets)
 		for _, tk := range tasks {
 			for _, sc := range scorers {
 				p := ScorePair{Task: tk, Scorer: sc}
@@ -156,32 +156,32 @@ func (c *Config) ExpandScorePairs(only ...string) ([]ScorePair, error) {
 	return out, errs.err()
 }
 
-// expandAxis expands one suite axis through the kind's sets: every id must
-// be known, and no item may land twice. returns the item ids in order (bad
+// expandAxis expands one suite axis through the kind's sets: every name must
+// be known, and no item may land twice. returns the item names in order (bad
 // refs dropped so expansion can keep collecting errors).
 func expandAxis(errs *errList, suite, axis, noun string, xs StrList, sets map[string][]string) []string {
 	var out []string
 	dup := map[string]bool{}
 	for _, x := range xs {
-		ids, ok := sets[x]
+		names, ok := sets[x]
 		if !ok {
 			errs.add("suite %q: unknown %s %q in %s", suite, noun, x, axis)
 			continue
 		}
-		for _, id := range ids {
-			if dup[id] {
-				errs.add("suite %q: duplicate %s %q in %s", suite, noun, id, axis)
+		for _, name := range names {
+			if dup[name] {
+				errs.add("suite %q: duplicate %s %q in %s", suite, noun, name, axis)
 				continue
 			}
-			dup[id] = true
-			out = append(out, id)
+			dup[name] = true
+			out = append(out, name)
 		}
 	}
 	return out
 }
 
-// FilterPairs narrows expanded test pairs to the given agent and/or task ids,
-// vector ids included (an empty list = no filter on that axis). it errors on
+// FilterPairs narrows expanded test pairs to the given agent and/or task names,
+// vector names included (an empty list = no filter on that axis). it errors on
 // a filter value that matches no pair (typo guard), or when the combined
 // filter selects nothing.
 func (c *Config) FilterPairs(pairs []TestPair, agents, tasks []string) ([]TestPair, error) {
@@ -213,8 +213,8 @@ func (c *Config) FilterPairs(pairs []TestPair, agents, tasks []string) ([]TestPa
 	return out, nil
 }
 
-// FilterScorePairs narrows expanded score pairs to the given scorer ids,
-// vector ids included (empty = no filter), with FilterPairs' typo guard.
+// FilterScorePairs narrows expanded score pairs to the given scorer names,
+// vector names included (empty = no filter), with FilterPairs' typo guard.
 func (c *Config) FilterScorePairs(pairs []ScorePair, scorers []string) ([]ScorePair, error) {
 	if len(scorers) == 0 {
 		return pairs, nil
@@ -237,15 +237,15 @@ func (c *Config) FilterScorePairs(pairs []ScorePair, scorers []string) ([]ScoreP
 	return out, nil
 }
 
-// filterSet expands the --<kind> filter's ids through sets, keeping those
+// filterSet expands the --<kind> filter's names through sets, keeping those
 // present in some pair. a filter value that reaches no pair is an error.
 func filterSet(errs *errList, kind string, xs []string, sets map[string][]string, have map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	for _, x := range xs {
 		hit := false
-		for _, id := range sets[x] {
-			if have[id] {
-				out[id] = true
+		for _, name := range sets[x] {
+			if have[name] {
+				out[name] = true
 				hit = true
 			}
 		}

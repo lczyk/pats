@@ -140,7 +140,7 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 		for _, sb := range cfg.Sandboxes {
 			id := sb.Image
 			if id == "" {
-				id = "img-" + sb.ID
+				id = "img-" + sb.Name
 			}
 			h.refs[id] = id
 			in, err := localInputs(sb, dir)
@@ -148,10 +148,10 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 			e := &pinEntry{Daemon: h.daemon, Image: pinImage{ID: id}, Inputs: in,
 				PatsVersion: version.Info.Version, PatsBuild: patsBuild()}
 			if sb.Egress.Set {
-				h.refs["proxy-"+sb.ID] = "proxy-" + sb.ID
-				e.Proxy = &pinImage{ID: "proxy-" + sb.ID}
+				h.refs["proxy-"+sb.Name] = "proxy-" + sb.Name
+				e.Proxy = &pinImage{ID: "proxy-" + sb.Name}
 			}
-			f.setPin(h.targetName, sb.ID, e, time.Now())
+			f.setPin(h.targetName, sb.Name, e, time.Now())
 		}
 		return nil
 	}))

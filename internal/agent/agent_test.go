@@ -35,7 +35,7 @@ func TestHarnessThroughSandbox(t *testing.T) {
 	defer overrideCmd("opencode-openrouter",
 		`echo "model=$PATS_MODEL"; echo "prompt=$PATS_PROMPT_FILE"; echo hello > out.txt`)()
 
-	a := config.Agent{ID: "x", Harness: "opencode-openrouter", Model: "m1", Sandbox: "s"}
+	a := config.Agent{Name: "x", Harness: "opencode-openrouter", Model: "m1", Sandbox: "s"}
 	env := Env(a, sandbox.WorkMount+"/prompt.txt", sandbox.WorkMount, "")
 	spec, err := Spec(a, dir, env)
 	require.NoError(t, err)
@@ -66,14 +66,14 @@ func overrideCmd(harness, cmd string) func() {
 }
 
 func TestSpecClaudeCli(t *testing.T) {
-	spec, err := Spec(config.Agent{ID: "h", Harness: "claude-cli-keyless", Sandbox: "s"}, "/tmp", nil)
+	spec, err := Spec(config.Agent{Name: "h", Harness: "claude-cli-keyless", Sandbox: "s"}, "/tmp", nil)
 	require.NoError(t, err)
 	assert.Equal(t, spec.Argv[0], "sh")
 	assert.ContainsString(t, spec.Argv[len(spec.Argv)-1], "claude --print")
 }
 
 func TestSpecCodexCliKeyless(t *testing.T) {
-	spec, err := Spec(config.Agent{ID: "c", Harness: "codex-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
+	spec, err := Spec(config.Agent{Name: "c", Harness: "codex-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
 	require.NoError(t, err)
 	cmd := spec.Argv[len(spec.Argv)-1]
 	assert.ContainsString(t, cmd, "codex exec --json --ephemeral")
@@ -84,7 +84,7 @@ func TestSpecCodexCliKeyless(t *testing.T) {
 }
 
 func TestSpecCopilotCliKeyless(t *testing.T) {
-	spec, err := Spec(config.Agent{ID: "p", Harness: "copilot-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
+	spec, err := Spec(config.Agent{Name: "p", Harness: "copilot-cli-keyless", Model: "gpt-5", Effort: "high", Sandbox: "s"}, "/tmp", nil)
 	require.NoError(t, err)
 	cmd := spec.Argv[len(spec.Argv)-1]
 	assert.ContainsString(t, cmd, "copilot -p")
@@ -151,7 +151,7 @@ func TestHostCredsFileCodex(t *testing.T) {
 }
 
 func TestSpecUnsupportedHarness(t *testing.T) {
-	_, err := Spec(config.Agent{ID: "h", Harness: "codex-cli", Sandbox: "s"}, "/tmp", nil)
+	_, err := Spec(config.Agent{Name: "h", Harness: "codex-cli", Sandbox: "s"}, "/tmp", nil)
 	assert.Error(t, err, "unsupported harness")
 }
 

@@ -70,7 +70,7 @@ suites: {kind: suite, items: {s: {agents: a, tasks: [t4, tasks]}}}
 func TestExpandOverlapDedupes(t *testing.T) {
 	c := suiteFixture(t)
 	c.Suites = append(c.Suites, Suite{
-		ID: "smoke", Vector: "suites", Agents: StrList{"a"}, Tasks: StrList{"t1"}, Scorers: StrList{"s1"},
+		Name: "smoke", Vector: "suites", Agents: StrList{"a"}, Tasks: StrList{"t1"}, Scorers: StrList{"s1"},
 	})
 	pairs, err := c.ExpandTestPairs()
 	require.NoError(t, err)

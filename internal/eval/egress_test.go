@@ -16,10 +16,10 @@ import (
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-const egressCfg = `box: {kind: sandbox, items: {s: {image: img, egress: {allow: [a.test, '.ubuntu.com'], deny: ['a.test/secret*']}}, open: {image: img}}}
-a: {kind: agent, items: {a: {harness: claude-cli-keyless, model: m, sandbox: s}}}
-t: {kind: task, items: {t: {prompt: p, egress: {allow: [pypi.org], deny: ['github.com/*/answer*']}}}}
-su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+const egressCfg = `box: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [a.test, '.ubuntu.com'], deny: ['a.test/secret*']}}, open: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: claude-cli-keyless, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, egress: {allow: [pypi.org], deny: ['github.com/*/answer*']}}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `
 
 func egressConfig(t *testing.T) *config.Config {
@@ -32,17 +32,17 @@ func egressConfig(t *testing.T) *config.Config {
 
 func TestEffectivePolicy(t *testing.T) {
 	c := egressConfig(t)
-	pol, err := EffectivePolicy(c, "s", "", "")
+	pol, err := EffectivePolicy(c, "sxx", "", "")
 	require.NoError(t, err)
 	assert.EqualArrays(t, pol.Allow, []string{"a.test", ".ubuntu.com"})
 
-	pol, err = EffectivePolicy(c, "s", "t", "a")
+	pol, err = EffectivePolicy(c, "sxx", "txx", "axx")
 	require.NoError(t, err)
 	assert.ContainsString(t, strings.Join(pol.Allow, " "), "pypi.org")
 	assert.ContainsString(t, strings.Join(pol.Allow, " "), ".anthropic.com")
 	assert.EqualArrays(t, pol.Deny, []string{"a.test/secret*", "github.com/*/answer*"})
 
-	for _, bad := range [][3]string{{"ghost", "", ""}, {"open", "", ""}, {"s", "ghost", ""}, {"s", "", "ghost"}} {
+	for _, bad := range [][3]string{{"ghost", "", ""}, {"open", "", ""}, {"sxx", "ghost", ""}, {"sxx", "", "ghost"}} {
 		_, err := EffectivePolicy(c, bad[0], bad[1], bad[2])
 		assert.Error(t, err, assert.AnyError, bad[0]+bad[1]+bad[2])
 	}
@@ -50,7 +50,7 @@ func TestEffectivePolicy(t *testing.T) {
 
 func TestCheckURL(t *testing.T) {
 	c := egressConfig(t)
-	pol, err := EffectivePolicy(c, "s", "t", "a")
+	pol, err := EffectivePolicy(c, "sxx", "txx", "axx")
 	require.NoError(t, err)
 	cases := []struct {
 		url, want string
@@ -76,7 +76,7 @@ func TestCheckURL(t *testing.T) {
 		assert.Equal(t, strings.Contains(out.String(), "harness hosts not merged"), false)
 	}
 
-	pol, _ = EffectivePolicy(c, "s", "", "")
+	pol, _ = EffectivePolicy(c, "sxx", "", "")
 	var out bytes.Buffer
 	ok, err := CheckURL(pol, "https://api.anthropic.com/", "", false, &out)
 	require.NoError(t, err)
@@ -127,9 +127,9 @@ func writeRun(t *testing.T, audit string) string {
 	t.Helper()
 	dir := t.TempDir()
 	run := filepath.Join(dir, runsSubdir, "001-20261106-test-run")
-	require.NoError(t, os.MkdirAll(filepath.Join(run, "a", "t"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(run, "a", "t", "egress.log"), []byte(audit), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(run, "a", "t", "metadata.json"), []byte(`{"agent":"a","harness":"claude-cli-keyless"}`), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(run, "axx", "txx"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(run, "axx", "txx", "egress.log"), []byte(audit), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(run, "axx", "txx", "metadata.json"), []byte(`{"agent":"axx","harness":"claude-cli-keyless"}`), 0o644))
 	return dir
 }
 

@@ -18,21 +18,21 @@ import (
 )
 
 const initCfg = `
-sb:
+sbx:
   kind: sandbox
   items:
     pub: {}
     own: {image: my/image:1}
     proxied: {image: my/image:1, egress: {allow: [example.com]}}
-ag:
+agx:
   kind: agent
   defaults: {harness: opencode-openrouter, model: m}
   items:
     a-pub: {sandbox: pub}
     a-own: {sandbox: own}
     a-proxied: {sandbox: proxied}
-t: {kind: task, items: {t: {prompt: p}}}
-su: {kind: suite, items: {all: {agents: ag, tasks: t}, only-pub: {agents: a-pub, tasks: t}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {all: {agents: agx, tasks: txx}, only-pub: {agents: a-pub, tasks: txx}}}
 `
 
 // init pins each sandbox's image by id: pulls what is absent, leaves what is
@@ -159,20 +159,20 @@ func TestRunMissingPins(t *testing.T) {
 func TestPinsSupersede(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
-	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "i1", Built: true}, Layers: []string{"l1"},
+	f.setPin("t", "axx", &pinEntry{Image: pinImage{ID: "i1", Built: true}, Layers: []string{"l1"},
 		Proxy: &pinImage{ID: "p1", Pulled: true}}, now)
-	f.setPin("t", "b", &pinEntry{Image: pinImage{ID: "user"}}, now)
-	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "i2", Built: true}, Layers: []string{"l1"},
+	f.setPin("t", "bxx", &pinEntry{Image: pinImage{ID: "user"}}, now)
+	f.setPin("t", "axx", &pinEntry{Image: pinImage{ID: "i2", Built: true}, Layers: []string{"l1"},
 		Proxy: &pinImage{ID: "p1", Pulled: true}}, now)
-	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "i2", Built: true}, Layers: []string{"l1"}}, now)
+	f.setPin("t", "axx", &pinEntry{Image: pinImage{ID: "i2", Built: true}, Layers: []string{"l1"}}, now)
 	var ids []string
 	for _, s := range f.Superseded {
 		ids = append(ids, s.ID)
 	}
 	assert.EqualArrays(t, ids, []string{"i1", "p1"})
 
-	f.dropMissing(map[string]bool{"b": true}, now)
-	assert.That(t, f.entry("t", "a") == nil, "a dropped sandbox kept its pin")
+	f.dropMissing(map[string]bool{"bxx": true}, now)
+	assert.That(t, f.entry("t", "axx") == nil, "a dropped sandbox kept its pin")
 	ids = nil
 	for _, s := range f.Superseded {
 		ids = append(ids, s.ID)
@@ -236,7 +236,7 @@ func TestComponentStamps(t *testing.T) {
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})
 	require.NoError(t, err)
 	assert.That(t, !bytes.Contains(out.Bytes(), []byte("harnesses differ")), "pinned versions warned: %s", out.String())
-	meta, err := os.ReadFile(filepath.Join(runDir, "a-own", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "a-own", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"claude": "`+pins["claude"]+`"`)
 
@@ -261,18 +261,18 @@ func TestComponentStamps(t *testing.T) {
 // logs) or only pulls.
 func TestInitWhat(t *testing.T) {
 	dir := "/nonexistent/proj"
-	log := relToCwd(filepath.Join(dir, ".pats", "init", "s.log"))
+	log := relToCwd(filepath.Join(dir, ".pats", "init", "sxx.log"))
 	cases := []struct {
 		sb   config.Sandbox
 		want string
 	}{
-		{config.Sandbox{ID: "s", Driver: "docker"}, "pulling images"},
-		{config.Sandbox{ID: "s", Driver: "docker", Image: "my/image:1"}, "pulling images"},
-		{config.Sandbox{ID: "s", Driver: "docker", Provision: "provision"}, "building images (log: " + log + ")"},
-		{config.Sandbox{ID: "s", Driver: "podman", Build: "."}, "building images (log: " + log + ")"},
-		{config.Sandbox{ID: "s", Driver: "lxd"}, "building images (log: " + log + ")"},
-		{config.Sandbox{ID: "s", Driver: "lxd", Image: "ubuntu:26.04"}, "pulling images"},
-		{config.Sandbox{ID: "s", Driver: "lxd", Image: "my-alias"}, "pinning its image"},
+		{config.Sandbox{Name: "sxx", Driver: "docker"}, "pulling images"},
+		{config.Sandbox{Name: "sxx", Driver: "docker", Image: "my/image:1"}, "pulling images"},
+		{config.Sandbox{Name: "sxx", Driver: "docker", Provision: "provision"}, "building images (log: " + log + ")"},
+		{config.Sandbox{Name: "sxx", Driver: "podman", Build: "."}, "building images (log: " + log + ")"},
+		{config.Sandbox{Name: "sxx", Driver: "lxd"}, "building images (log: " + log + ")"},
+		{config.Sandbox{Name: "sxx", Driver: "lxd", Image: "ubuntu:26.04"}, "pulling images"},
+		{config.Sandbox{Name: "sxx", Driver: "lxd", Image: "my-alias"}, "pinning its image"},
 	}
 	for _, c := range cases {
 		assert.Equal(t, initWhat(c.sb, dir), c.want, c.sb.Driver)
