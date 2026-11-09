@@ -246,10 +246,37 @@ type Scorer struct {
 	Prompt     string `yaml:"prompt" text:"free"`
 	PromptFile string `yaml:"prompt-file"`
 	PromptCmd  string `yaml:"prompt-cmd"`
+	// an agent scorer's steps and settings, each with a task's meaning: the
+	// judge runs as an agent on a task synthesised from them.
+	Stage   string            `yaml:"stage"`
+	Prepare string            `yaml:"prepare"`
+	Collect string            `yaml:"collect"`
+	Sudo    *bool             `yaml:"sudo"`
+	Timeout string            `yaml:"timeout"` // "" -> 5m; "0" -> none
+	Env     map[string]string `yaml:"env"`
+	Egress  TaskEgress        `yaml:"egress"`
 }
 
 // IsAgent reports whether the scorer judges via an agent rather than a script.
 func (s Scorer) IsAgent() bool { return s.Agent != "" }
+
+// DefaultJudgeTimeout bounds a judge whose scorer sets no timeout.
+const DefaultJudgeTimeout = 5 * time.Minute
+
+// Task is the task an agent scorer's judge runs: the scorer's prompt, steps
+// and settings, named and placed as the scorer is.
+func (s Scorer) Task() Task {
+	timeout := s.Timeout
+	if timeout == "" {
+		timeout = DefaultJudgeTimeout.String()
+	}
+	return Task{
+		Name: s.Name, Vector: s.Vector, Dir: s.Dir,
+		Prompt: s.Prompt, PromptFile: s.PromptFile, PromptCmd: s.PromptCmd,
+		Stage: s.Stage, Sudo: s.Sudo, Prepare: s.Prepare, Collect: s.Collect,
+		Timeout: timeout, Env: s.Env, Egress: s.Egress,
+	}
+}
 
 // Suite is a named (agents, tasks, scorers) selection. both cross-products are
 // implied within it: run = agents x tasks, score = tasks x scorers. each axis

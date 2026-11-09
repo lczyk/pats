@@ -356,22 +356,28 @@ func (c *Config) validateTasks(add func(string, ...any)) {
 				add("task %q: bad timeout %q (use e.g. 10m, 300s)", t.Name, t.Timeout)
 			}
 		}
-		names := make([]string, 0, len(t.Env))
-		for k := range t.Env {
-			names = append(names, k)
-		}
-		sort.Strings(names)
-		for _, k := range names {
-			switch {
-			case !envName.MatchString(k):
-				add("task %q: env %q is not a valid variable name", t.Name, k)
-			case strings.HasPrefix(k, "PATS_"):
-				add("task %q: env %q: PATS_* is reserved for pats", t.Name, k)
-			case k == "PATH":
-				add("task %q: env PATH is set by pats (bin/ is prepended to it)", t.Name)
-			case shellReadonly[k]:
-				add("task %q: env %s is read-only in a shell, which hands the env to prepare", t.Name, k)
-			}
+		checkEnv(add, fmt.Sprintf("task %q", t.Name), t.Env)
+	}
+}
+
+// checkEnv checks a task's or an agent scorer's env: names a shell can set,
+// clear of what pats sets.
+func checkEnv(add func(string, ...any), what string, env map[string]string) {
+	names := make([]string, 0, len(env))
+	for k := range env {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		switch {
+		case !envName.MatchString(k):
+			add("%s: env %q is not a valid variable name", what, k)
+		case strings.HasPrefix(k, "PATS_"):
+			add("%s: env %q: PATS_* is reserved for pats", what, k)
+		case k == "PATH":
+			add("%s: env PATH is set by pats (bin/ is prepended to it)", what)
+		case shellReadonly[k]:
+			add("%s: env %s is read-only in a shell, which hands the env to prepare", what, k)
 		}
 	}
 }
@@ -397,16 +403,93 @@ func (c *Config) validateScorers(add func(string, ...any)) {
 			if prompt {
 				add("scorer %q: a prompt is an agent-scorer field -- remove it, or replace the score with agent", s.Name)
 			}
-		case s.IsAgent():
-			add("scorer %q: agent scorers are not implemented yet", s.Name)
-			if _, err := c.One("agent", s.Agent); err != nil {
-				add("scorer %q: agent: %v", s.Name, err)
+			for _, f := range judgeFields(s) {
+				add("scorer %q: %s is an agent-scorer field -- a script scorer runs score alone", s.Name, f)
 			}
+		case s.IsAgent():
+			c.validateJudge(add, s)
 			if !prompt {
 				add("scorer %q: an agent scorer needs one of prompt, prompt-file or prompt-cmd", s.Name)
 			}
 		default:
 			add("scorer %q: needs score or agent", s.Name)
+		}
+	}
+}
+
+// judgeFields names the agent-scorer fields s sets besides its agent and prompt.
+func judgeFields(s Scorer) []string {
+	var set []string
+	for _, f := range []struct {
+		name string
+		on   bool
+	}{
+		{"stage", s.Stage != ""}, {"prepare", s.Prepare != ""}, {"collect", s.Collect != ""},
+		{"env", len(s.Env) > 0}, {"sudo", s.Sudo != nil}, {"egress", s.Egress.Set}, {"timeout", s.Timeout != ""},
+	} {
+		if f.on {
+			set = append(set, f.name)
+		}
+	}
+	return set
+}
+
+// validateJudge checks an agent scorer as a task is checked, against the one
+// agent that judges it and that agent's sandbox.
+func (c *Config) validateJudge(add func(string, ...any), s Scorer) {
+	what := fmt.Sprintf("scorer %q", s.Name)
+	if s.Timeout != "" {
+		if _, err := time.ParseDuration(s.Timeout); err != nil {
+			add("%s: bad timeout %q (use e.g. 5m, 300s)", what, s.Timeout)
+		}
+	}
+	checkEnv(add, what, s.Env)
+	if s.Egress.Set {
+		if _, err := (proxy.Policy{Allow: s.Egress.Allow, Deny: s.Egress.Deny}).Rule(); err != nil {
+			add("%s: egress: %v", what, err)
+		}
+	}
+	name, err := c.One("agent", s.Agent)
+	if err != nil {
+		add("%s: agent: %v", what, err)
+		return
+	}
+	// one scorer, one judge: a panel of judges is several scorers.
+	if name != s.Agent {
+		add("%s: agent %q is a vector -- name the one agent that judges (%s)", what, s.Agent, name)
+		return
+	}
+	var a Agent
+	for _, x := range c.Agents {
+		if x.Name == name {
+			a = x
+		}
+	}
+	sbID, err := c.ResolveSandbox(a)
+	if err != nil {
+		return // reported by validateAgents
+	}
+	var sb Sandbox
+	for _, x := range c.Sandboxes {
+		if x.Name == sbID {
+			sb = x
+		}
+	}
+	if s.Sudo != nil && *s.Sudo && sb.Driver != "lxd" {
+		add("%s sets sudo, but its agent %q runs in sandbox %q (driver %q); sudo is lxd-only for now", what, name, sbID, sb.Driver)
+	}
+	if !s.Egress.Set {
+		return
+	}
+	if !sb.Egress.Set {
+		add("%s sets egress, but its agent %q runs in sandbox %q, whose egress is %s -- give the sandbox an egress mapping", what, name, sbID, sb.Egress.Mode())
+		return
+	}
+	if sb.Egress.Default == "allow" {
+		for _, line := range s.Egress.Allow {
+			if e, err := proxy.ParseEntry(line, false); err == nil && !e.URL() {
+				add("%s: egress allow %q is dead under sandbox %q's default: allow", what, line, sbID)
+			}
 		}
 	}
 }

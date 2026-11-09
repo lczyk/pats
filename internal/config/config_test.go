@@ -22,8 +22,7 @@ func TestExampleConfig(t *testing.T) {
 
 	score, err := c.ExpandScorePairs()
 	require.NoError(t, err)
-	// 3 scorers x 3 tasks = 9 pairs. (the agent scorer is commented out until
-	// agent scorers are implemented.)
+	// 3 scorers x 3 tasks = 9 pairs.
 	assert.Len(t, score, 9)
 }
 
@@ -273,7 +272,12 @@ func TestValidateErrors(t *testing.T) {
 		{"scorer needs a source", "xxx: {kind: scorer, items: {xxx: {}}}\n", "needs score or agent"},
 		{"scorer with both", "xxx: {kind: scorer, items: {xxx: {score: ./s.py, agent: axx, prompt: p}}}\n", "mutually exclusive"},
 		{"script scorer with prompt", "xxx: {kind: scorer, items: {xxx: {score: ./s.py, prompt: p}}}\n", "a prompt is an agent-scorer field"},
-		{"agent scorer not implemented", "xxx: {kind: scorer, items: {xxx: {agent: ghost, prompt: p}}}\n", "agent scorers are not implemented"},
+		{"script scorer with a judge field", "xxx: {kind: scorer, items: {xxx: {score: ./s.py, stage: echo}}}\n", "stage is an agent-scorer field"},
+		{"judge vector", base + "jvx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m}}}\nsc2: {kind: scorer, items: {sc2: {agent: jvx, prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: txx, scorers: sc2}}}\n", "agent \"jvx\" is a vector"},
+		{"judge env", base + "jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}\n" + "sc2: {kind: scorer, items: {sc2: {agent: jxx, prompt: p, env: {PATS_X: y}}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: txx, scorers: sc2}}}\n", "scorer \"sc2\": env \"PATS_X\": PATS_* is reserved"},
+		{"judge timeout", base + "jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}\n" + "sc2: {kind: scorer, items: {sc2: {agent: jxx, prompt: p, timeout: soon}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: txx, scorers: sc2}}}\n", "bad timeout \"soon\""},
+		{"judge egress, open sandbox", base + "jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}\n" + "sc2: {kind: scorer, items: {sc2: {agent: jxx, prompt: p, egress: {allow: [x.com]}}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: txx, scorers: sc2}}}\n", "scorer \"sc2\" sets egress, but its agent \"jxx\""},
+		{"judge sudo under docker", base + "jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}\n" + "sc2: {kind: scorer, items: {sc2: {agent: jxx, prompt: p, sudo: true}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: txx, scorers: sc2}}}\n", "sets sudo"},
 		{"dangling scorer agent", "xxx: {kind: scorer, items: {xxx: {agent: ghost, prompt: p}}}\n", "unknown agent \"ghost\""},
 		{"agent scorer without prompt", "xxx: {kind: scorer, items: {xxx: {agent: ghost}}}\n", "needs one of prompt, prompt-file or prompt-cmd"},
 		{"task missing prompt", "xxx: {kind: task, items: {xxx: {}}}\n", "needs one of prompt, prompt-file or prompt-cmd"},
@@ -324,6 +328,27 @@ func TestValidateErrors(t *testing.T) {
 			assert.Error(t, c.Validate(), tc.want)
 		})
 	}
+}
+
+// an agent scorer takes a task's fields, and synthesises the task its judge runs.
+func TestValidateAgentScorer(t *testing.T) {
+	c := parseT(t, base+`
+jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+jud: {kind: scorer, items: {jud: {agent: jxx, prompt-file: r.md, stage: echo s, prepare: echo p, collect: echo c, env: {K: v}}}}
+su2: {kind: suite, items: {su2: {agents: axx, tasks: txx, scorers: jud}}}
+`)
+	require.NoError(t, c.Validate())
+	var sc Scorer
+	for _, x := range c.Scorers {
+		if x.Name == "jud" {
+			sc = x
+		}
+	}
+	task := sc.Task()
+	assert.Equal(t, task.Name, "jud")
+	assert.Equal(t, task.Stage, "echo s")
+	assert.Equal(t, task.Env["K"], "v")
+	assert.Equal(t, task.TimeoutDuration(), DefaultJudgeTimeout)
 }
 
 // an lxd sandbox takes its own keys, and the driver-neutral ones.
