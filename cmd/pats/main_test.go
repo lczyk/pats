@@ -61,3 +61,9 @@ func TestEgressRunFlagShadowsBadEnv(t *testing.T) {
 		t.Fatalf("want a listen error, got %v", err)
 	}
 }
+
+// --json is a preview flag: alone it never starts a run.
+func TestRunJSONNeedsDryRun(t *testing.T) {
+	err := (&RunCommand{JSON: true}).Execute(nil)
+	assert.Error(t, err, "--json goes with -n/--dry-run only")
+}

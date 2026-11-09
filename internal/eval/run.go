@@ -43,6 +43,14 @@ type Options struct {
 	Tasks     []string  // filter the pairs to these tasks (empty -> all)
 	Suites    []string  // only expand these suites (empty -> all)
 	Offline   bool      // skip the upstream checks, for a machine without a network
+	// DryRun lists the pairs with a cost estimate and stops before the first
+	// sandbox; JSON (with DryRun only) writes that list as json lines to
+	// JSONOut, while Out takes the log.
+	DryRun  bool
+	JSON    bool
+	JSONOut io.Writer
+	Repeat  int     // runs of the selection, one after another; 0 or 1 is one
+	MaxCost float64 // the invocation's budget in us dollars; 0 is none
 
 	live io.Writer // -vv's stream when Out is a pair's buffer (see liveStream)
 }
@@ -57,11 +65,14 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	}
 	opts.Color = useColor(opts.Out) // decided once from the real terminal; po copies inherit it
 	lg := logw{opts.Out, opts.Color, opts.Verbose}
-	unlock, err := lockConfigDir(opts.ConfigDir)
-	if err != nil {
-		return "", err
+	// a dry run only reads: it runs beside a live run.
+	if !opts.DryRun {
+		unlock, err := lockConfigDir(opts.ConfigDir)
+		if err != nil {
+			return "", err
+		}
+		defer unlock()
 	}
-	defer unlock()
 	pairs, err := cfg.ExpandTestPairs(opts.Suites...)
 	if err != nil {
 		return "", err
@@ -100,6 +111,9 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 		for _, w := range warns {
 			lg.warn("%s", w)
 		}
+	}
+	if opts.DryRun {
+		return "", dryRun(cfg, opts, pairs, lg)
 	}
 	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
 	if err != nil {
@@ -285,6 +299,11 @@ type egressRecord struct {
 type pairMeta struct {
 	Agent   string `json:"agent"`
 	Harness string `json:"harness,omitempty"`
+	// the model and effort the agent ran with: the agent id alone can be
+	// pointed at another model between runs (the dry run's estimate matches
+	// on them).
+	Model   string `json:"model,omitempty"`
+	Effort  string `json:"effort,omitempty"`
 	Task    string `json:"task"`
 	Sandbox string `json:"sandbox"`
 	Image   string `json:"image"`
@@ -567,7 +586,7 @@ func runPair(
 	}
 
 	meta := pairMeta{
-		Agent: p.Agent, Harness: a.Harness, Task: p.Task,
+		Agent: p.Agent, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: p.Task,
 		Sandbox: sbID, Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
 		PatsVersion:  version.Info.Version,

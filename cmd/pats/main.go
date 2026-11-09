@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -88,17 +89,29 @@ type RunCommand struct {
 	Tasks   []string `long:"task" short:"t" description:"only run these tasks or task vectors (repeatable); default: all"`
 	Suites  []string `long:"suite" short:"S" description:"only run these suites or suite vectors (repeatable); default: all"`
 	Offline bool     `long:"offline" description:"skip checking for newer upstream images and the openrouter model check"`
+	DryRun  bool     `long:"dry-run" short:"n" description:"list the pairs with a cost estimate from past runs, and run nothing"`
+	JSON    bool     `long:"json" description:"with -n: the list as one json object a line on stdout, the log on stderr"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
+	if r.JSON && !r.DryRun {
+		return errors.New("--json goes with -n/--dry-run only")
+	}
 	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
 	}
+	out := io.Writer(os.Stdout)
+	if r.JSON {
+		out = os.Stderr
+	}
 	_, err = eval.Run(cfg, eval.Options{
 		ConfigDir: filepath.Dir(opts.Config),
 		Now:       time.Now(),
-		Out:       os.Stdout,
+		Out:       out,
+		DryRun:    r.DryRun,
+		JSON:      r.JSON,
+		JSONOut:   os.Stdout,
 		Jobs:      r.Jobs,
 		Agents:    r.Agents,
 		Tasks:     r.Tasks,
