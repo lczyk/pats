@@ -310,6 +310,7 @@ func TestValidateErrors(t *testing.T) {
 		{"suite missing tasks", base + "su2: {kind: suite, items: {su2: {agents: axx}}}\n", "tasks is required"},
 		{"duplicate item name across vectors", base + "t2x: {kind: task, items: {txx: {prompt: p}}}\n", "duplicate task name: txx"},
 		{"vector name shadows an item of its kind", base + "t2x: {kind: task, items: {xxx: {prompt: p}, yxx: {prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: t2x}}}\nt3x: {kind: task, items: {t2x: {prompt: p}}}\n", "share a name but are different things"},
+		{"agent named as a run file", "sxx: {kind: sandbox, items: {sxx: {image: img}}}\naxx: {kind: agent, items: {scores.json: {harness: opencode-openrouter, model: m}}}\n", "the name is taken by a run's own scores.json"},
 		{"slash in name", "xxx: {kind: task, items: {a/b: {prompt: p}}}\n", "task \"a/b\" is not a name: lowercase letters, digits, dots, pluses and single hyphens, a letter or digit first, no hyphen last, at least 2 long"},
 		{"orphaned task", base + "t2x: {kind: task, items: {forgotten: {prompt: p}}}\n", "task \"forgotten\" is in no suite"},
 		{"orphaned scorer", base + "sc2: {kind: scorer, items: {lost: {score: ./s.py}}}\n", "scorer \"lost\" is in no suite"},

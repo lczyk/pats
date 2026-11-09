@@ -50,6 +50,9 @@ func (c *Config) validateNames(add func(string, ...any)) {
 			if bad := badName(m.name); bad != "" {
 				add("%s %q %s", kind, m.name, bad)
 			}
+			if kind == "agent" && runDirFiles[m.name] {
+				add("agent %q: the name is taken by a run's own %s, beside its agents' dirs", m.name, m.name)
+			}
 			if items[m.name] {
 				add("duplicate %s name: %s", kind, m.name)
 			}
@@ -72,6 +75,10 @@ func (c *Config) validateNames(add func(string, ...any)) {
 // last, at least 2 long. no name starts with a dot, so none meets .judge or
 // a judgement's staging dir.
 var nameRe = regexp.MustCompile(`^[a-z0-9](?:-?[.a-z0-9+]){1,}$`)
+
+// runDirFiles are what pats writes at the top of a run dir, beside one dir
+// per agent: no agent may be named as one.
+var runDirFiles = map[string]bool{"scores.json": true}
 
 // badName says what is wrong with a name, or "".
 func badName(name string) string {
