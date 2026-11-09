@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -104,7 +105,7 @@ func (p Policy) NeedsCA() bool {
 
 // Options configures Serve.
 type Options struct {
-	Listen string // address to listen on, default :8080
+	Listen string // address to listen on, default :8080; unix:<path> for a socket
 	Policy Policy
 	// CACert and CAKey are the run CA, each a pem file path or the pem itself.
 	// required when the policy has url entries.
@@ -193,7 +194,14 @@ func Serve(ctx context.Context, o Options) error {
 			return err
 		}
 	}
-	ln, err := net.Listen("tcp", addr)
+	network := "tcp"
+	if p, ok := strings.CutPrefix(addr, "unix:"); ok {
+		// a socket a sandbox reaches through a bind, with no network of its
+		// own: bwrap's.
+		network, addr = "unix", p
+		_ = os.Remove(p)
+	}
+	ln, err := net.Listen(network, addr)
 	if err != nil {
 		return err
 	}

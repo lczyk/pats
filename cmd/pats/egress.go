@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -24,6 +26,49 @@ type EgressCommand struct {
 	Log     EgressLogCommand     `command:"log" description:"a pair's egress log as a table"`
 	Run     EgressRunCommand     `command:"run" description:"serve the egress proxy: the sidecar's entrypoint, and standalone use"`
 	CA      EgressCACommand      `command:"ca" description:"mint a CA for a standalone proxy's url entries"`
+	Forward EgressForwardCommand `command:"forward" hidden:"yes" description:"inside a bwrap sandbox: relay a tcp port to the proxy's socket while a command runs"`
+}
+
+// EgressForwardCommand is the bwrap driver's in-sandbox half of egress: a
+// sandbox with no network gets a tcp proxy address that reaches the proxy
+// on the host through a bound socket, for as long as its command runs.
+type EgressForwardCommand struct {
+	Listen string `long:"listen" default:"127.0.0.1:8080" description:"tcp address to listen on"`
+	Socket string `long:"socket" required:"yes" description:"the proxy's unix socket"`
+	Args   struct {
+		Argv []string `positional-arg-name:"command" required:"1"`
+	} `positional-args:"yes"`
+}
+
+func (c *EgressForwardCommand) Execute(args []string) error {
+	ln, err := net.Listen("tcp", c.Listen)
+	if err != nil {
+		return err
+	}
+	go proxy.Relay(ln, c.Socket)
+	cmd := exec.Command(c.Args.Argv[0], c.Args.Argv[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, os.Interrupt)
+	go func() {
+		for s := range sigs {
+			_ = cmd.Process.Signal(s)
+		}
+	}()
+	err = cmd.Wait()
+	ln.Close()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		code := exit.ExitCode()
+		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			code = 128 + int(ws.Signal()) // as a shell reports it
+		}
+		os.Exit(code)
+	}
+	return err
 }
 
 // EgressCheckCommand evaluates one url against a sandbox's policy.

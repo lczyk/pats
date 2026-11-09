@@ -566,7 +566,8 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 			continue
 		}
 		if !dryRun {
-			if err := os.RemoveAll(path); err != nil {
+			// removeTree: a bwrap session's overlay work dir is mode 000.
+			if err := removeTree(path); err != nil {
 				errs = append(errs, err)
 				continue
 			}
@@ -574,6 +575,13 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 		}
 		gone[path], gone[path+ownerSuffix] = true, true
 		o.report(CleanEvent{Action: "remove", Kind: "temp", Name: path})
+	}
+	// a bwrap unpack a crash cut short leaves <id>.new, taken only when no
+	// unpack holds its lock.
+	if st, err := newBwrapStore(); err == nil {
+		for _, name := range st.sweepNew(dryRun) {
+			o.report(CleanEvent{Action: "remove", Kind: "temp", Name: filepath.Join(st.dir, "rootfs", name)})
+		}
 	}
 	if listed == nil && !force {
 		return gone, errors.Join(errs...)

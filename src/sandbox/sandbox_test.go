@@ -83,16 +83,13 @@ func TestAsExitErrorUnwrapsWrapped(t *testing.T) {
 }
 
 func TestOpenErrors(t *testing.T) {
-	_, err := Open(Options{Driver: "bwrap"})
-	assert.Error(t, err, "not implemented")
-
-	_, err = Open(Options{Driver: "nonsense"})
+	_, err := Open(Options{Driver: "nonsense"})
 	assert.Error(t, err, "unknown driver")
 
 	_, err = Open(Options{})
 	assert.Error(t, err, "empty driver")
 
-	for _, driver := range []string{"docker", "lxd"} {
+	for _, driver := range []string{"docker", "lxd", "bwrap"} {
 		d, err := Open(Options{Driver: driver})
 		assert.NoError(t, err)
 		_, err = d.Sandbox(SandboxOptions{})

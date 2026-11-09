@@ -267,7 +267,11 @@ func TestValidateErrors(t *testing.T) {
 		{"max-cost zero", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: 0}}}\n", "is not a cost cap"},
 		{"max-cost negative", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: -1}}}\n", "is not a cost cap"},
 		{"image and build", "sxx: {kind: sandbox, items: {sxx: {image: img, build: .}}}\n", "mutually exclusive"},
-		{"bwrap not implemented", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap}}}\n", "bwrap driver not implemented"},
+		{"bwrap build", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, build: .}}}\n", "build is refused under the bwrap driver"},
+		{"bwrap provision", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, provision: p}}}\n", "provision is refused under the bwrap driver"},
+		{"bwrap limits", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, limits: {memory: 1GiB}}}}\n", "limits is refused under the bwrap driver"},
+		{"bwrap sudo", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, sudo: true}}}\n", "sudo is refused under the bwrap driver"},
+		{"bwrap egress image", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, egress: {allow: [a.test], image: i}}}}\n", "egress image needs a container driver"},
 		{"unknown driver", "sxx: {kind: sandbox, items: {sxx: {driver: lxc, image: i}}}\n", "unknown driver \"lxc\""},
 		{"host without the key", "sxx: {kind: sandbox, items: {sxx: {driver: host}}}\n", "the host driver runs the agent on this machine, as you, with no isolation; set sand-not-boxed: true"},
 		{"the key elsewhere", "sxx: {kind: sandbox, items: {sxx: {image: i, sand-not-boxed: true}}}\n", "sand-not-boxed is the host driver's (driver \"docker\")"},
@@ -382,6 +386,14 @@ su2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}
 	assert.Equal(t, lx.Limits.Memory, "8GiB")
 	assert.Equal(t, lx.Config["security.nesting"], "true")
 	assert.Equal(t, lx.VM, true)
+}
+
+func TestValidateBwrapSandbox(t *testing.T) {
+	c := parseT(t, base+`bwx: {kind: sandbox, items: {bwx: {driver: bwrap, image: ghcr.io/x/y:1, max-parallel: 2, env: {A: b}, egress: {allow: [.ubuntu.com]}}}}
+bax: {kind: agent, items: {bax: {harness: opencode-openrouter, model: m, sandbox: bwx}}}
+su2: {kind: suite, items: {su2: {agents: bax, tasks: txx, scorers: scx}}}
+`)
+	require.NoError(t, c.Validate())
 }
 
 func TestValidateHostSandbox(t *testing.T) {

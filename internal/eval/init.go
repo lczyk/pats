@@ -331,6 +331,14 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if warn != "" {
 			lg.warn("%s", warn)
 		}
+		if !pinsProxy(sb) {
+			// bwrap runs its proxy on the host: no image to pin, only the
+			// in-sandbox forwarder to make present, so a run never fetches.
+			if _, _, err := h.ProxyImage(ctx, ref, opts.Force, log); err != nil {
+				return fail(fmt.Errorf("egress forwarder: %w", err))
+			}
+			return nil
+		}
 		im, err := ensurePulled(ctx, h, ref, opts.Force, lg, log, h.ProxyImage)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)
@@ -451,11 +459,11 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reason = "pinned against another " + sb.Driver + " daemon"
 		case !present(ctx, h, e.Image.ID):
 			reason = "its pinned image " + short(e.Image.ID) + " is gone"
-		case sb.Egress.Set && e.Proxy == nil:
+		case pinsProxy(sb) && e.Proxy == nil:
 			reason = "no egress proxy pinned"
-		case sb.Egress.Set && !present(ctx, h, e.Proxy.ID):
+		case pinsProxy(sb) && !present(ctx, h, e.Proxy.ID):
 			reason = "its pinned egress proxy " + short(e.Proxy.ID) + " is gone"
-		case sb.Egress.Set:
+		case pinsProxy(sb):
 			reason = proxyMismatch(e)
 		}
 		if reason != "" {
@@ -541,4 +549,11 @@ func hostComponents(ctx context.Context, sb config.Sandbox, lg logw) (map[string
 		lg.warn("sandbox %q: this machine's harnesses differ from what this pats pins: %s", sb.Name, strings.Join(drift, ", "))
 	}
 	return comps, nil
+}
+
+// pinsProxy says whether a sandbox's egress proxy is an image init pins:
+// docker's and podman's sidecar, lxd's proxy instance. bwrap and host run
+// theirs on this machine.
+func pinsProxy(sb config.Sandbox) bool {
+	return sb.Egress.Set && (sb.IsContainer() || sb.Driver == "lxd")
 }

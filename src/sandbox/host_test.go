@@ -170,7 +170,7 @@ func TestHostEgress(t *testing.T) {
 	require.NoError(t, err)
 	s := sess.(*hostSession)
 	assert.ContainsString(t, s.env["HTTP_PROXY"], "http://127.0.0.1:")
-	pid := s.proxy.Process.Pid
+	pid := s.proxy.cmd.Process.Pid
 	proxyURL, err := url.Parse(s.env["HTTP_PROXY"])
 	require.NoError(t, err)
 	get := func(target string, viaProxy bool) int {
@@ -326,7 +326,7 @@ func TestHostProxyDeathFailsExec(t *testing.T) {
 	s := sess.(*hostSession)
 	go func() {
 		time.Sleep(300 * time.Millisecond)
-		_ = s.proxy.Process.Kill()
+		_ = s.proxy.cmd.Process.Kill()
 	}()
 	start := time.Now()
 	_, err = sess.Exec(context.Background(), Cmd{Argv: []string{"sleep", "300"}}, io.Discard, io.Discard)

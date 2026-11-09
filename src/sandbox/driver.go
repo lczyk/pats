@@ -145,8 +145,12 @@ func newDriver(p *process, r runner, o Options) (Driver, error) {
 		return newLXD(p, r, o), nil
 	case o.Driver == HostDriver:
 		return newHost(p, o), nil
-	case o.Driver == "bwrap":
-		return nil, errors.New("sandbox driver bwrap not implemented yet")
+	case o.Driver == BwrapDriver:
+		d := newBwrap(p, o)
+		if r != nil {
+			d.r = r
+		}
+		return d, nil
 	case o.Driver == "":
 		return nil, errors.New("sandbox: empty driver")
 	default:

@@ -166,7 +166,7 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 				}
 			}
 		case "bwrap":
-			add("sandbox %q: bwrap driver not implemented yet", s.Name)
+			validateBwrap(add, s)
 		case "host":
 			validateHost(add, s)
 		default:
@@ -198,6 +198,24 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 			case shellReadonly[k]:
 				add("sandbox %q: env %s is read-only in a shell, which hands the env to the command", s.Name, k)
 			}
+		}
+	}
+}
+
+// validateBwrap refuses what a bwrap sandbox cannot honour, each key by
+// name: it runs a registry image as it is, with one uid and no limits.
+func validateBwrap(add func(string, ...any), s Sandbox) {
+	refused := []struct {
+		key string
+		set bool
+	}{
+		{"build", s.Build != ""}, {"base", s.Base != ""}, {"provision", s.Provision != ""},
+		{"limits", s.Limits != (Limits{})}, {"sudo", s.Sudo}, {"vm", s.VM}, {"remote", s.Remote != ""},
+		{"profiles", len(s.Profiles) > 0}, {"config", len(s.Config) > 0},
+	}
+	for _, r := range refused {
+		if r.set {
+			add("sandbox %q: %s is refused under the bwrap driver: it runs a registry image as it is, as one uid, with no limits", s.Name, r.key)
 		}
 	}
 }

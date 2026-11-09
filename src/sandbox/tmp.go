@@ -50,7 +50,7 @@ func (p *process) mkTemp(prefix string) (string, error) {
 
 // RemoveTemp removes a MkTemp dir and its owner file.
 func RemoveTemp(dir string) error {
-	err := os.RemoveAll(dir)
+	err := removeTree(dir)
 	_ = os.Remove(dir + ownerSuffix)
 	return err
 }
