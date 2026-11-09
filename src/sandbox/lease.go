@@ -130,13 +130,19 @@ func (p *process) leaseFound(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// a lease that cannot be looked at is not an absent one: its run is
+	// judged unknown, never dead by its age.
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
 	}
 	if legacy := p.legacy(); legacy != "" {
 		old := filepath.Join(legacy, leasePrefix+token+leaseSuffix)
 		if _, err := os.Stat(old); err == nil {
 			return old, nil
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
 		}
 	}
 	return path, nil

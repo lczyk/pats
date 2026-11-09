@@ -153,3 +153,19 @@ func (d *memDriver) Remove(_ context.Context, r Resource) error {
 	d.removed = append(d.removed, r.Kind+" "+r.Name)
 	return nil
 }
+
+// a legacy lease that cannot be looked at is not an absent one: the run is
+// unknown, never judged dead by its age.
+func TestLegacyLeaseUnreadable(t *testing.T) {
+	p := testProcess(t)
+	legacy := filepath.Join(t.TempDir(), "legacy")
+	require.NoError(t, os.MkdirAll(legacy, 0o755))
+	p.legacy = func() string { return legacy }
+	p.owner = func() string { return "me" }
+	require.NoError(t, os.Chmod(legacy, 0))
+	defer os.Chmod(legacy, 0o755)
+	old := time.Now().Add(-time.Hour)
+	run := strings.Repeat("ab", 6)
+	v, _ := p.judge(RunRecord{Token: run, Owner: "me", Resources: []Resource{{Kind: "sandbox", Created: old}}}, time.Now())
+	assert.Equal(t, v, unknown)
+}
