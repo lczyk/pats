@@ -93,9 +93,16 @@ func testProcess(t *testing.T) *process {
 	})
 	home := t.TempDir()
 	p.home = func() (string, error) { return home, nil }
+	// an owner of the test binary's own: a test clean on a real daemon then
+	// judges a real pats run there (labelled with this host's owner) as
+	// another's, and leaves it.
+	p.owner = func() string { return testOwner }
 	t.Cleanup(p.shutdown)
 	return p
 }
+
+// testOwner is the owner label every test process uses.
+var testOwner = fmt.Sprintf("pats-test/%d/%d", os.Getuid(), os.Getpid())
 
 // fixedClock is the wall clock but for Now.
 type fixedClock struct {
