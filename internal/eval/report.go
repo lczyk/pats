@@ -24,6 +24,20 @@ type reportDoc struct {
 	Agents  []reportAgent `json:"agents"`
 	Pairs   []reportPair  `json:"pairs"`
 	Scores  []ScoreResult `json:"scores"`
+	Judges  []reportJudge `json:"judges"`
+}
+
+// reportJudge is one judge agent's work in a run: its judgements by outcome,
+// and what its samples cost.
+type reportJudge struct {
+	Name         string   `json:"name"`
+	Judgements   int      `json:"judgements"`
+	Failed       int      `json:"failed"`
+	NA           int      `json:"na"`
+	Samples      int      `json:"samples"`
+	CostUSD      *float64 `json:"cost_usd"`
+	OutputTokens int      `json:"output_tokens"`
+	DurationS    float64  `json:"duration_s"`
 }
 
 type reportRun struct {
@@ -34,6 +48,9 @@ type reportRun struct {
 type reportAgent struct {
 	Name string   `json:"name"`
 	Mean *float64 `json:"mean"`
+	// FailedPairs is how many of its pairs no judge could grade: they are
+	// out of the mean. null when the scores predate the count.
+	FailedPairs *int `json:"failed_pairs"`
 }
 
 // reportPair is one pair: its mean and what its metadata.json says of the
@@ -180,6 +197,7 @@ func buildReport(runDir string, rep *ScoreReport, warn io.Writer) *reportDoc {
 		Agents:  []reportAgent{},
 		Pairs:   []reportPair{},
 		Scores:  append([]ScoreResult{}, rep.Scores...),
+		Judges:  readJudges(runDir, warn),
 	}
 	if len(rep.PerAgent) > 0 {
 		o := rep.Overall
@@ -223,6 +241,10 @@ func buildReport(runDir string, rep *ScoreReport, warn io.Writer) *reportDoc {
 		if m, ok := rep.PerAgent[name]; ok {
 			a.Mean = &m
 		}
+		if rep.FailedPairs != nil {
+			n := rep.FailedPairs[name]
+			a.FailedPairs = &n
+		}
 		doc.Agents = append(doc.Agents, a)
 	}
 	sort.Slice(doc.Agents, func(i, j int) bool { return doc.Agents[i].Name < doc.Agents[j].Name })
@@ -237,6 +259,85 @@ func buildReport(runDir string, rep *ScoreReport, warn io.Writer) *reportDoc {
 		return a.Scorer < b.Scorer
 	})
 	return doc
+}
+
+// readJudges sums each judge agent's work in runDir from .judge/: the
+// outcomes from each judgement's verdict.json, the spend from each sample's
+// metadata.json. a judgement whose prompt never resolved has a verdict and
+// no metadata, so the two are read apart.
+func readJudges(runDir string, warn io.Writer) []reportJudge {
+	byName := map[string]*reportJudge{}
+	judge := func(name string) *reportJudge {
+		if byName[name] == nil {
+			byName[name] = &reportJudge{Name: name}
+		}
+		return byName[name]
+	}
+	subdirs := func(dir string) []string {
+		es, err := os.ReadDir(dir)
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, e := range es {
+			if e.IsDir() {
+				out = append(out, filepath.Join(dir, e.Name()))
+			}
+		}
+		return out
+	}
+	for _, sc := range subdirs(filepath.Join(runDir, judgeSubdir)) {
+		for _, ag := range subdirs(sc) {
+			for _, jd := range subdirs(ag) {
+				if strings.HasSuffix(jd, ".new") || strings.HasSuffix(jd, ".old") {
+					continue // mid-swap: not a judgement
+				}
+				v, err := readVerdict(jd)
+				if err != nil {
+					if !errors.Is(err, fs.ErrNotExist) && warn != nil {
+						fmt.Fprintf(warn, "warning: %v\n", err)
+					}
+					continue
+				}
+				j := judge(v.Judge)
+				j.Judgements++
+				switch {
+				case !v.OK:
+					j.Failed++
+				case v.NA:
+					j.NA++
+				}
+				for _, sd := range subdirs(jd) {
+					b, err := os.ReadFile(filepath.Join(sd, "metadata.json"))
+					if err != nil {
+						continue
+					}
+					var m pairMeta
+					if json.Unmarshal(b, &m) != nil {
+						continue
+					}
+					j.Samples++
+					j.DurationS += m.DurationS
+					if s := m.Summary; s != nil {
+						j.OutputTokens += s.OutputTokens
+						if s.HasCost {
+							c := s.CostUSD
+							if j.CostUSD != nil {
+								c += *j.CostUSD
+							}
+							j.CostUSD = &c
+						}
+					}
+				}
+			}
+		}
+	}
+	out := []reportJudge{}
+	for _, j := range byName {
+		out = append(out, *j)
+	}
+	sort.Slice(out, func(i, k int) bool { return out[i].Name < out[k].Name })
+	return out
 }
 
 // Report reprints the scoring report of a past run from its scores.json, or
@@ -455,6 +556,19 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 			return []cell{scoreCell(s, ok)}
 		})
 	}
+	anyFailed := false
+	for _, n := range r.FailedPairs {
+		anyFailed = anyFailed || n > 0
+	}
+	if anyFailed {
+		// pairs no judge could grade are out of the means above: say how many.
+		row("failed", func(a string) []cell {
+			if n := r.FailedPairs[a]; n > 0 {
+				return []cell{{fmt.Sprintf("%d", n), "\033[31m"}}
+			}
+			return []cell{{"0", "\033[2m"}}
+		})
+	}
 	row("cost", func(a string) []cell {
 		if !costKnown[a] {
 			return []cell{{"-", "\033[2m"}}
@@ -485,5 +599,13 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 			}
 		}
 		fmt.Fprintln(w, strings.Join(legend, "  "))
+	}
+	for _, j := range readJudges(runDir, warn) {
+		line := fmt.Sprintf("judge %s: %d judged, %d failed, %d na, %d samples, %s tok, %s", j.Name,
+			j.Judgements, j.Failed, j.NA, j.Samples, humanK(j.OutputTokens), hms(j.DurationS))
+		if j.CostUSD != nil {
+			line += fmt.Sprintf(", $%.2f", *j.CostUSD)
+		}
+		fmt.Fprintln(w, line)
 	}
 }

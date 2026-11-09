@@ -146,6 +146,19 @@ func TestJudge(t *testing.T) {
 	rep2, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: io.Discard})
 	require.NoError(t, err)
 	assert.Equal(t, rep2.PerPair["axx/t1x"], 0.75)
+
+	// the report counts the pairs no judge could grade, and the judges' work.
+	doc := buildReport(run, rep2, io.Discard)
+	require.Len(t, doc.Judges, 1)
+	j := doc.Judges[0]
+	assert.That(t, j.Name == "jxx" && j.Judgements == 1 && j.Samples == 2 && j.Failed == 0, "judges: %+v", j)
+	assert.That(t, j.CostUSD != nil && *j.CostUSD > 0.019, "judge cost: %v", j.CostUSD)
+	require.Len(t, doc.Agents, 1)
+	assert.That(t, doc.Agents[0].FailedPairs != nil && *doc.Agents[0].FailedPairs == 1, "failed pairs")
+	var human bytes.Buffer
+	report(&human, run, rep2, false, io.Discard)
+	assert.ContainsString(t, human.String(), "failed")
+	assert.ContainsString(t, human.String(), "judge jxx: 1 judged, 0 failed, 0 na, 2 samples")
 }
 
 // a judge that does not end in a SCORE: line is a failed verdict, and its
