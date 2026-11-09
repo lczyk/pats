@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,10 @@ type cleanDriver struct {
 }
 
 func (d *cleanDriver) Runs(context.Context) ([]sandbox.RunRecord, error) { return d.runs, d.err }
+
+func (d *cleanDriver) Target(context.Context) (sandbox.Target, error) {
+	return sandbox.Target{Key: "docker:default", Daemon: "d1"}, nil
+}
 
 func (d *cleanDriver) Remove(_ context.Context, r sandbox.Resource) error {
 	d.removed = append(d.removed, r.Kind+" "+r.Name)
@@ -80,8 +85,8 @@ func TestCleanAcrossPlaces(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{"docker", "podman"}, LXDRemotes: []string{}, Out: &out}))
 	assert.EqualArrays(t, ok.removed, []string{"sandbox ctr-bbbbbbbbbbbb", "network net-bbbbbbbbbbbb"})
-	assert.ContainsString(t, out.String(), "podman: skipped (Cannot connect to the Docker daemon)")
-	assert.ContainsString(t, out.String(), "docker: left 1 live run(s)")
+	assert.ContainsString(t, out.String(), "WARN podman: skipped (Cannot connect to the Docker daemon)")
+	assert.ContainsString(t, out.String(), "INFO docker: left 1 live run(s)")
 	assert.ContainsString(t, out.String(), "docker: left 1 run(s) this clean cannot judge")
 	_, err = os.Stat(deadLease)
 	assert.That(t, os.IsNotExist(err), "a cleaned run's lease stayed")
@@ -91,9 +96,10 @@ func TestCleanAcrossPlaces(t *testing.T) {
 	ok, down = places()
 	open(t, ok, down)
 	out.Reset()
-	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{"docker"}, LXDRemotes: []string{}, Force: true, Out: &out}))
+	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{"docker"}, LXDRemotes: []string{}, All: true, Out: &out}))
 	assert.EqualArrays(t, ok.removed, []string{"sandbox ctr-bbbbbbbbbbbb", "network net-bbbbbbbbbbbb", "sandbox ctr-dddddddddddd", "network net-dddddddddddd"})
-	assert.ContainsString(t, out.String(), "may be alive elsewhere")
+	assert.ContainsString(t, out.String(), "WARN docker: run dddddddddddd (another/0/x) may be alive elsewhere")
+	assert.ContainsString(t, out.String(), "INFO removed docker sandbox ctr-dddddddddddd (run dddddddddddd: another user's or machine's)")
 	_, err = os.Stat(orphan)
 	assert.That(t, os.IsNotExist(err), "an orphan stale lease stayed")
 
@@ -103,4 +109,31 @@ func TestCleanAcrossPlaces(t *testing.T) {
 	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{"docker"}, LXDRemotes: []string{}, Run: "aaaaaaaaaaaa", Out: &out}))
 	assert.EqualArrays(t, ok.removed, []string{"sandbox ctr-aaaaaaaaaaaa", "network net-aaaaaaaaaaaa"})
 	assert.That(t, !strings.Contains(out.String(), "bbbbbbbbbbbb"), "--run took another run:\n%s", out.String())
+}
+
+// clean --all also takes what a project's pins say pats pulled or built on
+// the daemon answering, an image: ref pulled by pats included; never what a
+// pin names that pats did not make, or another daemon's.
+func TestPinnedHere(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("HOME", cache)
+	proj := t.TempDir()
+	_, err := registerProject(proj)
+	require.NoError(t, err)
+	require.NoError(t, updatePins(proj, func(f *pinFile) error {
+		f.Targets["docker:default"] = map[string]*pinEntry{
+			"pulled": {Daemon: "d1", Image: pinImage{ID: "sha256:aaa", Name: "ubuntu:24.04", Pulled: true}},
+			"theirs": {Daemon: "d1", Image: pinImage{ID: "sha256:bbb", Name: "mine:1"}},
+			"other":  {Daemon: "d2", Image: pinImage{ID: "sha256:ccc", Built: true}},
+		}
+		f.Superseded = []superseded{{Target: "docker:default", Daemon: "d1", ID: "sha256:ddd", Built: true}}
+		return nil
+	}))
+	var got []string
+	for _, r := range pinnedHere(context.Background(), &cleanDriver{}) {
+		got = append(got, r.Name+" "+r.Label)
+	}
+	sort.Strings(got)
+	assert.EqualArrays(t, got, []string{"sha256:aaa ubuntu:24.04", "sha256:ddd " + short("sha256:ddd")})
 }

@@ -2,9 +2,13 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,7 +124,7 @@ func TestCleanTemp(t *testing.T) {
 	require.NoError(t, os.Chtimes(ddir, old, old))
 
 	var out bytes.Buffer
-	require.NoError(t, p.cleanTemp(map[string]bool{}, 24*time.Hour, false, &out))
+	require.NoError(t, p.cleanTemp(map[string]bool{}, 24*time.Hour, false, false, TextReport(&out)))
 	_, err = os.Stat(dir)
 	assert.NoError(t, err) // its run is alive
 	_, err = os.Stat(ddir)
@@ -138,15 +142,144 @@ func TestCleanTemp(t *testing.T) {
 	require.NoError(t, os.WriteFile(listed, []byte("elsewhere 1\n"), 0o644))
 	require.NoError(t, os.Chtimes(listed, stale, stale))
 
-	require.NoError(t, p.cleanTemp(nil, 24*time.Hour, false, &out))
+	require.NoError(t, p.cleanTemp(nil, 24*time.Hour, false, false, TextReport(&out)))
 	_, err = os.Stat(orphan)
 	assert.NoError(t, err) // a place was not listed: lease files stay
 	_, err = os.Stat(dir)
 	assert.That(t, os.IsNotExist(err), "a dead run's old temp dir stayed")
 
-	require.NoError(t, p.cleanTemp(map[string]bool{"ffffffffffff": true}, 24*time.Hour, false, &out))
+	require.NoError(t, p.cleanTemp(map[string]bool{"ffffffffffff": true}, 24*time.Hour, false, false, TextReport(&out)))
 	_, err = os.Stat(orphan)
 	assert.That(t, os.IsNotExist(err), "an orphan stale lease stayed")
 	_, err = os.Stat(listed)
 	assert.NoError(t, err) // a run a place still holds
+
+	// force takes a live run's dir and every lease, a dry run saying so first.
+	out.Reset()
+	require.NoError(t, p.cleanTemp(nil, 24*time.Hour, true, true, TextReport(&out)))
+	assert.ContainsString(t, out.String(), "would remove temp dir "+ddir+"\n")
+	assert.ContainsString(t, out.String(), "would remove lease "+listed+"\n")
+	_, err = os.Stat(ddir)
+	assert.NoError(t, err)
+	require.NoError(t, p.cleanTemp(nil, 24*time.Hour, false, true, TextReport(&out)))
+	for _, gone := range []string{ddir, listed} {
+		_, err = os.Stat(gone)
+		assert.That(t, os.IsNotExist(err), "force left %s", gone)
+	}
+}
+
+// fakeImageDaemon answers clean's image calls from imgs, and records what
+// it removes.
+func fakeImageDaemon(t *testing.T, imgs []daemonImage, users map[string]string) (runner, *[]string) {
+	var calls []string
+	byID := map[string]daemonImage{}
+	for _, im := range imgs {
+		byID[im.ID] = im
+	}
+	return runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "ps ") && strings.Contains(joined, "ancestor="):
+			io.WriteString(stdout, users[strings.TrimPrefix(args[len(args)-1], "ancestor=")])
+		case strings.HasPrefix(joined, "ps ") || strings.HasPrefix(joined, "network ls"):
+		case joined == "images -a -q --no-trunc":
+			for _, im := range imgs {
+				io.WriteString(stdout, im.ID+"\n")
+			}
+		case strings.HasPrefix(joined, "image inspect --format"):
+			io.WriteString(stdout, strings.Join(byID[args[len(args)-1]].RepoTags, " ")+"\n")
+		case strings.HasPrefix(joined, "image inspect"):
+			var out []daemonImage
+			for _, id := range args[2:] {
+				out = append(out, byID[id])
+			}
+			b, _ := json.Marshal(out)
+			stdout.Write(b)
+		case args[0] == "rm" || args[0] == "rmi":
+			calls = append(calls, joined)
+		default:
+			t.Fatalf("unexpected call: %s", joined)
+		}
+		return nil
+	}), &calls
+}
+
+func image(id string, tags []string, label string, layers ...string) daemonImage {
+	im := daemonImage{ID: id, RepoTags: tags}
+	if label != "" {
+		im.Config.Labels = map[string]string{hashLabel: label}
+	}
+	im.RootFS.Layers = layers
+	return im
+}
+
+// clean --all takes every image pats made on a container daemon: built
+// ones and those pulled from its registry, ones built on others first, by
+// their tags so one under several goes. one a container uses stays, and so
+// does one an image that stays is built on: someone's own image FROM a pats
+// build, which inherits its label, is theirs. a dry run says exactly what
+// the real one does.
+func TestCleanCachedContainerImages(t *testing.T) {
+	base := image("sha256:base", []string{sandboxRepo + ":v1", sandboxRepo + ":latest"}, "", "l1")
+	parent := image("sha256:parent", nil, "h1", "l1", "l2")
+	child := image("sha256:child", []string{"pats-sbx:a"}, "h2", "l1", "l2", "l3")
+	used := image("sha256:used", []string{proxyRepo + ":v1"}, "", "p1")
+	users := map[string]string{"sha256:used": "agent-1\n"}
+
+	r, calls := fakeImageDaemon(t, []daemonImage{used, base, parent, child}, users)
+	c := newContainer(testProcess(t), r, Options{Driver: "docker"})
+	var dry, out bytes.Buffer
+	_, err := testProcess(t).clean(context.Background(), c, CleanOptions{Place: "docker", All: true, DryRun: true, Report: TextReport(&dry)})
+	require.NoError(t, err)
+	assert.Len(t, *calls, 0)
+	_, err = testProcess(t).clean(context.Background(), c, CleanOptions{Place: "docker", All: true, Report: TextReport(&out)})
+	require.NoError(t, err)
+	assert.EqualArrays(t, *calls, []string{"rmi pats-sbx:a", "rmi sha256:parent", "rmi " + sandboxRepo + ":v1 " + sandboxRepo + ":latest"})
+	assert.Equal(t, out.String(), "docker: kept image "+proxyRepo+":v1 (used by agent-1)\n"+
+		"removed docker image pats-sbx:a (cached)\n"+
+		"removed docker image parent (cached)\n"+
+		"removed docker image "+sandboxRepo+":v1 (cached)\n")
+	assert.Equal(t, dry.String(), strings.ReplaceAll(out.String(), "removed", "would remove"))
+
+	// --force takes the container using it first, then the image.
+	*calls = nil
+	out.Reset()
+	_, err = testProcess(t).clean(context.Background(), c, CleanOptions{Place: "docker", Force: true, Report: TextReport(&out)})
+	require.NoError(t, err)
+	assert.EqualArrays(t, *calls, []string{"rm -f agent-1", "rmi pats-sbx:a", "rmi sha256:parent",
+		"rmi " + sandboxRepo + ":v1 " + sandboxRepo + ":latest", "rmi " + proxyRepo + ":v1"})
+	assert.ContainsString(t, out.String(), "removed docker sandbox agent-1 (it uses image "+proxyRepo+":v1, forced)\n")
+
+	// a user an earlier step of the same clean takes, or would, frees it.
+	dry.Reset()
+	require.NoError(t, cleanCached(context.Background(), c, c, CleanOptions{Place: "docker", All: true, DryRun: true, Report: TextReport(&dry)},
+		map[string]bool{"sandbox agent-1": true}))
+	assert.ContainsString(t, dry.String(), "would remove docker image "+proxyRepo+":v1 (cached)\n")
+
+	// someone's own image on the pats build carries its label, and keeps it
+	// and everything under it, forced or not.
+	mine := image("sha256:mine", []string{"mine:1"}, "h2", "l1", "l2", "l3", "l4")
+	r, calls = fakeImageDaemon(t, []daemonImage{base, parent, child, mine}, nil)
+	c = newContainer(testProcess(t), r, Options{Driver: "docker"})
+	out.Reset()
+	_, err = testProcess(t).clean(context.Background(), c, CleanOptions{Place: "docker", Force: true, Report: TextReport(&out)})
+	require.NoError(t, err)
+	assert.Len(t, *calls, 0)
+	assert.Equal(t, out.String(), "docker: kept image pats-sbx:a (built on by mine:1)\n"+
+		"docker: kept image parent (built on by mine:1)\n"+
+		"docker: kept image "+sandboxRepo+":v1 (built on by mine:1)\n")
+
+	// one that only sets metadata has the same layers: neither is taken by
+	// its label, and the pats build a pin names stays under it.
+	meta := image("sha256:meta", []string{"meta:1"}, "h2", "l1", "l2", "l3")
+	r, calls = fakeImageDaemon(t, []daemonImage{base, parent, child, meta}, nil)
+	c = newContainer(testProcess(t), r, Options{Driver: "docker"})
+	out.Reset()
+	_, err = testProcess(t).clean(context.Background(), c, CleanOptions{Place: "docker", Force: true, Report: TextReport(&out),
+		Pinned: []Resource{{Kind: "image", Name: "sha256:child", Label: "pats-sbx:a"}}})
+	require.NoError(t, err)
+	assert.Len(t, *calls, 0)
+	assert.Equal(t, out.String(), "docker: kept image parent (built on by meta:1)\n"+
+		"docker: kept image "+sandboxRepo+":v1 (built on by meta:1)\n"+
+		"docker: kept image pats-sbx:a (built on by meta:1)\n")
 }

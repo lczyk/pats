@@ -42,13 +42,15 @@ type Options struct {
 type CleanCommand struct {
 	DryRun    bool          `long:"dry-run" short:"n" description:"print what would go, remove nothing"`
 	OlderThan time.Duration `long:"older-than" default:"24h" description:"keep temp dirs younger than this (a live run may own them)"`
-	Force     bool          `long:"force" description:"also remove runs this clean cannot judge (another user's or machine's on a shared daemon), and lxd's shared uplink; never a run whose lease is fresh"`
+	All       bool          `long:"all" short:"a" description:"also remove runs this clean cannot judge (another user's or machine's on a shared daemon), lxd's shared uplink, every image pats built or pulled, and temp dirs of any age; never a run whose lease is fresh"`
+	Force     bool          `long:"force" short:"f" description:"--all, and also live runs, the containers using a pats image, and every temp dir and lease: everything pats left"`
 	Run       string        `long:"run" description:"remove this one run (its token), whatever its lease"`
+	JSON      bool          `long:"json" description:"one json object a line for each thing removed, kept or left, in place of the log (with -n: what would go)"`
 	LXDRemote []string      `long:"lxd-remote" description:"lxd remote to sweep (repeatable); default: the lxc cli's default remote, when lxc is installed"`
 }
 
 func (c *CleanCommand) Execute(args []string) error {
-	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, Force: c.Force, Run: c.Run, LXDRemotes: c.LXDRemote, Out: os.Stdout})
+	return eval.Clean(context.Background(), eval.CleanOptions{OlderThan: c.OlderThan, DryRun: c.DryRun, All: c.All, Force: c.Force, Run: c.Run, LXDRemotes: c.LXDRemote, JSON: c.JSON, Out: os.Stdout})
 }
 
 // InitCommand makes and pins the sandboxes' images.

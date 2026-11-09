@@ -152,6 +152,56 @@ func (l *lxd) Runs(ctx context.Context) ([]RunRecord, error) {
 	return runs, nil
 }
 
+// CachedImages is every image in the pats project: the cached builds and the
+// base images lxd copied in. one under a run's private alias is that run's
+// while the alias stays (Holders).
+func (l *lxd) CachedImages(ctx context.Context) ([]Resource, error) {
+	c := *l
+	if c.o.Remote == "" {
+		r, err := c.defaultRemote(ctx)
+		if err != nil {
+			return nil, err
+		}
+		c.o.Remote = r
+	}
+	var imgs []struct {
+		Fingerprint string `json:"fingerprint"`
+		Aliases     []struct {
+			Name string `json:"name"`
+		} `json:"aliases"`
+	}
+	if err := c.query(ctx, "/1.0/images?project="+lxdProject+"&recursion=1", &imgs); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var res []Resource
+	for _, im := range imgs {
+		r := Resource{Kind: "image", Name: im.Fingerprint, Label: im.Fingerprint[:min(12, len(im.Fingerprint))]}
+		for _, a := range im.Aliases {
+			if runPrivateAlias(a.Name) {
+				r.Holders = append(r.Holders, a.Name)
+			} else {
+				r.Label = a.Name
+			}
+		}
+		res = append(res, r)
+	}
+	return res, nil
+}
+
+// ImageUsers is none: lxd removes an image its instances were made from,
+// since each holds its own copy.
+func (l *lxd) ImageUsers(ctx context.Context, id string) ([]string, error) {
+	return nil, nil
+}
+
+// ImageChildren is none: an lxd image stands alone.
+func (l *lxd) ImageChildren(ctx context.Context) (map[string][]Resource, error) {
+	return nil, nil
+}
+
 // Remove removes one thing a run left; one already gone is no error.
 func (l *lxd) Remove(ctx context.Context, r Resource) error {
 	c := *l

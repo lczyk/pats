@@ -128,13 +128,13 @@ func TestContainerCleanOnDaemon(t *testing.T) {
 
 			cleaner := onDaemon(t, driver)
 			cleaner.p.home = run.p.home
-			_, err = cleaner.p.clean(ctx, cleaner, CleanOptions{Place: driver, Out: io.Discard})
+			_, err = cleaner.p.clean(ctx, cleaner, CleanOptions{Place: driver})
 			require.NoError(t, err)
 			assert.That(t, labelled(t, driver, run.p.token) != "", "a live run was taken")
 
 			cleaner.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
 			var out strings.Builder
-			_, err = cleaner.p.clean(ctx, cleaner, CleanOptions{Place: driver, Out: &out})
+			_, err = cleaner.p.clean(ctx, cleaner, CleanOptions{Place: driver, Report: TextReport(&out)})
 			require.NoError(t, err)
 			assert.Equal(t, labelled(t, driver, run.p.token), "", "a dead run's leftovers stayed:\n%s", out.String())
 		})
@@ -210,7 +210,7 @@ func TestContainerEgressCleanOnDaemon(t *testing.T) {
 				cleaner.p.home = dead.p.home
 				cleaner.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
 				var out strings.Builder
-				_, err = cleaner.p.clean(ctx, cleaner, CleanOptions{Place: driver, Out: &out})
+				_, err = cleaner.p.clean(ctx, cleaner, CleanOptions{Place: driver, Report: TextReport(&out)})
 				require.NoError(t, err)
 				assert.Equal(t, labelled(t, driver, dead.p.token), "", "a crashed run's leftovers stayed:\n%s", out.String())
 			})

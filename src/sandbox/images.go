@@ -14,8 +14,9 @@ import (
 // sibling src/sandbox/proxy package -- the two speak the PROXY_* env
 // protocol). :latest follows the newest stable release.
 const (
-	sandboxRepo = "ghcr.io/lczyk/pats/sandbox"
-	proxyRepo   = "ghcr.io/lczyk/pats/egress-proxy"
+	patsRegistry = "ghcr.io/lczyk/pats"
+	sandboxRepo  = patsRegistry + "/sandbox"
+	proxyRepo    = patsRegistry + "/egress-proxy"
 )
 
 // SandboxImage resolves the default sandbox image; see publishedImage.

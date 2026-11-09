@@ -627,6 +627,6 @@ func TestImageKeyVersionAndKey(t *testing.T) {
 
 // cleanOn runs a clean of l's server by l's process.
 func cleanOn(ctx context.Context, l *lxd) error {
-	_, err := l.p.clean(ctx, l, CleanOptions{Place: "lxd", Out: io.Discard})
+	_, err := l.p.clean(ctx, l, CleanOptions{Place: "lxd"})
 	return err
 }

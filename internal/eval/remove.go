@@ -86,33 +86,13 @@ func registerProject(configDir string) ([]string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	var out []string
-	seen := map[string]bool{}
-	f, err := os.Open(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
+	out, err := readProjects()
+	if err != nil {
 		return nil, err
-	default:
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			p := strings.TrimSpace(sc.Text())
-			if p == "" || seen[p] {
-				continue
-			}
-			// only a project that is surely gone is forgotten: one this
-			// process cannot look at now may still pin images.
-			if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			seen[p] = true
-			out = append(out, p)
-		}
-		err := sc.Err()
-		f.Close()
-		if err != nil {
-			return nil, err
-		}
+	}
+	seen := map[string]bool{}
+	for _, p := range out {
+		seen[p] = true
 	}
 	if !seen[configDir] {
 		out = append(out, configDir)
@@ -128,6 +108,35 @@ func registerProject(configDir string) ([]string, error) {
 	}
 	tmp.Close()
 	return out, os.Rename(tmp.Name(), path)
+}
+
+// readProjects is the projects file's list, less the paths that are gone.
+func readProjects() ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	f, err := os.Open(projectsFile())
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		p := strings.TrimSpace(sc.Text())
+		if p == "" || seen[p] {
+			continue
+		}
+		// only a project that is surely gone is forgotten: one this
+		// process cannot look at now may still pin images.
+		if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out, sc.Err()
 }
 
 // pinnedIDs is every image id a pin file pins, on any target.

@@ -396,6 +396,8 @@ func TestLXDClean(t *testing.T) {
 			{"fingerprint": "cccccccccccccccc", "properties": cfg("dead", old), "aliases": []map[string]string{}},
 			{"fingerprint": "dddddddddddddddd", "properties": cfg("dead", old), "aliases": []map[string]string{{"name": "pats-img-d-dead"}},
 				"uploaded_at": now.Add(-24 * time.Hour), "last_used_at": "0001-01-01T00:00:00Z"},
+			{"fingerprint": "eeeeeeeeeeeeeeee", "properties": cfg("dead", old), "aliases": []map[string]string{{"name": "pats-img-e"}, {"name": "pats-img-e-dead"}}},
+			{"fingerprint": "ffffffffffffffff", "properties": cfg("beef", fresh), "aliases": []map[string]string{{"name": "pats-img-f"}, {"name": "pats-img-f-beef"}}},
 		},
 	}
 	var calls []string
@@ -417,7 +419,7 @@ func TestLXDClean(t *testing.T) {
 		return nil
 	})
 	var out bytes.Buffer
-	_, err := l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Out: &out})
+	_, err := l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Report: TextReport(&out)})
 	require.NoError(t, err)
 	log := strings.Join(calls, "\n")
 	for _, want := range []string{"delete srv:pats-dead", "network delete srv:patsbrdead", "network acl delete srv:patsbrdead",
@@ -430,18 +432,44 @@ func TestLXDClean(t *testing.T) {
 	}
 	assert.That(t, strings.Index(log, "delete srv:pats-dead") < strings.Index(log, "network delete srv:patsbrdead"), "bridge before its instance")
 	assert.That(t, strings.Index(log, "network acl delete srv:patsbrdead") < strings.Index(log, "network acl delete srv:pats-run-dead"), "marker before the rest")
-	assert.ContainsString(t, out.String(), "left 2 live run(s)")
+	assert.ContainsString(t, out.String(), "left 3 live run(s)")
+
+	// a dry run says what the real one then does.
+	var dry, real bytes.Buffer
+	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", All: true, DryRun: true, Report: TextReport(&dry)})
+	require.NoError(t, err)
+	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", All: true, Report: TextReport(&real)})
+	require.NoError(t, err)
+	assert.Equal(t, dry.String(), strings.ReplaceAll(real.String(), "removed", "would remove"))
+	assert.ContainsString(t, real.String(), "removed lxd srv image pats-img-k (cached)")
+	// its dead run's private alias goes first, then it is a cached image; a
+	// live run's alias keeps one the run's.
+	assert.ContainsString(t, real.String(), "removed lxd srv alias pats-img-e-dead (run dead: its lease is stale)\nremoved lxd srv")
+	assert.ContainsString(t, real.String(), "removed lxd srv image pats-img-e (cached)")
+	assert.That(t, !strings.Contains(real.String(), "pats-img-f"), "took a live run's image:\n%s", real.String())
 
 	calls = nil
-	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Force: true, Out: &out})
+	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", All: true, Report: TextReport(&out)})
 	require.NoError(t, err)
 	log = strings.Join(calls, "\n")
-	assert.Equal(t, strings.Contains(log, "delete srv:pats-live"), false, "force took a live run")
+	assert.Equal(t, strings.Contains(log, "delete srv:pats-live"), false, "--all took a live run")
+	// a live run stays on the shared uplink, so it stays too.
+	assert.Equal(t, strings.Contains(log, "network delete srv:patsup"), false, "--all took the uplink under a live run")
+	assert.ContainsString(t, out.String(), "lxd srv: kept network patsup (the shared uplink) (a run left here may use it)")
+	// --all takes the cached images too, and a run's own image however young.
+	for _, fp := range []string{"aaaaaaaaaaaaaaaa", "cccccccccccccccc", "dddddddddddddddd"} {
+		assert.ContainsString(t, log, "image delete srv:"+fp)
+	}
+	calls = nil
+	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Force: true, Report: TextReport(&out)})
+	require.NoError(t, err)
+	log = strings.Join(calls, "\n")
+	assert.ContainsString(t, log, "delete srv:pats-live")
 	up := strings.Index(log, "network delete srv:patsup")
-	require.That(t, up >= 0, "force left the shared uplink:\n%s", log)
+	require.That(t, up >= 0, "--force left the shared uplink:\n%s", log)
 	assert.That(t, up > strings.LastIndex(log, "delete srv:pats-"), "the uplink went before an instance on it")
 	calls = nil
-	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Run: "live", Out: &out})
+	_, err = l.p.clean(context.Background(), l, CleanOptions{Place: "lxd srv", Run: "live", Report: TextReport(&out)})
 	require.NoError(t, err)
 	log = strings.Join(calls, "\n")
 	assert.ContainsString(t, log, "delete srv:pats-live")

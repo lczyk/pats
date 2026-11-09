@@ -2,6 +2,10 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -58,6 +62,132 @@ func (c *container) Runs(ctx context.Context) ([]RunRecord, error) {
 	return runs, nil
 }
 
+// daemonImage is what clean reads of one image on a container daemon.
+type daemonImage struct {
+	ID          string   `json:"Id"`
+	RepoTags    []string `json:"RepoTags"`
+	RepoDigests []string `json:"RepoDigests"`
+	Config      struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
+	RootFS struct {
+		Layers []string `json:"Layers"`
+	} `json:"RootFS"`
+}
+
+func (im daemonImage) label() string {
+	if len(im.RepoTags) > 0 && !strings.Contains(im.RepoTags[0], "<none>") {
+		return im.RepoTags[0]
+	}
+	hex := strings.TrimPrefix(im.ID, "sha256:")
+	return hex[:min(12, len(hex))]
+}
+
+// builtOn says whether im may be built on base: another image with base's
+// layers, then more or none (a FROM that only sets ENV, CMD or a LABEL adds
+// no layer). two with the same layers are each taken as built on the other.
+func (im daemonImage) builtOn(base daemonImage) bool {
+	a, b := im.RootFS.Layers, base.RootFS.Layers
+	return im.ID != base.ID && len(a) >= len(b) && len(b) > 0 && slices.Equal(a[:len(b)], b)
+}
+
+// daemonImages reads every image on the daemon, tagged or not.
+func (c *container) daemonImages(ctx context.Context) ([]daemonImage, error) {
+	out, err := c.dockerOut(ctx, "images", "-a", "-q", "--no-trunc")
+	if err != nil {
+		return nil, err
+	}
+	ids := slices.Compact(slices.Sorted(slices.Values(strings.Fields(string(out)))))
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out, err = c.dockerOut(ctx, append([]string{"image", "inspect"}, ids...)...)
+	if err != nil && !gone(err) {
+		return nil, err
+	}
+	var imgs []daemonImage
+	if err := json.Unmarshal(out, &imgs); err != nil {
+		return nil, fmt.Errorf("image inspect: %w", err)
+	}
+	for i := range imgs {
+		imgs[i].ID = ImageID(imgs[i].ID)
+	}
+	return imgs, nil
+}
+
+// CachedImages is every image pats made here: those it built, by their
+// context hash label, less one that may be built on such an image (the
+// label is inherited, so that one is someone's own; of two with the same
+// layers neither is taken, and a pin names pats's), and those pulled from
+// its registry. ones built on others come first.
+func (c *container) CachedImages(ctx context.Context) ([]Resource, error) {
+	imgs, err := c.daemonImages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ours := func(im daemonImage) bool {
+		for _, r := range append(slices.Clone(im.RepoTags), im.RepoDigests...) {
+			if strings.HasPrefix(r, patsRegistry+"/") {
+				return true
+			}
+		}
+		h := im.Config.Labels[hashLabel]
+		if h == "" {
+			return false
+		}
+		for _, base := range imgs {
+			if base.Config.Labels[hashLabel] == h && im.builtOn(base) {
+				return false
+			}
+		}
+		return true
+	}
+	var picked []daemonImage
+	for _, im := range imgs {
+		if ours(im) {
+			picked = append(picked, im)
+		}
+	}
+	sort.SliceStable(picked, func(i, j int) bool {
+		if a, b := len(picked[i].RootFS.Layers), len(picked[j].RootFS.Layers); a != b {
+			return a > b
+		}
+		return picked[i].ID < picked[j].ID
+	})
+	res := make([]Resource, 0, len(picked))
+	for _, im := range picked {
+		res = append(res, Resource{Kind: "image", Name: im.ID, Label: im.label()})
+	}
+	return res, nil
+}
+
+// ImageChildren is, for every image, the images built on it.
+func (c *container) ImageChildren(ctx context.Context) (map[string][]Resource, error) {
+	imgs, err := c.daemonImages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	kids := map[string][]Resource{}
+	for _, base := range imgs {
+		for _, im := range imgs {
+			if im.builtOn(base) {
+				kids[base.ID] = append(kids[base.ID], Resource{Kind: "image", Name: im.ID, Label: im.label()})
+			}
+		}
+	}
+	return kids, nil
+}
+
+// ImageUsers is every container, running or not, of image id or of one
+// built on it.
+func (c *container) ImageUsers(ctx context.Context, id string) ([]string, error) {
+	out, err := c.dockerOut(ctx, "ps", "-a", "--format", "{{.Names}}", "--filter", "ancestor="+id)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
+}
+
 // parseCreated reads a creation time as docker prints it (rfc 3339) or as
 // podman does (go's time format); zero when neither.
 func parseCreated(s string) time.Time {
@@ -77,6 +207,16 @@ func (c *container) Remove(ctx context.Context, r Resource) error {
 		_, err = c.dockerOut(ctx, "rm", "-f", r.Name)
 	case "network":
 		_, err = c.dockerOut(ctx, "network", "rm", r.Name)
+	case "image":
+		// by its names, so an image under several goes in one call: by id
+		// alone the cli refuses it without -f, which would take one in use.
+		names := []string{r.Name}
+		if out, ierr := c.dockerOut(ctx, "image", "inspect", "--format", `{{join .RepoTags " "}}`, r.Name); ierr == nil {
+			if tags := strings.Fields(string(out)); len(tags) > 0 {
+				names = tags
+			}
+		}
+		_, err = c.dockerOut(ctx, append([]string{"rmi"}, names...)...)
 	default:
 		return nil
 	}

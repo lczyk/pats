@@ -188,9 +188,14 @@ func TestCleanTempDirs(t *testing.T) {
 
 	var out bytes.Buffer
 	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{}, OlderThan: 24 * time.Hour, DryRun: true, Out: &out}))
-	assert.ContainsString(t, out.String(), "would remove "+old)
+	assert.Equal(t, out.String(), "INFO would remove temp dir "+old+"\n")
 	_, err = os.Stat(old)
 	require.NoError(t, err)
+
+	// --json says the same as one object a line.
+	out.Reset()
+	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{}, OlderThan: 24 * time.Hour, DryRun: true, JSON: true, Out: &out}))
+	assert.Equal(t, out.String(), `{"action":"remove","dry_run":true,"place":"host","kind":"temp","name":"`+old+`"}`+"\n")
 
 	// an old dir whose run is alive is kept: a run with no timeout can own
 	// its dirs for days. the run's lease is fresh.

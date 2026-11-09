@@ -2,10 +2,12 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/lczyk/pats/src/sandbox"
@@ -16,16 +18,89 @@ type CleanOptions struct {
 	Drivers   []string      // container engines to sweep; nil: docker and podman, whichever are installed
 	OlderThan time.Duration // a dead run's temp dirs younger than this are kept
 	DryRun    bool
-	// Force also removes runs this clean cannot judge (another user's or
-	// machine's on a shared daemon), and what no run owns (lxd's uplink).
-	// a run whose fresh lease this clean reads is never removed by it.
+	// All also removes runs this clean cannot judge (another user's or
+	// machine's on a shared daemon), what no run owns (lxd's uplink), every
+	// image pats built or pulled, and dead runs' temp dirs of any age. a run
+	// whose fresh lease this clean reads is never removed by it.
+	All bool
+	// Force is All, and also live runs, the containers using an image it
+	// removes, and every temp dir and lease file: everything pats left.
 	Force bool
 	// Run removes that one run, whatever its lease.
 	Run string
 	// LXDRemotes are the lxd servers to sweep; nil: the lxc cli's default
 	// remote, when lxc is installed and Drivers is nil.
 	LXDRemotes []string
-	Out        io.Writer
+	// JSON writes each event as a one-line json object (sandbox.CleanEvent)
+	// in place of a log line.
+	JSON bool
+	Out  io.Writer
+}
+
+// cleanReport renders clean's events to o.Out: log lines, a warning where
+// something stays that the caller may want gone, or json lines.
+func cleanReport(o CleanOptions) func(sandbox.CleanEvent) {
+	var mu sync.Mutex
+	if o.JSON {
+		enc := json.NewEncoder(o.Out)
+		return func(e sandbox.CleanEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			_ = enc.Encode(e)
+		}
+	}
+	lg := logw{o.Out, useColor(o.Out), 0}
+	return func(e sandbox.CleanEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch e.Action {
+		case "keep", "skip", "warn":
+			lg.warn("%s", e)
+		default:
+			lg.info("%s", e)
+		}
+	}
+}
+
+// pinnedHere is every image a registered project's pins say pats pulled or
+// built on d's daemon: an image: ref pats pulled carries no mark of pats's
+// on the daemon itself. a project whose pins cannot be read adds none.
+func pinnedHere(ctx context.Context, d sandbox.Driver) []sandbox.Resource {
+	t, err := d.Target(ctx)
+	if err != nil {
+		return nil
+	}
+	projects, _ := readProjects()
+	var out []sandbox.Resource
+	add := func(id, name string) {
+		label := name
+		if label == "" {
+			label = short(id)
+		}
+		out = append(out, sandbox.Resource{Kind: "image", Name: id, Label: label})
+	}
+	for _, p := range projects {
+		f, err := readPins(p)
+		if err != nil {
+			continue
+		}
+		for _, e := range f.Targets[t.Key] {
+			if e.Daemon != t.Daemon {
+				continue
+			}
+			for _, im := range e.images() {
+				if im.owned() {
+					add(im.ID, im.Name)
+				}
+			}
+		}
+		for _, s := range f.Superseded {
+			if s.Target == t.Key && s.Daemon == t.Daemon && (s.Built || s.Pulled) {
+				add(s.ID, s.Name)
+			}
+		}
+	}
+	return out
 }
 
 // openDriver opens a place to clean; a var so tests fake it.
@@ -65,6 +140,7 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		places = append(places, place{name, sandbox.Options{Driver: "lxd", Remote: r}.WithEnv()})
 	}
 
+	report := cleanReport(o)
 	unlock, err := machineLock()
 	if err != nil {
 		return fmt.Errorf("cannot take %s.lock: %w", projectsFile(), err)
@@ -80,7 +156,11 @@ func Clean(ctx context.Context, o CleanOptions) error {
 			complete = false
 			continue
 		}
-		runs, err := sandbox.Clean(ctx, d, sandbox.CleanOptions{Place: p.name, Force: o.Force, Run: o.Run, DryRun: o.DryRun, Out: o.Out})
+		co := sandbox.CleanOptions{Place: p.name, All: o.All, Force: o.Force, Run: o.Run, DryRun: o.DryRun, Report: report}
+		if (o.All || o.Force) && sandbox.IsEngine(p.o.Driver) {
+			co.Pinned = pinnedHere(ctx, d)
+		}
+		runs, err := sandbox.Clean(ctx, d, co)
 		for t := range runs {
 			listed[t] = true
 		}
@@ -88,7 +168,7 @@ func Clean(ctx context.Context, o CleanOptions) error {
 			if runs == nil {
 				// the place could not be listed: its daemon is down, or
 				// the cli is not set up for it.
-				fmt.Fprintf(o.Out, "%s: skipped (%v)\n", p.name, err)
+				report(sandbox.CleanEvent{Action: "skip", Place: p.name, DryRun: o.DryRun, Why: err.Error()})
 				complete = false
 				continue
 			}
@@ -100,7 +180,11 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		if !complete {
 			listed = nil
 		}
-		if err := sandbox.CleanTemp(listed, o.OlderThan, o.DryRun, o.Out); err != nil {
+		olderThan := o.OlderThan
+		if o.All || o.Force {
+			olderThan = 0
+		}
+		if err := sandbox.CleanTemp(listed, olderThan, o.DryRun, o.Force, report); err != nil {
 			errs = append(errs, err)
 		}
 	}

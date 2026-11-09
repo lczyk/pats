@@ -122,7 +122,7 @@ func containerCleanLater(t *testing.T, f *fakeDaemon, run *process) {
 	c := newContainer(testProcess(t), runFunc(f.run), Options{Driver: f.driver})
 	c.p.home = run.home
 	c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
-	_, err := c.p.clean(context.Background(), c, CleanOptions{Place: f.driver, Out: io.Discard})
+	_, err := c.p.clean(context.Background(), c, CleanOptions{Place: f.driver})
 	require.NoError(t, err)
 }
 
@@ -197,7 +197,7 @@ func TestContainerSweepClean(t *testing.T) {
 				c.p.home = dead.p.home
 				c.p.clock = fixedClock{now: time.Now().Add(time.Hour)}
 				f.faults.arm(plan.at, plan.after, plan.cancel)
-				_, _ = c.p.clean(ctx, c, CleanOptions{Place: driver, Out: io.Discard})
+				_, _ = c.p.clean(ctx, c, CleanOptions{Place: driver})
 				f.faults.off()
 				containerCleanLater(t, f, dead.p)
 				return dead.p
