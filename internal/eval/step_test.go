@@ -221,7 +221,8 @@ func TestStepPipedLeftoverChild(t *testing.T) {
 }
 
 // a child that left the step's process group and holds both its outputs is
-// cut off after the delay: the step returns, it does not wait on the child.
+// cut off after the delay: the step returns, failed for its truncated output,
+// rather than wait on the child.
 func TestStepEscapedChildCutOff(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 makes the escaping child")
@@ -230,14 +231,18 @@ func TestStepEscapedChildCutOff(t *testing.T) {
 	stepWaitDelay = 200 * time.Millisecond
 	defer func() { stepWaitDelay = old }()
 	dir := t.TempDir()
-	escape := "python3 -c 'import os, time; os.setsid(); time.sleep(5)' &\necho 0.5\n"
+	// the script waits until the child has left the group, so the kill at
+	// its exit cannot reach it.
+	escape := "python3 -c 'import os, time; os.setsid(); open(\"escaped\", \"w\").close(); time.sleep(5)' &\n" +
+		"while [ ! -e escaped ]; do sleep 0.05; done\necho 0.5\n"
 	done := make(chan error, 1)
 	go func() {
 		_, err := step{script: escape, dir: dir}.output(context.Background(), dir, nil)
 		done <- err
 	}()
 	select {
-	case <-done:
+	case err := <-done:
+		assert.Error(t, err, "output cut off")
 	case <-time.After(3 * time.Second):
 		t.Fatal("the step waited on a child that left its group")
 	}

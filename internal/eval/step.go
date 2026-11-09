@@ -3,6 +3,7 @@ package eval
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -143,20 +144,22 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 		piped[dst], ours, reads, drains = w, append(ours, w), append(reads, r), append(drains, done)
 		return w, nil
 	}
-	finish := func(waitDrains bool) {
+	// finish closes every pipe and joins every drain. with waitDrains it
+	// first lets them end on their own: the group is gone, so the pipes'
+	// other ends are closed. once the delay passes, those still open (a
+	// child that left the group holds them) are cut off, and it says so.
+	finish := func(waitDrains bool) (cut bool) {
 		for _, w := range ours {
 			w.Close()
 		}
 		if waitDrains {
-			// the group is gone, so the pipes' other ends are closed and the
-			// drains end. once the delay passes, those that have not (a child
-			// that left the group holds them) are all cut off.
 			timeout := time.After(stepWaitDelay)
 		wait:
 			for _, d := range drains {
 				select {
 				case <-d:
 				case <-timeout:
+					cut = true
 					break wait
 				}
 			}
@@ -164,6 +167,10 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 		for _, r := range reads {
 			r.Close()
 		}
+		for _, d := range drains {
+			<-d
+		}
+		return cut
 	}
 	var err error
 	if cmd.Stdout, err = wire(cmd.Stdout); err == nil {
@@ -186,10 +193,14 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 	defer stop()
 	err = cmd.Wait()
 	kill()
-	finish(true)
+	cut := finish(true)
 	copyMu.Lock()
 	defer copyMu.Unlock()
-	if err == nil {
+	switch {
+	case err != nil:
+	case cut:
+		err = errors.New("output cut off: a process that left the step's process group still held it")
+	default:
 		err = copyErr
 	}
 	return err
