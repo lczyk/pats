@@ -130,7 +130,7 @@ sandbox sets no `egress` the host driver passes the proxy env pats was itself st
 `HTTP_PROXY`, `HTTPS_PROXY`, the lowercase forms, `NO_PROXY`, and the trust env above. a host sandbox that sets
 `egress` while pats runs behind a proxy (any of those proxy variables set) is refused at start: "pats runs behind a
 proxy, and its egress proxy cannot chain to another yet; drop egress, and the machine's proxy applies". the refusal
-goes when chained egress lands (`chained-egress.md`, to come).
+goes when chained egress lands (`chained-egress.md`).
 
 running pats inside a pats sandbox (an agent under test that runs pats itself) is not supported, under host or any
 driver.
@@ -155,7 +155,7 @@ driver.
 
 - **chained egress**: pats's proxy reaching upstream through the machine's own proxy, so an egress policy works on a
   machine that only gets out through one. a gap of every driver, not host's alone, so a spec of its own
-  (`chained-egress.md`, to come), which this driver picks up when it lands.
+  (`chained-egress.md`), which this driver picks up when it lands.
 - **trust bundles from the system**: linux's from the files go's root discovery uses; macos's from the keychain
   with its trust settings applied (a plain export loses "never trust"). until then `SSL_CERT_FILE` is required for
   tls inspection.

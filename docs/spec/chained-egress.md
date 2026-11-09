@@ -1,6 +1,6 @@
 # chained egress
 
-status: proposed, not implemented.
+status: implemented, for docker, podman and lxd. the host driver and bwrap pick it up as they land.
 
 ## problem
 
@@ -59,9 +59,12 @@ directly, as today):
   takes them through its exec env on stdin, as every exec does. these keys are pats's internal protocol, not a user
   setting.
 - **open sandboxes**: a sandbox with no `egress` gets the machine's proxy env, `HTTP_PROXY`, `HTTPS_PROXY`, their
-  lowercase forms, `NO_PROXY` and `no_proxy`, on the execs that run the agent and `prepare`, by the env-on-stdin path
-  (`envScript`). not on lxd's file-transfer execs, which carry their env as `--env KEY=value` since stdin holds the
-  file stream (`execArgs`): those need no proxy, and a credential must not ride on their command line.
+  lowercase forms, `NO_PROXY` and `no_proxy`, on every exec of the session, the agent's and `prepare`'s among them,
+  by the env-on-stdin path (`envScript`). not on lxd's file-transfer execs, which carry their env as
+  `--env KEY=value` since stdin holds the file stream (`execArgs`): those need no proxy, and a credential must not
+  ride on their command line. under lxd the open bridge's acl rejects private ranges, so the upstream's addresses are
+  cut out of its reject rule: a literal as is, a name resolved on pats's host at start (a remote server that resolves
+  it elsewhere is a limit: the open self-test then fails, naming the upstream).
 - **open preflight**: the open-network probe (`reachesInternet`, `probes.go`) checks a direct route by `/dev/tcp`,
   which a proxy-only machine never has. behind a proxy the same probe dials the upstream's `host:port` instead,
   from inside the sandbox, and a failure is the start error below. a sandbox with a policy gets pats's proxy env as

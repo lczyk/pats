@@ -122,11 +122,39 @@ the proxy writes one json line per event to the pair's `egress.log`:
 - `denied_egress` -- `rule: default`: nobody anticipated it. the cheat signal.
 - `blocked_egress` -- the policy refused it: an explicit `deny`, a path no `allow` url entry admits
   (`reason: url-not-allowed`), a private target, a tls hello naming another host.
-- `failed_egress` -- upstream trouble: a dial failure, a revoked certificate.
+- `failed_egress` -- upstream trouble: a dial failure, a revoked certificate, the machine's proxy refusing
+  (`reason: upstream: 407`, see below).
 
 only `denied_egress` is warned about at the end of each pair, the other two are in `metadata.json` alone. it also
 records the effective policy, the sidecar image (its registry digest when pulled), and the requests and bytes that
 crossed the proxy.
+
+## behind a proxy
+
+a machine that reaches the internet only through a proxy of its own says so the usual way, `HTTPS_PROXY` /
+`HTTP_PROXY` (or lowercase) and `NO_PROXY`, and pats reads them from its own environment at start, as go's `net/http`
+does. `ALL_PROXY` is not read. the run says so before its first pair: `egress via upstream http://proxy.corp:3128`.
+
+- an upstream is `http://[user:pass@]host:port`. basic auth is the one proxy auth pats speaks: an ntlm or kerberos
+  proxy is reached through a local helper (cntlm, px). any other scheme is a start error. the password never reaches a
+  command line, a log or a record.
+- pats's proxy decides first, then reaches the internet through the upstream: tunnels and mitm'd hosts by CONNECT,
+  plain http in absolute form, a `NO_PROXY` host directly. a refusal from the upstream is audited as
+  `upstream: <status>` and lands in `failed_egress`; nothing retries direct. a name is resolved by the upstream, so
+  the private-range guard checks literal addresses only behind it. the upstream itself may be on the lan.
+- an open sandbox gets the machine's proxy env on its execs (never on a command line). under lxd its bridge acl lets
+  the upstream's address through, resolved on pats's host, and the open self-test dials the upstream, not the
+  internet.
+- the proxy dials the upstream before it listens, so an unreachable one fails the start, naming it. an upstream on the
+  host's loopback (`127.0.0.1`, `localhost`, `::1`) is not reachable from a sandbox and is a start error that says how
+  out: bind the helper to an address the sandbox reaches, or run without it
+  (`env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy pats ...`).
+- with `SSL_CERT_FILE` set, its certificates are the machine's trust: they join the proxy's upstream roots, and the
+  merged bundle (and the trust env above) reaches every sandbox behind the proxy, open ones included, for an upstream
+  that inspects tls.
+- `pats egress check` adds whether the url goes via the upstream or direct.
+- not covered: `https://` or socks upstreams, auth beyond basic, pac files. `pats init` pulling images is the docker
+  daemon's or lxd server's own proxy setting, and a `build:` dockerfile or `provision:` script sets up its own.
 
 ## commands
 
