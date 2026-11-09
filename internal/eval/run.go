@@ -54,6 +54,8 @@ type Options struct {
 	MaxCost float64 // the invocation's budget in us dollars; 0 is none
 
 	live io.Writer // -vv's stream when Out is a pair's buffer (see liveStream)
+	// ledger is the invocation's spend (budget.md); nil counts nothing.
+	ledger *ledger
 }
 
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
@@ -147,14 +149,34 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 
 	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
 
+	// the budget spans every repeat: the invocation's.
+	opts.ledger = newLedger(opts.MaxCost)
+	if opts.MaxCost > 0 {
+		var uncapped []string
+		for _, a := range pairAgents(cfg, pairs) {
+			if noCostHarnesses[a.Harness] {
+				uncapped = append(uncapped, a.ID)
+			}
+		}
+		if len(uncapped) > 0 {
+			lg.warn("--max-cost: %s report no cost, and run uncapped", strings.Join(uncapped, ", "))
+		}
+	}
+
 	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
 	// run dir; what is above happens once for all of them.
 	n := max(opts.Repeat, 1)
 	var runDir string
+	unrun, current := 0, 0 // repeats a reached budget stopped; the one it stopped in
 	for i := 1; i <= n; i++ {
 		if ctx.Err() != nil {
 			break
 		}
+		if opts.ledger.reached() {
+			unrun = n - i + 1
+			break
+		}
+		current = i
 		dir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
 		if err != nil {
 			return runDir, err
@@ -169,6 +191,17 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	}
 	if ctx.Err() != nil {
 		return runDir, ErrInterrupted
+	}
+	if spent, notStarted := opts.ledger.totals(); notStarted > 0 || unrun > 0 {
+		what := fmt.Sprintf("%d pair(s)", notStarted)
+		if n > 1 {
+			what += fmt.Sprintf(" of run %d/%d", current, n)
+		}
+		if unrun > 0 {
+			what += fmt.Sprintf(" and %d more run(s)", unrun)
+		}
+		lg.warn("budget $%.2f reached at $%.2f: %s not started", opts.MaxCost, spent, what)
+		return runDir, ErrBudget
 	}
 	return runDir, nil
 }
@@ -237,6 +270,12 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 				})
 				return
 			}
+
+			// the run-wide cap: once the spend reached it, no pair starts.
+			if !opts.ledger.admit(stat) {
+				return
+			}
+			defer opts.ledger.finish(stat)
 
 			label := p.Agent + "/" + p.Task
 			po := opts
@@ -529,6 +568,7 @@ func runPair(
 	// setup -- start, the in-sandbox prepare -- has its own budget; the
 	// task's timeout covers the agent only.
 	var r harnessRun
+	var budget, stopped bool // the agent's max-cost stopped it; it or the deadline did
 	var sess sandbox.Session
 	// synced: the host copy of the agent's files is current, so collect
 	// can read it.
@@ -567,11 +607,25 @@ func runPair(
 		if s := opts.stream(); s != nil {
 			stderrW = io.MultiWriter(stderrF, s)
 		}
-		r = h.exec(ctx, sess, stdoutW, stderrW, t.TimeoutDuration())
+		// the agent gets a context of its own: its agent's max-cost cancels
+		// it alone, and sync and collect still run on the pair's.
+		actx, acancel := context.WithCancelCause(ctx)
+		stat.spend = func(c float64) {
+			opts.ledger.add(stat, c)
+			if spent := stat.spent(); a.MaxCost != nil && spent > *a.MaxCost {
+				acancel(errBudget)
+			}
+		}
+		r = h.exec(actx, sess, stdoutW, stderrW, t.TimeoutDuration())
+		// the first cause wins: a deadline first is a timeout, a cap first
+		// a budget stop; an interrupt is neither.
+		budget = !r.timedOut && ctx.Err() == nil && errors.Is(context.Cause(actx), errBudget)
+		acancel(nil)
+		stopped = r.timedOut || budget
 		// bring the agent's writes home for collect (a no-op where the
-		// workdir is bound). a timed-out agent left files too; a run
-		// interrupted by ctrl+c is not waited on.
-		if (r.err == nil || r.timedOut) && ctx.Err() == nil {
+		// workdir is bound). a timed-out or stopped agent left files too; a
+		// run interrupted by ctrl+c is not waited on.
+		if (r.err == nil || stopped) && ctx.Err() == nil {
 			sctx, scancel := context.WithTimeout(ctx, syncTimeout)
 			if syncErr = sess.Sync(sctx); syncErr == nil {
 				synced = true
@@ -586,6 +640,11 @@ func runPair(
 	case ctx.Err() != nil:
 		// an interrupt of the run wins over whatever else ended the agent.
 		status, errStr = "error", "interrupted"
+	case budget:
+		status, errStr = "budget", fmt.Sprintf("cost $%.2f passed max-cost $%.2f", stat.spent(), *a.MaxCost)
+		if syncErr != nil {
+			errStr += fmt.Sprintf("; sync: %v", syncErr)
+		}
 	case r.timedOut:
 		status, errStr = "timeout", fmt.Sprintf("timed out after %s", t.TimeoutDuration())
 		if syncErr != nil {
@@ -602,7 +661,7 @@ func runPair(
 	// collect when the agent ran, left something to gather (it finished, or
 	// timed out mid-run) and its files are on the host. a launch failure left
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
-	if collect := (step{t.Collect, taskDir}); (r.err == nil || r.timedOut) && synced && collect.set() {
+	if collect := (step{t.Collect, taskDir}); (r.err == nil || stopped) && synced && collect.set() {
 		if err := runLogged(filepath.Join(outDir, "collect.log"), opts.stream(), func(w io.Writer) error {
 			return collect.run(opts.ConfigDir, hostEnv, w)
 		}); err != nil {
@@ -645,6 +704,11 @@ func runPair(
 			Requests: ea.Requests, BytesIn: ea.In, BytesOut: ea.Out,
 		}
 	}
+	// the ledger reads the summary's cost when the pair ends: set before
+	// anything here can fail.
+	if s := meta.Summary; s != nil {
+		stat.tokens, stat.cost, stat.costKnown = s.OutputTokens, s.CostUSD, s.HasCost
+	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err
 	}
@@ -667,7 +731,6 @@ func runPair(
 	stat.status = status
 	stats := stat.cols(statScanner(a.Harness) != nil)
 	if s := meta.Summary; s != nil {
-		stat.tokens, stat.cost = s.OutputTokens, s.CostUSD
 		// cost + turns are omitted for harnesses whose stream doesn't report them.
 		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))
 		if s.HasCost {
@@ -743,7 +806,7 @@ func runTotals(stats []*pairStat, wall time.Duration) string {
 		cost += s.cost
 	}
 	var parts []string
-	for _, st := range []string{"ok", "nonzero", "timeout", "error"} {
+	for _, st := range []string{"ok", "nonzero", "timeout", "budget", "error"} {
 		if counts[st] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
 		}

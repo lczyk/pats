@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -292,6 +293,13 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 		if a.Effort != "" && !effortHarnesses[a.Harness] {
 			add("agent %q: effort is not supported by harness %q", a.ID, a.Harness)
 		}
+		if a.MaxCost != nil {
+			if err := CheckCost(*a.MaxCost); err != nil {
+				add("agent %q: max-cost: %v", a.ID, err)
+			} else if !LiveCostHarnesses[a.Harness] {
+				add("agent %q: max-cost needs a harness that reports cost as it runs (opencode-openrouter), not %q", a.ID, a.Harness)
+			}
+		}
 		sbID, err := c.ResolveSandbox(a)
 		if err != nil {
 			add("%v", err)
@@ -446,4 +454,17 @@ func mark(m map[string]bool, xs StrList, sets map[string][]string) {
 			m[id] = true
 		}
 	}
+}
+
+// LiveCostHarnesses report a pair's cost as it runs, so a per-agent
+// max-cost can stop one mid-run.
+var LiveCostHarnesses = map[string]bool{"opencode-openrouter": true}
+
+// CheckCost says whether a cap in us dollars is one: finite, above zero, at
+// most a million.
+func CheckCost(c float64) error {
+	if math.IsNaN(c) || math.IsInf(c, 0) || c <= 0 || c > 1e6 {
+		return fmt.Errorf("%v is not a cost cap (a number above 0, at most 1e6)", c)
+	}
+	return nil
 }

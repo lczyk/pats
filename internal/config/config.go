@@ -156,6 +156,9 @@ type Agent struct {
 	Model   string `yaml:"model"`
 	Sandbox string `yaml:"sandbox"` // a sandbox id; omitted -> the only sandbox defined
 	Effort  string `yaml:"effort"`  // optional reasoning effort (claude/copilot --effort; codex model_reasoning_effort; opencode --variant)
+	// MaxCost stops a pair once its reported spend passes it, in us dollars;
+	// nil is no cap. only a harness that reports cost as it runs takes one.
+	MaxCost *float64 `yaml:"max-cost"`
 }
 
 // Task is one scenario handed to a task-running agent. each step is a shell

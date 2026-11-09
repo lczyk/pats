@@ -244,6 +244,9 @@ type fakeSandbox struct {
 	pushed   []string
 	// preflights counts the credential preflight's sessions.
 	preflights int
+	// preRun is written to the agent's stdout as it starts, before
+	// blockUntilDone waits: a harness streaming events as it goes.
+	preRun string
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -308,6 +311,7 @@ func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr 
 		spec.Argv, spec.Env = cmd.Argv, cmd.Env
 		f.onRun(spec)
 	}
+	io.WriteString(stdout, f.preRun)
 	if f.blockUntilDone {
 		<-ctx.Done()
 	}

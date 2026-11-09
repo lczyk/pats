@@ -302,10 +302,10 @@ func scoreColor(s float64) string {
 
 // statusMarks marks a pair that did not end ok; "?" is a pair with scores
 // but no readable metadata.json.
-var statusMarks = map[string]string{"nonzero": "!", "timeout": "T", "error": "E"}
+var statusMarks = map[string]string{"nonzero": "!", "timeout": "T", "budget": "B", "error": "E"}
 
 // markLegend is the legend's order; it names only the marks a report shows.
-var markLegend = []struct{ mark, status string }{{"!", "nonzero"}, {"T", "timeout"}, {"E", "error"}, {"?", "no metadata"}}
+var markLegend = []struct{ mark, status string }{{"!", "nonzero"}, {"T", "timeout"}, {"B", "budget"}, {"E", "error"}, {"?", "no metadata"}}
 
 // statusMark is a pair's mark, "" when it ended ok.
 func statusMark(r pairRecord) string {
@@ -437,7 +437,7 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 		}
 		return cell{fmt.Sprintf("%.2f %s", s, scoreBar(s)), scoreColor(s)}
 	}
-	markColor := map[string]string{"!": "\033[31m", "E": "\033[31m", "T": "\033[33m", "?": "\033[2m"}
+	markColor := map[string]string{"!": "\033[31m", "E": "\033[31m", "T": "\033[33m", "B": "\033[33m", "?": "\033[2m"}
 
 	for _, t := range tasks {
 		row(t, func(a string) []cell {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"os"
 	"strings"
@@ -51,9 +52,30 @@ type pairStat struct {
 	netSeen int32 // 1 once egress.log was readable (i.e. proxy mode) -> show net
 
 	// set once the pair ends, for the run's summary.
-	status string
-	tokens int
-	cost   float64
+	status    string
+	tokens    int
+	cost      float64
+	costKnown bool // the summary reported a cost
+
+	liveCost atomic.Uint64 // float64 bits: spend reported so far, for the bar
+	// spend, when set, hears each step's cost as the harness reports it.
+	spend func(c float64)
+}
+
+// spent is the spend the pair's harness reported so far.
+func (s *pairStat) spent() float64 { return math.Float64frombits(s.liveCost.Load()) }
+
+// addCost records a step's cost as the harness reports it.
+func (s *pairStat) addCost(c float64) {
+	for {
+		old := s.liveCost.Load()
+		if s.liveCost.CompareAndSwap(old, math.Float64bits(math.Float64frombits(old)+c)) {
+			break
+		}
+	}
+	if s.spend != nil {
+		s.spend(c)
+	}
 }
 
 // cols renders the counter columns "out [tool] [net]" -- tool only when the harness
@@ -65,6 +87,9 @@ func (s *pairStat) cols(showTools bool) string {
 	}
 	if atomic.LoadInt32(&s.netSeen) == 1 {
 		parts = append(parts, fmt.Sprintf("%4d net", atomic.LoadInt64(&s.net)))
+	}
+	if c := s.spent(); c > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", c))
 	}
 	return strings.Join(parts, "  ")
 }
@@ -415,8 +440,16 @@ type opencodeEvent struct {
 // opencodeEvent).
 func scanOpencode(line []byte, s *pairStat) {
 	var ev opencodeEvent
-	if json.Unmarshal(line, &ev) == nil && ev.Type == "tool_use" {
+	if json.Unmarshal(line, &ev) != nil {
+		return
+	}
+	switch ev.Type {
+	case "tool_use":
 		atomic.AddInt64(&s.tools, 1)
+	case "step_finish":
+		if ev.Part.Cost > 0 {
+			s.addCost(ev.Part.Cost)
+		}
 	}
 }
 
