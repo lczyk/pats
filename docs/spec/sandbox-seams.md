@@ -311,8 +311,11 @@ an owner file's pid; both are liveness records, kept in different places. images
   apart from the runs: on docker and podman the built ones by their `pats.context-hash` label and those pulled from
   pats's registry, plus whatever the registered projects' pins say pats pulled or built on that daemon (an `image:`
   ref pats pulled has no mark of its own), on lxd every image in the pats project but a run's under its private
-  alias. the label is inherited, so a labelled image whose layers start with another's of the same label (or equal
-  them: a `FROM` that only sets metadata) is someone's own, and neither of two such twins is taken by label. an
+  alias. a build is tagged `pats-build:<hash>` as well, and the tag is the proof: an image carrying it is pats's. the
+  label alone is inherited, so a labelled image without the tag whose layers start with another's of the same label
+  (or equal them: a `FROM` that only sets metadata) is someone's own, and neither of two such twins is taken by label.
+  the build cache's hit (`cachedImageID`) needs the tag and the matching label, so an image built FROM a pats build
+  is never reused as one, even once the pats build is gone. an
   image that an image outside the removal set is built on (a layer prefix) stays, as does one a container uses
   unless forced; both are decided up front, so a dry run says what a real one does. images go in passes,
   so a parent goes once the children built on it have; one a container uses stays, and is said. a run's own image
