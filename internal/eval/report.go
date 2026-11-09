@@ -292,6 +292,11 @@ func readJudges(runDir string, warn io.Writer) []reportJudge {
 				if strings.HasPrefix(filepath.Base(jd), ".") {
 					continue // a staged or set-aside set, mid-swap: not a judgement
 				}
+				// a verdict on a pair no judge would grade is a crash's
+				// leftover, not a judgement.
+				if judgeRowOf(filepath.Join(runDir, filepath.Base(ag), filepath.Base(jd))) != rowJudge {
+					continue
+				}
 				v, err := readVerdict(jd)
 				if err != nil {
 					if !errors.Is(err, fs.ErrNotExist) && warn != nil {

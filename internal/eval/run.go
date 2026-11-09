@@ -516,6 +516,9 @@ type pairJob struct {
 	seed func(workDir string) error
 	// footer goes after the resolved prompt.
 	footer string
+	// agentEnv goes into the agent's own env in the sandbox, over what the
+	// harness sets.
+	agentEnv map[string]string
 	// meta adds the job's own fields to its metadata.json.
 	meta func(*pairMeta)
 }
@@ -587,6 +590,12 @@ func runPair(
 	defer h.cleanup()
 	if t.Sudo != nil {
 		h.spec.Sudo = *t.Sudo
+	}
+	if len(job.agentEnv) > 0 {
+		if h.spec.Env == nil {
+			h.spec.Env = map[string]string{}
+		}
+		maps.Copy(h.spec.Env, job.agentEnv)
 	}
 	hostEnv["PATS_AGENT_HOME"] = h.homeDir
 	for k, v := range t.Env {

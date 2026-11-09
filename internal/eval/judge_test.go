@@ -74,7 +74,9 @@ func useFake(t *testing.T, f *fakeSandbox) {
 func TestJudge(t *testing.T) {
 	var workdirs []map[string]bool
 	var prompts []string
+	var scorerEnv []string
 	fake := &fakeSandbox{stdout: opencodeReply("looks right\nSCORE: 0.5"), onRun: func(spec sandbox.Spec) {
+		scorerEnv = append(scorerEnv, spec.Env["PATS_SCORER_NAME"])
 		seen := map[string]bool{}
 		filepath.WalkDir(spec.Workdir, func(p string, d os.DirEntry, err error) error {
 			if rel, _ := filepath.Rel(spec.Workdir, p); rel != "." {
@@ -106,6 +108,7 @@ func TestJudge(t *testing.T) {
 		assert.That(t, !w["metadata.json"], "metadata.json reached the judge")
 	}
 	require.Len(t, prompts, 2)
+	assert.EqualArrays(t, scorerEnv, []string{"jud", "jud"}) // the judge knows its scorer
 	assert.That(t, strings.HasPrefix(prompts[0], "grade it") && strings.Contains(prompts[0], "SCORE: na"), "prompt: %q", prompts[0])
 
 	jd := judgementDir(run, "jud", "axx", "t1x")
@@ -204,6 +207,38 @@ func TestJudgeNothingToJudge(t *testing.T) {
 	for _, s := range rep.Scores {
 		assert.That(t, s.Scorer != "jud", "stale agent score kept: %+v", s)
 	}
+}
+
+// a run named by a relative path is still this config's run.
+func TestJudgeRelativeRun(t *testing.T) {
+	useFake(t, &fakeSandbox{stdout: opencodeReply("SCORE: 1")})
+	dir, run, cfg := judgeFixture(t)
+	t.Chdir(dir)
+	rel, err := filepath.Rel(dir, run)
+	require.NoError(t, err)
+	require.NoError(t, Judge(cfg, JudgeOptions{ConfigDir: ".", RunDir: rel, Out: io.Discard, Offline: true}))
+	v, err := readVerdict(judgementDir(run, "jud", "axx", "t1x"))
+	require.NoError(t, err)
+	assert.That(t, v.OK && *v.Score == 1, "verdict: %+v", v)
+}
+
+// a verdict a crash left on a pair no judge grades is not counted.
+func TestReadJudgesSkipsUnjudgeable(t *testing.T) {
+	_, run, _ := judgeFixture(t) // t2x is na, with a stale verdict
+	stale := judgementDir(run, "jud", "axx", "t2x")
+	require.NoError(t, os.WriteFile(filepath.Join(stale, "verdict.json"), []byte(`{"ok":true,"score":1,"judge":"jxx"}`), 0o644))
+	assert.Len(t, readJudges(run, io.Discard), 0)
+}
+
+// a swap that cannot put the new set in leaves the old one where it was.
+func TestSwapInRollsBack(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "t1x")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "verdict.json"), []byte("old"), 0o644))
+	assert.That(t, swapIn(dir) != nil, "a swap with nothing staged succeeded") // no staging dir: the rename fails
+	b, err := os.ReadFile(filepath.Join(dir, "verdict.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(b), "old")
 }
 
 func TestRepairJudgement(t *testing.T) {

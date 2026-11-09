@@ -52,6 +52,7 @@ type judgement struct {
 	staged    bool
 	samples   []verdict
 	committed *verdict // the set swapped in; nil when none was
+	saveErr   error    // the set could not be saved: the old one stands
 }
 
 func (j *judgement) dir() string { return judgementDir(j.runDir, j.sc.Name, j.agent, j.task) }
@@ -88,8 +89,11 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 		}
 		runDirs = []string{dir}
 	}
-	for _, d := range runDirs {
-		if err := inRuns(base, d); err != nil {
+	for i, d := range runDirs {
+		if abs, err := filepath.Abs(d); err == nil {
+			runDirs[i] = abs
+		}
+		if err := inRuns(base, runDirs[i]); err != nil {
 			return err
 		}
 	}
@@ -383,6 +387,15 @@ func judgeRun(ctx context.Context, cfg *config.Config, ro Options, runDir string
 		}
 	}
 	lg.info("%s: %d judged (%d failed), %d na, %d skipped", filepath.Base(runDir), judged, failed, na, skipped)
+	unsaved := 0
+	for _, j := range js {
+		if j.saveErr != nil {
+			unsaved++
+		}
+	}
+	if unsaved > 0 {
+		return fmt.Errorf("%s: %d judgement(s) could not be saved; their earlier verdicts and scores stand", filepath.Base(runDir), unsaved)
+	}
 	return nil
 }
 
@@ -405,13 +418,14 @@ func (j *judgement) sampleDone(ctx context.Context, n int, lg logw) {
 		FooterVersion: footerVersion, Judge: j.sc.Agent, Scorer: j.sc.Name,
 		Judged: judged{Agent: j.agent, Task: j.task},
 	})
-	if err := writeJSON(filepath.Join(staging, "verdict.json"), v); err != nil {
-		lg.error("%s %s/%s: %v", j.sc.Name, j.agent, j.task, err)
-		os.RemoveAll(staging)
-		return
+	err := writeJSON(filepath.Join(staging, "verdict.json"), v)
+	if err == nil {
+		err = swapIn(j.dir())
 	}
-	if err := swapIn(j.dir()); err != nil {
-		lg.error("%s %s/%s: %v", j.sc.Name, j.agent, j.task, err)
+	if err != nil {
+		os.RemoveAll(staging)
+		j.saveErr = err
+		lg.error("%s %s/%s: %v (its earlier verdict and score stand)", j.sc.Name, j.agent, j.task, err)
 		return
 	}
 	j.committed = &v
@@ -428,21 +442,32 @@ func asideDir(dir string) string {
 	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".old")
 }
 
-// swapIn replaces the set at dir with the one staged beside it.
+// swapIn replaces the set at dir with the one staged beside it. it fails
+// whole: the old set is back at dir unless the new one is in.
 func swapIn(dir string) error {
 	old := asideDir(dir)
 	if err := os.RemoveAll(old); err != nil {
 		return err
 	}
+	moved := false
 	if _, err := os.Stat(dir); err == nil {
 		if err := os.Rename(dir, old); err != nil {
 			return err
 		}
+		moved = true
 	}
 	if err := os.Rename(stagingDir(dir), dir); err != nil {
+		if moved {
+			if rerr := os.Rename(old, dir); rerr != nil {
+				return fmt.Errorf("%w; and putting the old set back: %v", err, rerr)
+			}
+		}
 		return err
 	}
-	return os.RemoveAll(old)
+	// the new set is in: a leftover aside dir is only clutter, and the next
+	// judge's repair removes it.
+	os.RemoveAll(old)
+	return nil
 }
 
 // repairJudgement undoes what a crash mid-judgement left at dir: a staging
@@ -510,7 +535,8 @@ func judgeSample(ctx context.Context, cfg *config.Config, ro Options, j *judgeme
 			}
 			return err
 		},
-		footer: judgeFooter,
+		footer:   judgeFooter,
+		agentEnv: map[string]string{"PATS_SCORER_NAME": j.sc.Name},
 		meta: func(m *pairMeta) {
 			m.Judged, m.Sample = &jd, i
 		},
