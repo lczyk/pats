@@ -96,6 +96,44 @@ func (c *Config) SelectSuites(only []string) ([]Suite, error) {
 	return out, errs.err()
 }
 
+// RunSuites is the suites a run selects: the named ones, or with none named
+// every suite not marked manual. a config whose suites are all manual has
+// none to run by default.
+func (c *Config) RunSuites(only []string) ([]string, error) {
+	if len(only) > 0 {
+		return only, nil
+	}
+	var out []string
+	for _, s := range c.Suites {
+		if !s.Manual {
+			out = append(out, s.Name)
+		}
+	}
+	if len(out) == 0 && len(c.Suites) > 0 {
+		return nil, fmt.Errorf("every suite is manual: name one with -S")
+	}
+	return out, nil
+}
+
+// ManualSuitesWith names the manual suites holding a pair the agent and task
+// filters keep: where a filter that missed the default run would land.
+func (c *Config) ManualSuitesWith(agents, tasks []string) []string {
+	var out []string
+	for _, s := range c.Suites {
+		if !s.Manual {
+			continue
+		}
+		pairs, err := c.ExpandTestPairs(s.Name)
+		if err != nil {
+			continue
+		}
+		if _, err := c.FilterPairs(pairs, agents, tasks); err == nil {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
+
 // ExpandTestPairs crosses each selected suite's agents x tasks. dangling refs
 // and duplicate names after expansion within one suite's axis are errors; the
 // same pair from two suites is fine (suites may overlap deliberately) and

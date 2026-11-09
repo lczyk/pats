@@ -193,3 +193,31 @@ func TestFilterScorePairs(t *testing.T) {
 	_, err = c.FilterScorePairs(only, []string{"s3"})
 	assert.Error(t, err, `--scorer "s3": no such scorer in the selected suites`)
 }
+
+// a manual suite runs only when named: a bare run takes the others.
+func TestRunSuitesManual(t *testing.T) {
+	c := parseT(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+agents: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}, bxx: {harness: opencode-openrouter, model: m}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+core: {kind: suite, items: {core: {agents: axx, tasks: txx}}}
+extra: {kind: suite, defaults: {manual: true}, items: {abl: {agents: bxx, tasks: txx}}}
+`)
+	require.NoError(t, c.Validate())
+	got, err := c.RunSuites(nil)
+	require.NoError(t, err)
+	assert.EqualArrays(t, got, []string{"core"})
+	got, err = c.RunSuites([]string{"extra"})
+	require.NoError(t, err)
+	assert.EqualArrays(t, got, []string{"extra"})
+	assert.EqualArrays(t, c.ManualSuitesWith([]string{"bxx"}, nil), []string{"abl"})
+	assert.Len(t, c.ManualSuitesWith([]string{"axx"}, nil), 0)
+
+	all := parseT(t, `
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx, manual: true}}}
+`)
+	_, err = all.RunSuites(nil)
+	assert.Error(t, err, "every suite is manual")
+}

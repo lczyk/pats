@@ -1097,3 +1097,16 @@ func assertNoBuildOrPull(t *testing.T, log string) {
 	}
 	assert.That(t, len(b) > 0, "the spy saw no docker call: it is not on the path the run takes")
 }
+
+// a filter that only a manual suite satisfies says which -S reaches it.
+func TestRunManualSuiteHint(t *testing.T) {
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+agents: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}, bxx: {harness: opencode-openrouter, model: m}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+core: {kind: suite, items: {core: {agents: axx, tasks: txx}}}
+extra: {kind: suite, defaults: {manual: true}, items: {abl: {agents: bxx, tasks: txx}}}
+`)
+	_, err := Run(cfg, Options{ConfigDir: t.TempDir(), Now: time.Now(), Out: io.Discard, Agents: []string{"bxx"}, DryRun: true})
+	assert.Error(t, err, "manual suite abl holds it: add -S abl")
+}

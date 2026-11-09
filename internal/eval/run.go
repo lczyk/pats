@@ -76,7 +76,11 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 		}
 		defer unlock()
 	}
-	pairs, err := cfg.ExpandTestPairs(opts.Suites...)
+	suites, err := cfg.RunSuites(opts.Suites)
+	if err != nil {
+		return "", err
+	}
+	pairs, err := cfg.ExpandTestPairs(suites...)
 	if err != nil {
 		return "", err
 	}
@@ -87,6 +91,13 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 		return "", fmt.Errorf("no (agent, task) pairs to run: the selected suites expand to none (a config with no suite vector runs nothing)")
 	}
 	if pairs, err = cfg.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
+		if manual := cfg.ManualSuitesWith(opts.Agents, opts.Tasks); len(opts.Suites) == 0 && len(manual) > 0 {
+			what := "manual suite " + manual[0] + " holds it"
+			if len(manual) > 1 {
+				what = "manual suites " + strings.Join(manual, ", ") + " hold it"
+			}
+			return "", fmt.Errorf("%w (%s: add -S %s)", err, what, manual[0])
+		}
 		return "", err
 	}
 	// first output up front: the slow startup steps (image build, preflight) are

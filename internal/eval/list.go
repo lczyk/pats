@@ -90,7 +90,7 @@ func ListScorers(cfg *config.Config, out io.Writer) error {
 // the pair counts its cross-products expand to.
 func ListSuites(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "VECTOR\tSUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS")
+	fmt.Fprintln(w, "VECTOR\tSUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS\tMANUAL")
 	for _, s := range cfg.Suites {
 		test, _ := cfg.ExpandTestPairs(s.Name)
 		score, _ := cfg.ExpandScorePairs(s.Name)
@@ -101,8 +101,12 @@ func ListSuites(cfg *config.Config, out io.Writer) error {
 		for _, p := range score {
 			scorers[p.Scorer] = true
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\n",
-			s.Vector, s.Name, len(agents), len(tasks), len(scorers), len(test), len(score))
+		manual := ""
+		if s.Manual {
+			manual = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			s.Vector, s.Name, len(agents), len(tasks), len(scorers), len(test), len(score), manual)
 	}
 	return w.Flush()
 }

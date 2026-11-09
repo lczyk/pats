@@ -108,3 +108,9 @@ suites:
       agents: haiku
       tasks: write-readme
       scorers: style
+    # a manual suite stays out of a bare `pats run`; `pats run -S <name>` runs it.
+    # readme-sweep:
+    #   manual: true
+    #   agents: [haiku, judge]
+    #   tasks: write-readme
+    #   scorers: style

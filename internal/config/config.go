@@ -288,6 +288,9 @@ type Suite struct {
 	Agents  StrList `yaml:"agents"`
 	Tasks   StrList `yaml:"tasks"`
 	Scorers StrList `yaml:"scorers"`
+	// Manual leaves the suite out of a run that names no suite: it runs
+	// only when -S names it, or a suite vector holding it.
+	Manual bool `yaml:"manual"`
 }
 
 // StrList accepts a yaml scalar or sequence and stores it as []string.
