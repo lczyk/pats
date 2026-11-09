@@ -53,13 +53,13 @@ haiku:
       harness: opencode-openrouter
       model: anthropic/claude-haiku-4.5
 
-# a judge for agent scorers (not implemented yet): an agent in no suite, named by a scorer's `agent`.
-# judge:
-#   kind: agent
-#   items:
-#     judge:
-#       harness: claude-cli-keyless
-#       model: claude-sonnet-4-6
+# a judge for agent scorers: an agent in no suite, named by a scorer's `agent`. pats judge runs it.
+judge:
+  kind: agent
+  items:
+    judge:
+      harness: claude-cli-keyless
+      model: claude-sonnet-4-6
 
 # the prompt is `prompt` (literal text), `prompt-file` or `prompt-cmd` (a script; its stdout). `stage` and `collect` are
 # shell scripts, a one-liner like `./collect.sh --fast` included, run on the host with PATS_* env set and this dir's bin/
@@ -92,10 +92,13 @@ style:
     only-ascii:
     title-correct:
     no-finite-verbs:
-    # an agent scorer (not implemented yet):
-    # no-colloquialisms:
-    #   agent: judge
-    #   prompt-file: prompts/no-colloquialisms.txt
+    # an agent scorer: its agent judges a copy of the pair's output, with a task's steps to shape what it sees.
+    no-colloquialisms:
+      score: ~                                  # unset the vector's default: an agent scorer has no score
+      agent: judge
+      prompt-file: prompts/no-colloquialisms.txt
+      # stage: rm -f "$PATS_WORKDIR"/answer-key.md   # take out what the judge must not see
+      # timeout: 5m
 
 # a suite runs its agents x tasks and scores its tasks x scorers. every item must be in at least one suite.
 suites:

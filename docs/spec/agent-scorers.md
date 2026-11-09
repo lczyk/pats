@@ -1,13 +1,13 @@
 # agent scorers
 
-status: proposed, not implemented. it supersedes part 1 of an earlier proposal, agent-scorers-and-followups, no
+status: implemented, except where noted below. it supersedes part 1 of an earlier proposal, agent-scorers-and-followups, no
 longer in the tree; the backlog items it numbered (F1, F8) are named below where they matter.
 
 ## problem
 
 script scorers are regex and parser based, and a meaning-level check ("did the review catch the partial migration?")
 needs an llm. the config already reserves the shape -- a scorer with `agent:` and one of `prompt` / `prompt-file` /
-`prompt-cmd` -- and validation rejects it as not implemented. hand-rolled judges (a script scorer shelling out to the
+`prompt-cmd` -- and validation rejected it as not implemented. hand-rolled judges (a script scorer shelling out to the
 host `claude`) run unsandboxed under the host's login, settings and hooks, their cost is invisible to pats, and their
 caching is ad hoc.
 
@@ -210,8 +210,9 @@ then shared.
     note with no `SCORE:` line at all is skipped.
   - codex: the `text` of the last `item.completed` event whose item is an `agent_message` (present in all 37 past
     logs). `codex exec -o <file>` writes the same thing to a file, an alternative to parsing.
-  - copilot: the last assistant message; opencode: the text parts of the final step. no past logs of either, so these
-    are written against fresh samples first.
+  - copilot: the last non-empty `assistant.message` content; opencode: the `text` parts after the last step
+    boundary. no past logs of either: these readers follow the event shapes the summaries parse (`progress_test.go`)
+    and no real judge run of either has checked them yet. a reply they miss is a failed sample, never a wrong score.
 - **parse** -- the last non-empty line of the final text must match
   `^\s*SCORE:\s*(na|0|1|0?\.[0-9]+|1\.0+)\s*$` (case-insensitive): `na`, `0`, `1`, a decimal below one
   (`0.75`, `.75`), or one written with zeros (`1.0`). any other form (`1.5`, `00.5`, `2`, `-0`, `0.5/1`) is a parse

@@ -85,8 +85,9 @@ small nor quite parsable:
 - **version** -- an integer. a new field is not a new version, and a consumer ignores fields it does not know. a field
   renamed, removed or changing meaning bumps it. pats prints only the current version; there is no flag to ask for
   an older one.
-- **later fields** -- agent scorers (`agent-scorers.md`) add `failed` to each agent (its unjudged pairs) and a
-  `judges` array (per judge agent: cost, tokens, duration, failures), as new fields of version 1.
+- **agent-scorer fields** -- agent scorers (`agent-scorers.md`) add `failed_pairs` to each agent (its pairs no judge
+  could grade, `null` when the scores predate the count) and a `judges` array (per judge agent: `judgements`,
+  `failed`, `na`, `samples`, `cost_usd`, `output_tokens`, `duration_s`), as new fields of version 1.
 
 ## the command
 
@@ -116,8 +117,8 @@ per-agent `avg`, `cost` and `time` rows. it replaced the breakdown and run stats
   score -r <run>`, and a narrowed score refuses to merge into it with the same message, since merging would drop
   every score the file held. an unnarrowed `pats score` replaces it, as it replaces any file. 1.x is unreleased, so
   there is no reader for the old format: `pats score -r all` rewrites every run.
-- user-facing words: `-j`'s help (`max scores to compute in parallel`), `--judge`'s (`each judges its pairs in a
-  sandbox`), and the two log lines (`computing <n> scores, up to <m> in parallel`, `<n> agent scores need --judge`).
+- user-facing words: `-j`'s help (`max scores to compute in parallel`) and the log line (`computing <n> scores, up
+  to <m> in parallel`). judging has since moved to `pats judge`, and `scores.json` is at version 3.
 - the docs: `cli-filters.md`, `agent-scorers.md` (an error cell is a failed score, a judged cell a judged score, an
   agent cell an agent score) and the readme.
 

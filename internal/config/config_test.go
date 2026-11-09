@@ -22,8 +22,8 @@ func TestExampleConfig(t *testing.T) {
 
 	score, err := c.ExpandScorePairs()
 	require.NoError(t, err)
-	// 3 scorers x 3 tasks = 9 pairs.
-	assert.Len(t, score, 9)
+	// 4 scorers (one an agent scorer) x 3 tasks = 12 pairs.
+	assert.Len(t, score, 12)
 }
 
 func parseT(t *testing.T, src string) *Config {

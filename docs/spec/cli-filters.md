@@ -32,8 +32,9 @@ way `run`'s filters do. so `score` gets the same filters, plus one for scorers.
   other score is kept unless the config no longer has its (agent, task, scorer), and the means cover them all. a
   narrowed score that reaches no score is an error and leaves the file alone; `-r all` skips a run where that happens
   and fails only when every run does. an unnarrowed score replaces the file, as before.
-- `--judge` keeps its meaning and composes: `pats score --judge -s my-judge` judges that scorer's pairs and nothing
-  else (`agent-scorers.md`).
+- `pats judge` takes the same filters and merges the same way (`agent-scorers.md`): `pats judge -s my-judge` judges
+  that scorer's pairs and nothing else. `pats score` lost `--judge`: an agent score in its selection is read from its
+  stored verdict.
 
 ## the one trap
 
