@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"net/netip"
 	pathpkg "path"
 	"strings"
@@ -491,6 +492,23 @@ func BenchmarkDecide(b *testing.B) {
 	for i := 0; b.Loop(); i++ {
 		c := cases[i%len(cases)]
 		r.Decide(c.host, 443, "GET", c.path, "")
+	}
+}
+
+// BenchmarkDecideHost is the verdict every CONNECT gets before a byte moves:
+// the host normalised and walked down both lists, here 50 entries long with
+// ip entries among them.
+func BenchmarkDecideHost(b *testing.B) {
+	var deny, allow []string
+	for i := range 25 {
+		deny = append(deny, fmt.Sprintf("203.0.113.%d", i))
+		allow = append(allow, fmt.Sprintf(".docs%d.example.com", i))
+	}
+	r := mustRule(b, false, allow, deny)
+	hosts := []string{"api.docs24.example.com", "Other.Example.com.", "203.0.113.24", "198.51.100.7"}
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		r.DecideHost(hosts[i%len(hosts)], 443)
 	}
 }
 

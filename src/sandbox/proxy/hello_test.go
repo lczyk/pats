@@ -143,3 +143,21 @@ func FuzzPeekHello(f *testing.F) {
 		assert.Equal(t, got, want, "the server reads a name the tunnel was not opened for")
 	})
 }
+
+// BenchmarkPeekHello is the work a tunnel does before its first byte goes
+// upstream: the records read and the hello walked to its server name.
+func BenchmarkPeekHello(b *testing.B) {
+	hello := clientHello(b, "good.test")
+	p := &Proxy{}
+	stream := bytes.NewReader(hello)
+	c := bufConn{Conn: streamConn{}, r: bufio.NewReader(stream)}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(hello)))
+	for b.Loop() {
+		stream.Reset(hello)
+		c.r.Reset(stream)
+		if got, reason := p.peekHello(c, "good.test", 443); got == nil {
+			b.Fatal(reason)
+		}
+	}
+}
