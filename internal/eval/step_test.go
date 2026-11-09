@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -198,4 +199,21 @@ func TestStepLeftoverChildEndsWithStep(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	assert.That(t, gone, "the background child outlived its step")
+}
+
+// a scorer that leaves a child holding its stdout still scores at once: the
+// child is killed when the script exits, before its output is drained.
+func TestStepPipedLeftoverChild(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Now()
+	out, err := step{script: "sleep 30 &\necho 0.5\n", dir: dir}.output(context.Background(), dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(string(out)), "0.5")
+	assert.That(t, time.Since(start) < 5*time.Second, "waited %s on the leftover child", time.Since(start))
+
+	var buf bytes.Buffer // a run's -vv tee: not a file
+	start = time.Now()
+	require.NoError(t, step{script: "sleep 30 &\necho staged\n", dir: dir}.run(context.Background(), dir, nil, io.MultiWriter(&buf)))
+	assert.Equal(t, buf.String(), "staged\n")
+	assert.That(t, time.Since(start) < 5*time.Second, "waited %s on the leftover child", time.Since(start))
 }

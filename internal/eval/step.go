@@ -64,7 +64,6 @@ func (s step) command(ctx context.Context, root string, env map[string]string) (
 	cmd.Dir, cmd.Env = s.dir, environ
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = stepWaitDelay
 	return cmd, cleanup, nil
 }
 
@@ -104,24 +103,81 @@ func (s step) outputTee(ctx context.Context, root string, env map[string]string,
 }
 
 // runGroup runs cmd in its own process group, and a step's processes end
-// with it: the group is killed when ctx ends while it runs, also after the
-// script exited and a child it left still holds the output, and when it
-// returns, so nothing it started in the background outlives it.
+// with it: the group is killed when ctx ends while it runs, and when the
+// script exits, so nothing it started in the background outlives it. the
+// output goes through pipes runGroup owns, drained only after that kill: a
+// child left holding the output cannot keep the step waiting.
 func runGroup(ctx context.Context, cmd *exec.Cmd) error {
-	if err := cmd.Start(); err != nil {
+	var ours []*os.File // the child's ends, closed in this process once it has them
+	var reads []*os.File
+	var drains []chan struct{}
+	piped := map[io.Writer]*os.File{}
+	wire := func(dst io.Writer) (io.Writer, error) {
+		if _, isFile := dst.(*os.File); isFile || dst == nil {
+			return dst, nil
+		}
+		if w, ok := piped[dst]; ok { // stdout and stderr to one writer: one pipe
+			return w, nil
+		}
+		r, w, err := os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		done := make(chan struct{})
+		go func() {
+			io.Copy(dst, r)
+			close(done)
+		}()
+		piped[dst], ours, reads, drains = w, append(ours, w), append(reads, r), append(drains, done)
+		return w, nil
+	}
+	finish := func(waitDrains bool) {
+		for _, w := range ours {
+			w.Close()
+		}
+		if waitDrains {
+			// the group is gone, so the pipes' other ends are closed and the
+			// drains end. one that does not (a child that left the group) is
+			// cut off.
+			timeout := time.After(stepWaitDelay)
+			for _, d := range drains {
+				select {
+				case <-d:
+				case <-timeout:
+				}
+			}
+		}
+		for _, r := range reads {
+			r.Close()
+		}
+	}
+	var err error
+	if cmd.Stdout, err = wire(cmd.Stdout); err == nil {
+		cmd.Stderr, err = wire(cmd.Stderr)
+	}
+	if err == nil {
+		err = cmd.Start()
+	}
+	if err != nil {
+		finish(false)
 		return err
 	}
+	for _, w := range ours {
+		w.Close()
+	}
+	ours = nil
 	pid := cmd.Process.Pid
 	kill := func() { syscall.Kill(-pid, syscall.SIGKILL) }
 	stop := context.AfterFunc(ctx, kill)
 	defer stop()
-	err := cmd.Wait()
+	err = cmd.Wait()
 	kill()
+	finish(true)
 	return err
 }
 
-// stepWaitDelay bounds the wait for a killed step's output to drain, should
-// something outside its group still hold the pipe.
+// stepWaitDelay bounds the wait for a finished step's output to drain,
+// should something outside its group still hold the pipe.
 const stepWaitDelay = 10 * time.Second
 
 // stepNames is every name pats sets in some host step's env. an inherited
