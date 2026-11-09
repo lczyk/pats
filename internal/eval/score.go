@@ -11,12 +11,14 @@ import (
 	"maps"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/lczyk/pats/internal/config"
 )
@@ -181,7 +183,10 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 
 	// same bounded-worker-pool pattern as Run: buffered per-job output emitted
 	// atomically on completion so concurrent progress/log writes don't interleave.
-	ctx := context.Background()
+	// a scorer runs in a process group of its own, out of the terminal's
+	// reach: ctrl-c reaches it through ctx.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	sem := make(chan struct{}, njobs)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -241,6 +246,11 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}(j)
 	}
 	wg.Wait()
+	// an interrupted score writes nothing: its results are a part, and the
+	// unnarrowed path would replace the file with them.
+	if ctx.Err() != nil {
+		return nil, ErrInterrupted
+	}
 
 	var rep *ScoreReport
 	if narrowed {
