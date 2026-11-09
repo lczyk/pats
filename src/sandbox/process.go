@@ -177,20 +177,40 @@ func (r execRunner) environ() []string {
 
 func (r execRunner) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 	cmd := exec.CommandContext(ctx, r.bin, args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = unfileR(stdin), unfileW(stdout), unfileW(stderr)
 	cmd.Env = r.environ()
+	cmd.WaitDelay = r.waitDelay
 	return cmd.Run()
 }
 
 func (r execRunner) Start(stdin io.Reader, stdout, stderr io.Writer, args ...string) (proc, error) {
 	cmd := exec.Command(r.bin, args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = unfileR(stdin), unfileW(stdout), unfileW(stderr)
 	cmd.Env = r.environ()
 	cmd.WaitDelay = r.waitDelay
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	return execProc{cmd}, nil
+}
+
+// unfileR and unfileW hide an *os.File from os/exec, which would hand the
+// cli the descriptor itself. a snap-confined cli (lxd's lxc) cannot inherit
+// one outside its confinement: apparmor swaps it for /dev/null and the
+// output is lost. a pipe, which os/exec makes for any other reader or
+// writer, crosses.
+func unfileR(r io.Reader) io.Reader {
+	if f, ok := r.(*os.File); ok && f != nil {
+		return struct{ io.Reader }{f}
+	}
+	return r
+}
+
+func unfileW(w io.Writer) io.Writer {
+	if f, ok := w.(*os.File); ok && f != nil {
+		return struct{ io.Writer }{f}
+	}
+	return w
 }
 
 type execProc struct{ cmd *exec.Cmd }
