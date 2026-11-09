@@ -98,8 +98,8 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	// ctrl-c anywhere from here (the model check, the preflight, a repeat)
 	// is an interrupted run, whatever error the step it cut made of it.
 	defer func() {
-		if err != nil && ctx.Err() != nil {
-			err = ErrInterrupted
+		if ctx.Err() != nil {
+			err = ErrInterrupted // shutdown below runs first, and may be what was cut
 		}
 	}()
 	// an lxd run's marker goes when the run ends; its lease stops.
@@ -708,6 +708,11 @@ func runPair(
 	// anything here can fail.
 	if s := meta.Summary; s != nil {
 		stat.tokens, stat.cost, stat.costKnown = s.OutputTokens, s.CostUSD, s.HasCost
+	}
+	// an interrupt during the close or the lookups above still makes the
+	// pair interrupted.
+	if ctx.Err() != nil {
+		meta.Status, meta.Error = "error", "interrupted"
 	}
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err
