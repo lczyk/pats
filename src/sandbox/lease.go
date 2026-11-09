@@ -35,11 +35,7 @@ type hostLease struct {
 // cacheDir is where pats keeps its per-user state: the temp root, the
 // client id, the lease files.
 func cacheDir() (string, error) {
-	root, err := TempRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Dir(root), nil
+	return CacheDir()
 }
 
 // leasePath is the lease file of a run.
@@ -127,13 +123,37 @@ type leaseFile struct {
 	at   time.Time
 }
 
-// readLease reads a run's lease file on this host; ok is false when there
-// is none.
-func (p *process) readLease(token string) (l leaseFile, ok bool, err error) {
+// leaseFound is where a run's lease file is on this host: the cache dir's,
+// else the legacy dir's (an older pats's run), else the cache dir's path.
+func (p *process) leaseFound(token string) (string, error) {
 	path, err := p.leasePath(token)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	if legacy := p.legacy(); legacy != "" {
+		old := filepath.Join(legacy, leasePrefix+token+leaseSuffix)
+		if _, err := os.Stat(old); err == nil {
+			return old, nil
+		}
+	}
+	return path, nil
+}
+
+// readLease reads a run's lease file on this host, in the cache dir or the
+// legacy one; ok is false when there is none.
+func (p *process) readLease(token string) (l leaseFile, ok bool, err error) {
+	path, err := p.leaseFound(token)
 	if err != nil {
 		return l, false, err
 	}
+	return readLeaseAt(path)
+}
+
+// readLeaseAt reads the lease file at path; ok is false when there is none.
+func readLeaseAt(path string) (l leaseFile, ok bool, err error) {
 	st, err := os.Stat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return l, false, nil

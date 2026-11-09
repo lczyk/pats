@@ -126,7 +126,7 @@ func TestCleanTemp(t *testing.T) {
 	require.NoError(t, os.Chtimes(ddir, old, old))
 
 	var out bytes.Buffer
-	require.NoError(t, p.cleanTemp(map[string]bool{}, 24*time.Hour, false, false, TextReport(&out)))
+	require.NoError(t, p.cleanTemp(map[string]bool{}, nil, 24*time.Hour, false, false, TextReport(&out)))
 	_, err = os.Stat(dir)
 	assert.NoError(t, err) // its run is alive
 	_, err = os.Stat(ddir)
@@ -144,13 +144,13 @@ func TestCleanTemp(t *testing.T) {
 	require.NoError(t, os.WriteFile(listed, []byte("elsewhere 1\n"), 0o644))
 	require.NoError(t, os.Chtimes(listed, stale, stale))
 
-	require.NoError(t, p.cleanTemp(nil, 24*time.Hour, false, false, TextReport(&out)))
+	require.NoError(t, p.cleanTemp(nil, nil, 24*time.Hour, false, false, TextReport(&out)))
 	_, err = os.Stat(orphan)
 	assert.NoError(t, err) // a place was not listed: lease files stay
 	_, err = os.Stat(dir)
 	assert.That(t, os.IsNotExist(err), "a dead run's old temp dir stayed")
 
-	require.NoError(t, p.cleanTemp(map[string]bool{"ffffffffffff": true}, 24*time.Hour, false, false, TextReport(&out)))
+	require.NoError(t, p.cleanTemp(map[string]bool{"ffffffffffff": true}, nil, 24*time.Hour, false, false, TextReport(&out)))
 	_, err = os.Stat(orphan)
 	assert.That(t, os.IsNotExist(err), "an orphan stale lease stayed")
 	_, err = os.Stat(listed)
@@ -158,12 +158,12 @@ func TestCleanTemp(t *testing.T) {
 
 	// force takes a live run's dir and every lease, a dry run saying so first.
 	out.Reset()
-	require.NoError(t, p.cleanTemp(nil, 24*time.Hour, true, true, TextReport(&out)))
+	require.NoError(t, p.cleanTemp(nil, nil, 24*time.Hour, true, true, TextReport(&out)))
 	assert.ContainsString(t, out.String(), "would remove temp dir "+ddir+"\n")
 	assert.ContainsString(t, out.String(), "would remove lease "+listed+"\n")
 	_, err = os.Stat(ddir)
 	assert.NoError(t, err)
-	require.NoError(t, p.cleanTemp(nil, 24*time.Hour, false, true, TextReport(&out)))
+	require.NoError(t, p.cleanTemp(nil, nil, 24*time.Hour, false, true, TextReport(&out)))
 	for _, gone := range []string{ddir, listed} {
 		_, err = os.Stat(gone)
 		assert.That(t, os.IsNotExist(err), "force left %s", gone)

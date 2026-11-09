@@ -93,10 +93,12 @@ func testProcess(t *testing.T) *process {
 	})
 	home := t.TempDir()
 	p.home = func() (string, error) { return home, nil }
+	p.legacy = func() string { return "" }
 	// an owner of the test binary's own: a test clean on a real daemon then
 	// judges a real pats run there (labelled with this host's owner) as
 	// another's, and leaves it.
 	p.owner = func() string { return testOwner }
+	p.knownOwner = func() string { return p.owner() }
 	t.Cleanup(p.shutdown)
 	return p
 }

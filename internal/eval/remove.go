@@ -49,12 +49,8 @@ var hostForTarget = func(ctx context.Context, target, daemon string) (h imageHos
 // projectsFile lists every project whose init ran on this machine, one path
 // a line, so a container image goes only when none of their pins names it.
 func projectsFile() string {
-	dir := os.Getenv("XDG_CACHE_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".cache")
-	}
-	return filepath.Join(dir, "pats", "projects")
+	dir, _ := sandbox.CacheDir()
+	return filepath.Join(dir, "projects")
 }
 
 // machineLock serialises what inits on this machine do with each other's

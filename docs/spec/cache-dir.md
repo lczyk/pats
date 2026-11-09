@@ -1,6 +1,6 @@
 # cache dir
 
-status: proposed.
+status: implemented.
 
 ## problem
 

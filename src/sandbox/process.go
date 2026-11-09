@@ -37,8 +37,13 @@ type process struct {
 	t     timings
 	reg   registry
 	// home is the per-user dir the temp root and the lease files live in.
-	home  func() (string, error)
-	lease hostLease
+	home func() (string, error)
+	// legacy is an older pats's home, read by clean; "" for none.
+	legacy func() string
+	// knownOwner is the owner label as it stands, read only (clean judges by
+	// it); "" when this host has no client id yet.
+	knownOwner func() string
+	lease      hostLease
 
 	slot atomic.Uint32 // the next egress subnet
 
@@ -94,6 +99,7 @@ func newProcess(c clock, t timings) *process {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	return &process{token: hex.EncodeToString(b), owner: sync.OnceValue(hostOwner), clock: c, t: t, reg: defaultRegistry, home: cacheDir,
+		legacy: legacyCacheDir, knownOwner: knownOwner,
 		lxd: lxdProcess{servers: map[string]*lxdServer{}, proxyImages: map[string]string{}}}
 }
 

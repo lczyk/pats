@@ -140,7 +140,15 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		places = append(places, place{name, sandbox.Options{Driver: "lxd", Remote: r}.WithEnv()})
 	}
 
-	report := cleanReport(o)
+	// leases the run sweep removes, or would: the temp sweep counts them gone.
+	planned := map[string]bool{}
+	render := cleanReport(o)
+	report := func(e sandbox.CleanEvent) {
+		if e.Action == "remove" && e.Kind == "lease" {
+			planned[e.Name] = true
+		}
+		render(e)
+	}
 	unlock, err := machineLock()
 	if err != nil {
 		return fmt.Errorf("cannot take %s.lock: %w", projectsFile(), err)
@@ -184,7 +192,7 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		if o.All || o.Force {
 			olderThan = 0
 		}
-		if err := sandbox.CleanTemp(listed, olderThan, o.DryRun, o.Force, report); err != nil {
+		if err := sandbox.CleanTemp(listed, planned, olderThan, o.DryRun, o.Force, report); err != nil {
 			errs = append(errs, err)
 		}
 	}

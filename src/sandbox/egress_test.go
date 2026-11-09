@@ -458,7 +458,7 @@ func TestLoadClientID(t *testing.T) {
 	ids := make(chan string, 8)
 	for i := range 8 {
 		go func(i int) {
-			id, err := loadClientID(p, fmt.Sprintf("%016x", i+1))
+			id, err := loadClientID(p, func() string { return fmt.Sprintf("%016x", i+1) })
 			if err != nil {
 				id = "err: " + err.Error()
 			}
@@ -470,7 +470,7 @@ func TestLoadClientID(t *testing.T) {
 		assert.Equal(t, <-ids, first)
 	}
 	require.NoError(t, os.WriteFile(p, []byte("half"), 0o600))
-	id, err := loadClientID(p, "00000000000000ff")
+	id, err := loadClientID(p, func() string { return "00000000000000ff" })
 	require.NoError(t, err)
 	assert.Equal(t, id, "00000000000000ff")
 }

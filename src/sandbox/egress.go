@@ -47,25 +47,34 @@ var clientID = sync.OnceValue(func() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	fresh := hex.EncodeToString(b)
-	root, err := TempRoot()
+	dir, err := CacheDir()
 	if err != nil {
 		// unpersisted: unique to this process, so never another's; a later
-		// clean sees what it made as foreign and leaves it to --force.
+		// clean sees what it made as foreign and leaves it to --all.
 		return fresh
 	}
-	p := filepath.Join(filepath.Dir(root), "client-id")
-	if id, err := loadClientID(p, fresh); err == nil {
+	// a pats before CacheDir kept its id in the legacy dir: carried over, so
+	// runs an older binary started stay this client's.
+	if id, err := loadClientID(filepath.Join(dir, "client-id"), func() string {
+		if legacy := legacyCacheDir(); legacy != "" {
+			if id := readClientID(filepath.Join(legacy, "client-id")); id != "" {
+				return id
+			}
+		}
+		return fresh
+	}); err == nil {
 		return id
 	}
 	return fresh
 })
 
-// loadClientID returns the id stored at p, publishing fresh there first when
-// there is none: written to a temp file and hard-linked into place, so the
+// loadClientID returns the id stored at p, publishing fresh() there first
+// when there is none (fresh runs under p's lock, so a legacy id it reads is
+// read under both locks, p's first): written to a temp file and hard-linked into place, so the
 // file is whole whenever it exists. a malformed file (from before this) is
 // replaced. a lock beside it serialises the whole read-repair-publish, so
 // concurrent first runs, and concurrent repairs, all end on one id.
-func loadClientID(p, fresh string) (string, error) {
+func loadClientID(p string, fresh func() string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return "", err
 	}
@@ -104,7 +113,7 @@ func loadClientID(p, fresh string) (string, error) {
 		return "", err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(fresh + "\n"); err != nil {
+	if _, err := tmp.WriteString(fresh() + "\n"); err != nil {
 		tmp.Close()
 		return "", err
 	}

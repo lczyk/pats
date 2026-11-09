@@ -137,3 +137,38 @@ func TestPinnedHere(t *testing.T) {
 	sort.Strings(got)
 	assert.EqualArrays(t, got, []string{"sha256:aaa ubuntu:24.04", "sha256:ddd " + short("sha256:ddd")})
 }
+
+// clean reads this host's client id and never makes or repairs one, dry run
+// or not, though judging a run compares owners.
+func TestCleanWritesNoClientID(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("HOME", cache)
+	idPath := filepath.Join(cache, "pats", "client-id")
+	old := openDriver
+	openDriver = func(o sandbox.Options) (sandbox.Driver, error) {
+		// a lease-less run: judging it compares its owner with this host's.
+		run, owner := strings.Repeat("e", 12), "h/1/"+strings.Repeat("0", 16)
+		return &cleanDriver{runs: []sandbox.RunRecord{{Token: run, Owner: owner,
+			Resources: []sandbox.Resource{{Kind: "sandbox", Name: "c", Created: time.Now()}}}}}, nil
+	}
+	t.Cleanup(func() { openDriver = old })
+	for _, malformed := range []bool{false, true} {
+		if malformed {
+			require.NoError(t, os.MkdirAll(filepath.Dir(idPath), 0o755))
+			require.NoError(t, os.WriteFile(idPath, []byte("not-an-id\n"), 0o600))
+		}
+		for _, dry := range []bool{true, false} {
+			var out bytes.Buffer
+			require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{"docker"}, LXDRemotes: []string{}, DryRun: dry, All: true, Out: &out}))
+			b, err := os.ReadFile(idPath)
+			if malformed {
+				require.NoError(t, err)
+				assert.Equal(t, string(b), "not-an-id\n", "clean repaired the id")
+			} else {
+				assert.That(t, os.IsNotExist(err), "clean (dry run %v) made a client id", dry)
+			}
+			assert.ContainsString(t, out.String(), "may be alive elsewhere") // judged as another's
+		}
+	}
+}

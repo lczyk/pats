@@ -153,7 +153,10 @@ pats clean [-n|--dry-run] [--older-than 24h] [-a|--all] [-f|--force] [--run <tok
   pats image, and every temp dir and lease file: everything pats left. each thing removed, kept or left is a log
   line; `--json` makes it one json object a line instead (`action`, `dry_run`, `place`, `kind`, `name`, `label`,
   `run`, `owner`, `why`, `count`), with the same things in it. `-n` says exactly what the same flags without it
-  would do, an image a container uses included: it is kept, unless forced.
+  would do, an image a container uses included: it is kept, unless forced. pats keeps this state in
+  `$XDG_CACHE_HOME/pats` or `~/.cache/pats` on every os; a pats before 1.0.0-beta.8 used `~/Library/Caches/pats` on
+  macos, which clean still sweeps and points at once only an old client id is left in it. upgrade every pats on a
+  machine together: an older `pats clean` cannot see a newer run's lease and may take it.
 
 ## standalone
 

@@ -71,7 +71,8 @@ type CleanEvent struct {
 	DryRun bool   `json:"dry_run"`
 	Place  string `json:"place"` // docker, lxd srv; host for temp dirs and leases
 	// Kind is a resource's (sandbox, network, acl, alias, image, marker,
-	// temp, lease, owner), or what a leave counts (live, unknown).
+	// temp, lease, owner), or what a leave is about (live, unknown runs; the
+	// legacy cache dir).
 	Kind  string `json:"kind,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Label string `json:"label,omitempty"` // Name as the text says it, when that differs
@@ -109,6 +110,9 @@ func (e CleanEvent) String() string {
 	case "keep":
 		return fmt.Sprintf("%s: kept %s %s (%s)", e.Place, e.Kind, name, e.Why)
 	case "leave":
+		if e.Kind == "legacy" {
+			return fmt.Sprintf("left legacy cache dir %s: it holds only an old client id; remove it once no older pats is installed", name)
+		}
 		if e.Kind == "live" {
 			return fmt.Sprintf("%s: left %d live run(s); pats clean --run <token> removes one", e.Place, e.Count)
 		}
@@ -183,7 +187,7 @@ func (p *process) judge(r RunRecord, now time.Time) (verdict, string) {
 			return dead, "its lease is stale"
 		}
 		return alive, ""
-	case r.Owner != p.owner():
+	case r.Owner != p.knownOwner():
 		return unknown, "another user's or machine's"
 	case young():
 		return alive, "it has no lease yet"
@@ -288,7 +292,7 @@ func (p *process) clean(ctx context.Context, d Driver, o CleanOptions) (map[stri
 			o.report(e)
 		}
 		if !r.Held && r.Token != "" && !failed {
-			if path, err := p.leasePath(r.Token); err == nil {
+			if path, err := p.leaseFound(r.Token); err == nil {
 				if _, err := os.Stat(path); err == nil {
 					if !o.DryRun {
 						_ = os.Remove(path)
@@ -467,33 +471,87 @@ next:
 // a temp dir once its run is dead and it is older than olderThan, a lease
 // file once stale and naming no run in listed and no temp dir. a nil listed
 // (a place could not be listed) leaves every lease file.
-func CleanTemp(listed map[string]bool, olderThan time.Duration, dryRun, force bool, report func(CleanEvent)) error {
-	return defaultProcess.cleanTemp(listed, olderThan, dryRun, force, report)
+// planned names what the run sweep removed, or would: a dry run leaves it on
+// disk, and it counts as gone for the legacy dir's note all the same.
+func CleanTemp(listed, planned map[string]bool, olderThan time.Duration, dryRun, force bool, report func(CleanEvent)) error {
+	return defaultProcess.cleanTemp(listed, planned, olderThan, dryRun, force, report)
 }
 
-func (p *process) cleanTemp(listed map[string]bool, olderThan time.Duration, dryRun, force bool, report func(CleanEvent)) error {
+func (p *process) cleanTemp(listed, planned map[string]bool, olderThan time.Duration, dryRun, force bool, report func(CleanEvent)) error {
 	o := CleanOptions{Place: "host", DryRun: dryRun, Report: report}
 	dir, err := p.home()
 	if err != nil {
 		return err
 	}
+	_, err = p.cleanTempIn(dir, o, listed, olderThan, force)
+	errs := []error{err}
+	// an older pats's home: swept by the same rules, and never removed (an
+	// old binary may hold its lock), only pointed at once nothing else is in it.
+	if legacy := p.legacy(); legacy != "" {
+		if _, err := os.Stat(legacy); err == nil {
+			gone, err := p.cleanTempIn(legacy, o, listed, olderThan, force)
+			errs = append(errs, err)
+			for path := range planned {
+				gone[path] = true
+			}
+			if onlyClientID(legacy, gone) {
+				o.report(CleanEvent{Action: "leave", Kind: "legacy", Name: legacy})
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// onlyClientID says whether dir holds nothing but a client id, its lock and
+// an empty tmp/, once what gone names is gone.
+func onlyClientID(dir string, gone map[string]bool) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		path := filepath.Join(dir, e.Name())
+		switch {
+		case gone[path], e.Name() == "client-id", e.Name() == "client-id.lock":
+		case e.Name() == "tmp" && e.IsDir():
+			sub, err := os.ReadDir(path)
+			if err != nil {
+				return false
+			}
+			for _, s := range sub {
+				if !gone[filepath.Join(path, s.Name())] {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// cleanTempIn sweeps one home's temp root and lease files, and returns what
+// it removed, or would in a dry run.
+func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool, olderThan time.Duration, force bool) (map[string]bool, error) {
+	dryRun := o.DryRun
 	root := filepath.Join(dir, "tmp")
 	now := p.clock.Now()
 	var errs []error
-	held := map[string]bool{}    // runs a temp dir names
-	removed := map[string]bool{} // dirs this pass takes, owner files and all
+	held := map[string]bool{} // runs a temp dir names
+	gone := map[string]bool{} // what this sweep takes: dirs, owner files, leases
 	ents, err := os.ReadDir(root)
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return gone, err
 	}
 	for _, e := range ents {
 		path := filepath.Join(root, e.Name())
 		if owner, ok := strings.CutSuffix(path, ownerSuffix); ok {
 			// an owner file outlives its dir when the caller removed the dir.
-			if _, err := os.Stat(owner); os.IsNotExist(err) && !removed[owner] {
+			if _, err := os.Stat(owner); os.IsNotExist(err) && !gone[owner] {
 				if !dryRun {
 					_ = os.Remove(path)
 				}
+				gone[path] = true
 				o.report(CleanEvent{Action: "remove", Kind: "owner", Name: path})
 			}
 			continue
@@ -514,11 +572,11 @@ func (p *process) cleanTemp(listed map[string]bool, olderThan time.Duration, dry
 			}
 			_ = os.Remove(path + ownerSuffix)
 		}
-		removed[path] = true
+		gone[path], gone[path+ownerSuffix] = true, true
 		o.report(CleanEvent{Action: "remove", Kind: "temp", Name: path})
 	}
 	if listed == nil && !force {
-		return errors.Join(errs...)
+		return gone, errors.Join(errs...)
 	}
 	leases, _ := filepath.Glob(filepath.Join(dir, leasePrefix+"*"+leaseSuffix))
 	for _, path := range leases {
@@ -527,7 +585,7 @@ func (p *process) cleanTemp(listed map[string]bool, olderThan time.Duration, dry
 		if !isHex(token) || token == "" || listed[token] || (!force && held[token]) {
 			continue
 		}
-		l, ok, err := p.readLease(token)
+		l, ok, err := readLeaseAt(path)
 		if err != nil || !ok || (!force && !l.at.Before(now.Add(-p.t.leaseStale))) {
 			continue
 		}
@@ -537,9 +595,10 @@ func (p *process) cleanTemp(listed map[string]bool, olderThan time.Duration, dry
 				continue
 			}
 		}
+		gone[path] = true
 		o.report(CleanEvent{Action: "remove", Kind: "lease", Name: path})
 	}
-	return errors.Join(errs...)
+	return gone, errors.Join(errs...)
 }
 
 // tempAlive is the run a temp dir's owner file names, and whether that run
@@ -555,6 +614,6 @@ func (p *process) tempAlive(dir string, now time.Time) (token string, live bool)
 		pid, err := strconv.Atoi(token)
 		return "", err == nil && pid > 0 && processAlive(pid)
 	}
-	v, _ := p.judge(RunRecord{Token: token, Owner: p.owner()}, now)
+	v, _ := p.judge(RunRecord{Token: token, Owner: p.knownOwner()}, now)
 	return token, v == alive
 }
