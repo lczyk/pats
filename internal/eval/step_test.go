@@ -177,3 +177,25 @@ func TestStepCancelKillsLeftoverChild(t *testing.T) {
 	}
 	assert.That(t, gone, "the leftover child outlived the cancel")
 }
+
+// a child a step started in the background, writing to the step's log file,
+// does not outlive the step.
+func TestStepLeftoverChildEndsWithStep(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child")
+	log, err := os.Create(filepath.Join(dir, "stage.log"))
+	require.NoError(t, err)
+	defer log.Close()
+	err = step{script: "sleep 30 &\necho $! > " + pidFile + "\n", dir: dir}.run(context.Background(), dir, nil, log)
+	require.NoError(t, err)
+	b, err := os.ReadFile(pidFile)
+	require.NoError(t, err)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	require.That(t, pid > 0, "no child pid")
+	gone := false
+	for i := 0; i < 100 && !gone; i++ {
+		gone = syscall.Kill(pid, 0) != nil
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.That(t, gone, "the background child outlived its step")
+}

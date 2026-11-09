@@ -103,17 +103,21 @@ func (s step) outputTee(ctx context.Context, root string, env map[string]string,
 	return stdout.Bytes(), nil
 }
 
-// runGroup runs cmd and, should ctx end before it returns, kills its whole
-// process group: also after the script itself exited, while a child it left
-// behind still holds the output open.
+// runGroup runs cmd in its own process group, and a step's processes end
+// with it: the group is killed when ctx ends while it runs, also after the
+// script exited and a child it left still holds the output, and when it
+// returns, so nothing it started in the background outlives it.
 func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	pid := cmd.Process.Pid
-	stop := context.AfterFunc(ctx, func() { syscall.Kill(-pid, syscall.SIGKILL) })
+	kill := func() { syscall.Kill(-pid, syscall.SIGKILL) }
+	stop := context.AfterFunc(ctx, kill)
 	defer stop()
-	return cmd.Wait()
+	err := cmd.Wait()
+	kill()
+	return err
 }
 
 // stepWaitDelay bounds the wait for a killed step's output to drain, should
