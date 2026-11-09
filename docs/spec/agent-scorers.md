@@ -55,7 +55,7 @@ quality:
       stage: rm -f "$PATS_WORKDIR"/*.expected.yaml
       prompt-file: prompts/no-peeking.md
     slice-builds:
-      stage: cp "cases/$PATS_SCORED_TASK_ID/case.yaml" "$PATS_WORKDIR/"
+      stage: cp "cases/$PATS_SCORED_TASK_NAME/case.yaml" "$PATS_WORKDIR/"
       prepare: apt-get install -y dpkg-dev
       collect: scorers/keep-build-log.sh        # into the judge's own dir
       sudo: true
@@ -66,7 +66,7 @@ quality:
       prompt-file: prompts/slice-builds.md
 ```
 
-- `agent` names exactly one judging agent: any agent, in a suite or not. an agent vector id is an error, so one scorer
+- `agent` names exactly one judging agent: any agent, in a suite or not. an agent vector name is an error, so one scorer
   has one judge (a panel of judges is several scorers). an agent named only by scorers is not an orphan (as today).
 - one of `prompt` / `prompt-file` / `prompt-cmd`, resolved as a task's prompt is.
 - `stage`, `prepare`, `collect`, `env`, `sudo`, `egress` and `timeout`
@@ -96,7 +96,7 @@ quality:
   `$PATS_*`.
 - **the host env** -- every host step of an agent scorer (`stage`, `prompt-cmd`, `collect`) runs in the scorer's
   directory with two sets of vars (see "scorer env" below): the `PATS_SCORED_*` set every scorer gets, describing the
-  pair being graded, and the vars a task's steps get, describing the judge's own run -- `PATS_AGENT_ID` (the judge),
+  pair being graded, and the vars a task's steps get, describing the judge's own run -- `PATS_AGENT_NAME` (the judge),
   `PATS_MODEL`, `PATS_AGENT_HARNESS`, `PATS_AGENT_HOME`, `PATS_WORKDIR`, and `PATS_OUTPUT_DIR` the judge's own dir
   under `.judge/`, where `collect` writes. no `PATS_TASK_*`: a judge has no task of its own. the scorer's `env` goes
   on top.
@@ -113,7 +113,7 @@ quality:
   ```
 
 - **in the sandbox** -- the judge's own `PATS_*` are set as for a task agent (its model, effort, prompt file), plus
-  `PATS_SCORER_ID`. no `PATS_SCORED_*` reaches the sandbox, `prepare` included: the paths are host paths, and
+  `PATS_SCORER_NAME`. no `PATS_SCORED_*` reaches the sandbox, `prepare` included: the paths are host paths, and
   nothing names the judged agent or its model there, so a judge can't be swayed by who it grades. a scorer that wants
   the judge to know says so through `stage` or the prompt.
 - **egress** -- the judge agent's own sandbox policy with the scorer's `egress` entries unioned in, as a task's are.
@@ -125,20 +125,20 @@ every scorer, script or agent, names the pair it grades with one prefix:
 | var | meaning |
 |---|---|
 | `PATS_SCORED_DIR` | the graded pair's output dir on the host (`<run>/<agent>/<task>/`) |
-| `PATS_SCORED_AGENT_ID` | the graded pair's agent |
-| `PATS_SCORED_TASK_ID` | the graded pair's task |
+| `PATS_SCORED_AGENT_NAME` | the graded pair's agent |
+| `PATS_SCORED_TASK_NAME` | the graded pair's task |
 | `PATS_SCORED_TASK_DIR` | that task's directory |
 | `PATS_SCORED_MODEL` | the graded agent's model |
 | `PATS_SCORED_HARNESS` | the graded agent's harness |
 
-with `PATS_RUN_ID`, `PATS_RUN_DIR` and `PATS_SCORER_ID` beside them. this replaces what script scorers get today:
-`PATS_OUTPUT_DIR`, `PATS_TASK_DIR`, `PATS_AGENT_ID`, `PATS_TASK_ID`, `PATS_MODEL` and `PATS_AGENT_HARNESS` are no
+with `PATS_RUN_NAME`, `PATS_RUN_DIR` and `PATS_SCORER_NAME` beside them. this replaces what script scorers get today:
+`PATS_OUTPUT_DIR`, `PATS_TASK_DIR`, `PATS_AGENT_NAME`, `PATS_TASK_NAME`, `PATS_MODEL` and `PATS_AGENT_HARNESS` are no
 longer set for a script scorer. 1.x is unreleased, so the old names go with no alias; existing scorers (mason,
 oci-factory) rename theirs. the unprefixed names then mean one thing everywhere: the run of the agent the step
 belongs to, a task's or a judge's.
 
 a host step inherits pats's own environment (`step.go`'s `hostEnviron`), so leaving a name out of the map is not
-unsetting it: a pats run from inside a task's step would hand its parent's `PATS_TASK_ID` to a judge, and an old
+unsetting it: a pats run from inside a task's step would hand its parent's `PATS_TASK_NAME` to a judge, and an old
 `PATS_OUTPUT_DIR` to a script scorer. every host step, a task's included, drops the inherited names pats sets for any
 step (the tables here, a task's set, `PATS_ROOT`) before adding its own. pats's own settings (`PATS_LXD_UPLINK` and
 the like) pass through.
@@ -158,11 +158,11 @@ a judge is a pair run through `runPair`, not a parallel code path:
 - the output dir is `<run>/.judge/<scorer>/<agent>/<task>/`, holding what any pair dir holds (`stdout.log`,
   `stderr.log`, `egress.log`, `metadata.json` with cost and tokens) plus `verdict.json`. `metadata.json` gains
   `judged: {agent, task}`.
-- agent ids starting with `.` become a validation error, so no agent's pair dirs can collide with `.judge/`. the
+- agent names starting with `.` become a validation error, so no agent's pair dirs can collide with `.judge/`. the
   existing globs (`<run>/*/*/metadata.json`) never reach four levels down, so run stats and status tallies stay
   pair-only.
-- an id of `.` or `..` becomes a validation error for every kind (`badID` refuses only `/`, `$` and whitespace
-  today): agent, task and scorer ids are path components, and a scorer `..` would put a judge's dir on the judged
+- a name of `.` or `..` becomes a validation error for every kind (`badID` refuses only `/`, `$` and whitespace
+  today): agent, task and scorer names are path components, and a scorer `..` would put a judge's dir on the judged
   pair's own, which `runPair` truncates.
 
 `runPair` today computes its output dir from the pair; the refactor makes the output dir and the workdir seed inputs,
@@ -193,7 +193,7 @@ then shared.
   `na` drops it, as a script scorer's `na` does. anything else is a failed score, logged and dropped from
   aggregation, even when a `SCORE:` line parsed.
 - **verdict.json** -- `{ok, score | na, error, footer_version, judge, scorer, judged: {agent, task}}`, written for
-  every judge run, failed or not. `judge` is the judge agent's id: the dir names only the scorer and the judged pair,
+  every judge run, failed or not. `judge` is the judge agent's name: the dir names only the scorer and the judged pair,
   and `pats report` reads a run's files without the config, so this is how it attributes a failure to a judge.
 
 ## the score phase

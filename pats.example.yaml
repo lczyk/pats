@@ -1,8 +1,9 @@
-# pats.yaml is a mapping of vectors. the key is the vector's id. a vector has a `kind` (sandbox | agent | task | scorer | suite),
-# optional `defaults`, and `items` keyed by id. an item inherits every default it doesn't set, and `field: ~` unsets one.
-# ids are unique per kind. a reference (a suite axis, `sandbox:`, `-a` / `-t` / `-s`) takes a vector id or an item id.
-# nothing in pats.yaml is templated: a step is a shell script, and reads the ids it runs for from its env
-# ($PATS_TASK_ID, $PATS_TASK_VECTOR, $PATS_SCORER_ID, ...). the readme has the full rules.
+# pats.yaml is a mapping of vectors. the key is the vector's name. a vector has a `kind` (sandbox | agent | task | scorer | suite),
+# optional `defaults`, and `items` keyed by name. an item inherits every default it doesn't set, and `field: ~` unsets one.
+# names are unique per kind, and follow chisel's slice-name rule (lowercase, digits, single hyphens, at least 3).
+# a reference (a suite axis, `sandbox:`, `-a` / `-t` / `-s`) takes a vector name or an item name.
+# nothing in pats.yaml is templated: a step is a shell script, and reads the names it runs for from its env
+# ($PATS_TASK_NAME, $PATS_TASK_VECTOR, $PATS_SCORER_NAME, ...). the readme has the full rules.
 
 sandbox:
   kind: sandbox
@@ -70,9 +71,9 @@ haiku:
 write-readme:
   kind: task
   defaults:
-    prompt-cmd: cat "prompts/$PATS_TASK_VECTOR-$PATS_TASK_ID.txt"
-    stage: scripts/stage.sh --"$PATS_TASK_ID"
-    collect: scripts/collect.sh --"$PATS_TASK_ID"
+    prompt-cmd: cat "prompts/$PATS_TASK_VECTOR-$PATS_TASK_NAME.txt"
+    stage: scripts/stage.sh --"$PATS_TASK_NAME"
+    collect: scripts/collect.sh --"$PATS_TASK_NAME"
   items:
     simple:
     hard:
@@ -86,7 +87,7 @@ write-readme:
 style:
   kind: scorer
   defaults:
-    score: scorers/"$PATS_SCORER_ID".sh
+    score: scorers/"$PATS_SCORER_NAME".sh
   items:
     only-ascii:
     title-correct:

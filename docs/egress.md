@@ -129,10 +129,10 @@ crossed the proxy.
 ## commands
 
 ```
-pats egress check <sandbox> [--task <id>] [--agent <id>] [--method GET] <url>
+pats egress check <sandbox> [--task <name>] [--agent <name>] [--method GET] <url>
 pats egress suggest [--run <run>]
 pats egress log [--denied] [--method POST,PUT,PATCH,DELETE] <pair-dir>
-pats egress run --policy <file> | --sandbox <id> [--task <id>] [--agent <id>] [flags]
+pats egress run --policy <file> | --sandbox <name> [--task <name>] [--agent <name>] [flags]
 pats egress ca --out <dir>
 pats clean [-n|--dry-run] [--older-than 24h] [-a|--all] [-f|--force] [--run <token>] [--json]
 ```

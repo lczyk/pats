@@ -39,10 +39,10 @@ an error but an over-broad one is a long, expensive run.
 - **the estimate** is the median `summary.cost_usd` of past pairs that match, with `has_cost: true`, whatever their
   status. `samples` is how many there were. none: `unknown`, with the reason `no history`, or `no cost reported` for
   a harness that reports none.
-- **matching.** a past pair matches when its `metadata.json` has the same agent id, task id, harness, model, effort
+- **matching.** a past pair matches when its `metadata.json` has the same agent name, task name, harness, model, effort
   and provider block (`provider-pinning.md`) as the agent and task now. a missing provider block matches only an
   agent with none. metadata from before `model` was recorded matches nothing.
-- **metadata gains `model`, `effort` and `provider`**, for the matching, since the agent id alone can be pointed at
+- **metadata gains `model`, `effort` and `provider`**, for the matching, since the agent name alone can be pointed at
   another model or provider between runs.
 - **history** is every numbered run dir under `.pats/runs/` (`sortedRunNames`, which skips the `latest` alias, so no
   run counts twice). no `.pats/runs/` yet (a project after `pats init`, before any run) is no history; another error

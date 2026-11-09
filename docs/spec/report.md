@@ -31,10 +31,10 @@ small nor quite parsable:
 ```json
 {
   "version": 1,
-  "run": {"id": "003-20260621-fluffy-bunny", "dir": "/abs/path/.pats/runs/003-20260621-fluffy-bunny"},
+  "run": {"name": "003-20260621-fluffy-bunny", "dir": "/abs/path/.pats/runs/003-20260621-fluffy-bunny"},
   "overall": 0.82,
   "agents": [
-    {"id": "claude-opus", "mean": 0.9}
+    {"name": "claude-opus", "mean": 0.9}
   ],
   "pairs": [
     {"agent": "claude-opus", "task": "slicer-libc6", "mean": 0.75,
@@ -79,9 +79,9 @@ small nor quite parsable:
   count agent scorers add (below) has somewhere to go.
 - **`overall`** -- the mean of the non-null agent means; `null` when there are none.
 - **means are unrounded.** rounding is the human report's.
-- **order** -- every array sorted by its ids (agent, then task, then scorer), so two reports of one run diff cleanly.
+- **order** -- every array sorted by its names (agent, then task, then scorer), so two reports of one run diff cleanly.
   the human report keeps its worst-first order.
-- **`run.dir`** is absolute, `run.id` its basename.
+- **`run.dir`** is absolute, `run.name` its basename.
 - **version** -- an integer. a new field is not a new version, and a consumer ignores fields it does not know. a field
   renamed, removed or changing meaning bumps it. pats prints only the current version; there is no flag to ask for
   an older one.
@@ -95,7 +95,7 @@ small nor quite parsable:
   printed (the document names the run), and no colour, no table. errors go to stderr with a non-zero exit and an
   empty stdout, so `pats report --json | jq` never parses half a line.
 - no `scores.json` is the same error as today (`no scores for <run> (run pats score first)`), on stderr.
-- it reads only run artefacts, no config, as `report` does today: the pair and score ids are what the run recorded.
+- it reads only run artefacts, no config, as `report` does today: the pair and score names are what the run recorded.
 
 ## the human report
 

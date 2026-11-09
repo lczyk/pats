@@ -80,9 +80,9 @@ a single-run report keeps its current document, version 1, unchanged. a report o
 ```json
 {
   "version": 2,
-  "runs": [{"id": "004-20261109-fluffy-bunny", "dir": "/abs/.pats/runs/004-..."}],
+  "runs": [{"name": "004-20261109-fluffy-bunny", "dir": "/abs/.pats/runs/004-..."}],
   "overall": 0.81,
-  "agents": [{"id": "haiku", "mean": 0.8}],
+  "agents": [{"name": "haiku", "mean": 0.8}],
   "pairs": [
     {"agent": "haiku", "task": "curl", "mean": 0.82, "sd": 0.05, "n": 5,
      "samples": [
@@ -94,7 +94,7 @@ a single-run report keeps its current document, version 1, unchanged. a report o
 ```
 
 `samples` has one entry per attempt, null `mean` included, so a failed or unscored attempt keeps its status, error,
-cost and duration. per-run facts of a pair live in its samples, each carrying its run id. a pair carries only what is
+cost and duration. per-run facts of a pair live in its samples, each carrying its run name. a pair carries only what is
 computed across runs. `report.md` gets the version 2 shape beside version 1.
 
 ## not doing

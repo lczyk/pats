@@ -10,9 +10,9 @@ words and exec'd with no shell. on top, pats templates `${task}` / `${agent}` / 
 `${vector}` into every field that is not content, at load.
 
 the two forms do the same job. a `-cmd` value looks like a shell line and is not one: `stage-cmd: cp
-cases/$PATS_SCORED_TASK_ID/case.yaml .` hands `cp` the literal `$PATS_SCORED_TASK_ID`. templating exists to put an
-id into a `-cmd` (`score-cmd: scorers/${scorer}.sh`), and every id is already in the step's environment
-(`PATS_TASK_ID`, `PATS_AGENT_ID`, `PATS_SCORER_ID`). the one place templating is used on a field pats itself reads is
+cases/$PATS_SCORED_TASK_NAME/case.yaml .` hands `cp` the literal `$PATS_SCORED_TASK_NAME`. templating exists to put a
+name into a `-cmd` (`score-cmd: scorers/${scorer}.sh`), and every name is already in the step's environment
+(`PATS_TASK_NAME`, `PATS_AGENT_NAME`, `PATS_SCORER_NAME`). the one place templating is used on a field pats itself reads is
 a prompt path, `prompt-file: prompts/${vector}-${task}.txt`, which the `dir` layout makes moot (each task holds its
 own prompt) and `prompt-cmd` covers otherwise. a search of every pats config at hand (the example, mason, oci-factory)
 found no other: no templated `image`, `build`, `base`, `model`, agent `sandbox`, egress entry, profile, config or
@@ -25,7 +25,7 @@ so each step is one field, a shell script, and nothing in `pats.yaml` or a `task
 - **one field per step.** `stage`, `prepare`, `collect` (task), `score` (scorer), `provision` (sandbox), and
   `prompt-cmd` (task, agent scorer) are scripts. a script with a `#!` line runs under that interpreter; any other runs
   under `/bin/sh -e`. a one-liner is a script too: `stage: ./stage.sh --fast` runs `./stage.sh` from the step's
-  directory with `--fast`, and `score: scorers/scorer_$PATS_SCORER_ID.py` expands the id, both by the shell.
+  directory with `--fast`, and `score: scorers/scorer_$PATS_SCORER_NAME.py` expands the name, both by the shell.
 - **the `-cmd` forms go:** `stage-cmd`, `prepare-cmd`, `collect-cmd`, `score-cmd`, `provision-cmd`. a config that
   sets one is a load error naming the field to use instead. 1.x is unreleased, so there is no alias.
 - **the prompt keeps three forms**, since they differ in kind, not in how they run: `prompt` (the text),
@@ -37,14 +37,14 @@ so each step is one field, a shell script, and nothing in `pats.yaml` or a `task
   likely than a wish. accepted; the readme says it.
 - **no templating.** `${...}` in a field is the field's text. so that a config written for templating fails loudly
   rather than reading a file named `prompts/${task}.txt`, a field holding `${task}`, `${agent}`, `${scorer}`,
-  `${sandbox}` or `${vector}` is a load error naming the env var that carries it (`$PATS_TASK_ID`, ...) or saying there
+  `${sandbox}` or `${vector}` is a load error naming the env var that carries it (`$PATS_TASK_NAME`, ...) or saying there
   is none (`${sandbox}`, and `${vector}` on an agent or a sandbox). the check covers every string field, scripts and
   `env` values included, but not `prompt`, whose text is the agent's: a literal `${task}` in a prompt reaches the agent
   as written. a script that means a shell variable of one of those five names renames it.
 
-- **the vector joins the step env**, as the item's id already is: a task's steps (`stage`, `prompt-cmd`, `prepare`,
+- **the vector joins the step env**, as the item's name already is: a task's steps (`stage`, `prompt-cmd`, `prepare`,
   `collect`) get `PATS_TASK_VECTOR`, a script scorer gets `PATS_SCORER_VECTOR`. so defaults shared across vectors by
-  an anchor keep picking per-vector files: `prompt-cmd: cat "prompts/$PATS_TASK_VECTOR-$PATS_TASK_ID.txt"` is what
+  an anchor keep picking per-vector files: `prompt-cmd: cat "prompts/$PATS_TASK_VECTOR-$PATS_TASK_NAME.txt"` is what
   `prompt-file: prompts/${vector}-${task}.txt` was.
 
 ## where a step runs, and what it can reach

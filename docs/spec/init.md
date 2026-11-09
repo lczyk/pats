@@ -39,7 +39,7 @@ projects share a layer only by accident of identical inputs.
 
 ### `pats init`
 
-`pats init [-S <suite>]... [-a <agent>]... [-t <task>]... [--sandbox <id>]... [--driver <d>] [--force]` makes what
+`pats init [-S <suite>]... [-a <agent>]... [-t <task>]... [--sandbox <name>]... [--driver <d>] [--force]` makes what
 the selected pairs' sandboxes need -- by default every sandbox the config's suites use -- and pins it. `-S`, `-a`
 and `-t` are `run`'s selectors, so `pats init` and `pats run` with the same flags agree on what is needed;
 `--sandbox` and `--driver` narrow further. the driver comes from each sandbox, so a project mixing docker and lxd
@@ -71,7 +71,7 @@ before the first pair, for each sandbox it uses:
   missing sandbox and the one command that makes them: `pats init --sandbox mason --sandbox haiku-docker` (or bare
   `pats init`).
 - **stale, local.** the provision material, the dockerfile context, the pats version or the pats build differs from
-  the pin's: one warning per sandbox naming what changed and `pats init --sandbox <id>`, and the run goes on with
+  the pin's: one warning per sandbox naming what changed and `pats init --sandbox <name>`, and the run goes on with
   the pinned image. hashing is local and is what the keys cost today.
 - **stale, components.** the pinned image's stamped harness versions differ from what this pats release pins
   (component versions, below): same warning, same going on.
