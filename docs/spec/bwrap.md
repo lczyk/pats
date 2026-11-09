@@ -1,6 +1,6 @@
 # the bwrap driver
 
-status: proposed, not implemented.
+status: implemented.
 
 ## purpose and limits
 
@@ -28,6 +28,9 @@ the limits it accepts:
 - **nothing outlives an exec.** each exec is its own bwrap with its own pid namespace (below): a daemon that `prepare`
   starts is gone when `prepare` ends, unlike in a container, where it keeps running into the agent's exec.
 - **no resource limits** in v1 (below, "later").
+- **gzip or plain layers.** a layer compressed with zstd is refused at pull: go's standard library has no zstd, and
+  pats takes no new dependency for it.
+- **the proxy is a child of pats**, as under the host driver: on linux the kernel ends it when pats dies.
 
 ## platform and preflight
 
