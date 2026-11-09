@@ -188,8 +188,8 @@ a judge is a pair run through `runPair`, not a parallel code path:
 - the output dir is a sample's: `<run>/.judge/<scorer>/<agent>/<task>/<i>/` (`samples` below), holding what any pair
   dir holds (`stdout.log`, `stderr.log`, `egress.log`, `metadata.json` with cost and tokens) plus the sample's
   `verdict.json`. `metadata.json` gains `judged: {agent, task}` and `sample: i`.
-- no agent's pair dirs can collide with `.judge/`: a name starts with a letter (the slice-name rule `badName`
-  enforces), so none starts with `.`, and none is `.` or `..`. the existing globs (`<run>/*/*/metadata.json`) never
+- no agent's pair dirs can collide with `.judge/`: a name starts with a letter or digit (chisel's package-name rule
+  `badName` enforces), so none starts with `.`, and none is `.` or `..`. the existing globs (`<run>/*/*/metadata.json`) never
   reach five levels down, so run stats and status tallies stay pair-only.
 
 `runPair` today computes its output dir from the pair; the refactor makes the output dir and the workdir seed inputs,
@@ -289,11 +289,12 @@ repeats task agents.
 
 - each sample is a synthesised pair of its own, with its own dir: `.judge/<scorer>/<agent>/<task>/<i>/`, `i` from 1.
   a judgement is the set of its samples, and a `pats judge` replaces the whole set at once: the new samples run in a
-  staging dir beside it (`.judge/<scorer>/<agent>/<task>.new/`), and when the judgement is done (every sample finished,
+  staging dir beside it (`.judge/<scorer>/<agent>/.<task>.new/`), and when the judgement is done (every sample finished,
   or the rest held back by the budget) its `verdict.json` is written there and it is swapped in: the old set is
-  renamed to `<task>.old/`, the staging dir to `<task>/`, and `<task>.old/` removed. a crash between the two renames
-  is repaired by the next `pats judge` before it judges that score: a `<task>.old/` with no `<task>/` is renamed
-  back, one beside a `<task>/` is removed, and a leftover `<task>.new/` is removed. a judgement cancelled before that leaves the old set and its stored score untouched and its staging dir
+  renamed to `.<task>.old/`, the staging dir to `<task>/`, and `.<task>.old/` removed. both start with a dot, so no
+  task name can be either. a crash between the two renames
+  is repaired by the next `pats judge` before it judges that score: a `.<task>.old/` with no `<task>/` is renamed
+  back, one beside a `<task>/` is removed, and a leftover `.<task>.new/` is removed. a judgement cancelled before that leaves the old set and its stored score untouched and its staging dir
   removed, so the set on disk and the number in `scores.json` always belong together. a judgement the budget held
   back entirely never makes a staging dir.
 - the budget admits samples, not judgements: each sample is an agent call, and the ledger admits agent calls. the

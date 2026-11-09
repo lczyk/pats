@@ -310,7 +310,7 @@ func TestValidateErrors(t *testing.T) {
 		{"suite missing tasks", base + "su2: {kind: suite, items: {su2: {agents: axx}}}\n", "tasks is required"},
 		{"duplicate item name across vectors", base + "t2x: {kind: task, items: {txx: {prompt: p}}}\n", "duplicate task name: txx"},
 		{"vector name shadows an item of its kind", base + "t2x: {kind: task, items: {xxx: {prompt: p}, yxx: {prompt: p}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: t2x}}}\nt3x: {kind: task, items: {t2x: {prompt: p}}}\n", "share a name but are different things"},
-		{"slash in name", "xxx: {kind: task, items: {a/b: {prompt: p}}}\n", "task \"a/b\" is not a name: lowercase letters, digits and single hyphens, a letter first, no hyphen last, at least 3 long"},
+		{"slash in name", "xxx: {kind: task, items: {a/b: {prompt: p}}}\n", "task \"a/b\" is not a name: lowercase letters, digits, dots, pluses and single hyphens, a letter or digit first, no hyphen last, at least 2 long"},
 		{"orphaned task", base + "t2x: {kind: task, items: {forgotten: {prompt: p}}}\n", "task \"forgotten\" is in no suite"},
 		{"orphaned scorer", base + "sc2: {kind: scorer, items: {lost: {score: ./s.py}}}\n", "scorer \"lost\" is in no suite"},
 		{"orphaned agent", base + "bxx: {kind: agent, items: {idle: {harness: opencode-openrouter, model: m}}}\n", "agent \"idle\" is in no suite"},
@@ -469,4 +469,14 @@ func TestTaskEgressDefaults(t *testing.T) {
 	assert.EqualArrays(t, got["replaces"].Allow, []string{"c.test"})
 	assert.Equal(t, len(got["replaces"].Deny), 0)
 	assert.Equal(t, got["drops"].Set, false)
+}
+
+// a name is chisel's package name: debian's own names fit, a dot never leads.
+func TestBadName(t *testing.T) {
+	for _, ok := range []string{"curl", "python3.14", "libstdc++6", "g++-14", "0ad", "ab", "base-passwd"} {
+		assert.Equal(t, badName(ok), "", ok)
+	}
+	for _, bad := range []string{"", "a", ".judge", "-ab", "ab-", "a--b", "Ab", "a_b", "a/b", "a b", "+ab"} {
+		assert.That(t, badName(bad) != "", "%q passed", bad)
+	}
 }

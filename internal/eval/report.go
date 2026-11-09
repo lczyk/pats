@@ -289,8 +289,8 @@ func readJudges(runDir string, warn io.Writer) []reportJudge {
 	for _, sc := range subdirs(filepath.Join(runDir, judgeSubdir)) {
 		for _, ag := range subdirs(sc) {
 			for _, jd := range subdirs(ag) {
-				if strings.HasSuffix(jd, ".new") || strings.HasSuffix(jd, ".old") {
-					continue // mid-swap: not a judgement
+				if strings.HasPrefix(filepath.Base(jd), ".") {
+					continue // a staged or set-aside set, mid-swap: not a judgement
 				}
 				v, err := readVerdict(jd)
 				if err != nil {

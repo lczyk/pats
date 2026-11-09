@@ -375,7 +375,7 @@ func judgeRun(ctx context.Context, cfg *config.Config, ro Options, runDir string
 	// trusts for a pair the table does not judge.
 	for _, j := range js {
 		if j.row != rowJudge {
-			for _, d := range []string{j.dir(), j.dir() + ".new", j.dir() + ".old"} {
+			for _, d := range []string{j.dir(), stagingDir(j.dir()), asideDir(j.dir())} {
 				if err := os.RemoveAll(d); err != nil {
 					return err
 				}
@@ -396,7 +396,7 @@ func (j *judgement) sampleDone(ctx context.Context, n int, lg logw) {
 	if j.pending > 0 || !j.staged {
 		return // the budget held back every sample: no staging was made
 	}
-	staging := j.dir() + ".new"
+	staging := stagingDir(j.dir())
 	if ctx.Err() != nil {
 		os.RemoveAll(staging)
 		return
@@ -417,9 +417,20 @@ func (j *judgement) sampleDone(ctx context.Context, n int, lg logw) {
 	j.committed = &v
 }
 
+// stagingDir is where a judgement at dir stages its new set, and asideDir
+// where the old set waits during the swap: dot-prefixed, so no task name can
+// be either.
+func stagingDir(dir string) string {
+	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".new")
+}
+
+func asideDir(dir string) string {
+	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".old")
+}
+
 // swapIn replaces the set at dir with the one staged beside it.
 func swapIn(dir string) error {
-	old := dir + ".old"
+	old := asideDir(dir)
 	if err := os.RemoveAll(old); err != nil {
 		return err
 	}
@@ -428,7 +439,7 @@ func swapIn(dir string) error {
 			return err
 		}
 	}
-	if err := os.Rename(dir+".new", dir); err != nil {
+	if err := os.Rename(stagingDir(dir), dir); err != nil {
 		return err
 	}
 	return os.RemoveAll(old)
@@ -437,10 +448,10 @@ func swapIn(dir string) error {
 // repairJudgement undoes what a crash mid-judgement left at dir: a staging
 // dir goes, and a set renamed aside comes back unless its successor is in.
 func repairJudgement(dir string) error {
-	if err := os.RemoveAll(dir + ".new"); err != nil {
+	if err := os.RemoveAll(stagingDir(dir)); err != nil {
 		return err
 	}
-	old := dir + ".old"
+	old := asideDir(dir)
 	if _, err := os.Stat(old); err != nil {
 		return nil
 	}
@@ -457,7 +468,7 @@ func judgeSample(ctx context.Context, cfg *config.Config, ro Options, j *judgeme
 	sandboxes map[string]config.Sandbox, stat *pairStat,
 ) *verdict {
 	lg := logw{ro.Out, ro.Color, ro.Verbose}
-	staging := j.dir() + ".new"
+	staging := stagingDir(j.dir())
 	j.mu.Lock()
 	var stageErr error
 	if !j.staged {

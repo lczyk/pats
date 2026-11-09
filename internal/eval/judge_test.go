@@ -125,7 +125,7 @@ func TestJudge(t *testing.T) {
 		assert.Equal(t, m.Agent, "jxx")
 		assert.That(t, m.Judged != nil && m.Judged.Task == "t1x", "judged: %+v", m.Judged)
 	}
-	for _, gone := range []string{jd + ".new", jd + ".old", judgementDir(run, "jud", "axx", "t2x")} {
+	for _, gone := range []string{stagingDir(jd), asideDir(jd), judgementDir(run, "jud", "axx", "t2x")} {
 		_, err := os.Stat(gone)
 		assert.That(t, os.IsNotExist(err), gone+" left behind")
 	}
@@ -213,13 +213,13 @@ func TestRepairJudgement(t *testing.T) {
 	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 
 	// a crash between the renames: the old set comes back.
-	mk(dir + ".old")
-	mk(dir + ".new")
+	mk(asideDir(dir))
+	mk(stagingDir(dir))
 	require.NoError(t, repairJudgement(dir))
-	assert.That(t, exists(dir) && !exists(dir+".old") && !exists(dir+".new"), "old set not restored")
+	assert.That(t, exists(dir) && !exists(asideDir(dir)) && !exists(stagingDir(dir)), "old set not restored")
 
 	// a crash after the second rename: the new set stays, the old goes.
-	mk(dir + ".old")
+	mk(asideDir(dir))
 	require.NoError(t, repairJudgement(dir))
-	assert.That(t, exists(dir) && !exists(dir+".old"), "old set not removed")
+	assert.That(t, exists(dir) && !exists(asideDir(dir)), "old set not removed")
 }

@@ -67,9 +67,11 @@ func (c *Config) validateNames(add func(string, ...any)) {
 	}
 }
 
-// nameRe is a name's shape, chisel's for a slice: lowercase letters, digits
-// and single hyphens, a letter first, no hyphen last, at least 3 long.
-var nameRe = regexp.MustCompile(`^[a-z](?:-?[a-z0-9]){2,}$`)
+// nameRe is a name's shape, chisel's for a package: lowercase letters,
+// digits, dots, pluses and single hyphens, a letter or digit first, no hyphen
+// last, at least 2 long. no name starts with a dot, so none meets .judge or
+// a judgement's staging dir.
+var nameRe = regexp.MustCompile(`^[a-z0-9](?:-?[.a-z0-9+]){1,}$`)
 
 // badName says what is wrong with a name, or "".
 func badName(name string) string {
@@ -77,7 +79,7 @@ func badName(name string) string {
 	case name == "":
 		return "is empty"
 	case !nameRe.MatchString(name):
-		return "is not a name: lowercase letters, digits and single hyphens, a letter first, no hyphen last, at least 3 long"
+		return "is not a name: lowercase letters, digits, dots, pluses and single hyphens, a letter or digit first, no hyphen last, at least 2 long"
 	}
 	return ""
 }
