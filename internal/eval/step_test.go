@@ -88,3 +88,22 @@ func TestHostEnvironWithoutBin(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "bin"), 0o755))
 	assert.Equal(t, pathOf(hostEnviron(root, nil)), filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+// a step sees its own map's names only: a parent pats's step vars, inherited
+// through the environment, never leak into a step that leaves them out.
+func TestHostEnvironDropsInheritedStepNames(t *testing.T) {
+	t.Setenv("PATS_TASK_NAME", "parent-task")
+	t.Setenv("PATS_OUTPUT_DIR", "/parent/out")
+	t.Setenv("PATS_LXD_UPLINK", "keep")
+	env := hostEnviron(t.TempDir(), map[string]string{"PATS_SCORER_NAME": "own"})
+	got := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = v
+	}
+	_, task := got["PATS_TASK_NAME"]
+	_, out := got["PATS_OUTPUT_DIR"]
+	assert.That(t, !task && !out, "inherited step names kept")
+	assert.Equal(t, got["PATS_LXD_UPLINK"], "keep")
+	assert.Equal(t, got["PATS_SCORER_NAME"], "own")
+}

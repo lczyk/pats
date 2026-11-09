@@ -94,8 +94,24 @@ func (s step) outputTee(root string, env map[string]string, tee io.Writer) ([]by
 	return stdout.Bytes(), nil
 }
 
-// hostEnviron is the host environment for a script: os env with root/bin
-// prepended to PATH (when it exists), PATS_ROOT, then env.
+// stepNames is every name pats sets in some host step's env. an inherited
+// one is dropped before a step's own map goes on, so a pats started from
+// inside another's step never hands the parent's values to a step whose map
+// leaves the name out. pats's own settings (PATS_LXD_UPLINK and the like)
+// are in no step map and pass through.
+var stepNames = map[string]bool{
+	"PATS_ROOT": true, "PATS_RUN_NAME": true, "PATS_RUN_DIR": true,
+	"PATS_AGENT_NAME": true, "PATS_AGENT_HARNESS": true, "PATS_AGENT_HOME": true, "PATS_MODEL": true,
+	"PATS_TASK_NAME": true, "PATS_TASK_VECTOR": true, "PATS_TASK_DIR": true,
+	"PATS_WORKDIR": true, "PATS_OUTPUT_DIR": true,
+	"PATS_SCORER_NAME": true, "PATS_SCORER_VECTOR": true,
+	"PATS_SCORED_DIR": true, "PATS_SCORED_AGENT_NAME": true, "PATS_SCORED_TASK_NAME": true,
+	"PATS_SCORED_TASK_DIR": true, "PATS_SCORED_MODEL": true, "PATS_SCORED_HARNESS": true,
+}
+
+// hostEnviron is the host environment for a script: os env less PWD and
+// stepNames, with root/bin prepended to PATH (when it exists), PATS_ROOT,
+// then env.
 func hostEnviron(root string, env map[string]string) []string {
 	path := os.Getenv("PATH")
 	if fi, err := os.Stat(filepath.Join(root, binDir)); err == nil && fi.IsDir() {
@@ -103,7 +119,8 @@ func hostEnviron(root string, env map[string]string) []string {
 	}
 	out := make([]string, 0, len(os.Environ())+len(env)+2)
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "PATH=") && !strings.HasPrefix(kv, "PWD=") {
+		k, _, _ := strings.Cut(kv, "=")
+		if k != "PATH" && k != "PWD" && !stepNames[k] {
 			out = append(out, kv)
 		}
 	}
