@@ -37,7 +37,7 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 		if err := preflightAgent(ctx, cfg, opts, agents[p.Agent], sandboxes); err != nil {
 			return fmt.Errorf("agent %q failed credential preflight: %w", p.Agent, err)
 		}
-		logw{opts.Out, opts.Color}.info("preflight: %s ok", p.Agent)
+		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok", p.Agent)
 	}
 	return nil
 }

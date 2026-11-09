@@ -49,6 +49,11 @@ type pairStat struct {
 	tools   int64 // tool_use events (per-harness parse; 0 for harnesses w/o a parser)
 	net     int64 // egress requests, from the proxy audit log
 	netSeen int32 // 1 once egress.log was readable (i.e. proxy mode) -> show net
+
+	// set once the pair ends, for the run's summary.
+	status string
+	tokens int
+	cost   float64
 }
 
 // cols renders the counter columns "out [tool] [net]" -- tool only when the harness

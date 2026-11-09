@@ -263,7 +263,7 @@ func Report(configDir, runArg string, asJSON bool, out, errOut io.Writer) error 
 		_, err = out.Write(append(b, '\n'))
 		return err
 	}
-	logw{out, useColor(out)}.info("report: %s", relToCwd(runDir))
+	logw{out, useColor(out), 0}.info("report: %s", relToCwd(runDir))
 	report(out, runDir, rep, useColor(out), errOut)
 	return nil
 }

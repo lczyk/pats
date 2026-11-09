@@ -34,6 +34,15 @@ func provisions(sb config.Sandbox) bool {
 	return sb.Base != "" || sb.Provision != ""
 }
 
+// buildLog is where a build or pull writes: its log, and under -vv the
+// terminal too.
+func (o Options) buildLog(log io.Writer) io.Writer {
+	if s := o.stream(); s != nil {
+		return io.MultiWriter(log, s)
+	}
+	return log
+}
+
 // lxdImage provisions an lxd sandbox's image on h: with no base, the pats
 // sandbox's tools on ubuntu first, then the sandbox's own provision on top --
 // two cached images in a chain, the first's alias in the second's key. the
@@ -55,8 +64,9 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 		return img, nil, false, nil, err
 	}
 	defer logF.Close()
-	lg := logw{opts.Out, opts.Color}
-	progress := func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
+	log := opts.buildLog(logF)
+	lg := logw{opts.Out, opts.Color, opts.Verbose}
+	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.ID, msg) }
 	warn := func(msg string) { lg.warn("sandbox %q: %s", sb.ID, msg) }
 	fail := func(err error) error {
 		return fmt.Errorf("%w%s\n(full log: %s)", err, sandbox.LogTail(fileTail(logPath, 64<<10)), relToCwd(logPath))
@@ -74,7 +84,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 			return img, nil, false, nil, err
 		}
 		layer, fp, b, err := h.Build(ctx, sandbox.BuildSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn,
-			Role: "sandbox", Sandbox: sb.ID, Force: force}, logF)
+			Role: "sandbox", Sandbox: sb.ID, Force: force}, log)
 		if err != nil {
 			return img, nil, false, nil, fail(err)
 		}
@@ -95,7 +105,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 		// no project layer: the pats sandbox layer is the image.
 		return img, nil, anyBuilt, upstream, nil
 	}
-	img, fp, built, err := h.Build(ctx, spec, logF)
+	img, fp, built, err := h.Build(ctx, spec, log)
 	if err != nil {
 		return img, nil, false, nil, fail(err)
 	}

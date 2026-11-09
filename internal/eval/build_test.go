@@ -74,7 +74,7 @@ func TestLXDImageBuild(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
 		logPath := filepath.Join(t.TempDir(), "init", sb.ID+".log")
-		_, layers, built, upstream, err := lxdImage(context.Background(), h, sb, Options{ConfigDir: dir, Out: &out}, logPath, false)
+		_, layers, built, upstream, err := lxdImage(context.Background(), h, sb, Options{ConfigDir: dir, Out: &out, Verbose: 1}, logPath, false)
 		b, _ := os.ReadFile(logPath)
 		lastUpstream = upstream
 		return calls, layers, out.String(), string(b), built, err

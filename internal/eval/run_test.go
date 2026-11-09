@@ -351,6 +351,45 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	assert.Equal(t, string(stdout), "fine\n")
 }
 
+// the default is the verdict per pair; -v adds the detail lines and the
+// run's totals; -vv streams the host scripts, which log either way.
+func TestRunVerbosity(t *testing.T) {
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{stdout: "fine\n"}, nil
+	}
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt-file: prompt.txt, stage: echo staged, collect: echo collected}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+	pinAll(t, dir, cfg)
+	for v, c := range []struct{ has, hasnt []string }{
+		{[]string{"INFO a/t ok (exit 0"}, []string{"run dir", "1 ok", "staged", "collected"}},
+		{[]string{"INFO a/t ok (exit 0", "INFO run dir", "INFO 1 ok"}, []string{"staged", "collected"}},
+		{[]string{"INFO a/t ok (exit 0", "INFO 1 ok", "staged", "collected"}, nil},
+	} {
+		var out bytes.Buffer
+		runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Verbose: v})
+		require.NoError(t, err)
+		for _, w := range c.has {
+			assert.ContainsString(t, out.String(), w, "-v x%d", v)
+		}
+		for _, w := range c.hasnt {
+			assert.That(t, !strings.Contains(out.String(), w), "-v x%d printed %q:\n%s", v, w, out.String())
+		}
+		for name, want := range map[string]string{"stage.log": "staged\n", "collect.log": "collected\n"} {
+			b, err := os.ReadFile(filepath.Join(runDir, "a", "t", name))
+			require.NoError(t, err)
+			assert.Equal(t, string(b), want)
+		}
+	}
+}
+
 // COVER: a deadline whose sandbox reports a plain non-zero exit with no
 // error -- exactly what sandbox.container.Run does today, since it maps any
 // *exec.ExitError (including the 143 from a SIGTERM'd container) to

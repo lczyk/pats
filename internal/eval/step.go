@@ -73,6 +73,11 @@ func (s step) run(root string, env map[string]string, out io.Writer) error {
 // output executes the step and returns its stdout. a failure carries the tail
 // of its stderr.
 func (s step) output(root string, env map[string]string) ([]byte, error) {
+	return s.outputTee(root, env, nil)
+}
+
+// outputTee is output, with stdout and stderr also written to tee when set.
+func (s step) outputTee(root string, env map[string]string, tee io.Writer) ([]byte, error) {
 	cmd, cleanup, err := s.command(root, env)
 	if err != nil {
 		return nil, err
@@ -80,6 +85,9 @@ func (s step) output(root string, env map[string]string) ([]byte, error) {
 	defer cleanup()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if tee != nil {
+		cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, tee), io.MultiWriter(&stderr, tee)
+	}
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("%w%s", err, stderrTail(&stderr))
 	}

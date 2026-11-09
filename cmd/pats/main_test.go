@@ -16,6 +16,9 @@ func TestWantsVersion(t *testing.T) {
 	}{
 		{[]string{"--version"}, true},
 		{[]string{"-v"}, true},
+		{[]string{"version"}, true},
+		{[]string{"-v", "run"}, false}, // verbosity, then the command
+		{[]string{"-vv", "init"}, false},
 		{[]string{"score", "-r", "-v"}, false}, // only the first arg counts
 		{[]string{"run"}, false},
 		{[]string{}, false},

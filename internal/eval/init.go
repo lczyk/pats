@@ -29,6 +29,7 @@ type InitOptions struct {
 	Sandboxes []string // narrow to these sandbox ids
 	Driver    string   // narrow to sandboxes of this driver
 	Force     bool     // rebuild and re-pull what exists
+	Verbose   int      // -v count: 1 adds build steps, 2 streams the builds
 }
 
 // Init makes every image the selected pairs' sandboxes need and pins it in
@@ -41,8 +42,8 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
-	ro := Options{ConfigDir: opts.ConfigDir, Out: opts.Out, Color: useColor(opts.Out)}
-	lg := logw{opts.Out, ro.Color}
+	ro := Options{ConfigDir: opts.ConfigDir, Out: opts.Out, Color: useColor(opts.Out), Verbose: opts.Verbose}
+	lg := logw{opts.Out, ro.Color, ro.Verbose}
 
 	sbs, err := initSandboxes(cfg, opts)
 	if err != nil {
@@ -220,7 +221,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 // from build: or base / provision, else pulled when absent (always, with
 // --force).
 func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h builder, e *pinEntry) error {
-	lg := logw{ro.Out, ro.Color}
+	lg := logw{ro.Out, ro.Color, ro.Verbose}
 	logPath := initLogPath(ro.ConfigDir, sb.ID)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
@@ -230,6 +231,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		return err
 	}
 	defer logF.Close()
+	log := ro.buildLog(logF)
 	// a failure's error carries the log's tail; the whole log stays.
 	fail := func(err error) error {
 		return fmt.Errorf("%w\n(full log: %s)", err, relToCwd(logPath))
@@ -255,7 +257,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 			lg.warn("sandbox %q: its base %s moved while init built on it; its upstream is not tracked until the next pats init", sb.ID, ref)
 		}
 	}()
-	progress := func(msg string) { lg.info("sandbox %q: %s", sb.ID, msg) }
+	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.ID, msg) }
 	switch {
 	case provisions(sb):
 		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force, Progress: progress}
@@ -267,7 +269,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 			defer sandbox.RemoveTemp(material)
 			spec.Material, spec.Argv = material, argv
 		}
-		img, _, _, err := h.Build(ctx, spec, logF)
+		img, _, _, err := h.Build(ctx, spec, log)
 		if err != nil {
 			return fail(err)
 		}
@@ -277,19 +279,19 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if err != nil {
 			return err
 		}
-		img, _, _, err := h.Build(ctx, sandbox.BuildSpec{Dir: ctxDir, Dockerfile: dockerfile, SandboxImage: base, Force: opts.Force, Progress: progress}, logF)
+		img, _, _, err := h.Build(ctx, sandbox.BuildSpec{Dir: ctxDir, Dockerfile: dockerfile, SandboxImage: base, Force: opts.Force, Progress: progress}, log)
 		if err != nil {
 			return fail(err)
 		}
 		e.Image = pinImage{ID: img.ID, Built: true}
 	case sb.Image != "":
-		im, err := ensurePulled(ctx, h, sb.Image, opts.Force, lg, logF, h.Pull)
+		im, err := ensurePulled(ctx, h, sb.Image, opts.Force, lg, log, h.Pull)
 		if err != nil {
 			return err
 		}
 		e.Image = im
 	default:
-		im, err := ensurePulled(ctx, h, base(), opts.Force, lg, logF, h.Pull)
+		im, err := ensurePulled(ctx, h, base(), opts.Force, lg, log, h.Pull)
 		if err != nil {
 			return err
 		}
@@ -300,7 +302,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		if warn != "" {
 			lg.warn("%s", warn)
 		}
-		im, err := ensurePulled(ctx, h, ref, opts.Force, lg, logF, h.ProxyImage)
+		im, err := ensurePulled(ctx, h, ref, opts.Force, lg, log, h.ProxyImage)
 		if err != nil {
 			return fmt.Errorf("egress proxy: %w", err)
 		}
@@ -324,7 +326,7 @@ func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw
 		return pinImage{}, err
 	}
 	if _, err := h.Resolve(ctx, ref); force || err != nil {
-		lg.info("pulling %s", ref)
+		lg.detail("pulling %s", ref)
 	}
 	img, fetched, err := pull(ctx, ref, force, log)
 	if err != nil {
@@ -336,7 +338,7 @@ func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw
 // initLXD makes an lxd sandbox's layers and proxy on its server, logging to
 // .pats/init/<sandbox>.log, and pins them by fingerprint.
 func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h builder, e *pinEntry) error {
-	lg := logw{ro.Out, ro.Color}
+	lg := logw{ro.Out, ro.Color, ro.Verbose}
 	switch {
 	case strings.Contains(sb.Image, ":"):
 		// an image of another remote: copied onto the server now, so a run
@@ -365,8 +367,8 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 		e.Layers = layers
 	}
 	if sb.Egress.Set {
-		log := &stepLog{w: io.Discard,
-			step: func(msg string) { lg.info("sandbox %q: egress proxy: %s", sb.ID, msg) },
+		log := &stepLog{w: ro.buildLog(io.Discard),
+			step: func(msg string) { lg.detail("sandbox %q: egress proxy: %s", sb.ID, msg) },
 			warn: func(msg string) { lg.warn("sandbox %q: egress proxy: %s", sb.ID, msg) }}
 		img, _, err := h.ProxyImage(ctx, "", opts.Force, log)
 		if err != nil {
@@ -387,7 +389,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 	}
 	var checks []upstreamCheck
 	used := usedSandboxes(cfg, pairs)
-	lg := logw{opts.Out, opts.Color}
+	lg := logw{opts.Out, opts.Color, opts.Verbose}
 	var missing []string
 	var reasons []string
 	for i, sb := range cfg.Sandboxes {

@@ -32,6 +32,9 @@ type ScoreOptions struct {
 	Scorers   []string // only run these scorers (empty -> all)
 	Out       io.Writer
 	Color     bool // colour log tags (set internally from Out's tty-ness)
+	Verbose   int  // -v count: 1 adds a line per score, 2 streams the scorers' output
+
+	live io.Writer // -vv's stream when Out is a job's buffer (see liveStream)
 
 	// noReport skips the report + stats tables (scores.json still written) --
 	// set by scoreAll, where per-run tables would just scroll past.
@@ -74,7 +77,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		opts.ConfigDir = abs
 	}
 	opts.Color = useColor(opts.Out)
-	lg := logw{opts.Out, opts.Color}
+	lg := logw{opts.Out, opts.Color, opts.Verbose}
 	unlock, err := lockConfigDir(opts.ConfigDir)
 	if err != nil {
 		return nil, err
@@ -84,7 +87,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	lg.info("scoring: %s", relToCwd(runDir))
+	lg.detail("scoring: %s", relToCwd(runDir))
 
 	testPairs, err := cfg.ExpandTestPairs(opts.Suites...)
 	if err != nil {
@@ -160,7 +163,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		bar = newProgress(opts.Out, len(jobs), labelW)
 		defer bar.close()
 	} else if njobs > 1 {
-		lg.info("computing %d scores, up to %d in parallel", len(jobs), njobs)
+		lg.detail("computing %d scores, up to %d in parallel", len(jobs), njobs)
 	}
 
 	// same bounded-worker-pool pattern as Run: buffered per-job output emitted
@@ -190,8 +193,13 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			var buf bytes.Buffer
 			if bar != nil || njobs > 1 {
 				po.Out = &buf
+				if opts.Verbose >= 2 {
+					ls := liveStream(label, bar, opts.Out, &mu)
+					defer ls.flush()
+					po.live = ls
+				}
 			}
-			jlg := logw{po.Out, opts.Color}
+			jlg := logw{po.Out, opts.Color, opts.Verbose}
 			if bar != nil {
 				bar.start(label, &pairStat{}, "", false)
 			}
@@ -199,11 +207,11 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.taskDir, j.agent, j.task, agents[j.agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
-				jlg.info("%s/%s %s = n/a", j.agent, j.task, j.sc.ID)
+				jlg.detail("%s/%s %s = n/a", j.agent, j.task, j.sc.ID)
 			case serr != nil:
 				jlg.error("%s/%s %s: %v", j.agent, j.task, j.sc.ID, serr)
 			default:
-				jlg.info("%s/%s %s = %.4f", j.agent, j.task, j.sc.ID, score)
+				jlg.detail("%s/%s %s = %.4f", j.agent, j.task, j.sc.ID, score)
 				mu.Lock()
 				results = append(results, ScoreResult{j.agent, j.task, j.sc.ID, score})
 				mu.Unlock()
@@ -284,7 +292,17 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 	if sc.IsAgent() {
 		return 0, fmt.Errorf("agent scorer not implemented yet")
 	}
-	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.output(opts.ConfigDir, map[string]string{
+	var tee io.Writer
+	switch {
+	case opts.Verbose < 2:
+	case opts.live != nil:
+		tee = opts.live
+	default:
+		ls := &lineStream{emit: func(s string) { fmt.Fprintln(opts.Out, s) }}
+		defer ls.flush()
+		tee = ls
+	}
+	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.outputTee(opts.ConfigDir, map[string]string{
 		"PATS_RUN_ID":        filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
 		"PATS_OUTPUT_DIR":    outDir,
@@ -295,7 +313,7 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 		"PATS_SCORER_VECTOR": sc.Vector,
 		"PATS_MODEL":         info.model,
 		"PATS_AGENT_HARNESS": info.harness,
-	})
+	}, tee)
 	if err != nil { // non-zero exit = failure
 		return 0, fmt.Errorf("run: %w", err)
 	}
@@ -417,7 +435,7 @@ func scoreAll(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		switch {
 		case errors.Is(err, errNothingToScore):
 			// an older run may predate the agents, tasks or scorers selected.
-			logw{opts.Out, useColor(opts.Out)}.info("run %s: %v, skipped", name, err)
+			logw{opts.Out, useColor(opts.Out), 0}.info("run %s: %v, skipped", name, err)
 			skipped++
 		case err != nil:
 			return nil, fmt.Errorf("run %s: %w", name, err)

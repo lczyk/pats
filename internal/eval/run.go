@@ -37,10 +37,13 @@ type Options struct {
 	Out       io.Writer // progress + host script output
 	Jobs      int       // max concurrent pairs; 0 -> serial (1), negative -> auto (see resolveJobs)
 	Color     bool      // colour log tags (set internally from Out's tty-ness)
+	Verbose   int       // -v count: 1 adds detail lines, 2 streams host scripts and the agent's stderr
 	Agents    []string  // filter the pairs to these agents (empty -> all)
 	Tasks     []string  // filter the pairs to these tasks (empty -> all)
 	Suites    []string  // only expand these suites (empty -> all)
 	Offline   bool      // skip the upstream checks, for a machine without a network
+
+	live io.Writer // -vv's stream when Out is a pair's buffer (see liveStream)
 }
 
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
@@ -52,7 +55,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 		opts.ConfigDir = abs
 	}
 	opts.Color = useColor(opts.Out) // decided once from the real terminal; po copies inherit it
-	lg := logw{opts.Out, opts.Color}
+	lg := logw{opts.Out, opts.Color, opts.Verbose}
 	unlock, err := lockConfigDir(opts.ConfigDir)
 	if err != nil {
 		return "", err
@@ -73,7 +76,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	}
 	// first output up front: the slow startup steps (image build, preflight) are
 	// otherwise silent, so a bare `pats run` looks hung until the first pair logs.
-	lg.info("%d pair(s) to run", len(pairs))
+	lg.detail("%d pair(s) to run", len(pairs))
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -90,7 +93,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	lg.info("run dir: %s", relToCwd(runDir))
+	lg.detail("run dir: %s", relToCwd(runDir))
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
@@ -105,7 +108,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	}
 
 	// fail fast on bad/expired creds before spinning per-pair containers.
-	lg.info("preflight: checking agent credentials")
+	lg.detail("preflight: checking agent credentials")
 	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
 		return "", err
 	}
@@ -128,7 +131,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 		bar = newProgress(opts.Out, len(pairs), labelW)
 		defer bar.close()
 	} else if jobs > 1 {
-		lg.info("running %d pairs, up to %d in parallel", len(pairs), jobs)
+		lg.detail("running %d pairs, up to %d in parallel", len(pairs), jobs)
 	}
 
 	// bounded worker pool. a failing pair is logged + skipped, never aborts
@@ -149,9 +152,12 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
 	var interrupted sync.Once
-	for _, p := range pairs {
+	began := time.Now()
+	stats := make([]*pairStat, len(pairs))
+	for i, p := range pairs {
+		stats[i] = &pairStat{}
 		wg.Add(1)
-		go func(p config.TestPair) {
+		go func(p config.TestPair, stat *pairStat) {
 			defer wg.Done()
 			if sbID, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil && sbSem[sbID] != nil {
 				sbSem[sbID] <- struct{}{}
@@ -175,16 +181,18 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 			var buf bytes.Buffer
 			if bar != nil || jobs > 1 {
 				po.Out = &buf
+				if opts.Verbose >= 2 {
+					ls := liveStream(label, bar, opts.Out, &outMu)
+					defer ls.flush()
+					po.live = ls
+				}
 			}
-			// always track per-pair counters: the bar shows them live, and the
-			// completion line logs the final out/tool/net regardless of tty.
-			stat := &pairStat{}
 			if bar != nil {
 				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
 				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Harness) != nil)
 			}
 			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes, stat); err != nil {
-				logw{po.Out, opts.Color}.error("%s/%s %v", p.Agent, p.Task, err)
+				logw{po.Out, opts.Color, opts.Verbose}.error("%s/%s %v", p.Agent, p.Task, err)
 			}
 			switch {
 			case bar != nil:
@@ -194,9 +202,16 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 				opts.Out.Write(buf.Bytes())
 				outMu.Unlock()
 			}
-		}(p)
+		}(p, stats[i])
 	}
 	wg.Wait()
+	if opts.Verbose >= 1 {
+		if sum := runTotals(stats, time.Since(began)); bar != nil {
+			bar.log(lg.line(lvInfo, "%s", sum))
+		} else {
+			lg.info("%s", sum)
+		}
+	}
 	return runDir, nil
 }
 
@@ -412,7 +427,7 @@ func runPair(
 	// agent never runs, nothing is collected, and the metadata names the step.
 	var setupErr error
 	if stage := (step{t.Stage, taskDir}); stage.set() {
-		if err := runLogged(filepath.Join(outDir, "stage.log"), opts.Out, func(w io.Writer) error {
+		if err := runLogged(filepath.Join(outDir, "stage.log"), opts.stream(), func(w io.Writer) error {
 			return stage.run(opts.ConfigDir, hostEnv, w)
 		}); err != nil {
 			setupErr = fmt.Errorf("stage: %w (see stage.log)", err)
@@ -464,7 +479,7 @@ func runPair(
 			defer sess.Close()
 			if t.Prepare != "" {
 				env := prepareEnv(t, a, p.Agent, filepath.Base(runDir))
-				if err := runLogged(filepath.Join(outDir, "prepare.log"), nil, func(w io.Writer) error {
+				if err := runLogged(filepath.Join(outDir, "prepare.log"), opts.stream(), func(w io.Writer) error {
 					return runPrepare(sctx, sess, opts.ConfigDir, taskDir, t, env, w)
 				}); err != nil {
 					setupErr = fmt.Errorf("prepare: %w", err)
@@ -482,7 +497,11 @@ func runPair(
 	if setupErr != nil {
 		r = harnessRun{code: -1, err: setupErr}
 	} else {
-		r = h.exec(ctx, sess, stdoutW, stderrF, t.TimeoutDuration())
+		var stderrW io.Writer = stderrF
+		if s := opts.stream(); s != nil {
+			stderrW = io.MultiWriter(stderrF, s)
+		}
+		r = h.exec(ctx, sess, stdoutW, stderrW, t.TimeoutDuration())
 		// bring the agent's writes home for collect (a no-op where the
 		// workdir is bound). a timed-out agent left files too; a run
 		// interrupted by ctrl+c is not waited on.
@@ -509,13 +528,15 @@ func runPair(
 		status = "nonzero"
 	}
 
-	lg := logw{opts.Out, opts.Color}
+	lg := logw{opts.Out, opts.Color, opts.Verbose}
 
 	// collect when the agent ran, left something to gather (it finished, or
 	// timed out mid-run) and its files are on the host. a launch failure left
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
 	if collect := (step{t.Collect, taskDir}); (r.err == nil || r.timedOut) && synced && collect.set() {
-		if err := collect.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
+		if err := runLogged(filepath.Join(outDir, "collect.log"), opts.stream(), func(w io.Writer) error {
+			return collect.run(opts.ConfigDir, hostEnv, w)
+		}); err != nil {
 			lg.warn("%s/%s collect: %v", p.Agent, p.Task, err)
 		}
 	}
@@ -565,8 +586,10 @@ func runPair(
 	default:
 		lg.error("%s", statusLine)
 	}
+	stat.status = status
 	stats := stat.cols(statScanner(a.Harness) != nil)
 	if s := meta.Summary; s != nil {
+		stat.tokens, stat.cost = s.OutputTokens, s.CostUSD
 		// cost + turns are omitted for harnesses whose stream doesn't report them.
 		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))
 		if s.HasCost {
@@ -576,7 +599,7 @@ func runPair(
 			stats += fmt.Sprintf("  %d turns", s.NumTurns)
 		}
 	}
-	lg.info("%s/%s %s", p.Agent, p.Task, stats)
+	lg.detail("%s/%s %s", p.Agent, p.Task, stats)
 	return nil
 }
 
@@ -614,6 +637,50 @@ func lxdProvenanceOf(ctx context.Context, sb config.Sandbox) *lxdProvenance {
 	}
 	lxdProvenances.Store(sb.ID+"\x00"+sb.Image, p)
 	return p
+}
+
+// stream is where -vv streams host scripts and the agent's stderr, beside
+// their logs; nil below -vv.
+func (o Options) stream() io.Writer {
+	switch {
+	case o.Verbose < 2:
+		return nil
+	case o.live != nil:
+		return o.live
+	}
+	return o.Out
+}
+
+// runTotals is the run's last -v line: how its pairs ended, their output
+// tokens and cost where the harness reports them, and the wall time.
+func runTotals(stats []*pairStat, wall time.Duration) string {
+	counts := map[string]int{}
+	tokens, cost := 0, 0.0
+	for _, s := range stats {
+		if s.status == "" {
+			continue // not started: interrupted first
+		}
+		counts[s.status]++
+		tokens += s.tokens
+		cost += s.cost
+	}
+	var parts []string
+	for _, st := range []string{"ok", "nonzero", "timeout", "error"} {
+		if counts[st] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "no pair ran")
+	}
+	out := strings.Join(parts, ", ")
+	if tokens > 0 {
+		out += fmt.Sprintf("  %s tok", humanK(tokens))
+	}
+	if cost > 0 {
+		out += fmt.Sprintf("  $%.2f", cost)
+	}
+	return out + "  " + wall.Round(100*time.Millisecond).String()
 }
 
 // runLogged runs f with its output written to logPath and, when tee is set,
@@ -668,7 +735,7 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 		hasCreds = true
 	}
 	if !hasCreds {
-		logw{opts.Out, opts.Color}.warn("%s no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(harness))
+		logw{opts.Out, opts.Color, opts.Verbose}.warn("%s no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(harness))
 	}
 	return harnessSetup{
 		dir:     homeDir,

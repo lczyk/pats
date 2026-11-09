@@ -75,7 +75,7 @@ func TestRemoveSupersededContainers(t *testing.T) {
 		{Target: "docker:default", ID: "current"}, // pinned again since
 	}}
 	var out bytes.Buffer
-	removeSuperseded(context.Background(), f, me, []string{me, other}, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, me, []string{me, other}, now, logw{&out, false, 0})
 	assert.EqualArrays(t, h.removed, []string{"old"})
 	var left []string
 	for _, s := range f.Superseded {
@@ -92,13 +92,13 @@ func TestRemoveSupersededContainers(t *testing.T) {
 		f.Targets = map[string]map[string]*pinEntry{}
 		return nil
 	}))
-	removeSuperseded(context.Background(), f, me, []string{me, other}, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, me, []string{me, other}, now, logw{&out, false, 0})
 	assert.EqualArrays(t, h.removed, []string{"old", "shared", "busy"})
 
 	// a project whose pins cannot be read keeps every container image.
 	f.Superseded = []superseded{{Target: "docker:default", ID: "later"}}
 	require.NoError(t, os.WriteFile(filepath.Join(other, ".pats", pinsName), []byte("{"), 0o644))
-	removeSuperseded(context.Background(), f, me, []string{me, other}, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, me, []string{me, other}, now, logw{&out, false, 0})
 	assert.Len(t, f.Superseded, 1)
 }
 
@@ -119,7 +119,7 @@ func TestRemoveSupersededLXD(t *testing.T) {
 		f.Superseded = append(f.Superseded, superseded{Target: "lxd:srv", ID: id})
 	}
 	var out bytes.Buffer
-	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false, 0})
 	assert.EqualArrays(t, h.removed, []string{"stale", "unused"})
 	assert.ContainsString(t, out.String(), "kept superseded image recent (lxd:srv): used 72h0m0s ago, may serve another machine")
 	assert.ContainsString(t, out.String(), "kept superseded image private (lxd:srv): a run holds it under its private alias")
@@ -216,12 +216,12 @@ func TestRemoveKeepsOnLookupFailure(t *testing.T) {
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{},
 		Superseded: []superseded{{Target: "lxd:srv", ID: "x"}}}
 	var out bytes.Buffer
-	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false, 0})
 	assert.Len(t, f.Superseded, 1)
 	assert.ContainsString(t, out.String(), "kept superseded image x (lxd:srv): dial: connection refused")
 
 	h.gone = true
-	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false, 0})
 	assert.Len(t, f.Superseded, 0)
 }
 
@@ -249,7 +249,7 @@ func TestRemoveHandsOwnershipToTheOtherPin(t *testing.T) {
 	f.setPin("t", "a", &pinEntry{Image: pinImage{ID: "y", Pulled: true}}, now)
 	useTargets(t, map[string]imageHost{"t": &removingHost{fakeHost: newFakeHost()}})
 	var out bytes.Buffer
-	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false, 0})
 	assert.Len(t, f.Superseded, 0)
 	assert.That(t, f.entry("t", "b").Image.Pulled, "b's pin did not take the ownership")
 	f.dropMissing(map[string]bool{"a": true}, now)
@@ -286,7 +286,7 @@ func TestRemoveAcrossTargetsAndDaemons(t *testing.T) {
 	f.setPin("docker:b", "s2", &pinEntry{Daemon: "d", Image: pinImage{ID: "x"}}, now)
 	f.setPin("docker:a", "s1", &pinEntry{Daemon: "d", Image: pinImage{ID: "y", Pulled: true}}, now)
 	var out bytes.Buffer
-	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false})
+	removeSuperseded(context.Background(), f, t.TempDir(), nil, now, logw{&out, false, 0})
 	assert.Len(t, h.removed, 0)
 	assert.ContainsString(t, out.String(), "this project still pins it under another target")
 
@@ -364,7 +364,7 @@ func TestForcedPullOfTheSameImage(t *testing.T) {
 	h := newFakeHost("u/img:1")
 	h.samePull = true
 	var out bytes.Buffer
-	im, err := ensurePulled(context.Background(), h, "u/img:1", true, logw{&out, false}, &out, h.Pull)
+	im, err := ensurePulled(context.Background(), h, "u/img:1", true, logw{&out, false, 0}, &out, h.Pull)
 	require.NoError(t, err)
 	assert.EqualArrays(t, h.pulls, []string{"u/img:1"})
 	assert.That(t, !im.owned(), "an unchanged forced pull took the user's image")
@@ -377,7 +377,7 @@ func TestPullOntoAnUntaggedImage(t *testing.T) {
 	h.untagged = map[string]bool{"sha256:x": true}
 	h.pullTo = "sha256:x"
 	var out bytes.Buffer
-	im, err := ensurePulled(context.Background(), h, "u/img:1", false, logw{&out, false}, &out, h.Pull)
+	im, err := ensurePulled(context.Background(), h, "u/img:1", false, logw{&out, false, 0}, &out, h.Pull)
 	require.NoError(t, err)
 	assert.Equal(t, im.ID, "sha256:x")
 	assert.That(t, !im.owned(), "a pull onto a held image took it as pats's")

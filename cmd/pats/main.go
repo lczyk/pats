@@ -26,7 +26,8 @@ import (
 // global (`pats -c <path> <command>`); go-flags also accepts it after the
 // command name.
 type Options struct {
-	Config string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	Config  string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	Verbose []bool `long:"verbose" short:"v" description:"init, run and score: more detail (build steps, stats, each score); twice also streams builds, host scripts, the agent's stderr and scorers"`
 
 	Init   InitCommand   `command:"init" description:"make and pin the images the suites' sandboxes need"`
 	Run    RunCommand    `command:"run" description:"run the suites (agents x tasks)"`
@@ -74,6 +75,7 @@ func (c *InitCommand) Execute(args []string) error {
 		Sandboxes: c.Sandboxes,
 		Driver:    c.Driver,
 		Force:     c.Force,
+		Verbose:   len(opts.Verbose),
 	})
 }
 
@@ -100,6 +102,7 @@ func (r *RunCommand) Execute(args []string) error {
 		Tasks:     r.Tasks,
 		Suites:    r.Suites,
 		Offline:   r.Offline,
+		Verbose:   len(opts.Verbose),
 	})
 	return err
 }
@@ -130,6 +133,7 @@ func (s *ScoreCommand) Execute(args []string) error {
 		Tasks:     s.Tasks,
 		Scorers:   s.Scorers,
 		Out:       os.Stdout,
+		Verbose:   len(opts.Verbose),
 	})
 	return err
 }
@@ -219,10 +223,16 @@ var opts Options
 
 // wantsVersion reports whether args (os.Args[1:]) ask for the version.
 // only the first argument counts -- otherwise "pats score -r -v" would print
-// the version instead of reporting a bad value for -r, and any future
-// subcommand flag spelled -v would be swallowed too.
+// the version instead of reporting a bad value for -r. a lone -v is the
+// version too; followed by a command it is verbosity.
 func wantsVersion(args []string) bool {
-	return len(args) > 0 && (args[0] == "--version" || args[0] == "-v")
+	switch {
+	case len(args) == 0:
+		return false
+	case args[0] == "--version" || args[0] == "version":
+		return true
+	}
+	return len(args) == 1 && args[0] == "-v"
 }
 
 func main() {
