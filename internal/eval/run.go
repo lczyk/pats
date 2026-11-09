@@ -582,14 +582,14 @@ func runPair(
 	var setupErr error
 	if stage := (step{t.Stage, taskDir}); stage.set() {
 		if err := runLogged(filepath.Join(outDir, "stage.log"), opts.stream(), func(w io.Writer) error {
-			return stage.run(opts.ConfigDir, hostEnv, w)
+			return stage.run(ctx, opts.ConfigDir, hostEnv, w)
 		}); err != nil {
 			setupErr = fmt.Errorf("stage: %w (see stage.log)", err)
 		}
 	}
 
 	if setupErr == nil {
-		promptData, err := taskPrompt(opts.ConfigDir, taskDir, t, hostEnv)
+		promptData, err := taskPrompt(ctx, opts.ConfigDir, taskDir, t, hostEnv)
 		if err != nil {
 			return fmt.Errorf("prompt: %w", err)
 		}
@@ -712,7 +712,7 @@ func runPair(
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
 	if collect := (step{t.Collect, taskDir}); (r.err == nil || stopped) && synced && collect.set() {
 		if err := runLogged(filepath.Join(outDir, "collect.log"), opts.stream(), func(w io.Writer) error {
-			return collect.run(opts.ConfigDir, hostEnv, w)
+			return collect.run(ctx, opts.ConfigDir, hostEnv, w)
 		}); err != nil {
 			lg.warn("%s collect: %v", job.label, err)
 		}
@@ -1015,7 +1015,7 @@ func relToCwd(p string) string {
 // taskPrompt is the prompt handed to the agent: the literal prompt, the
 // contents of prompt-file (resolved against the task's dir), or the stdout of
 // prompt-cmd, a script run after stage with the task's env.
-func taskPrompt(root, dir string, t config.Task, env map[string]string) ([]byte, error) {
+func taskPrompt(ctx context.Context, root, dir string, t config.Task, env map[string]string) ([]byte, error) {
 	switch {
 	case t.PromptFile != "":
 		p := t.PromptFile
@@ -1024,7 +1024,7 @@ func taskPrompt(root, dir string, t config.Task, env map[string]string) ([]byte,
 		}
 		return os.ReadFile(p)
 	case t.PromptCmd != "":
-		return step{script: t.PromptCmd, dir: dir}.output(root, env)
+		return step{script: t.PromptCmd, dir: dir}.output(ctx, root, env)
 	}
 	return []byte(t.Prompt), nil
 }

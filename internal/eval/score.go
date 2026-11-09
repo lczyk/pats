@@ -306,7 +306,7 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 		defer ls.flush()
 		tee = ls
 	}
-	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.outputTee(opts.ConfigDir, map[string]string{
+	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.outputTee(ctx, opts.ConfigDir, map[string]string{
 		"PATS_RUN_NAME":      filepath.Base(runDir),
 		"PATS_RUN_DIR":       runDir,
 		"PATS_OUTPUT_DIR":    outDir,

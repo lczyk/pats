@@ -165,22 +165,22 @@ func TestTaskPrompt(t *testing.T) {
 		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_NAME $1 $(basename \"$PWD\")\"\n"), 0o755))
 
 	// literal text, verbatim -- quotes, apostrophes and ${...} included.
-	got, err := taskPrompt(root, dir, config.Task{Prompt: "it's ${not} a template"}, nil)
+	got, err := taskPrompt(context.Background(), root, dir, config.Task{Prompt: "it's ${not} a template"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, string(got), "it's ${not} a template")
 
 	// prompt-file resolves against the task's dir.
-	got, err = taskPrompt(root, dir, config.Task{PromptFile: "p.md"}, nil)
+	got, err = taskPrompt(context.Background(), root, dir, config.Task{PromptFile: "p.md"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, string(got), "from file\n")
 
 	// prompt-cmd: stdout, run in the task's dir with env + args passed through.
-	got, err = taskPrompt(root, dir, config.Task{PromptCmd: "./gen.sh --flavour"}, map[string]string{"PATS_TASK_NAME": "t1x"})
+	got, err = taskPrompt(context.Background(), root, dir, config.Task{PromptCmd: "./gen.sh --flavour"}, map[string]string{"PATS_TASK_NAME": "t1x"})
 	require.NoError(t, err)
 	assert.Equal(t, string(got), "gen t1x --flavour axx\n")
 
 	// a missing prompt-file is an error, never a literal fallback.
-	_, err = taskPrompt(root, dir, config.Task{PromptFile: "nope.md"}, nil)
+	_, err = taskPrompt(context.Background(), root, dir, config.Task{PromptFile: "nope.md"}, nil)
 	assert.Error(t, err, assert.AnyError)
 }
 

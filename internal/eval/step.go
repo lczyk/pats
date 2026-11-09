@@ -2,12 +2,15 @@ package eval
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // binDir is the directory under the pats root put on every host script's PATH,
@@ -28,7 +31,10 @@ func (s step) set() bool { return s.script != "" }
 // file: with a #! line it is exec'd (its shebang picks the interpreter),
 // without one it runs under `/bin/sh -e`, so a one-liner like `./collect.sh
 // --fast` runs that file. the returned cleanup removes the temp file.
-func (s step) command(root string, env map[string]string) (*exec.Cmd, func(), error) {
+//
+// the step runs in a process group of its own, killed whole when ctx ends: a
+// hung step and whatever it started never outlive the run.
+func (s step) command(ctx context.Context, root string, env map[string]string) (*exec.Cmd, func(), error) {
 	// PWD follows the dir the script runs in: the inherited one names pats's
 	// own cwd, and a shell trusts it when it resolves to the same place.
 	environ := append(hostEnviron(root, env), "PWD="+s.dir)
@@ -51,17 +57,20 @@ func (s step) command(root string, env map[string]string) (*exec.Cmd, func(), er
 			cleanup()
 			return nil, nil, err
 		}
-		cmd = exec.Command(f.Name())
+		cmd = exec.CommandContext(ctx, f.Name())
 	} else {
-		cmd = exec.Command("/bin/sh", "-e", f.Name())
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-e", f.Name())
 	}
 	cmd.Dir, cmd.Env = s.dir, environ
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = stepWaitDelay
 	return cmd, cleanup, nil
 }
 
 // run executes the step with stdout and stderr streamed to out.
-func (s step) run(root string, env map[string]string, out io.Writer) error {
-	cmd, cleanup, err := s.command(root, env)
+func (s step) run(ctx context.Context, root string, env map[string]string, out io.Writer) error {
+	cmd, cleanup, err := s.command(ctx, root, env)
 	if err != nil {
 		return err
 	}
@@ -72,13 +81,13 @@ func (s step) run(root string, env map[string]string, out io.Writer) error {
 
 // output executes the step and returns its stdout. a failure carries the tail
 // of its stderr.
-func (s step) output(root string, env map[string]string) ([]byte, error) {
-	return s.outputTee(root, env, nil)
+func (s step) output(ctx context.Context, root string, env map[string]string) ([]byte, error) {
+	return s.outputTee(ctx, root, env, nil)
 }
 
 // outputTee is output, with stdout and stderr also written to tee when set.
-func (s step) outputTee(root string, env map[string]string, tee io.Writer) ([]byte, error) {
-	cmd, cleanup, err := s.command(root, env)
+func (s step) outputTee(ctx context.Context, root string, env map[string]string, tee io.Writer) ([]byte, error) {
+	cmd, cleanup, err := s.command(ctx, root, env)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +102,10 @@ func (s step) outputTee(root string, env map[string]string, tee io.Writer) ([]by
 	}
 	return stdout.Bytes(), nil
 }
+
+// stepWaitDelay bounds the wait for a killed step's output to drain, should
+// something outside its group still hold the pipe.
+const stepWaitDelay = 10 * time.Second
 
 // stepNames is every name pats sets in some host step's env. an inherited
 // one is dropped before a step's own map goes on, so a pats started from
