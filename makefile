@@ -1,6 +1,8 @@
 .SUFFIXES:
 
-SRCS := $(shell find ./cmd ./internal ./src -name '*.go')
+SRCS   := $(shell find ./cmd ./internal ./src ./images -name '*.go') ./version.go
+# go:embed inputs: the version string, and what images/embed.go bakes in
+EMBEDS := ./VERSION ./images/provision-sandbox.sh ./images/harness-versions
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -8,7 +10,7 @@ help:  ## Show this help
 .PHONY: build
 build: ./bin/pats  ## Build the pats binary into ./bin (upx-compressed if available)
 
-./bin/pats: $(SRCS) makefile go.mod go.sum
+./bin/pats: $(SRCS) $(EMBEDS) makefile go.mod go.sum
 	mkdir -p ./bin
 	go build -o ./bin/pats ./cmd/pats
 	@if command -v upx >/dev/null 2>&1; then \
