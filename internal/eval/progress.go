@@ -246,7 +246,7 @@ func (p *progress) regionLines() []string {
 	}
 	for _, a := range p.active {
 		sp := spinner[int(a.spin)%len(spinner)]
-		lines = append(lines, fmt.Sprintf("  %c [%-*s]  %s", sp, w, a.label, a.stat.cols(a.showTools)))
+		lines = append(lines, fmt.Sprintf("  %c %-*s  %s", sp, w, a.label, a.stat.cols(a.showTools)))
 	}
 	return lines
 }

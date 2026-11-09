@@ -153,7 +153,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if isProgressTTY(opts.Out) {
 		labelW := 0
 		for _, j := range jobs {
-			if w := len(j.agent) + len(" x ") + len(j.task) + len(" x ") + len(j.sc.ID); w > labelW {
+			if w := len(j.agent) + len("/") + len(j.task) + len("/") + len(j.sc.ID); w > labelW {
 				labelW = w
 			}
 		}
@@ -185,7 +185,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			label := j.agent + " x " + j.task + " x " + j.sc.ID
+			label := j.agent + "/" + j.task + " " + j.sc.ID
 			po := opts
 			var buf bytes.Buffer
 			if bar != nil || njobs > 1 {
@@ -199,11 +199,11 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.taskDir, j.agent, j.task, agents[j.agent])
 			switch {
 			case errors.Is(serr, errScorerNA):
-				jlg.info("[%s x %s] %s = n/a", j.agent, j.task, j.sc.ID)
+				jlg.info("%s/%s %s = n/a", j.agent, j.task, j.sc.ID)
 			case serr != nil:
-				jlg.error("[%s x %s] %s: %v", j.agent, j.task, j.sc.ID, serr)
+				jlg.error("%s/%s %s: %v", j.agent, j.task, j.sc.ID, serr)
 			default:
-				jlg.info("[%s x %s] %s = %.4f", j.agent, j.task, j.sc.ID, score)
+				jlg.info("%s/%s %s = %.4f", j.agent, j.task, j.sc.ID, score)
 				mu.Lock()
 				results = append(results, ScoreResult{j.agent, j.task, j.sc.ID, score})
 				mu.Unlock()

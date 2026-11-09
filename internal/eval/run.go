@@ -121,7 +121,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if isProgressTTY(opts.Out) {
 		labelW := 0
 		for _, p := range pairs {
-			if w := len(p.Agent) + len(" x ") + len(p.Task); w > labelW {
+			if w := len(p.Agent) + len("/") + len(p.Task); w > labelW {
 				labelW = w
 			}
 		}
@@ -170,7 +170,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 				return
 			}
 
-			label := p.Agent + " x " + p.Task
+			label := p.Agent + "/" + p.Task
 			po := opts
 			var buf bytes.Buffer
 			if bar != nil || jobs > 1 {
@@ -184,7 +184,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Harness) != nil)
 			}
 			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes, stat); err != nil {
-				logw{po.Out, opts.Color}.error("[%s x %s] %v", p.Agent, p.Task, err)
+				logw{po.Out, opts.Color}.error("%s/%s %v", p.Agent, p.Task, err)
 			}
 			switch {
 			case bar != nil:
@@ -395,7 +395,7 @@ func runPair(
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
 	// precedes stage so stage can seed harness config into it.
-	h, err := newHarness(opts, a, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
+	h, err := newHarness(opts, a, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), p.Agent+"/"+p.Task)
 	if err != nil {
 		return err
 	}
@@ -516,7 +516,7 @@ func runPair(
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
 	if collect := (step{t.Collect, taskDir}); (r.err == nil || r.timedOut) && synced && collect.set() {
 		if err := collect.run(opts.ConfigDir, hostEnv, opts.Out); err != nil {
-			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
+			lg.warn("%s/%s collect: %v", p.Agent, p.Task, err)
 		}
 	}
 
@@ -524,7 +524,7 @@ func runPair(
 	// in metadata.json.
 	ea := readEgressAudit(filepath.Join(outDir, "egress.log"))
 	if len(ea.Denied) > 0 {
-		lg.warn("[%s x %s] egress denied (no rule): %s", p.Agent, p.Task, strings.Join(ea.Denied, ", "))
+		lg.warn("%s/%s egress denied (no rule): %s", p.Agent, p.Task, strings.Join(ea.Denied, ", "))
 	}
 
 	meta := pairMeta{
@@ -556,7 +556,7 @@ func runPair(
 		atomic.StoreInt32(&stat.netSeen, 1)
 	}
 	// line 1: the verdict (level by status). line 2: the stats, indented under it.
-	statusLine := fmt.Sprintf("[%s x %s] %s (exit %d, %.1fs)", p.Agent, p.Task, status, r.code, r.dur)
+	statusLine := fmt.Sprintf("%s/%s %s (exit %d, %.1fs)", p.Agent, p.Task, status, r.code, r.dur)
 	switch status {
 	case "ok":
 		lg.info("%s", statusLine)
@@ -576,7 +576,7 @@ func runPair(
 			stats += fmt.Sprintf("  %d turns", s.NumTurns)
 		}
 	}
-	lg.info("[%s x %s] %s", p.Agent, p.Task, stats)
+	lg.info("%s/%s %s", p.Agent, p.Task, stats)
 	return nil
 }
 
@@ -645,7 +645,7 @@ type harnessSetup struct {
 // copies its file-based credentials when present, and warns when no supported
 // credential source is available. copies are writable for token refreshes but
 // discarded after the invocation; pats never modifies the host credential file.
-// label ("agent x task") prefixes the warning.
+// label ("agent/task") prefixes the warning.
 func harnessHome(opts Options, label, harness string, env map[string]string, hasToken bool) (harnessSetup, error) {
 	homeDir, err := sandbox.MkTemp("pats-home-")
 	if err != nil {
@@ -668,7 +668,7 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 		hasCreds = true
 	}
 	if !hasCreds {
-		logw{opts.Out, opts.Color}.warn("[%s] no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(harness))
+		logw{opts.Out, opts.Color}.warn("%s no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(harness))
 	}
 	return harnessSetup{
 		dir:     homeDir,

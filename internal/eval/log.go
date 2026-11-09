@@ -14,7 +14,7 @@ const (
 )
 
 var (
-	logTags   = [...]string{"INFO ", "WARN ", "ERROR"} // padded to 5 so messages align
+	logTags   = [...]string{"INFO", "WARN", "ERROR"}
 	logColors = [...]string{"\033[2m", "\033[33m", "\033[1;31m"}
 )
 

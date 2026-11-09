@@ -18,15 +18,15 @@ import (
 // run under -race it also checks the ticker goroutine doesn't race foreground writes.
 func TestProgress(t *testing.T) {
 	var buf bytes.Buffer
-	p := newProgress(&buf, 2, len("a x t1"))
+	p := newProgress(&buf, 2, len("a/t1"))
 
 	s1 := &pairStat{}
-	p.start("a x t1", s1, "", true) // showTools -> tool column
+	p.start("a/t1", s1, "", true) // showTools -> tool column
 	atomic.StoreInt64(&s1.out, 5)
 	atomic.StoreInt64(&s1.tools, 2)
-	p.start("a x t2", &pairStat{}, "", false) // no tool column
-	p.finish("a x t1", "  [a x t1] ok (exit 0, 1.0s)\n")
-	p.finish("a x t2", "  [a x t2] ok (exit 0, 1.0s)\n")
+	p.start("a/t2", &pairStat{}, "", false) // no tool column
+	p.finish("a/t1", "  a/t1 ok (exit 0, 1.0s)\n")
+	p.finish("a/t2", "  a/t2 ok (exit 0, 1.0s)\n")
 	p.close()
 
 	out := buf.String()
@@ -34,7 +34,7 @@ func TestProgress(t *testing.T) {
 	assert.That(t, strings.Contains(out, "2/2"), "reaches full total", out)
 	assert.That(t, strings.Contains(out, "5 out"), "shows out count", out)
 	assert.That(t, strings.Contains(out, "2 tool"), "shows tool count when showTools", out)
-	assert.That(t, strings.Contains(out, "[a x t1] ok (exit 0, 1.0s)"), "logs completion above bar", out)
+	assert.That(t, strings.Contains(out, "a/t1 ok (exit 0, 1.0s)"), "logs completion above bar", out)
 }
 
 func TestStatTap(t *testing.T) {
