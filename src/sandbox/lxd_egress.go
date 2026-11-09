@@ -265,13 +265,16 @@ func (s *lxdSession) closeEgress() {
 	if e == nil {
 		return
 	}
+	// the proxy instance goes first: its exec stream then ends on its own,
+	// and the audit lines still in flight reach the file, as for docker's
+	// follower. killing the lxc client first could drop the denied-host tail.
+	_ = s.l.deleteInstance(e.proxy)
 	if e.run != nil {
-		e.run.stop(s.l.p.clock, 0)
+		e.run.stop(s.l.p.clock, s.l.p.t.followerGrace)
 	}
 	if e.auditF != nil {
 		_ = e.auditF.Close()
 	}
-	_ = s.l.deleteInstance(e.proxy)
 	if e.m != nil {
 		e.m.cleanup()
 	}
