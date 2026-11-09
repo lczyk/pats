@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -111,6 +112,8 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 	var ours []*os.File // the child's ends, closed in this process once it has them
 	var reads []*os.File
 	var drains []chan struct{}
+	var copyMu sync.Mutex
+	var copyErr error // the first output that could not be written
 	piped := map[io.Writer]*os.File{}
 	wire := func(dst io.Writer) (io.Writer, error) {
 		if _, isFile := dst.(*os.File); isFile || dst == nil {
@@ -125,8 +128,17 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 		}
 		done := make(chan struct{})
 		go func() {
-			io.Copy(dst, r)
-			close(done)
+			defer close(done)
+			if _, err := io.Copy(dst, r); err != nil {
+				// closed, the pipe fails the child's next write rather than
+				// filling up and stalling it.
+				r.Close()
+				copyMu.Lock()
+				if copyErr == nil {
+					copyErr = fmt.Errorf("output: %w", err)
+				}
+				copyMu.Unlock()
+			}
 		}()
 		piped[dst], ours, reads, drains = w, append(ours, w), append(reads, r), append(drains, done)
 		return w, nil
@@ -137,13 +149,15 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 		}
 		if waitDrains {
 			// the group is gone, so the pipes' other ends are closed and the
-			// drains end. one that does not (a child that left the group) is
-			// cut off.
+			// drains end. once the delay passes, those that have not (a child
+			// that left the group holds them) are all cut off.
 			timeout := time.After(stepWaitDelay)
+		wait:
 			for _, d := range drains {
 				select {
 				case <-d:
 				case <-timeout:
+					break wait
 				}
 			}
 		}
@@ -173,12 +187,17 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 	err = cmd.Wait()
 	kill()
 	finish(true)
+	copyMu.Lock()
+	defer copyMu.Unlock()
+	if err == nil {
+		err = copyErr
+	}
 	return err
 }
 
 // stepWaitDelay bounds the wait for a finished step's output to drain,
 // should something outside its group still hold the pipe.
-const stepWaitDelay = 10 * time.Second
+var stepWaitDelay = 10 * time.Second
 
 // stepNames is every name pats sets in some host step's env. an inherited
 // one is dropped before a step's own map goes on, so a pats started from

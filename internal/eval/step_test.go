@@ -3,8 +3,10 @@ package eval
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -217,3 +219,37 @@ func TestStepPipedLeftoverChild(t *testing.T) {
 	assert.Equal(t, buf.String(), "staged\n")
 	assert.That(t, time.Since(start) < 5*time.Second, "waited %s on the leftover child", time.Since(start))
 }
+
+// a child that left the step's process group and holds both its outputs is
+// cut off after the delay: the step returns, it does not wait on the child.
+func TestStepEscapedChildCutOff(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 makes the escaping child")
+	}
+	old := stepWaitDelay
+	stepWaitDelay = 200 * time.Millisecond
+	defer func() { stepWaitDelay = old }()
+	dir := t.TempDir()
+	escape := "python3 -c 'import os, time; os.setsid(); time.sleep(5)' &\necho 0.5\n"
+	done := make(chan error, 1)
+	go func() {
+		_, err := step{script: escape, dir: dir}.output(context.Background(), dir, nil)
+		done <- err
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the step waited on a child that left its group")
+	}
+}
+
+// output that cannot be written fails the step instead of passing silently.
+func TestStepOutputWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	err := step{script: "echo hi\n", dir: dir}.run(context.Background(), dir, nil, failWriter{})
+	assert.Error(t, err, "output:")
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
