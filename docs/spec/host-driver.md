@@ -1,6 +1,6 @@
 # the host driver
 
-status: proposed, not implemented.
+status: implemented. chained egress landed first, so a host sandbox behind the machine's proxy chains through it (below).
 
 ## purpose and limits
 
@@ -74,6 +74,8 @@ there are none, and its `Runs` lists nothing. a session is a set of host dirs an
   invoking user, like a `stage`.
 - **push** and **pull** are host copies. **handover** and **sync** are no-ops. **close** ends the session's groups
   and its proxy, and is safe to call twice.
+- `prepare`'s material goes to a dir in the harness home (`<home>/.pats-prepare`), which prepare removes before the
+  agent runs, as it removes `/pats-prepare` elsewhere.
 
 ### the paths an agent is told
 
@@ -126,11 +128,11 @@ rules, `deny-response` and the dial guard work as under any driver for what goes
 
 a machine that only gets out through a proxy of its own (a corporate one, a ci network's) sets `HTTP(S)_PROXY` for
 everything it runs. under "nothing inherited" a host agent would lose that, its only way out, so when the host
-sandbox sets no `egress` the host driver passes the proxy env pats was itself started with through to the agent:
-`HTTP_PROXY`, `HTTPS_PROXY`, the lowercase forms, `NO_PROXY`, and the trust env above. a host sandbox that sets
-`egress` while pats runs behind a proxy (any of those proxy variables set) is refused at start: "pats runs behind a
-proxy, and its egress proxy cannot chain to another yet; drop egress, and the machine's proxy applies". the refusal
-goes when chained egress lands (`chained-egress.md`).
+sandbox sets no `egress` the host driver passes the machine's proxy env, as pats read it (`chained-egress.md`), through
+to the agent: `HTTP_PROXY`, `HTTPS_PROXY`, the lowercase forms, `NO_PROXY`, and with `SSL_CERT_FILE` set the trust env
+pointing at it. a host sandbox that sets `egress` runs its proxy with pats's own env, so the proxy chains through the
+machine's as under every driver. an upstream on the host's loopback is fine here: a host agent and its proxy reach it
+as pats does.
 
 running pats inside a pats sandbox (an agent under test that runs pats itself) is not supported, under host or any
 driver.
@@ -153,9 +155,6 @@ driver.
 
 ## later
 
-- **chained egress**: pats's proxy reaching upstream through the machine's own proxy, so an egress policy works on a
-  machine that only gets out through one. a gap of every driver, not host's alone, so a spec of its own
-  (`chained-egress.md`), which this driver picks up when it lands.
 - **trust bundles from the system**: linux's from the files go's root discovery uses; macos's from the keychain
   with its trust settings applied (a plain export loses "never trust"). until then `SSL_CERT_FILE` is required for
   tls inspection.
@@ -184,5 +183,5 @@ driver.
 - advisory egress: a host run through the proxy with a deny entry leaves the audit line, `enforced: false` in
   metadata, and the report lines; a curl with `--noproxy '*'` goes out with no audit line, the documented limit; a
   `NeedsCA()` policy without `SSL_CERT_FILE` is refused; the proxy child is reaped on a failed start and on close.
-- behind a proxy: the machine's proxy env passes through when the sandbox sets no egress; egress behind a proxy is
-  refused.
+- behind a proxy: the machine's proxy env passes through when the sandbox sets no egress; a loopback upstream is not
+  refused under host.
