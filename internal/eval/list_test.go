@@ -88,7 +88,7 @@ func TestListRuns(t *testing.T) {
 	mk("20260101-002", "t1", "ok")
 	mk("20260101-002", "t2", "error")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "20260101-001", "scores.json"),
-		[]byte(`{"version":2,"overall":0.5}`), 0o644))
+		[]byte(`{"version":3,"overall":0.5}`), 0o644))
 	// another pats's scores.json shows as unscored, not as its stale overall.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "20260101-002", "scores.json"),
 		[]byte(`{"overall":0.9}`), 0o644))

@@ -83,8 +83,8 @@ func readPairs(runDir string, rep *ScoreReport, warn io.Writer) []pairRecord {
 		warnf("%s: %v", relToCwd(runDir), err)
 	}
 	for _, a := range agents {
-		if !a.IsDir() {
-			continue
+		if !a.IsDir() || strings.HasPrefix(a.Name(), ".") {
+			continue // .judge holds judgements, not pairs
 		}
 		dir := filepath.Join(runDir, a.Name())
 		tasks, err := os.ReadDir(dir)

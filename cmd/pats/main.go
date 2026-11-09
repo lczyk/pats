@@ -138,7 +138,6 @@ func (r *RunCommand) Execute(args []string) error {
 type ScoreCommand struct {
 	Run     string   `long:"run" short:"r" description:"run to score: a dir, a friendly name like fluffy-bunny, a number (1 = run 001; 0 = latest, -1 = second to last; default: latest), or all"`
 	Jobs    int      `long:"jobs" short:"j" default:"1" description:"max scores to compute in parallel; -1 for auto"`
-	Judge   bool     `long:"judge" short:"J" description:"also run agent scorers: each judges its pairs in a sandbox"`
 	Agents  []string `long:"agent" short:"a" description:"only score these agents' pairs, or agent vectors' (repeatable); default: all"`
 	Tasks   []string `long:"task" short:"t" description:"only score these tasks' pairs, or task vectors' (repeatable); default: all"`
 	Scorers []string `long:"scorer" short:"s" description:"only run these scorers or scorer vectors (repeatable); default: all"`
@@ -158,7 +157,6 @@ func (s *ScoreCommand) Execute(args []string) error {
 		ConfigDir: filepath.Dir(opts.Config),
 		RunDir:    s.Run,
 		Jobs:      s.Jobs,
-		Judge:     s.Judge,
 		Suites:    s.Suites,
 		Agents:    s.Agents,
 		Tasks:     s.Tasks,

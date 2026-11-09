@@ -26,7 +26,6 @@ type ScoreOptions struct {
 	ConfigDir string   // dir holding pats.yaml -- scorer paths resolve against it
 	RunDir    string   // explicit run dir, or "" for the latest under .pats/runs
 	Jobs      int      // max concurrent scores; 0 -> serial (1), negative -> auto (see resolveJobs)
-	Judge     bool     // also run agent scorers
 	Suites    []string // only expand these suites (empty -> all)
 	Agents    []string // filter the scored pairs to these agents (empty -> all)
 	Tasks     []string // filter the scored pairs to these tasks (empty -> all)
@@ -45,7 +44,7 @@ type ScoreOptions struct {
 
 // scoresVersion is scores.json's own format. a file of any other version was
 // written by another pats: it reads as unscored and is never merged into.
-const scoresVersion = 2
+const scoresVersion = 3
 
 // ScoreReport is the aggregated result of scoring a run, kept as scores.json.
 // it is pats's own state; `pats report --json` is the interface (report.go).
@@ -56,6 +55,10 @@ type ScoreReport struct {
 	PerPair  map[string]float64 `json:"per_pair"` // "agent/task" -> mean over scorers
 	PerAgent map[string]float64 `json:"per_agent"`
 	Overall  float64            `json:"overall"`
+	// FailedPairs counts, per agent, the pairs no judge can grade (nothing
+	// came home, or the harness reported an error): they drop out of the
+	// means, and this shows how many did.
+	FailedPairs map[string]int `json:"failed_pairs"`
 }
 
 // ScoreResult is one scorer's score for one pair.
@@ -66,8 +69,8 @@ type ScoreResult struct {
 	Score  float64 `json:"score"`
 }
 
-// Score runs each suite's tasks x scorers over a run's collected outputs and
-// aggregates. RunDir "all" scores every run under .pats/runs, oldest first,
+// Score runs each suite's tasks x script scorers over a run's collected
+// outputs, takes each agent score from its stored verdict, and aggregates. RunDir "all" scores every run under .pats/runs, oldest first,
 // with no report tables printed (the returned report is the last run's).
 func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if opts.RunDir == "all" {
@@ -131,7 +134,11 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		sc          config.Scorer
 	}
 	var jobs []scoreJob
-	gated := 0
+	// an agent score is pats judge's to make: here it is read from its
+	// stored verdict, when that is good and the pair is still one a judge
+	// would grade.
+	var judgedScores []ScoreResult
+	var stored []ScoreResult
 	for _, tp := range testPairs {
 		outDir := filepath.Join(runDir, tp.Agent, tp.Task)
 		if _, err := os.Stat(outDir); err != nil {
@@ -139,21 +146,22 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}
 		for _, sp := range byTask[tp.Task] {
 			sc := scorers[sp.Scorer]
-			if sc.IsAgent() && !opts.Judge {
-				gated++
-				continue // agent scorers gated behind --judge
+			if sc.IsAgent() {
+				key := ScoreResult{Agent: tp.Agent, Task: tp.Task, Scorer: sc.Name}
+				judgedScores = append(judgedScores, key)
+				if score, ok := storedVerdict(runDir, key); ok {
+					key.Score = score
+					stored = append(stored, key)
+				}
+				continue
 			}
 			jobs = append(jobs, scoreJob{tp.Agent, tp.Task, outDir, filepath.Join(opts.ConfigDir, tasks[tp.Task].Dir), sc})
 		}
 	}
 	// a narrowed score that reaches nothing must not rewrite scores.json empty.
 	narrowed := len(opts.Suites) > 0 || pairFilter || len(opts.Scorers) > 0
-	if len(jobs) == 0 && narrowed {
-		hint := ""
-		if gated > 0 {
-			hint = fmt.Sprintf(" (%d agent score(s) need --judge)", gated)
-		}
-		return nil, fmt.Errorf("%w: no pair with output in this run has a selected scorer%s", errNothingToScore, hint)
+	if len(jobs) == 0 && len(judgedScores) == 0 && narrowed {
+		return nil, fmt.Errorf("%w: no pair with output in this run has a selected scorer", errNothingToScore)
 	}
 
 	njobs := resolveJobs(opts.Jobs, runtime.NumCPU)
@@ -177,7 +185,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	sem := make(chan struct{}, njobs)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var results []ScoreResult
+	results := append([]ScoreResult(nil), stored...)
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			if bar != nil {
@@ -240,6 +248,9 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		for _, j := range jobs {
 			scope[ScoreResult{Agent: j.agent, Task: j.task, Scorer: j.sc.Name}] = true
 		}
+		for _, k := range judgedScores {
+			scope[k] = true
+		}
 		if rep, err = mergeScores(cfg, runDir, results, scope); err != nil {
 			return nil, err
 		}
@@ -295,7 +306,7 @@ type agentInfo struct {
 // defined in. agent scorers pending (they will run under ctx).
 func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir, outDir, taskDir, agent, task string, info agentInfo) (float64, error) {
 	if sc.IsAgent() {
-		return 0, fmt.Errorf("agent scorer not implemented yet")
+		return 0, fmt.Errorf("agent scorer %q is pats judge's to run", sc.Name)
 	}
 	var tee io.Writer
 	switch {
@@ -417,7 +428,35 @@ func aggregate(runDir string, results []ScoreResult, testPairs []config.TestPair
 	return &ScoreReport{
 		Version: scoresVersion, RunDir: runDir, Scores: results,
 		PerPair: perPair, PerAgent: perAgent, Overall: overall,
+		FailedPairs: failedPairs(runDir, testPairs),
 	}
+}
+
+// failedPairs counts, per agent, the pairs of testPairs in runDir that the
+// judge table leaves unjudged (its na rows). a pair with no metadata is not
+// counted: its status is unknown.
+func failedPairs(runDir string, testPairs []config.TestPair) map[string]int {
+	out := map[string]int{}
+	for _, tp := range testPairs {
+		if judgeRowOf(filepath.Join(runDir, tp.Agent, tp.Task)) == rowNA {
+			out[tp.Agent]++
+		}
+	}
+	return out
+}
+
+// storedVerdict is an agent score's number from its stored verdict.json:
+// ok only when the verdict is good and numeric, and the pair is one the
+// judge table would grade.
+func storedVerdict(runDir string, k ScoreResult) (float64, bool) {
+	if judgeRowOf(filepath.Join(runDir, k.Agent, k.Task)) != rowJudge {
+		return 0, false
+	}
+	v, err := readVerdict(judgementDir(runDir, k.Scorer, k.Agent, k.Task))
+	if err != nil || !v.OK || v.Score == nil {
+		return 0, false
+	}
+	return *v.Score, true
 }
 
 func sortedKeys(m map[string]float64) []string {

@@ -34,8 +34,9 @@ func scoredRun(t *testing.T) (configDir, runDir string) {
 	meta("codex", "t1", `{"agent":"codex","harness":"codex-cli-keyless","task":"t1","status":"nonzero","duration_s":3,
 		"error":"exit 1","summary":{"has_cost":false,"input_tokens":7,"output_tokens":9,"reasoning_tokens":2}}`)
 	meta("broken", "t1", `{"agent":"broken","task":"t1","status":"error","duration_s":1}`)
-	// a dot-prefixed agent id is a valid one; its pair is read like any other.
-	meta(".base", "t1", `{"agent":".base","task":"t1","status":"ok","duration_s":2}`)
+	meta("base", "t1", `{"agent":"base","task":"t1","status":"ok","duration_s":2}`)
+	// nothing under .judge is a pair, whatever it holds.
+	meta(".judge", "sxx", `{"agent":"judge","task":"sxx","status":"ok","duration_s":9}`)
 	meta("claude", "t2", `{"agent":"claude","sta`)
 	rep := aggregate(runDir, []ScoreResult{
 		{Agent: "codex", Task: "t1", Scorer: "s2", Score: 0.5},
@@ -67,7 +68,7 @@ func TestReportJSON(t *testing.T) {
 	// every agent with a pair, the failed one with a null mean.
 	agents := doc["agents"].([]any)
 	assert.Len(t, agents, 5)
-	assert.Equal(t, agents[0].(map[string]any)["name"], any(".base"))
+	assert.Equal(t, agents[0].(map[string]any)["name"], any("base"))
 	assert.Equal(t, agents[1].(map[string]any)["name"], any("broken"))
 	assert.Equal(t, agents[1].(map[string]any)["mean"], any(nil))
 	assert.Equal(t, agents[2].(map[string]any)["mean"], any(0.75))
@@ -75,7 +76,7 @@ func TestReportJSON(t *testing.T) {
 	// pairs sorted by agent then task; unknown is null, never zero.
 	pairs := doc["pairs"].([]any)
 	assert.Len(t, pairs, 6)
-	assert.Equal(t, pairs[0].(map[string]any)["status"], any("ok")) // .base/t1
+	assert.Equal(t, pairs[0].(map[string]any)["status"], any("ok")) // base/t1
 	pairs = pairs[1:]
 	p := func(i int) map[string]any { return pairs[i].(map[string]any) }
 	assert.Equal(t, p(0)["agent"], any("broken"))
@@ -153,7 +154,7 @@ func TestReportPivot(t *testing.T) {
 		return ""
 	}
 	// agents are the columns, every agent with a pair, sorted.
-	assert.EqualArrays(t, strings.Fields(lines[0]), []string{".base", "broken", "claude", "codex", "gone"})
+	assert.EqualArrays(t, strings.Fields(lines[0]), []string{"base", "broken", "claude", "codex", "gone"})
 	// worst task first: t1 has codex's 0.5, t2 nothing scored.
 	assert.ContainsString(t, lines[1], "t1")
 	assert.ContainsString(t, lines[2], "t2")

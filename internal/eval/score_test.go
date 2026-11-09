@@ -434,3 +434,48 @@ func FuzzParseScore(f *testing.F) {
 		parseScore(s)
 	})
 }
+
+// a plain score runs no judge: it takes each agent score from its stored
+// verdict, when the verdict is good and the pair one a judge grades, and
+// counts the pairs no judge can grade.
+func TestScoreReadsStoredVerdicts(t *testing.T) {
+	dir := t.TempDir()
+	run := filepath.Join(dir, ".pats", "runs", "001-20260621-a-b")
+	pair := func(task, meta string) {
+		od := filepath.Join(run, "axx", task)
+		require.NoError(t, os.MkdirAll(od, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(od, "metadata.json"), []byte(meta), 0o644))
+	}
+	stored := func(task, v string) {
+		d := judgementDir(run, "jud", "axx", task)
+		require.NoError(t, os.MkdirAll(d, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(d, "verdict.json"), []byte(v), 0o644))
+	}
+	pair("t1x", `{"status":"ok","synced":true}`)
+	stored("t1x", `{"ok":true,"score":0.75}`)
+	pair("t2x", `{"status":"ok","synced":true}`)
+	stored("t2x", `{"ok":false,"error":"no score"}`)
+	// a verdict left on a pair no judge grades is never read as current.
+	pair("t3x", `{"status":"timeout","synced":false}`)
+	stored("t3x", `{"ok":true,"score":1}`)
+
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~, t2x: ~, t3x: ~}}
+scorers: {kind: scorer, items: {jud: {agent: jxx, prompt: grade it}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [t1x, t2x, t3x], scorers: jud}}}
+`)
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
+	require.NoError(t, err)
+	assert.Len(t, rep.Scores, 1)
+	assert.Equal(t, rep.PerPair["axx/t1x"], 0.75)
+	assert.Equal(t, rep.FailedPairs["axx"], 1)
+
+	// narrowed to one pair, it still reads that pair's verdict.
+	rep, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out, Tasks: []string{"t1x"}})
+	require.NoError(t, err)
+	assert.Equal(t, rep.PerPair["axx/t1x"], 0.75)
+}
