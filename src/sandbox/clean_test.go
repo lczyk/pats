@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -190,8 +192,15 @@ func fakeImageDaemon(t *testing.T, imgs []daemonImage, users map[string]string) 
 			io.WriteString(stdout, strings.Join(byID[args[len(args)-1]].RepoTags, " ")+"\n")
 		case strings.HasPrefix(joined, "image inspect"):
 			var out []daemonImage
-			for _, id := range args[2:] {
-				out = append(out, byID[id])
+			for _, ref := range args[2:] {
+				for _, im := range imgs {
+					if im.ID == ref || slices.Contains(im.RepoTags, ref) {
+						out = append(out, im)
+					}
+				}
+			}
+			if len(out) == 0 {
+				return errors.New("Error: No such image: " + args[2])
 			}
 			b, _ := json.Marshal(out)
 			stdout.Write(b)
@@ -291,4 +300,20 @@ func TestCleanCachedContainerImages(t *testing.T) {
 	assert.Equal(t, out.String(), "docker: kept image parent (built on by meta:1)\n"+
 		"docker: kept image "+sandboxRepo+":v1 (built on by meta:1)\n"+
 		"docker: kept image pats-sbx:a (built on by meta:1)\n")
+}
+
+// a build's cache hit is the image tagged as pats's build of the hash: an
+// image built FROM it inherits the hash label but not the tag, and is never
+// one, even once the pats build itself is gone.
+func TestCachedImageIDNeedsTag(t *testing.T) {
+	pats := image("sha256:pats", []string{buildTag("h")}, "h", "l1")
+	mine := image("sha256:mine", []string{"mine:1"}, "h", "l1", "l2")
+	r, _ := fakeImageDaemon(t, []daemonImage{pats, mine}, nil)
+	assert.Equal(t, cachedImageID(context.Background(), r, "h"), "sha256:pats")
+	r, _ = fakeImageDaemon(t, []daemonImage{mine}, nil)
+	assert.Equal(t, cachedImageID(context.Background(), r, "h"), "")
+	// a tag someone moved onto an image of another hash is no hit either.
+	other := image("sha256:other", []string{buildTag("h")}, "g", "l9")
+	r, _ = fakeImageDaemon(t, []daemonImage{other}, nil)
+	assert.Equal(t, cachedImageID(context.Background(), r, "h"), "")
 }

@@ -97,11 +97,16 @@ func (c *container) daemonImages(ctx context.Context) ([]daemonImage, error) {
 	if err != nil {
 		return nil, err
 	}
-	ids := slices.Compact(slices.Sorted(slices.Values(strings.Fields(string(out)))))
+	return inspectImages(ctx, c.r, strings.Fields(string(out)))
+}
+
+// inspectImages reads images ids; one gone since it was listed is left out.
+func inspectImages(ctx context.Context, r runner, ids []string) ([]daemonImage, error) {
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	out, err = c.dockerOut(ctx, append([]string{"image", "inspect"}, ids...)...)
+	out, err := output(ctx, r, append([]string{"image", "inspect"}, ids...)...)
 	if err != nil && !gone(err) {
 		return nil, err
 	}
@@ -134,6 +139,12 @@ func (c *container) CachedImages(ctx context.Context) ([]Resource, error) {
 		h := im.Config.Labels[hashLabel]
 		if h == "" {
 			return false
+		}
+		for _, t := range im.RepoTags {
+			// podman spells a local tag localhost/<repo>.
+			if strings.TrimPrefix(t, "localhost/") == buildTag(h) {
+				return true
+			}
 		}
 		for _, base := range imgs {
 			if base.Config.Labels[hashLabel] == h && im.builtOn(base) {

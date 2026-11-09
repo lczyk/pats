@@ -145,7 +145,7 @@ func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash,
 		args = append(args, "--build-arg", baseArg+"="+base)
 	}
 	if hash != "" {
-		args = append(args, "--label", hashLabel+"="+hash)
+		args = append(args, "--label", hashLabel+"="+hash, "--tag", buildTag(hash))
 	}
 	if log == nil {
 		log = io.Discard
@@ -162,26 +162,32 @@ func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash,
 	return id, nil
 }
 
-// cachedImageID looks up an image already built from identical inputs (same
-// hashLabel value); "" means none and the caller must build. reuse carries the
-// same staleness the layer cache always had: a mutable FROM tag or a RUN that
-// fetches "latest" won't refresh until the dockerfile or context changes (or
-// the image is removed -- `docker rmi` is the force-rebuild escape hatch).
+// cachedImageID looks up an image already built from identical inputs: the
+// one tagged buildTag(hash) and carrying that hash label; "" means none and
+// the caller must build. the tag is the provenance: the label alone is
+// inherited by any image built FROM a pats build, which is someone's own and
+// never a cache hit. reuse carries the same staleness the layer cache always
+// had: a mutable FROM tag or a RUN that fetches "latest" won't refresh until
+// the dockerfile or context changes (or the image is removed -- `docker rmi`
+// is the force-rebuild escape hatch).
 func cachedImageID(ctx context.Context, r runner, hash string) string {
 	if hash == "" {
 		return ""
 	}
-	// -a: `build -q` leaves the image untagged, which plain `images` hides.
-	out, err := output(ctx, r, "images", "-a", "--no-trunc", "-q", "--filter", "label="+hashLabel+"="+hash)
-	if err != nil {
+	imgs, err := inspectImages(ctx, r, []string{buildTag(hash)})
+	if err != nil || len(imgs) != 1 || imgs[0].Config.Labels[hashLabel] != hash {
 		return ""
 	}
-	ids := strings.Fields(string(out)) // newest first; older builds may share the label
-	if len(ids) == 0 {
-		return ""
-	}
-	return ids[0]
+	return imgs[0].ID
 }
+
+// buildTag is the tag pats gives an image it built from inputs of hash.
+func buildTag(hash string) string {
+	return buildRepo + ":" + hash
+}
+
+// buildRepo is the repository of pats's own builds.
+const buildRepo = "pats-build"
 
 // fromRefs lists the images a dockerfile builds FROM, the pats sandbox arg
 // and the defaults of ARGs declared before the first FROM substituted, earlier

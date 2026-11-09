@@ -122,6 +122,23 @@ func (f *fakeDaemon) imageCmd(stdout, stderr io.Writer, args []string) (handled 
 		default:
 			f.t.Errorf("fake %s: image inspect format %q", f.driver, args[3])
 		}
+	case at(0) == "image" && at(1) == "inspect" && at(2) != "--format":
+		// plain inspect: a json array, as clean and the build cache read it.
+		var out []map[string]any
+		for _, ref := range args[2:] {
+			id := f.findImage(ref)
+			if id == "" {
+				continue
+			}
+			im := f.images[id]
+			out = append(out, map[string]any{"Id": id, "RepoTags": im.tags, "RepoDigests": im.digests,
+				"Config": map[string]any{"Labels": im.labels}, "RootFS": map[string]any{"Layers": []string{id}}})
+		}
+		if len(out) == 0 {
+			return true, f.noSuchImage(stderr, args[2])
+		}
+		b, _ := json.Marshal(out)
+		stdout.Write(b)
 	case at(0) == "images":
 		var label string
 		for i := 1; i < len(args); i++ {
@@ -238,6 +255,7 @@ func (f *fakeDaemon) imageCmd(stdout, stderr io.Writer, args []string) (handled 
 // held.
 func (f *fakeDaemon) build(stderr io.Writer, args []string) error {
 	var iid, dockerfile string
+	var tags []string
 	labels := map[string]string{}
 	key := []string{}
 	for i := 0; i < len(args); i++ {
@@ -256,6 +274,9 @@ func (f *fakeDaemon) build(stderr io.Writer, args []string) error {
 			i++
 			k, v, _ := strings.Cut(args[i], "=")
 			labels[k] = v
+		case "--tag":
+			i++
+			tags = append(tags, args[i])
 		default:
 			if strings.HasPrefix(args[i], "-") || i != len(args)-1 {
 				f.t.Errorf("fake %s: build %s", f.driver, strings.Join(args, " "))
@@ -271,6 +292,9 @@ func (f *fakeDaemon) build(stderr io.Writer, args []string) error {
 	f.builds++
 	id := fakeImageID(string(df) + strings.Join(key, "\n") + fmt.Sprint(f.builds))
 	f.images[id] = &fakeDImage{labels: labels}
+	for _, t := range tags {
+		f.tag(id, t)
+	}
 	return os.WriteFile(iid, []byte(id), 0o644)
 }
 
