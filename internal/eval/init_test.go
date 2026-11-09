@@ -278,3 +278,25 @@ func TestInitWhat(t *testing.T) {
 		assert.Equal(t, initWhat(c.sb, dir), c.want, c.sb.Driver)
 	}
 }
+
+// a judge's sandbox is used by the suites whose agent scorers name it, and
+// -a narrows the task pairs without dropping it.
+func TestInitSandboxesCountsJudges(t *testing.T) {
+	cfg := parseCfg(t, `
+sbs: {kind: sandbox, items: {sxx: {image: s}, jsb: {image: j}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: jsb}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+scx: {kind: scorer, items: {jud: {agent: jxx, prompt: grade}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx, scorers: jud}}}
+`)
+	sbs, err := initSandboxes(cfg, InitOptions{Agents: []string{"axx"}})
+	require.NoError(t, err)
+	var names []string
+	for _, sb := range sbs {
+		names = append(names, sb.Name)
+	}
+	assert.EqualArrays(t, names, []string{"sxx", "jsb"})
+	_, err = initSandboxes(cfg, InitOptions{Sandboxes: []string{"jsb"}})
+	require.NoError(t, err)
+}
