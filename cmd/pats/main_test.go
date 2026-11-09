@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lczyk/assert"
+	"github.com/lczyk/assert/require"
 )
 
 func TestWantsVersion(t *testing.T) {
@@ -66,4 +67,25 @@ func TestEgressRunFlagShadowsBadEnv(t *testing.T) {
 func TestRunJSONNeedsDryRun(t *testing.T) {
 	err := (&RunCommand{JSON: true}).Execute(nil)
 	assert.Error(t, err, "--json goes with -n/--dry-run only")
+}
+
+// a repeat count below one is an error before anything runs.
+func TestRunRepeatAtLeastOne(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		err := (&RunCommand{Repeat: n}).Execute(nil)
+		assert.Error(t, err, "--repeat must be at least 1")
+	}
+}
+
+// an explicit zero is told from an absent flag in any spelling the parser
+// takes, grouped short flags included, before anything runs.
+func TestRunsZeroGrouped(t *testing.T) {
+	for _, args := range [][]string{{"score", "-vN", "0"}, {"report", "-N0"}, {"report", "--runs=0"}} {
+		opts = Options{}
+		parser = newParser()
+		_, err := parser.ParseArgs(args)
+		require.That(t, err != nil, "%v: no error", args)
+		assert.That(t, strings.Contains(err.Error(), "--runs must be at least 1"), "%v: %v", args, err)
+	}
+	parser = nil
 }

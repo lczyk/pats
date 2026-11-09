@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -57,7 +58,7 @@ type Options struct {
 
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
 // a single pair failing is logged and skipped -- it does not abort the run.
-func Run(cfg *config.Config, opts Options) (string, error) {
+func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	// absolute config dir: stage/collect run with cwd=ConfigDir, and the
 	// PATS_*_DIR paths must resolve regardless of that cwd.
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
@@ -92,6 +93,13 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// ctrl-c anywhere from here (the model check, the preflight, a repeat)
+	// is an interrupted run, whatever error the step it cut made of it.
+	defer func() {
+		if err != nil && ctx.Err() != nil {
+			err = ErrInterrupted
+		}
+	}()
 	// an lxd run's marker goes when the run ends; its lease stops.
 	defer sandbox.Shutdown()
 
@@ -115,11 +123,6 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	if opts.DryRun {
 		return "", dryRun(cfg, opts, pairs, lg)
 	}
-	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
-	if err != nil {
-		return "", err
-	}
-	lg.detail("run dir: %s", relToCwd(runDir))
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
@@ -144,6 +147,39 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 
 	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
 
+	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
+	// run dir; what is above happens once for all of them.
+	n := max(opts.Repeat, 1)
+	var runDir string
+	for i := 1; i <= n; i++ {
+		if ctx.Err() != nil {
+			break
+		}
+		dir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
+		if err != nil {
+			return runDir, err
+		}
+		runDir = dir
+		if n > 1 {
+			lg.info("run %d/%d: %s", i, n, filepath.Base(runDir))
+		} else {
+			lg.detail("run dir: %s", relToCwd(runDir))
+		}
+		runOnce(ctx, cfg, opts, lg, runDir, pairs, jobs, agents, tasks, sandboxes)
+	}
+	if ctx.Err() != nil {
+		return runDir, ErrInterrupted
+	}
+	return runDir, nil
+}
+
+// ErrInterrupted is a run stopped by ctrl-c or sigterm.
+var ErrInterrupted = errors.New("interrupted")
+
+// runOnce runs every pair once into runDir, up to jobs at a time.
+func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, runDir string, pairs []config.TestPair, jobs int,
+	agents map[string]config.Agent, tasks map[string]config.Task, sandboxes map[string]config.Sandbox,
+) {
 	// on a tty, draw a sticky progress region (total bar + a live line per
 	// in-flight pair); otherwise (pipe/ci/tee) print plain per-pair lines.
 	var bar *progress
@@ -238,7 +274,6 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 			lg.info("%s", sum)
 		}
 	}
-	return runDir, nil
 }
 
 // resolveJobs maps a Jobs option to a concrete worker count.
@@ -548,6 +583,9 @@ func runPair(
 	}
 	status, errStr := "ok", ""
 	switch {
+	case ctx.Err() != nil:
+		// an interrupt of the run wins over whatever else ended the agent.
+		status, errStr = "error", "interrupted"
 	case r.timedOut:
 		status, errStr = "timeout", fmt.Sprintf("timed out after %s", t.TimeoutDuration())
 		if syncErr != nil {
@@ -570,6 +608,9 @@ func runPair(
 		}); err != nil {
 			lg.warn("%s/%s collect: %v", p.Agent, p.Task, err)
 		}
+	}
+	if ctx.Err() != nil {
+		status, errStr = "error", "interrupted" // an interrupt during sync or collect too
 	}
 
 	// closing removes the proxy, and its log follower drains the audit's

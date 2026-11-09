@@ -54,7 +54,7 @@ func scoredRun(t *testing.T) (configDir, runDir string) {
 func TestReportJSON(t *testing.T) {
 	configDir, runDir := scoredRun(t)
 	var out, errOut bytes.Buffer
-	require.NoError(t, Report(configDir, "", true, &out, &errOut))
+	require.NoError(t, Report(configDir, "", 0, true, &out, &errOut))
 
 	var doc map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &doc), "stdout is one json document")
@@ -111,7 +111,7 @@ func TestReportJSON(t *testing.T) {
 
 	// the same run reports the same bytes.
 	var again bytes.Buffer
-	require.NoError(t, Report(configDir, "", true, &again, &bytes.Buffer{}))
+	require.NoError(t, Report(configDir, "", 0, true, &again, &bytes.Buffer{}))
 	assert.Equal(t, again.String(), out.String())
 	_ = runDir
 }
@@ -122,13 +122,13 @@ func TestReportErrors(t *testing.T) {
 	// another pats's scores.json: an error naming the rescore, nothing on stdout.
 	require.NoError(t, os.WriteFile(filepath.Join(runDir, "scores.json"), []byte(`{"cells":[],"overall":1}`), 0o644))
 	var out bytes.Buffer
-	err := Report(configDir, "", true, &out, &bytes.Buffer{})
+	err := Report(configDir, "", 0, true, &out, &bytes.Buffer{})
 	assert.ErrorIs(t, err, errOldScores)
 	assert.ContainsString(t, err.Error(), "pats score -r 003-20260621-fluffy-bunny")
 	assert.Equal(t, out.Len(), 0)
 
 	require.NoError(t, os.Remove(filepath.Join(runDir, "scores.json")))
-	err = Report(configDir, "", true, &out, &bytes.Buffer{})
+	err = Report(configDir, "", 0, true, &out, &bytes.Buffer{})
 	assert.Error(t, err, "no scores for")
 	assert.Equal(t, out.Len(), 0)
 }

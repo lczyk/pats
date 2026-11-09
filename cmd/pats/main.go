@@ -91,11 +91,15 @@ type RunCommand struct {
 	Offline bool     `long:"offline" description:"skip checking for newer upstream images and the openrouter model check"`
 	DryRun  bool     `long:"dry-run" short:"n" description:"list the pairs with a cost estimate from past runs, and run nothing"`
 	JSON    bool     `long:"json" description:"with -n: the list as one json object a line on stdout, the log on stderr"`
+	Repeat  int      `long:"repeat" short:"N" default:"1" description:"run the selection this many times, one run after another, each its own run dir"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
 	if r.JSON && !r.DryRun {
 		return errors.New("--json goes with -n/--dry-run only")
+	}
+	if r.Repeat < 1 {
+		return errors.New("--repeat must be at least 1")
 	}
 	cfg, err := load(opts.Config)
 	if err != nil {
@@ -110,6 +114,7 @@ func (r *RunCommand) Execute(args []string) error {
 		Now:       time.Now(),
 		Out:       out,
 		DryRun:    r.DryRun,
+		Repeat:    r.Repeat,
 		JSON:      r.JSON,
 		JSONOut:   os.Stdout,
 		Jobs:      r.Jobs,
@@ -131,9 +136,13 @@ type ScoreCommand struct {
 	Tasks   []string `long:"task" short:"t" description:"only score these tasks' pairs, or task vectors' (repeatable); default: all"`
 	Scorers []string `long:"scorer" short:"s" description:"only run these scorers or scorer vectors (repeatable); default: all"`
 	Suites  []string `long:"suite" short:"S" description:"only score these suites or suite vectors (repeatable); default: all"`
+	Runs    int      `long:"runs" short:"N" description:"score the latest this many runs, each on its own"`
 }
 
 func (s *ScoreCommand) Execute(args []string) error {
+	if err := checkRuns("score", s.Runs, s.Run); err != nil {
+		return err
+	}
 	cfg, err := load(opts.Config)
 	if err != nil {
 		return err
@@ -147,6 +156,7 @@ func (s *ScoreCommand) Execute(args []string) error {
 		Agents:    s.Agents,
 		Tasks:     s.Tasks,
 		Scorers:   s.Scorers,
+		Runs:      s.Runs,
 		Out:       os.Stdout,
 		Verbose:   len(opts.Verbose),
 	})
@@ -158,10 +168,41 @@ func (s *ScoreCommand) Execute(args []string) error {
 type ReportCommand struct {
 	Run  string `long:"run" short:"r" description:"run to report: a dir, a friendly name like fluffy-bunny, or a number (1 = run 001; 0 = latest, -1 = second to last; default: latest)"`
 	JSON bool   `long:"json" description:"print the run's results as one json document, for scripts, and nothing else"`
+	Runs int    `long:"runs" short:"N" description:"report the latest this many runs together: mean, sd and n per pair"`
 }
 
 func (c *ReportCommand) Execute(args []string) error {
-	return eval.Report(filepath.Dir(opts.Config), c.Run, c.JSON, os.Stdout, os.Stderr)
+	if err := checkRuns("report", c.Runs, c.Run); err != nil {
+		return err
+	}
+	return eval.Report(filepath.Dir(opts.Config), c.Run, c.Runs, c.JSON, os.Stdout, os.Stderr)
+}
+
+// checkRuns is -N's rules: a whole number of at least one when given, and
+// never beside -r.
+func checkRuns(command string, n int, run string) error {
+	switch {
+	case n < 0, n == 0 && flagSet(command, "runs"):
+		return errors.New("--runs must be at least 1")
+	case n > 0 && run != "":
+		return errors.New("--runs and --run do not combine")
+	}
+	return nil
+}
+
+// flagSet says whether command's --long was given, in any spelling the
+// parser takes (-N3, -vN 3, --runs=3), so an explicit 0 is told from the
+// flag's absence.
+func flagSet(command, long string) bool {
+	if parser == nil {
+		return false
+	}
+	c := parser.Find(command)
+	if c == nil {
+		return false
+	}
+	o := c.FindOptionByLongName(long)
+	return o != nil && o.IsSet()
 }
 
 // ListCommand groups the per-kind list subcommands.
@@ -236,6 +277,18 @@ func load(path string) (*config.Config, error) {
 // opts is package-level so command Execute methods can read the global flags.
 var opts Options
 
+// parser is the command line's parser, kept so a command can ask whether a
+// flag was given (flagSet).
+var parser *flags.Parser
+
+// newParser is pats's command line over opts.
+func newParser() *flags.Parser {
+	p := flags.NewParser(&opts, flags.Default&^flags.PrintErrors)
+	p.Name = "pats"
+	p.Usage = "[OPTIONS] COMMAND"
+	return p
+}
+
 // wantsVersion reports whether args (os.Args[1:]) ask for the version.
 // only the first argument counts -- otherwise "pats score -r -v" would print
 // the version instead of reporting a bad value for -r. a lone -v is the
@@ -258,9 +311,7 @@ func main() {
 	}
 
 	// PrintErrors stripped so we can colourise the help text ourselves.
-	parser := flags.NewParser(&opts, flags.Default&^flags.PrintErrors)
-	parser.Name = "pats"
-	parser.Usage = "[OPTIONS] COMMAND"
+	parser = newParser()
 
 	_, err := parser.Parse()
 	// every command's leases end with it: a temp dir or a container's lease
@@ -277,6 +328,9 @@ func main() {
 			os.Exit(0)
 		}
 		fmt.Fprintln(os.Stderr, err)
+		if errors.Is(err, eval.ErrInterrupted) {
+			os.Exit(130)
+		}
 		os.Exit(1)
 	}
 }

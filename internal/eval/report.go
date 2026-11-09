@@ -243,7 +243,14 @@ func buildReport(runDir string, rep *ScoreReport, warn io.Writer) *reportDoc {
 // with asJSON prints its document: that and nothing else on out, warnings on
 // errOut. runArg resolves like `pats score -r`: "" -> latest, else dir or run
 // name.
-func Report(configDir, runArg string, asJSON bool, out, errOut io.Writer) error {
+func Report(configDir, runArg string, runs int, asJSON bool, out, errOut io.Writer) error {
+	if runs > 1 {
+		dirs, err := latestRuns(filepath.Join(configDir, runsSubdir), runs)
+		if err != nil {
+			return err
+		}
+		return reportMulti(dirs, asJSON, out, errOut)
+	}
 	runDir, err := resolveRunDir(filepath.Join(configDir, runsSubdir), runArg)
 	if err != nil {
 		return err

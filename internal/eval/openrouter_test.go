@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -112,4 +113,33 @@ su: {kind: suite, items: {su: {agents: a, tasks: t}}}
 	// --offline skips the check.
 	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Offline: true})
 	assert.That(t, err == nil || !strings.Contains(err.Error(), "openrouter"), "offline still checked: %v", err)
+}
+
+// ctrl-c while the catalogue loads is an interrupted run: no run dir.
+func TestRunModelCheckInterrupted(t *testing.T) {
+	old := checkModels
+	checkModels = checkOpenrouterModels
+	defer func() { checkModels = old }()
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer slow.Close()
+	t.Setenv("PATS_OPENROUTER_URL", slow.URL)
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: p}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+	pinAll(t, dir, cfg)
+	go func() { time.Sleep(200 * time.Millisecond); _ = syscall.Kill(os.Getpid(), syscall.SIGINT) }()
+	var out strings.Builder
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	assert.ErrorIs(t, err, ErrInterrupted)
+	_, statErr := os.Stat(filepath.Join(dir, runsSubdir))
+	assert.That(t, os.IsNotExist(statErr), "a run dir was made")
 }

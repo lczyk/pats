@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -241,6 +242,8 @@ type fakeSandbox struct {
 	onRoot   func(cmd sandbox.Cmd, stdout io.Writer) (int, error)
 	rootCmds []sandbox.Cmd
 	pushed   []string
+	// preflights counts the credential preflight's sessions.
+	preflights int
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -252,6 +255,9 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr
 // always passes, so the canned outcome lands on the pair's agent exec.
 func (f *fakeSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Session, error) {
 	preflight := strings.HasPrefix(filepath.Base(spec.Workdir), "pats-preflight-")
+	if preflight {
+		f.preflights++
+	}
 	if f.startErr != nil && !preflight {
 		return nil, f.startErr
 	}
@@ -356,6 +362,57 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	stdout, err := os.ReadFile(filepath.Join(runDir, "ok", "t", "stdout.log"))
 	require.NoError(t, err)
 	assert.Equal(t, string(stdout), "fine\n")
+}
+
+// -N runs the selection that many times, each its own run dir, with the
+// credential preflight once; an interrupt stops the series after the
+// current run and is an error.
+func TestRunRepeat(t *testing.T) {
+	fake := &fakeSandbox{stdout: "fine\n"}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+s: {kind: sandbox, items: {s: {image: s}}}
+a: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: s}}}
+t: {kind: task, items: {t: {prompt: p}}}
+su: {kind: suite, items: {su: {agents: a, tasks: t}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Repeat: 3})
+	require.NoError(t, err)
+	runs, err := sortedRunNames(filepath.Join(dir, runsSubdir))
+	require.NoError(t, err)
+	assert.Len(t, runs, 3)
+	assert.Equal(t, fake.preflights, 1)
+	assert.ContainsString(t, out.String(), "INFO run 3/3: "+runs[2])
+	for _, r := range runs {
+		_, err := os.Stat(filepath.Join(dir, runsSubdir, r, "a", "t", "metadata.json"))
+		assert.NoError(t, err, r)
+	}
+
+	// ctrl-c during the first repeat: no second run dir, and an error. the
+	// agent waits for the signal to land, as a real one would still run.
+	fake.onRun = func(sandbox.Spec) { _ = syscall.Kill(os.Getpid(), syscall.SIGINT) }
+	fake.blockUntilDone = true
+	dir2 := t.TempDir()
+	pinAll(t, dir2, cfg)
+	_, err = Run(cfg, Options{ConfigDir: dir2, Now: time.Now(), Out: &out, Repeat: 3})
+	assert.ErrorIs(t, err, ErrInterrupted)
+	runs, err = sortedRunNames(filepath.Join(dir2, runsSubdir))
+	require.NoError(t, err)
+	assert.Len(t, runs, 1)
+	m, err := os.ReadFile(filepath.Join(dir2, runsSubdir, runs[0], "a", "t", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(m), `"error": "interrupted"`)
+
+	// the last (here the only) repeat interrupted is an error too.
+	dir3 := t.TempDir()
+	pinAll(t, dir3, cfg)
+	_, err = Run(cfg, Options{ConfigDir: dir3, Now: time.Now(), Out: &out})
+	assert.ErrorIs(t, err, ErrInterrupted)
 }
 
 // the proxy's audit tail lands only once the session closes (its log

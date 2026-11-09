@@ -30,6 +30,7 @@ type ScoreOptions struct {
 	Agents    []string // filter the scored pairs to these agents (empty -> all)
 	Tasks     []string // filter the scored pairs to these tasks (empty -> all)
 	Scorers   []string // only run these scorers (empty -> all)
+	Runs      int      // score the latest this many runs, each on its own (0: one, by RunDir)
 	Out       io.Writer
 	Color     bool // colour log tags (set internally from Out's tty-ness)
 	Verbose   int  // -v count: 1 adds a line per score, 2 streams the scorers' output
@@ -70,6 +71,9 @@ type ScoreResult struct {
 func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if opts.RunDir == "all" {
 		return scoreAll(cfg, opts)
+	}
+	if opts.Runs > 0 {
+		return scoreLatest(cfg, opts)
 	}
 	// absolute config dir: scorers run with cwd=ConfigDir; their file path +
 	// PATS_OUTPUT_DIR must resolve regardless of that cwd.
@@ -425,6 +429,32 @@ func scoreAll(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	if err != nil || len(names) == 0 {
 		return nil, fmt.Errorf("no runs found under %s", base)
 	}
+	return scoreRuns(cfg, opts, base, names)
+}
+
+// scoreLatest scores the latest opts.Runs runs, as scoreAll does every one.
+func scoreLatest(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
+	configDir, err := filepath.Abs(opts.ConfigDir)
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Join(configDir, runsSubdir)
+	dirs, err := latestRuns(base, opts.Runs)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, d := range dirs {
+		names = append(names, filepath.Base(d))
+	}
+	o := opts
+	o.Runs = 0
+	return scoreRuns(cfg, o, base, names)
+}
+
+// scoreRuns scores the named runs under base in turn: one with nothing to
+// score under the filters is skipped, any other error stops.
+func scoreRuns(cfg *config.Config, opts ScoreOptions, base string, names []string) (*ScoreReport, error) {
 	var rep *ScoreReport
 	skipped := 0
 	for _, name := range names {
