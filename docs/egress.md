@@ -23,12 +23,12 @@ sandbox:
         allow:
           - .ubuntu.com            # a host, or a suffix when it starts with a dot
           - github.com:22          # a host on one port; without a port, 80 and 443
-          - '.githubusercontent.com/canonical/*'   # a url entry: a host and a path glob
+          - '.githubusercontent.com/canonical/**'  # a url entry: a host and a path glob
           - 'api.github.com ~^/repos/[^/]+/x$'     # a url entry: a host and a go regexp over path?query
           - 10.0.5.20:5432         # an ip, dialable only with allow-private
           - POST api.github.com/graphql            # a method prefix: admits POST here whatever methods says
         deny:
-          - 'github.com/*/some-answer-repo*'
+          - 'github.com/*/some-answer-repo**'
         deny-response: 403         # 403 | 404 | reset | timeout
         allow-private: false       # true lets entries name loopback, link-local and rfc1918 targets
         image: ghcr.io/...         # the sidecar image (container drivers)
@@ -43,8 +43,10 @@ sandbox:
   host or lan numbered out of global addresses is not covered: it looks like the internet from here.
 - **precedence** a deny match always wins, then an allow match, then `default`. both lists apply under both postures.
   a bare host in `allow` under `default: allow` can never matter and is a load error.
-- **url entries** a glob's `*` matches anything, `/` included, over the whole path (and the query, when the glob names
-  one). a regexp is unanchored unless you anchor it. a `..` in the request path does not dodge an entry: every entry
+- **url entries** a glob matches the whole path (and the query, when the glob names one). `*` matches within one path
+  segment, never `/`, and `**` matches anything, `/` included, as gitignore reads them: `github.com/*/repo**` pins the
+  owner segment and takes the repo and all below it, where `github.com/**/repo**` would also catch
+  `github.com/x/docs/repo`. a `*` that should cross segments is a `**`. a regexp is unanchored unless you anchor it. a `..` in the request path does not dodge an entry: every entry
   is also tried against the `path.Clean`ed path. an `allow` url entry matches the path case-sensitively, a `deny` one
   case-insensitively, each erring toward closed. a host with `allow` url entries passes only paths one of them admits.
 - **mitm** a url entry is the opt-in to tls termination for its host: the proxy presents a leaf from a per-run CA and
@@ -62,7 +64,7 @@ sandbox:
   `default: allow`, every host reached -- except the harness's own (its inference api is never decrypted for it; an
   explicit url entry on such a host still mitm's it, and the posture applies to what it shows). an entry can carry a
   method prefix, which needs a url part: `POST api.github.com/graphql` in `allow` admits that method there whatever
-  the posture, `PUT,PATCH github.com/*` in `deny` refuses only those methods. absent, every method passes and nothing
+  the posture, `PUT,PATCH github.com/**` in `deny` refuses only those methods. absent, every method passes and nothing
   extra is inspected.
 
 ## topology
@@ -167,7 +169,7 @@ pats egress ca --out ./ca                      # only needed for url entries
 cat > policy.yaml <<'POLICY'
 allow:
   - .ubuntu.com
-  - 'github.com/canonical/*'
+  - 'github.com/canonical/**'
 deny-response: "404"
 POLICY
 pats egress run --policy policy.yaml --listen 127.0.0.1:8080 \

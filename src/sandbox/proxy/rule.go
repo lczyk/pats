@@ -82,7 +82,7 @@ func ParseEntry(raw string, deny bool) (Entry, error) {
 		e.urlRe = globRe(glob, deny)
 	}
 	if e.methods != nil && e.urlRe == nil {
-		return e, fmt.Errorf("a method needs a url entry: write %s %s/*", strings.Join(e.methods, ","), hostPart)
+		return e, fmt.Errorf("a method needs a url entry: write %s %s/**", strings.Join(e.methods, ","), hostPart)
 	}
 	return e, nil
 }
@@ -150,19 +150,33 @@ func splitHostPortStrict(s string) (host, port string, err error) {
 	return host, port, nil
 }
 
-// globRe compiles a path glob ("*" matches anything, "/" included) to a full
-// match over the path, with the query appended when the glob names one.
+// globRe compiles a path glob to a full match over the path, with the query
+// appended when the glob names one. "*" matches within one path segment, "/"
+// excluded, and "**" matches anything, "/" included, as gitignore reads them:
+// "github.com/*/repo**" pins the owner segment and takes all under the repo.
 func globRe(glob string, deny bool) *regexp.Regexp {
 	var b strings.Builder
 	if deny {
 		b.WriteString("(?i)")
 	}
 	b.WriteString("^")
-	parts := strings.Split(glob, "*")
-	for i, part := range parts {
-		b.WriteString(regexp.QuoteMeta(part))
-		if i < len(parts)-1 {
+	for i := 0; i < len(glob); {
+		switch {
+		case strings.HasPrefix(glob[i:], "**"):
 			b.WriteString(".*")
+			for i < len(glob) && glob[i] == '*' {
+				i++
+			}
+		case glob[i] == '*':
+			b.WriteString("[^/]*")
+			i++
+		default:
+			j := strings.IndexByte(glob[i:], '*')
+			if j < 0 {
+				j = len(glob) - i
+			}
+			b.WriteString(regexp.QuoteMeta(glob[i : i+j]))
+			i += j
 		}
 	}
 	b.WriteString("$")

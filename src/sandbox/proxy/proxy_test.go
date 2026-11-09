@@ -102,7 +102,7 @@ func TestHandleHTTP(t *testing.T) {
 	uhost := strings.TrimPrefix(upstream.URL, "http://")
 
 	var audit auditBuf
-	p := &Proxy{Rule: mustRule(t, false, []string{uhost}, []string{uhost + "/secret*"}), Audit: &audit, Dial: looseDial}
+	p := &Proxy{Rule: mustRule(t, false, []string{uhost}, []string{uhost + "/secret**"}), Audit: &audit, Dial: looseDial}
 	proxy := httptest.NewServer(p)
 	defer proxy.Close()
 	proxyURL, _ := url.Parse(proxy.URL)
@@ -129,7 +129,7 @@ func TestHandleHTTP(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, resp.StatusCode, http.StatusForbidden)
-	assert.Equal(t, audit.last(t).Rule, uhost+"/secret*")
+	assert.Equal(t, audit.last(t).Rule, uhost+"/secret**")
 
 	// unlisted host dies at the host gate.
 	resp, err = client.Get("http://203.0.113.1/x")

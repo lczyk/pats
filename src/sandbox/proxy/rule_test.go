@@ -113,8 +113,8 @@ func TestDecideHost(t *testing.T) {
 
 func TestDecideURL(t *testing.T) {
 	r := mustRule(t, false,
-		[]string{"github.com", "raw.githubusercontent.com", "docs.example.com/public*", "docs.example.com/api*"},
-		[]string{"github.com/*/chisel-releases*", "raw.githubusercontent.com/canonical/chisel-releases*", "docs.example.com/internal*"})
+		[]string{"github.com", "raw.githubusercontent.com", "docs.example.com/public**", "docs.example.com/api**"},
+		[]string{"github.com/*/chisel-releases**", "raw.githubusercontent.com/canonical/chisel-releases**", "docs.example.com/internal**"})
 
 	cases := []struct {
 		host, path string
@@ -133,6 +133,10 @@ func TestDecideURL(t *testing.T) {
 		{"docs.example.com", "/api/v1", true},
 		{"docs.example.com", "/private/x", false},       // restricted host, no allow match
 		{"docs.example.com", "/internal/public", false}, // deny wins
+		// a single * stays in its segment: the owner is pinned, a deeper repo of
+		// the same name is not the answer repo.
+		{"github.com", "/canonical/chisel-docs/blob/chisel-releases", true},
+		{"github.com", "/a/b/chisel-releases", true},
 	}
 	for _, c := range cases {
 		got := r.Decide(c.host, 443, "GET", c.path, "")
@@ -140,12 +144,33 @@ func TestDecideURL(t *testing.T) {
 	}
 	v := r.Decide("docs.example.com", 443, "GET", "/private/x", "")
 	assert.Equal(t, v.Reason, "url-not-allowed")
-	assert.Equal(t, v.Rule, "docs.example.com/public*") // the host's first allow entry, never "default"
+	assert.Equal(t, v.Rule, "docs.example.com/public**") // the host's first allow entry, never "default"
 
 	// the mitm set is every host a url entry names, and only those.
 	assert.That(t, r.MitmHost("github.com", 443))
 	assert.That(t, r.MitmHost("docs.example.com", 443))
 	assert.That(t, !r.MitmHost("example.com", 443))
+}
+
+func TestGlobRe(t *testing.T) {
+	for _, c := range []struct {
+		glob, path string
+		want       bool
+	}{
+		{"/*", "/a", true},
+		{"/*", "/a/b", false},
+		{"/**", "/a/b", true},
+		{"/a/*/c", "/a/b/c", true},
+		{"/a/*/c", "/a/b/x/c", false},
+		{"/a/**/c", "/a/b/x/c", true},
+		{"/repo**", "/repo.git/info/refs", true},
+		{"/repo*", "/repo.git", true},
+		{"/repo*", "/repo/x", false},
+		{"/a.b", "/axb", false}, // the rest is literal
+		{"/***", "/a/b", true},
+	} {
+		assert.Equal(t, globRe(c.glob, false).MatchString(c.path), c.want, "%s ~ %s", c.glob, c.path)
+	}
 }
 
 // the three candidate forms beyond the bare path: a deny anchored on the

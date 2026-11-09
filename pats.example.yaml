@@ -18,9 +18,9 @@ sandbox:
       #   allow:
       #     - .ubuntu.com                        # apt mirrors (a dot prefix covers subdomains)
       #     - github.com                         # a host, on 80 and 443; `github.com:22` for one port
-      #     - '.githubusercontent.com/canonical/*'   # a url entry: its host is mitm'd, only matching paths pass
+      #     - '.githubusercontent.com/canonical/**'  # a url entry: its host is mitm'd, only matching paths pass
       #   deny:
-      #     - 'github.com/*/some-answer-repo*'   # the answer source, by url (`*` matches anything, `/` included)
+      #     - 'github.com/*/some-answer-repo**'  # the answer source, by url (`*` stays in one path segment, `**` crosses `/`)
       #   # default: allow          # a denylist instead; bare hosts in allow are dead under it
       #   # deny-response: 404      # 403 (default) | 404 | reset | timeout
       #   # allow-private: true     # let entries name lan / loopback targets
@@ -81,7 +81,7 @@ write-readme:
       # a task can add to its sandbox's egress lists (not its posture), when the sandbox runs the proxy:
       # egress:
       #   allow: [registry.npmjs.org]          # a host this task alone needs
-      #   deny: ['github.com/*/monorepo-answers*']
+      #   deny: ['github.com/*/monorepo-answers**']
 
 # a scorer's `score` is a script: it reads a pair's collected output and prints a float in [0,1], or `na`, on its first stdout line.
 style:

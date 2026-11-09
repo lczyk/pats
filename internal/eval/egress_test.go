@@ -16,7 +16,7 @@ import (
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-const egressCfg = `box: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [a.test, '.ubuntu.com'], deny: ['a.test/secret*']}}, open: {image: img}}}
+const egressCfg = `box: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [a.test, '.ubuntu.com'], deny: ['a.test/secret**']}}, open: {image: img}}}
 axx: {kind: agent, items: {axx: {harness: claude-cli-keyless, model: m, sandbox: sxx}}}
 txx: {kind: task, items: {txx: {prompt: p, egress: {allow: [pypi.org], deny: ['github.com/*/answer*']}}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
@@ -40,7 +40,7 @@ func TestEffectivePolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.ContainsString(t, strings.Join(pol.Allow, " "), "pypi.org")
 	assert.ContainsString(t, strings.Join(pol.Allow, " "), ".anthropic.com")
-	assert.EqualArrays(t, pol.Deny, []string{"a.test/secret*", "github.com/*/answer*"})
+	assert.EqualArrays(t, pol.Deny, []string{"a.test/secret**", "github.com/*/answer*"})
 
 	for _, bad := range [][3]string{{"ghost", "", ""}, {"open", "", ""}, {"sxx", "ghost", ""}, {"sxx", "", "ghost"}} {
 		_, err := EffectivePolicy(c, bad[0], bad[1], bad[2])
@@ -57,15 +57,15 @@ func TestCheckURL(t *testing.T) {
 		ok        bool
 	}{
 		{"https://a.test/x", "allow rule=a.test  (mitm;", true},
-		{"https://a.test/secret/1", "deny  rule=a.test/secret*  (mitm;", false},
+		{"https://a.test/secret/1", "deny  rule=a.test/secret**  (mitm;", false},
 		{"archive.ubuntu.com", "allow rule=.ubuntu.com  (tunnel;", true},
 		{"http://archive.ubuntu.com/x.deb", "allow rule=.ubuntu.com  (plain http;", true},
 		{"https://evil.test/", "deny  rule=default  (tunnel;", false},
 		{"https://github.com/canonical/answer", "deny  rule=default", false}, // github is not allowed at all
 		{"https://api.anthropic.com/v1", "allow rule=.anthropic.com", true},
 		{"https://a.test:8443/", "deny  rule=default", false},
-		{"https://a.test/%73ecret/1", "deny  rule=a.test/secret*", false}, // decoded, as the proxy sees it
-		{"https://a.test", "allow rule=a.test  (mitm;", true},             // empty path is "/"
+		{"https://a.test/%73ecret/1", "deny  rule=a.test/secret**", false}, // decoded, as the proxy sees it
+		{"https://a.test", "allow rule=a.test  (mitm;", true},              // empty path is "/"
 	}
 	for _, tc := range cases {
 		var out bytes.Buffer

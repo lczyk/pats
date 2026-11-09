@@ -83,7 +83,7 @@ func TestMitmE2E(t *testing.T) {
 	var audit auditBuf
 	// the proxy's upstream transport trusts the test server's self-signed cert.
 	p := &Proxy{
-		Rule:     mustRule(t, false, []string{uhost}, []string{uhost + "/secret*"}),
+		Rule:     mustRule(t, false, []string{uhost}, []string{uhost + "/secret**"}),
 		Signer:   s,
 		Upstream: upstream.Client().Transport,
 		Audit:    &audit,
@@ -116,7 +116,7 @@ func TestMitmE2E(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, resp.StatusCode, http.StatusForbidden)
-	assert.Equal(t, audit.last(t).Rule, uhost+"/secret*")
+	assert.Equal(t, audit.last(t).Rule, uhost+"/secret**")
 
 	// non-mitm'd host on the same rule set stays a tunnel and is refused by
 	// the host gate (not on the allowlist).
@@ -141,7 +141,7 @@ func mitmProxy(t *testing.T, host string, rt http.RoundTripper) (*Proxy, *x509.C
 	require.NoError(t, err)
 	var audit auditBuf
 	p := &Proxy{
-		Rule:     mustRule(t, false, []string{host}, []string{host + "/secret*"}),
+		Rule:     mustRule(t, false, []string{host}, []string{host + "/secret**"}),
 		Signer:   s,
 		Upstream: rt,
 		Audit:    &audit,
