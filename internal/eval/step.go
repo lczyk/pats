@@ -76,7 +76,7 @@ func (s step) run(ctx context.Context, root string, env map[string]string, out i
 	}
 	defer cleanup()
 	cmd.Stdout, cmd.Stderr = out, out
-	return cmd.Run()
+	return runGroup(ctx, cmd)
 }
 
 // output executes the step and returns its stdout. a failure carries the tail
@@ -97,10 +97,23 @@ func (s step) outputTee(ctx context.Context, root string, env map[string]string,
 	if tee != nil {
 		cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, tee), io.MultiWriter(&stderr, tee)
 	}
-	if err := cmd.Run(); err != nil {
+	if err := runGroup(ctx, cmd); err != nil {
 		return nil, fmt.Errorf("%w%s", err, stderrTail(&stderr))
 	}
 	return stdout.Bytes(), nil
+}
+
+// runGroup runs cmd and, should ctx end before it returns, kills its whole
+// process group: also after the script itself exited, while a child it left
+// behind still holds the output open.
+func runGroup(ctx context.Context, cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	pid := cmd.Process.Pid
+	stop := context.AfterFunc(ctx, func() { syscall.Kill(-pid, syscall.SIGKILL) })
+	defer stop()
+	return cmd.Wait()
 }
 
 // stepWaitDelay bounds the wait for a killed step's output to drain, should

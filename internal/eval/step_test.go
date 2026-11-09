@@ -144,3 +144,36 @@ func TestStepCancelKillsGroup(t *testing.T) {
 	}
 	assert.That(t, gone, "the step's child outlived it")
 }
+
+// a child the script left behind, holding its output open after the script
+// exited, dies with the step when the run is cancelled.
+func TestStepCancelKillsLeftoverChild(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- step{script: "sleep 30 &\necho $! > " + pidFile + "\n", dir: dir}.run(ctx, dir, nil, io.Discard)
+	}()
+	var pid int
+	for i := 0; i < 200 && pid == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+		if b, err := os.ReadFile(pidFile); err == nil {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+	}
+	require.That(t, pid > 0, "the step never started its child")
+	time.Sleep(100 * time.Millisecond) // the script has exited; the child holds stdout
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled step waited on its leftover child")
+	}
+	gone := false
+	for i := 0; i < 100 && !gone; i++ {
+		gone = syscall.Kill(pid, 0) != nil
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.That(t, gone, "the leftover child outlived the cancel")
+}
