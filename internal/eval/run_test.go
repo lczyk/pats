@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -829,6 +830,101 @@ not json
 	assert.Equal(t, a.Requests, 11) // open + req, close lines excluded
 	assert.Equal(t, a.In, int64(1500))
 	assert.Equal(t, a.Out, int64(34))
+}
+
+// FuzzEgressAudit: an audit log carries the hosts and urls the agent chose.
+// folding two logs joined is folding each and joining the folds, so no line
+// reaches past itself; lines that are not json change nothing; every listed
+// target is one a refused line named, once; and the denied list, the cheat
+// signal, is exactly the refusals the default rule made.
+func FuzzEgressAudit(f *testing.F) {
+	lines := []string{
+		`{"ev":"open","host":"ok.example.com","kind":"tunnel","allowed":true,"rule":"ok.example.com"}`,
+		`{"ev":"close","host":"ok.example.com","allowed":true,"in":1000,"out":24}`,
+		`{"ev":"open","host":"evil.example.com","allowed":false,"rule":"default"}`,
+		`{"ev":"req","host":"gh.com","url":"gh.com/x/secrets","allowed":false,"rule":"gh.com/x/*"}`,
+		`{"ev":"req","host":"bad.test","url":"bad.test/","allowed":false,"rule":"bad.test","reason":"revoked","status":502}`,
+		`{"ev":"open","host":"corp.test","allowed":false,"rule":"default","reason":"upstream: 407"}`,
+		`{"ev":"req","host":"apt.test","url":"apt.test/x.deb","allowed":true,"rule":"apt.test","in":500,"out":10}`,
+		`{"ev":"req","host":"evil.example.com","url":"evil.example.com/\n{\"ev\":\"open\"}","allowed":false,"rule":"default"}`,
+		`{"ev":"open"}`, `{"ev":"req","in":9223372036854775807,"allowed":true}`, "not json", "null", "",
+	}
+	for i, l := range lines {
+		f.Add([]byte(l+"\n"), []byte(lines[(i+3)%len(lines)]))
+	}
+	f.Add([]byte(strings.Join(lines, "\n")), []byte(strings.Join(lines, "\r\n")))
+
+	dir := f.TempDir() // one dir for every input
+	f.Fuzz(func(t *testing.T, a, b []byte) {
+		fold := func(name string, parts ...[]byte) (egressAudit, string) {
+			p := filepath.Join(dir, name)
+			require.NoError(t, os.WriteFile(p, bytes.Join(parts, []byte("\n")), 0o644))
+			return readEgressAudit(p), p
+		}
+		same := func(got, want egressAudit, what string) {
+			t.Helper()
+			assert.That(t, got.Requests == want.Requests && got.In == want.In && got.Out == want.Out,
+				"%s: totals (%d, %d, %d), want (%d, %d, %d)", what, got.Requests, got.In, got.Out, want.Requests, want.In, want.Out)
+			assert.EqualArrays(t, got.Denied, want.Denied, what+": denied")
+			assert.EqualArrays(t, got.Blocked, want.Blocked, what+": blocked")
+			assert.EqualArrays(t, got.Failed, want.Failed, what+": failed")
+		}
+		// xs, then the ys not in it.
+		union := func(xs, ys []string) []string {
+			out := slices.Clone(xs)
+			for _, y := range ys {
+				if !slices.Contains(out, y) {
+					out = append(out, y)
+				}
+			}
+			return out
+		}
+
+		fa, pa := fold("a.log", a)
+		fb, _ := fold("b.log", b)
+		joined, _ := fold("ab.log", a, b)
+		same(joined, egressAudit{
+			Denied: union(fa.Denied, fb.Denied), Blocked: union(fa.Blocked, fb.Blocked), Failed: union(fa.Failed, fb.Failed),
+			Requests: fa.Requests + fb.Requests, In: fa.In + fb.In, Out: fa.Out + fb.Out,
+		}, "two logs joined")
+		noisy, _ := fold("noisy.log", []byte("not json"), a, []byte(`[1,2]`), nil, []byte(`{"ev":`))
+		same(noisy, fa, "garbage lines added")
+
+		evs, err := readEvents(pa)
+		require.NoError(t, err)
+		requests := 0
+		refused := map[string]bool{}
+		var denied []string
+		for _, e := range evs {
+			if e.Ev != "open" && e.Ev != "req" {
+				continue
+			}
+			requests++
+			if e.Allowed {
+				continue
+			}
+			target := e.Host
+			if e.URL != "" {
+				target = e.URL
+			}
+			refused[target] = true
+			if e.Rule == "default" && e.Reason == "" && !slices.Contains(denied, target) {
+				denied = append(denied, target)
+			}
+		}
+		assert.Equal(t, fa.Requests, requests)
+		assert.EqualArrays(t, fa.Denied, denied)
+		listed := map[string]bool{}
+		for _, list := range [][]string{fa.Denied, fa.Blocked, fa.Failed} {
+			once := map[string]bool{}
+			for _, target := range list {
+				assert.That(t, refused[target], "%q is listed, no refused line names it", target)
+				assert.That(t, !once[target], "%q is listed twice", target)
+				once[target], listed[target] = true, true
+			}
+		}
+		assert.Equal(t, len(listed), len(refused), "a refused target is in no list")
+	})
 }
 
 func TestHarnessHomeCodexCredentials(t *testing.T) {

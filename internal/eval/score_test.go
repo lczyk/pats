@@ -3,6 +3,9 @@ package eval
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -424,14 +427,39 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: [txx], scorers: [one]}}}
 	}
 }
 
-// FuzzParseScore: scorer stdout isn't trusted input (arbitrary user script),
-// just wants no panic.
+// FuzzParseScore: scorer stdout isn't trusted input (arbitrary user script).
+// an accepted score is a number in [0,1]; n/a is the first non-empty line
+// saying "na" in some case, and nothing else is; the lines after the first
+// never matter.
 func FuzzParseScore(f *testing.F) {
-	for _, s := range []string{"0.5\n", "na\n", "", "\n\n1\n", "inf", "1e400", "-0"} {
+	for _, s := range []string{
+		"0.5\n", "na\n", "", "\n\n1\n", "inf", "1e400", "-0", "nan", "0x1p-1", "+1", "1e-400",
+		" Na \n0.9\n", "1\nna\n", "nah\n", "\xc2\xa0NA\xc2\xa0", "0.25\r\nnoise", "\x00", "1.0000000000000002",
+	} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		parseScore(s)
+		got, err := parseScore(s)
+
+		// the first non-empty line, found without parseScore's own split.
+		first := ""
+		for line := range strings.Lines(s) {
+			if first = strings.TrimSpace(line); first != "" {
+				break
+			}
+		}
+		isNA := first == "na" || first == "NA" || first == "Na" || first == "nA"
+		assert.Equal(t, errors.Is(err, errScorerNA), isNA, "n/a from %q", s)
+
+		if err != nil {
+			assert.Equal(t, got, 0.0, "an error carries no score: %q", s)
+		} else {
+			assert.That(t, !math.IsNaN(got) && got >= 0 && got <= 1, "score %v out of [0,1] from %q", got, s)
+		}
+
+		alone, errAlone := parseScore(first)
+		assert.Equal(t, math.Float64bits(alone), math.Float64bits(got), "the first line alone scores another number: %q", s)
+		assert.Equal(t, fmt.Sprint(errAlone), fmt.Sprint(err), "the first line alone fails another way: %q", s)
 	})
 }
 

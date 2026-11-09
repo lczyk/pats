@@ -167,7 +167,7 @@ func TestDenyResponse(t *testing.T) {
 // newEchoListener starts a raw tcp listener that echoes back whatever it
 // reads -- something the CONNECT tunnel can dial straight through to without
 // needing a full http server on the far end.
-func newEchoListener(t *testing.T) net.Listener {
+func newEchoListener(t testing.TB) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -199,7 +199,7 @@ func dialTo(addr string) func(context.Context, string, string) (net.Conn, error)
 
 // connect sends a CONNECT for target through the proxy and returns the conn
 // once the 200 and its blank line were read.
-func connect(t *testing.T, proxyAddr, target string) (net.Conn, *bufio.Reader) {
+func connect(t testing.TB, proxyAddr, target string) (net.Conn, *bufio.Reader) {
 	t.Helper()
 	conn, err := net.Dial("tcp", proxyAddr)
 	require.NoError(t, err)
@@ -280,7 +280,7 @@ func TestHandleConnectPipelinedBytes(t *testing.T) {
 }
 
 // clientHello captures the ClientHello a go tls client sends for serverName.
-func clientHello(t *testing.T, serverName string) []byte {
+func clientHello(t testing.TB, serverName string) []byte {
 	t.Helper()
 	c1, c2 := net.Pipe()
 	defer c1.Close()

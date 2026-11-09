@@ -2,13 +2,17 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 
 	"github.com/lczyk/pats/internal/config"
@@ -164,6 +168,46 @@ func useFakeSandbox(t *testing.T, fake sandbox.Sandbox) {
 	old := newSandbox
 	newSandbox = func(sandbox.Options, sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	t.Cleanup(func() { newSandbox = old })
+}
+
+// FuzzReadPins: .pats/images.json is read on every init and run, and may be
+// hand-edited, cut short or another pats's. whatever it holds, reading it is
+// an error (init then remakes it) or a pin file init can go on with: written
+// back it reads the same, and pruning it does not panic.
+func FuzzReadPins(f *testing.F) {
+	hex := strings.Repeat("ab", 32)
+	for _, s := range []string{
+		`{"version":1}`, `{"version":2}`, `{}`, `[]`, `{"version":1,"superseded":[]}`, `{"version":1,"docker:local":{}}`,
+		`{"version":1,"superseded":[{"target":"podman:local","id":"` + hex + `","built":true,"since":"2026-11-01T10:00:00Z"}],` +
+			`"podman:local":{"sxx":{"daemon":"d","image":{"id":"` + hex + `","name":"img","pulled":true},"layers":["sha256:l1"],` +
+			`"proxy":{"id":"` + hex + `"},"pats_version":"1.0.0","pats_build":"dev","built":"2026-11-01","inputs":{"image_ref":"img"},` +
+			`"components":{"claude":"2.1.0"}}},` +
+			`"lxd:srv":{"lxx":{"image":{"id":"` + hex + `","built":true},"proxy":null,"pats_version":"1.0.0","pats_build":"dev","built":"","inputs":null}}}`,
+	} {
+		f.Add([]byte(s))
+	}
+	dir := f.TempDir() // one config dir for every input
+	path := filepath.Join(dir, ".pats", pinsName)
+	require.NoError(f, os.MkdirAll(filepath.Dir(path), 0o755))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		require.NoError(t, os.WriteFile(path, data, 0o644))
+		pins, err := readPins(dir)
+		if err != nil {
+			return
+		}
+
+		written, err := json.Marshal(pins)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, written, 0o644))
+		back, err := readPins(dir)
+		require.NoError(t, err, "its own writing does not read back: %s", written)
+		again, err := json.Marshal(back)
+		require.NoError(t, err)
+		assert.Equal(t, string(again), string(written))
+
+		// what an init does next with a sandbox the config dropped.
+		pins.dropMissing(nil, time.Unix(0, 0))
+	})
 }
 
 // a container pin podman's inspect wrote holds a bare hex id; read back it is

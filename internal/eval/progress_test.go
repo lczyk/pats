@@ -10,6 +10,8 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/internal/config"
 )
 
 // drive the progress display against a buffer (the bar is normally tty-gated).
@@ -64,6 +66,147 @@ func TestStatTapCapsUnboundedLine(t *testing.T) {
 	tap.Write([]byte("\n"))
 	assert.Equal(t, atomic.LoadInt64(&s.out), int64(1)) // newline arrives -> counted once
 	assert.Equal(t, len(tap.buf), 0)
+}
+
+// streamSeeds are short harness streams the stdout fuzz targets start from:
+// one per harness, then lines that are not events.
+var streamSeeds = []string{
+	`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"},{"type":"text"},{"type":"tool_use","name":"Read"}]}}` + "\n" +
+		`{"type":"stream_event","event":{"type":"content_block_delta"}}` + "\n" +
+		`{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.42,"usage":{"input_tokens":4,"output_tokens":9}}` + "\n",
+	`{"type":"item.started","item":{"type":"command_execution"}}` + "\n" +
+		`{"type":"item.completed","item":{"type":"command_execution"}}` + "\n" +
+		`{"type":"item.completed","item":{"type":"mcp_tool_call","server":"github","tool":"get_issue"}}` + "\n" +
+		`{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":75,"output_tokens":20}}` + "\n",
+	`{"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"bash"}}` + "\n" +
+		`{"type":"assistant.message","data":{"content":"done","outputTokens":3}}` + "\n" +
+		`{"type":"assistant.turn_end","data":{"turnId":"0"}}` + "\n" +
+		`{"type":"result","exitCode":1,"usage":{"premiumRequests":1}}` + "\n",
+	`{"type":"tool_use","part":{"type":"tool","tool":"bash"}}` + "\n" +
+		`{"type":"step_finish","part":{"cost":0.01,"tokens":{"input":100,"output":50,"reasoning":25,"cache":{"read":1000,"write":10}}}}` + "\n" +
+		`{"type":"error","error":{"name":"APIError"}}` + "\n",
+	"", "\n\n", "just some prose\n", "null\n[]\n1\n", `{"type":"assistant","message":{"content":[{"type":"tool_use"}]}}`,
+	`{"type":"tool_use"}` + "\r\n" + `{"type":"tool.execution_start"}` + "\r\n", `{"type":"result","num_turns":1.5}` + "\n",
+}
+
+// FuzzStatTap: stdout reaches the tap in whatever chunks the pipe hands over.
+// the same bytes in one Write or split in two leave the same counters,
+// whichever harness parses them; out is the newline count; and the tap holds
+// the line in progress, never more than statTapMaxBuf of it, also when it
+// starts a few bytes short of that cap.
+func FuzzStatTap(f *testing.F) {
+	for _, s := range streamSeeds {
+		f.Add([]byte(s), uint16(len(s)/2), uint8(0), false)
+		f.Add([]byte(s), uint16(7), uint8(40), true)
+	}
+	f.Add([]byte("0123456789"), uint16(5), uint8(5), true) // the split is where the cap is
+	f.Add([]byte("0123\n456789"), uint16(2), uint8(0), true)
+
+	scans := map[string]func([]byte, *pairStat){"no parser": nil}
+	for h := range config.Harnesses {
+		scans[h] = statScanner(h)
+	}
+
+	// a line in progress as long as the cap, one per tap: every input starts
+	// from a prefix of it, so none allocates 8 MiB of its own.
+	var held [2][]byte
+	var dirty [2]int // bytes at the front an earlier input overwrote
+	for i := range held {
+		held[i] = bytes.Repeat([]byte("x"), statTapMaxBuf)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte, cut uint16, room uint8, nearCap bool) {
+		k := int(cut) % (len(data) + 1)
+		pre := 0
+		if nearCap {
+			pre = statTapMaxBuf - int(room)
+		}
+		start := func(i int) []byte {
+			if !nearCap {
+				return nil
+			}
+			for j := range dirty[i] {
+				held[i][j] = 'x'
+			}
+			dirty[i] = min(len(data), statTapMaxBuf)
+			return held[i][:pre]
+		}
+		// what the tap must hold after data: the bytes since the last newline,
+		// on top of what it started with when there was none, cut at the cap.
+		last := bytes.LastIndexByte(data, '\n')
+		wantLen := min(len(data)-last-1, statTapMaxBuf)
+		tail := data[last+1 : last+1+wantLen]
+		if last < 0 {
+			wantLen = min(pre+len(data), statTapMaxBuf)
+			tail = data[:wantLen-pre]
+		}
+
+		for name, scan := range scans {
+			var one, two pairStat
+			whole := &statTap{stat: &one, scan: scan, buf: start(0)}
+			split := &statTap{stat: &two, scan: scan, buf: start(1)}
+
+			n, err := whole.Write(data)
+			assert.That(t, n == len(data) && err == nil, "%s: Write = (%d, %v) for %d bytes", name, n, err, len(data))
+			for _, part := range [][]byte{data[:k], data[k:]} {
+				n, err := split.Write(part)
+				assert.That(t, n == len(part) && err == nil, "%s: Write = (%d, %v) for %d bytes", name, n, err, len(part))
+			}
+
+			assert.Equal(t, one.out, int64(bytes.Count(data, []byte("\n"))), name)
+			if scan == nil {
+				assert.Equal(t, one.tools, int64(0), name)
+			}
+			assert.Equal(t, two.out, one.out, "%s: out differs split at %d", name, k)
+			assert.Equal(t, two.tools, one.tools, "%s: tools differ split at %d", name, k)
+			assert.Equal(t, two.liveCost.Load(), one.liveCost.Load(), "%s: cost differs split at %d", name, k)
+
+			for _, tap := range []*statTap{whole, split} {
+				assert.That(t, len(tap.buf) <= statTapMaxBuf, "%s: holds %d bytes, over the cap", name, len(tap.buf))
+				assert.Equal(t, len(tap.buf), wantLen, "%s: held length, split at %d", name, k)
+				if len(tap.buf) == wantLen {
+					assert.That(t, bytes.Equal(tap.buf[wantLen-len(tail):], tail), "%s: held line differs, split at %d", name, k)
+				}
+			}
+		}
+	})
+}
+
+// FuzzSummarize: stdout.log is the harness's stream with whatever the agent
+// put in it. the post-run digest reads it without a panic for every harness,
+// lists no tool it did not count, never prices a keyless run, and agrees with
+// the live counter the tap kept from the same bytes: both decode one event
+// type, so the tool total is one number.
+func FuzzSummarize(f *testing.F) {
+	for _, s := range streamSeeds {
+		f.Add([]byte(s))
+	}
+	p := filepath.Join(f.TempDir(), "stdout.log") // one file for every input
+	f.Fuzz(func(t *testing.T, data []byte) {
+		require.NoError(t, os.WriteFile(p, data, 0o644))
+
+		for h := range config.Harnesses {
+			var live pairStat
+			tap := &statTap{stat: &live, scan: statScanner(h)}
+			tap.Write(data)
+			tap.Write([]byte("\n")) // the tap counts a line at its newline, the digest at eof too
+
+			sum := summarize(h, p)
+			total := 0
+			if sum != nil {
+				for name, n := range sum.Tools {
+					assert.That(t, n > 0, "%s: tool %q listed with count %d", h, name, n)
+					total += n
+				}
+				if h == "codex-cli-keyless" || h == "copilot-cli-keyless" {
+					assert.That(t, !sum.HasCost && sum.CostUSD == 0, "%s: a keyless run priced at %v", h, sum.CostUSD)
+				}
+			}
+			assert.Equal(t, int64(total), live.tools, "%s: the digest and the live counter disagree", h)
+			assert.That(t, live.spent() >= 0, "%s: live spend %v", h, live.spent())
+		}
+		assert.Nil(t, summarize("no-such-harness", p))
+	})
 }
 
 func TestClaudeSummary(t *testing.T) {

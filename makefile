@@ -61,10 +61,36 @@ FUZZTIME ?= 10s
 
 .PHONY: fuzz
 fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
-	go test ./internal/config -run - -fuzz FuzzParse -fuzztime $(FUZZTIME)
-	go test ./internal/eval -run - -fuzz FuzzParseScore -fuzztime $(FUZZTIME)
-	go test ./src/sandbox/proxy -run - -fuzz FuzzDecide -fuzztime $(FUZZTIME)
-	go test ./src/sandbox/proxy -run - -fuzz FuzzParseEntry -fuzztime $(FUZZTIME)
+	@for t in \
+		./internal/config:FuzzParse \
+		./internal/config:FuzzCheckTemplates \
+		./internal/eval:FuzzParseScore \
+		./internal/eval:FuzzParseVerdict \
+		./internal/eval:FuzzFinalTexts \
+		./internal/eval:FuzzStatTap \
+		./internal/eval:FuzzSummarize \
+		./internal/eval:FuzzEgressAudit \
+		./internal/eval:FuzzReadPins \
+		./internal/eval:FuzzCheckOpenrouterModels \
+		./src/sandbox:FuzzReadTar \
+		./src/sandbox:FuzzUnpackLayer \
+		./src/sandbox:FuzzFromRefs \
+		./src/sandbox:FuzzNormalizeRef \
+		./src/sandbox:FuzzEnvScript \
+		./src/sandbox:FuzzBuildSteps \
+		./src/sandbox:FuzzParseStamps \
+		./src/sandbox:FuzzIgnore \
+		./src/sandbox/proxy:FuzzDecide \
+		./src/sandbox/proxy:FuzzDecideAllow \
+		./src/sandbox/proxy:FuzzNormalizeHost \
+		./src/sandbox/proxy:FuzzParseEntry \
+		./src/sandbox/proxy:FuzzParseClientHello \
+		./src/sandbox/proxy:FuzzPeekHello \
+	; do \
+		echo "go test $${t%%:*} -fuzz $${t##*:}"; \
+		go test "$${t%%:*}" -run - -fuzz "^$${t##*:}\$$" -fuzztime $(FUZZTIME) || failed="$$failed $${t##*:}"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "failed:$$failed"; exit 1; fi
 
 .PHONY: bench
 bench:  ## Run all benchmarks

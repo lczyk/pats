@@ -2,10 +2,16 @@ package config
 
 import (
 	"os"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // the committed example must load, validate, and expand to the matrices its
@@ -469,7 +475,11 @@ func TestEffortHarnessesAreHarnesses(t *testing.T) {
 	}
 }
 
-// FuzzParse just wants Parse to never panic on arbitrary yaml.
+// FuzzParse: Parse never panics on arbitrary yaml, and what it loads Validate
+// can always check. a config that validates clean is left as parsed and is
+// clean again; it expands, every pair made of items it defines; every agent
+// has its one sandbox; every name and vector name passes badName, no name
+// twice in a kind; and no checked string holds a ${...} placeholder.
 func FuzzParse(f *testing.F) {
 	seed, err := os.ReadFile("../../pats.example.yaml")
 	if err == nil {
@@ -477,11 +487,108 @@ func FuzzParse(f *testing.F) {
 	}
 	f.Add([]byte("agents: [foo\n"))
 	f.Add([]byte("xxx: {kind: task, items: {axx: {prompt-file: \"${nope}\"}}}\n"))
+	f.Add([]byte(base))
+	f.Add([]byte(base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: .nan}}}\nsu2: {kind: suite, items: {su2: {agents: [axx, bxx], tasks: txx}}}\n"))
+	f.Add([]byte("sdf: {kind: scorer, defaults: &py {score: ./s.py}, items: {one: ~, two: ~}}\nmore: {kind: scorer, defaults: {<<: *py, score: ~}, items: {three: {score: ./t.py}}}\n"))
+	f.Add([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, env: {A: b}, egress: {methods: [GET], allow: [a.test, 'POST a.test/graphql'], deny: ['github.com/*/x*']}}}}\n"))
+	f.Add([]byte("xxx: {kind: task, defaults: {prompt: p, timeout: 5m, env: {MODE: knockout}}, items: {axx: ~, bxx: {env: {MODE: ~}, egress: {allow: [c.test]}}}}\n"))
+	f.Add([]byte("xxx: {kind: task, dir: cases}\n"))
+	f.Add([]byte("xxx: &x {kind: task, items: {axx: *x}}\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c, err := Parse(data)
-		if err == nil {
-			_ = c.Validate()
+		if err != nil || c.Validate() != nil {
+			return
 		}
+
+		// a second copy, parsed afresh, is what Validate must leave c as.
+		fresh, err := Parse(data)
+		require.NoError(t, err)
+		assert.That(t, reflect.DeepEqual(c, fresh), "Validate changed the config:\n%+v\nwas\n%+v", c, fresh)
+		assert.NoError(t, c.Validate(), "clean once, not twice")
+
+		defined := map[string]map[string]bool{}
+		for _, kind := range Kinds {
+			defined[kind] = map[string]bool{}
+			for _, m := range c.members(kind) {
+				assert.Equal(t, badName(m.name), "", "%s %q", kind, m.name)
+				assert.Equal(t, badName(m.vector), "", "%s vector %q", kind, m.vector)
+				assert.That(t, !defined[kind][m.name], "%s %q is defined twice", kind, m.name)
+				defined[kind][m.name] = true
+			}
+		}
+
+		pairs, err := c.ExpandTestPairs()
+		require.NoError(t, err)
+		for _, p := range pairs {
+			assert.That(t, defined["agent"][p.Agent] && defined["task"][p.Task], "pair %v names an item the config lacks", p)
+		}
+		scored, err := c.ExpandScorePairs()
+		require.NoError(t, err)
+		for _, p := range scored {
+			assert.That(t, defined["task"][p.Task] && defined["scorer"][p.Scorer], "score pair %v names an item the config lacks", p)
+		}
+		for _, a := range c.Agents {
+			sb, err := c.ResolveSandbox(a)
+			require.NoError(t, err)
+			assert.That(t, defined["sandbox"][sb], "agent %q resolves to sandbox %q, not defined", a.Name, sb)
+		}
+
+		for i := range c.Sandboxes {
+			assert.NoError(t, checkTemplates(&c.Sandboxes[i], "sandbox"))
+		}
+		for i := range c.Agents {
+			assert.NoError(t, checkTemplates(&c.Agents[i], "agent"))
+		}
+		for i := range c.Tasks {
+			assert.NoError(t, checkTemplates(&c.Tasks[i], "task"))
+		}
+		for i := range c.Scorers {
+			assert.NoError(t, checkTemplates(&c.Scorers[i], "scorer"))
+		}
+	})
+}
+
+// FuzzCheckTemplates: nothing in pats.yaml is expanded, and the five ${...}
+// placeholders are refused. a checked string is refused exactly when it
+// holds one, wherever it sits in the item; a prompt is never refused and
+// comes back from Parse byte for byte; a suite holds references, not text.
+func FuzzCheckTemplates(f *testing.F) {
+	for _, s := range []string{
+		"", "p/${task}.txt", "${agent}${agent}", "${vector", "$task", "${Task}", "${ task }", "${nope}", "$${scorer}}",
+		"${${sandbox}}", "a$b", "\x00${task}", "tasks/\xc3\xa9/${vector}\n", "${task\n}",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		held := false
+		for _, name := range []string{"task", "agent", "scorer", "sandbox", "vector"} {
+			held = held || strings.Contains(s, "${"+name+"}")
+		}
+
+		for kind, item := range map[string]any{
+			"task": &Task{PromptFile: s}, "scorer": &Scorer{Score: s}, "agent": &Agent{Model: s}, "sandbox": &Sandbox{Image: s},
+		} {
+			assert.Equal(t, checkTemplates(item, kind) != nil, held, "%s holding %q", kind, s)
+		}
+		// nested: a map's value, a list's entry inside an embedded struct.
+		assert.Equal(t, checkTemplates(&Task{Env: map[string]string{"K": s}}, "task") != nil, held, "env %q", s)
+		assert.Equal(t, checkTemplates(&Sandbox{Egress: Egress{Policy: proxy.Policy{Allow: []string{"a.test", s}}}}, "sandbox") != nil, held, "egress %q", s)
+
+		assert.NoError(t, checkTemplates(&Task{Prompt: s}, "task"))
+		assert.NoError(t, checkTemplates(&Scorer{Prompt: s, Agent: "jxx"}, "scorer"))
+		assert.NoError(t, checkTemplates(&Suite{Agents: StrList{s}}, "suite"))
+
+		// through Parse: the same string as a yaml double-quoted scalar.
+		if !utf8.ValidString(s) {
+			return
+		}
+		q := strconv.QuoteToASCII(s)
+		_, err := Parse([]byte("xxx: {kind: task, items: {axx: {prompt-file: " + q + "}}}\n"))
+		assert.Equal(t, err != nil, held, "Parse of prompt-file %s: %v", q, err)
+		c, err := Parse([]byte("xxx: {kind: task, items: {axx: {prompt: " + q + "}}}\n"))
+		require.NoError(t, err, "Parse of prompt %s", q)
+		require.Len(t, c.Tasks, 1)
+		assert.Equal(t, c.Tasks[0].Prompt, s)
 	})
 }
 

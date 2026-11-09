@@ -27,7 +27,7 @@ import (
 )
 
 // testCA mints a throwaway CA and writes it to dir, returning paths + cert pool.
-func testCA(t *testing.T, dir string) (certPath, keyPath string, pool *x509.CertPool) {
+func testCA(t testing.TB, dir string) (certPath, keyPath string, pool *x509.CertPool) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -134,7 +134,7 @@ func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r)
 
 // mitmProxy is a proxy that mitm's host via a harmless deny entry and answers
 // upstream requests with rt.
-func mitmProxy(t *testing.T, host string, rt http.RoundTripper) (*Proxy, *x509.CertPool, *auditBuf) {
+func mitmProxy(t testing.TB, host string, rt http.RoundTripper) (*Proxy, *x509.CertPool, *auditBuf) {
 	t.Helper()
 	certPath, keyPath, pool := testCA(t, t.TempDir())
 	s, err := NewSigner(certPath, keyPath)

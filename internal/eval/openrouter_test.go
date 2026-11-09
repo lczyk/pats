@@ -1,11 +1,15 @@
 package eval
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -89,6 +93,89 @@ func TestCheckOpenrouterModelsUnreadable(t *testing.T) {
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	_, err := checkOpenrouterModels(ctx, agents, http.DefaultClient)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// cannedBody answers every request with 200 and one body, without a socket.
+type cannedBody []byte
+
+func (b cannedBody) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{}, Request: r,
+		Body: io.NopCloser(bytes.NewReader(b))}, nil
+}
+
+// FuzzCheckOpenrouterModels: the catalogue is a remote api's reply. a body
+// that is no catalogue is one warning, never an error; one that is fails the
+// agent exactly when its model's catalogue id is not listed or takes no
+// tools, and offers at most three of its ids as closest, nearest first.
+func FuzzCheckOpenrouterModels(f *testing.F) {
+	for _, model := range []string{"openai/gpt-4o-mini", "openai/gpt-4o-mni", "x/y:nitro:free", "prose/only", "x/y:weird", "", ":nitro"} {
+		f.Add([]byte(catalogue), model)
+	}
+	f.Add([]byte(`{}`), "x/y")
+	f.Add([]byte(`not json`), "x/y")
+	f.Add([]byte(`{"data":[]}`), "x/y")
+	f.Add([]byte(`{"data":null}`), "x/y")
+	f.Add([]byte(`{"data":[null,{"id":"x/y"},{"id":"x/y","supported_parameters":["tools"]}]} trailing`), "x/y:floor")
+	f.Add([]byte(`{"data":[{"id":7}]}`), "x/y")
+
+	f.Fuzz(func(t *testing.T, body []byte, model string) {
+		id := catalogueID(model)
+		assert.Equal(t, catalogueID(id), id, "the catalogue id of %q has one of its own", model)
+		if !strings.Contains(model, ":") {
+			assert.Equal(t, id, model)
+		}
+
+		client := &http.Client{Transport: cannedBody(body)}
+		warns, err := checkOpenrouterModels(context.Background(), []config.Agent{orAgent("axx", model)}, client)
+
+		// the catalogue as its reader takes it: the first json value of the body.
+		var cat struct {
+			Data []openrouterModel `json:"data"`
+		}
+		if json.NewDecoder(bytes.NewReader(body)).Decode(&cat) != nil || cat.Data == nil {
+			require.NoError(t, err, "an unreadable catalogue failed the run")
+			require.Len(t, warns, 1)
+			assert.That(t, strings.HasPrefix(warns[0], "model check skipped: "), "%s", warns[0])
+			return
+		}
+		assert.Len(t, warns, 0)
+
+		listed, tools := 0, false
+		for _, m := range cat.Data {
+			if m.ID == id {
+				listed++
+				tools = slices.Contains(m.SupportedParameters, "tools")
+			}
+			d := editDistance(id, m.ID)
+			assert.Equal(t, editDistance(m.ID, id), d, "distance %q to %q is not symmetric", id, m.ID)
+			assert.Equal(t, d == 0, m.ID == id, "distance %d between %q and %q", d, id, m.ID)
+			assert.That(t, d >= max(len(id), len(m.ID))-min(len(id), len(m.ID)) && d <= max(len(id), len(m.ID)),
+				"distance %d between %q and %q", d, id, m.ID)
+		}
+		switch {
+		case listed == 0:
+			assert.Error(t, err, "is not on openrouter")
+		case listed > 1: // an id listed twice: which entry speaks is not pinned here
+		case !tools:
+			assert.Error(t, err, "does not take tools")
+		default:
+			assert.NoError(t, err)
+		}
+
+		near := closestIDs(id, cat.Data, 3)
+		assert.Len(t, near, min(3, len(cat.Data)))
+		for i, n := range near {
+			assert.That(t, slices.ContainsFunc(cat.Data, func(m openrouterModel) bool { return m.ID == n }), "closest %q is not in the catalogue", n)
+			if i > 0 {
+				assert.That(t, editDistance(id, near[i-1]) <= editDistance(id, n), "closest ids out of order: %q before %q", near[i-1], n)
+			}
+		}
+		for _, m := range cat.Data {
+			if len(near) > 0 {
+				assert.That(t, editDistance(id, m.ID) >= editDistance(id, near[0]), "%q is closer than the closest %q", m.ID, near[0])
+			}
+		}
+	})
 }
 
 // a bad model stops the run before the run dir: nothing is made.

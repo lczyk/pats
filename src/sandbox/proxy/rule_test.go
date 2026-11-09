@@ -2,13 +2,15 @@ package proxy
 
 import (
 	"net/netip"
+	pathpkg "path"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 )
 
-func mustRule(t *testing.T, defaultAllow bool, allow, deny []string) Rule {
+func mustRule(t testing.TB, defaultAllow bool, allow, deny []string) Rule {
 	t.Helper()
 	r, err := ParseRule(defaultAllow, allow, deny)
 	require.NoError(t, err)
@@ -327,34 +329,144 @@ func TestGuard(t *testing.T) {
 }
 
 // FuzzDecide: host, path and query come straight from the client's request,
-// so they're attacker-controlled. just wants no panic across rule shapes.
+// so they're attacker-controlled. no panic across rule shapes, and two things
+// every input must keep: a request the full verdict passes is on a host the
+// tunnel verdict passed (the tunnel is never the stricter gate), and a deny
+// that takes a path takes every spelling of it with dot segments.
 func FuzzDecide(f *testing.F) {
-	r, err := ParseRule(false,
+	mixed := mustRule(f, false,
 		[]string{"docs.example.com/public*", "api.github.com ~^/repos/[^/]+/x$", "GET github.com/*"},
 		[]string{"github.com/*/chisel-releases*"})
-	if err != nil {
-		f.Fatal(err)
-	}
+	// default allow and deny entries alone: every refusal is a deny's.
+	denies := mustRule(f, true, nil,
+		[]string{"github.com/*/chisel-releases*", "docs.example.com/private/**", "example.com/search?token=*", "evil.test"})
 	f.Add("github.com", "/canonical/chisel-releases/tree/main", "")
 	f.Add("docs.example.com", "/public/guide", "ver=2")
 	f.Add("", "", "")
 	f.Add("*", "/*", "*")
 	f.Add("github.com", "/../../etc/passwd", "")
+	f.Add("docs.example.com", "/public/../private/key", "")
+	f.Add("GITHUB.com.", "/x/../canonical/./chisel-releases", "a=b")
+	f.Add("example.com", "/search", "token=abc")
 	f.Fuzz(func(t *testing.T, host, urlPath, rawQuery string) {
-		r.Decide(host, 443, "GET", urlPath, rawQuery)
-		r.DecideHost(host, 443)
+		for _, r := range []Rule{mixed, denies} {
+			v := r.Decide(host, 443, "GET", urlPath, rawQuery)
+			if v.Allowed {
+				assert.That(t, r.DecideHost(host, 443).Allowed,
+					"%q %q passes the request verdict on a host the tunnel verdict refuses", host, urlPath)
+			}
+		}
+		if urlPath == "" {
+			return
+		}
+		if c := denies.Decide(host, 443, "GET", pathpkg.Clean(urlPath), rawQuery); !c.Allowed {
+			assert.That(t, !denies.Decide(host, 443, "GET", urlPath, rawQuery).Allowed,
+				"%q dodges the deny %q that takes its cleaned form", urlPath, c.Rule)
+		}
+	})
+}
+
+// FuzzDecideAllow: a url allow admits paths, and an origin serves the path it
+// resolves, not the one spelled. so a path that passes still passes resolved
+// ("/public/../private" does not pass for "/public/**"), and still passes
+// without its query: no entry here names one, so a query cannot stand in for
+// the part of the path an entry asks for ("/repos/?/x" for "/repos/*/x").
+func FuzzDecideAllow(f *testing.F) {
+	r := mustRule(f, false,
+		[]string{"docs.example.com/public/**", "api.github.com ~^/repos/[^/]+/x$", "GET github.com/*"}, nil)
+	f.Add("docs.example.com", "/public/guide", "ver=2")
+	f.Add("docs.example.com", "/public/a/../guide", "")
+	f.Add("docs.example.com", "/public/", "")
+	f.Add("github.com", "/canonical", "")
+	f.Add("api.github.com", "/repos/o/x", "a=b")
+	allowed := func(host, urlPath, rawQuery string) bool {
+		return r.Decide(host, 443, "GET", urlPath, rawQuery).Allowed
+	}
+	f.Fuzz(func(t *testing.T, host, urlPath, rawQuery string) {
+		if urlPath == "" || !allowed(host, urlPath, rawQuery) {
+			return
+		}
+		assert.That(t, allowed(host, urlPath, ""),
+			"%q is allowed only with the query %q", urlPath, rawQuery)
+		assert.That(t, allowed(host, resolve(urlPath), rawQuery),
+			"%q is allowed, but it resolves to %q, which is not", urlPath, resolve(urlPath))
+	})
+}
+
+// resolve is the path an origin serves for urlPath: path.Clean's, dot
+// segments and doubled slashes gone, with the slash a directory keeps.
+func resolve(urlPath string) string {
+	r := pathpkg.Clean(urlPath)
+	for _, dir := range []string{"/", "/.", "/.."} {
+		if strings.HasSuffix(urlPath, dir) && r != "/" {
+			return r + "/"
+		}
+	}
+	return r
+}
+
+// FuzzNormalizeHost: every verdict is on the normalised host, so it has to be
+// one form per name: normalising it again changes nothing, and what comes
+// out is a lower-case name with no empty label and no dot left to strip.
+func FuzzNormalizeHost(f *testing.F) {
+	for _, s := range []string{"example.com", "EXAMPLE.com.", "b\u00fccher.example", "[::1]", "::ffff:1.2.3.4", "1.2.3.4", " a.test ", "a_b.test", ""} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		n, err := NormalizeHost(raw)
+		if err != nil {
+			return
+		}
+		again, err := NormalizeHost(n)
+		assert.NoError(t, err, "%q normalises to %q, which does not normalise", raw, n)
+		assert.Equal(t, again, n, "%q is not normalised in one go", raw)
+		assert.That(t, n != "", "%q normalises to no host", raw)
+		assert.Equal(t, strings.ToLower(n), n)
+		if _, err := netip.ParseAddr(n); err == nil {
+			return
+		}
+		for _, label := range strings.Split(n, ".") {
+			assert.That(t, label != "", "%q normalises to %q, with an empty label", raw, n)
+		}
 	})
 }
 
 // FuzzParseEntry: entries come from pats.yaml, but a hand-set policy can also
-// feed them, so the parser must never panic.
+// feed them, so the parser must never panic. an entry it takes parses the
+// same from its own Raw, and a host entry admits the host it names.
 func FuzzParseEntry(f *testing.F) {
-	for _, s := range []string{"github.com/*/chisel-releases*", "*/x", "", "a/b/c*d*e", "GET a.b ~^/x", "[::1]:443", "a:b:c"} {
+	for _, s := range []string{"github.com/*/chisel-releases*", "*/x", "", "a/b/c*d*e", "GET a.b ~^/x", "[::1]:443", "a:b:c",
+		".example.com", "*.example.com:8443", "1.2.3.4", "GET,POST a.b/**", "a.b ~(", " a.b "} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
-		ParseEntry(raw, false)
-		ParseEntry(raw, true)
+		for _, deny := range []bool{false, true} {
+			e, err := ParseEntry(raw, deny)
+			if err != nil {
+				continue
+			}
+			again, err := ParseEntry(e.Raw, deny)
+			assert.NoError(t, err, "%q parses, its Raw %q does not", raw, e.Raw)
+			assert.Equal(t, again.host, e.host)
+			assert.Equal(t, again.suffix, e.suffix)
+			assert.Equal(t, again.port, e.port)
+			assert.Equal(t, again.ip, e.ip)
+			if deny || e.URL() {
+				continue
+			}
+			host, port := e.host, e.port
+			if e.ip.IsValid() {
+				host = e.ip.String()
+			}
+			if port == 0 {
+				port = 443
+			}
+			r := Rule{Allow: []Entry{e}}
+			assert.That(t, r.DecideHost(host, port).Allowed, "the entry %q does not admit its own host %q", raw, host)
+			if e.suffix {
+				assert.That(t, r.DecideHost("sub."+host, port).Allowed, "the suffix entry %q does not admit a subdomain", raw)
+			}
+		}
 	})
 }
 
