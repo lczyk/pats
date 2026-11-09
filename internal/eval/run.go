@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -88,6 +89,17 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	checks, err := usePins(ctx, cfg, opts, pairs)
 	if err != nil {
 		return "", err
+	}
+	// a model openrouter does not have, or one without tools, fails here,
+	// before the run dir and any sandbox.
+	if !opts.Offline {
+		warns, err := checkModels(ctx, pairAgents(cfg, pairs), http.DefaultClient)
+		if err != nil {
+			return "", err
+		}
+		for _, w := range warns {
+			lg.warn("%s", w)
+		}
 	}
 	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
 	if err != nil {

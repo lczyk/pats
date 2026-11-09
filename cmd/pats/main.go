@@ -87,7 +87,7 @@ type RunCommand struct {
 	Agents  []string `long:"agent" short:"a" description:"only run these agents or agent vectors (repeatable); default: all"`
 	Tasks   []string `long:"task" short:"t" description:"only run these tasks or task vectors (repeatable); default: all"`
 	Suites  []string `long:"suite" short:"S" description:"only run these suites or suite vectors (repeatable); default: all"`
-	Offline bool     `long:"offline" description:"skip checking for newer upstream images"`
+	Offline bool     `long:"offline" description:"skip checking for newer upstream images and the openrouter model check"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
