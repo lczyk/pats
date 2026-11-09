@@ -383,12 +383,15 @@ type pairMeta struct {
 	Image   string `json:"image"`
 	Sudo    bool   `json:"sudo,omitempty"` // the agent could sudo (lxd)
 	// the lxd server and image the pair ran on.
-	LXD         *lxdProvenance `json:"lxd,omitempty"`
-	ExitCode    int            `json:"exit_code"`
-	DurationS   float64        `json:"duration_s"`
-	Status      string         `json:"status"` // ok | nonzero | error
-	Error       string         `json:"error,omitempty"`
-	PatsVersion string         `json:"pats_version"`
+	LXD       *lxdProvenance `json:"lxd,omitempty"`
+	ExitCode  int            `json:"exit_code"`
+	DurationS float64        `json:"duration_s"`
+	Status    string         `json:"status"` // ok | nonzero | error
+	Error     string         `json:"error,omitempty"`
+	// Synced is whether the agent's files came home, so collect saw them; a
+	// pair from before the field has nil (see filesHome).
+	Synced      *bool  `json:"synced"`
+	PatsVersion string `json:"pats_version"`
 	// egress the proxy refused, by kind: denied is what no rule anticipated
 	// (the cheat signal), blocked is what the policy names, failed is upstream
 	// trouble. see readEgressAudit.
@@ -400,6 +403,15 @@ type pairMeta struct {
 	Summary *runSummary `json:"summary,omitempty"`
 	// the harness versions inside the image, as pats init stamped them.
 	Components map[string]string `json:"components,omitempty"`
+}
+
+// filesHome says whether the pair's files came home. a pair written before
+// the synced field counts as home when it ended ok or nonzero.
+func (m *pairMeta) filesHome() bool {
+	if m.Synced != nil {
+		return *m.Synced
+	}
+	return m.Status == "ok" || m.Status == "nonzero"
 }
 
 // egressAudit is a pair's egress.log folded into what the run reports: the
@@ -725,7 +737,7 @@ func runPair(
 	meta := pairMeta{
 		Agent: job.agentName, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: t.Name,
 		Sandbox: sbID, Image: sb.Image, Sudo: h.spec.Sudo,
-		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
+		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, Synced: &synced,
 		PatsVersion:  version.Info.Version,
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
 		Summary:    summarize(a.Harness, filepath.Join(outDir, "stdout.log")),

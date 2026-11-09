@@ -80,6 +80,25 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	meta, err := os.ReadFile(filepath.Join(outDir, "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "ok"`)
+	assert.ContainsString(t, string(meta), `"synced": true`)
+}
+
+func TestFilesHome(t *testing.T) {
+	yes, no := true, false
+	for _, c := range []struct {
+		m    pairMeta
+		want bool
+	}{
+		{pairMeta{Status: "error", Synced: &yes}, true},
+		{pairMeta{Status: "ok", Synced: &no}, false},
+		// from before the field: by status.
+		{pairMeta{Status: "ok"}, true},
+		{pairMeta{Status: "nonzero"}, true},
+		{pairMeta{Status: "timeout"}, false},
+		{pairMeta{Status: "error"}, false},
+	} {
+		assert.Equal(t, c.m.filesHome(), c.want)
+	}
 }
 
 func TestNextRunDirIncrements(t *testing.T) {
@@ -557,6 +576,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "timeout"`)
+	assert.ContainsString(t, string(meta), `"synced": true`) // a timed-out agent still left files
 
 	_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 	assert.NoError(t, err) // collect ran despite runErr != nil, because the pair timed out
@@ -936,6 +956,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 			require.NoError(t, json.Unmarshal(b, &pm))
 			assert.Equal(t, pm.Status, "error")
 			assert.ContainsString(t, pm.Error, c.want)
+			assert.That(t, pm.Synced != nil && !*pm.Synced, "a failed setup synced nothing")
 			assert.Equal(t, c.fake.calls, 1) // the preflight only, never the pair's agent
 			_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 			assert.That(t, os.IsNotExist(err), "collected after a failed setup")
