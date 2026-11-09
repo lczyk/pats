@@ -250,6 +250,15 @@ func TestCleanCachedContainerImages(t *testing.T) {
 		"rmi " + sandboxRepo + ":v1 " + sandboxRepo + ":latest", "rmi " + proxyRepo + ":v1"})
 	assert.ContainsString(t, out.String(), "removed docker sandbox agent-1 (it uses image "+proxyRepo+":v1, forced)\n")
 
+	// a pin naming an image the daemon no longer holds is not news: it
+	// would say "removed" on every clean.
+	*calls = nil
+	out.Reset()
+	_, err = testProcess(t).clean(context.Background(), c, CleanOptions{Place: "docker", All: true, Report: TextReport(&out),
+		Pinned: []Resource{{Kind: "image", Name: "sha256:gone", Label: "gone:1"}}})
+	require.NoError(t, err)
+	assert.That(t, !strings.Contains(out.String(), "gone"), "a gone pinned image was reported:\n%s", out.String())
+
 	// a user an earlier step of the same clean takes, or would, frees it.
 	dry.Reset()
 	require.NoError(t, cleanCached(context.Background(), c, c, CleanOptions{Place: "docker", All: true, DryRun: true, Report: TextReport(&dry)},

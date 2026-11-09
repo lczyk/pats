@@ -338,8 +338,15 @@ func cleanCached(ctx context.Context, d Driver, c imageCache, o CleanOptions, go
 	for _, x := range imgs {
 		seen[x.Name] = true
 	}
+	// a pin outlives its image: only what the place still holds is news.
+	var held map[string]bool
+	if len(o.Pinned) > 0 {
+		if held, err = d.Images(ctx); err != nil {
+			return err
+		}
+	}
 	for _, x := range o.Pinned {
-		if !seen[x.Name] {
+		if !seen[x.Name] && held[x.Name] {
 			seen[x.Name] = true
 			imgs = append(imgs, x)
 		}
