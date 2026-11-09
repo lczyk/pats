@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -113,8 +114,11 @@ type Options struct {
 	Roots []byte
 	// Refuse lists ranges never dialled on top of the private-range guard.
 	Refuse []netip.Prefix
-	Audit  io.Writer // one json line per request; nil: discard
-	Ready  io.Writer // where "listening <addr>" goes once the port is open; nil: nowhere
+	// Chain is the machine's proxy every upstream connection goes through;
+	// nil: direct.
+	Chain *Chain
+	Audit io.Writer // one json line per request; nil: discard
+	Ready io.Writer // where "listening <addr>" goes once the port is open; nil: nowhere
 }
 
 // New builds the Proxy for o without listening.
@@ -134,6 +138,7 @@ func New(o Options) (*Proxy, error) {
 	}
 	guard := &Guard{AllowPrivate: o.Policy.AllowPrivate, Refuse: o.Refuse}
 	p.Dial = Dialer(guard).DialContext
+	p.Chain = o.Chain
 	tlsConf := &tls.Config{VerifyConnection: checkStaple}
 	if o.Roots != nil {
 		pool := x509.NewCertPool()
@@ -142,15 +147,35 @@ func New(o Options) (*Proxy, error) {
 		}
 		tlsConf.RootCAs = pool
 	}
-	p.Upstream = &http.Transport{
-		DialContext:           p.Dial,
-		TLSClientConfig:       tlsConf,
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   30 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Minute,
+	transport := func() *http.Transport {
+		return &http.Transport{
+			DialContext:           p.Dial,
+			TLSClientConfig:       tlsConf,
+			ForceAttemptHTTP2:     true,
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: 5 * time.Minute,
+		}
 	}
+	if o.Chain == nil {
+		p.Upstream = transport()
+		return p, nil
+	}
+	// plain http goes direct or to the http upstream, each over its own
+	// transport: only a connection to the upstream that was chosen skips
+	// the guard, never a direct request that happens to name its address.
+	directHTTP := transport()
+	proxiedHTTP := transport()
+	proxiedHTTP.Proxy = func(*http.Request) (*url.URL, error) { return o.Chain.HTTP, nil }
+	proxiedHTTP.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return dialUpstream(ctx, o.Chain.HTTP)
+	}
+	p.Dial = chainedDial(o.Chain, guard, p.Dial)
+	p.Upstream = chainRouter{chain: o.Chain, guard: guard, https: transport(), direct: directHTTP, proxied: proxiedHTTP}
 	return p, nil
 }
+
+// readyTimeout bounds the start's dial to each upstream.
+const readyTimeout = 5 * time.Second
 
 // Serve runs the proxy until ctx is done.
 func Serve(ctx context.Context, o Options) error {
@@ -161,6 +186,11 @@ func Serve(ctx context.Context, o Options) error {
 	addr := o.Listen
 	if addr == "" {
 		addr = ":8080"
+	}
+	if o.Chain != nil {
+		if err := o.Chain.Reach(ctx, readyTimeout); err != nil {
+			return err
+		}
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

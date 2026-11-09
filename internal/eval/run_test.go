@@ -818,14 +818,15 @@ func TestReadEgressAudit(t *testing.T) {
 {"ev":"open","host":"front.test","allowed":false,"rule":"front.test","reason":"sni-mismatch"}
 {"ev":"req","host":"bad.test","url":"bad.test/","allowed":false,"rule":"bad.test","reason":"revoked","status":502}
 {"ev":"open","host":"down.test","allowed":false,"rule":"down.test","reason":"dial"}
+{"ev":"open","host":"corp.test","allowed":false,"rule":"corp.test","reason":"upstream: 407"}
 {"ev":"req","host":"apt.test","url":"apt.test/x.deb","allowed":true,"rule":"apt.test","in":500,"out":10}
 not json
 `), 0o644))
 	a := readEgressAudit(p)
 	assert.EqualArrays(t, a.Denied, []string{"evil.example.com"})
 	assert.EqualArrays(t, a.Blocked, []string{"gh.com/x/secrets", "docs.test/private", "lan.test", "front.test"})
-	assert.EqualArrays(t, a.Failed, []string{"bad.test/", "down.test"})
-	assert.Equal(t, a.Requests, 10) // open + req, close lines excluded
+	assert.EqualArrays(t, a.Failed, []string{"bad.test/", "down.test", "corp.test"})
+	assert.Equal(t, a.Requests, 11) // open + req, close lines excluded
 	assert.Equal(t, a.In, int64(1500))
 	assert.Equal(t, a.Out, int64(34))
 }

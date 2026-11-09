@@ -84,5 +84,9 @@ func dialReason(err error) string {
 	if errors.As(err, &r) {
 		return r.Reason
 	}
+	var u *UpstreamError
+	if errors.As(err, &u) {
+		return "upstream: " + u.Status
+	}
 	return "dial"
 }

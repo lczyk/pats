@@ -551,7 +551,8 @@ func (c *container) egressCanary(ctx context.Context, net string) error {
 }
 
 // ProxyEnvOptions turns the sidecar's env into proxy.Options: the policy
-// yaml, the inline CA, the roots path and the refused range. it is the one
+// yaml, the inline CA, the roots path, the refused range and the upstream
+// (pats's keys, else the machine's proxy env). it is the one
 // place the env protocol is read, shared by the sidecar entrypoint and any
 // in-process use.
 func ProxyEnvOptions(getenv func(string) string) (proxy.Options, error) {
@@ -585,5 +586,10 @@ func ProxyEnvOptions(getenv func(string) string) (proxy.Options, error) {
 		}
 	}
 	o.Listen = getenv("PATS_EGRESS_LISTEN")
+	c, err := proxy.ChainFromEnv(getenv)
+	if err != nil {
+		return o, err
+	}
+	o.Chain = c
 	return o, nil
 }

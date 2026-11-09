@@ -432,6 +432,12 @@ func TestProxyEnvOptions(t *testing.T) {
 	assert.EqualArrays(t, o.Policy.Deny, []string{"evil.test"})
 	assert.Equal(t, len(o.Refuse), 2)
 	assert.ContainsString(t, string(o.Roots), "BEGIN CERTIFICATE")
+	assert.Equal(t, o.Chain == nil, true)
+
+	env["PATS_EGRESS_UPSTREAM_HTTPS"] = "http://proxy.corp:3128"
+	o, err = ProxyEnvOptions(func(k string) string { return env[k] })
+	require.NoError(t, err)
+	assert.Equal(t, o.Chain.HTTPS.Host, "proxy.corp:3128")
 
 	env["PATS_EGRESS_POLICY"] = "default: [x"
 	_, err = ProxyEnvOptions(func(k string) string { return env[k] })

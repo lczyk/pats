@@ -32,6 +32,9 @@ type Proxy struct {
 	// "reset" (the connection is reset), or "timeout" (held, then reset).
 	DenyResponse string
 	Audit        io.Writer
+	// Chain is the upstream proxy, when there is one: a 407 it answers a
+	// plain http request with is its failure, not the origin's answer.
+	Chain *Chain
 
 	once sync.Once
 	mu   sync.Mutex
@@ -263,6 +266,13 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusProxyAuthRequired && p.Chain.For("http", req.URL.Host) != nil {
+		ev.Reason, ev.Status = "upstream: 407", http.StatusBadGateway
+		ev.Out, ev.MS = body.n, time.Since(start).Milliseconds()
+		p.audit(ev)
+		http.Error(w, "upstream proxy: 407", http.StatusBadGateway)
+		return
+	}
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)

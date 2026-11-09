@@ -434,7 +434,7 @@ func (m *pairMeta) filesHome() bool {
 type egressAudit struct {
 	Denied   []string // rule: default -- nobody anticipated it; the cheat signal
 	Blocked  []string // a policy refusal the agent triggered
-	Failed   []string // upstream trouble: revoked certificate, dial failure
+	Failed   []string // upstream trouble: revoked certificate, dial failure, the machine's proxy refusing
 	Requests int      // open and req lines
 	In, Out  int64    // bytes from and to upstream
 }
@@ -482,7 +482,7 @@ func readEgressAudit(auditPath string) egressAudit {
 		}
 		var list *[]string
 		switch {
-		case failedReasons[e.Reason]:
+		case failedReasons[e.Reason], strings.HasPrefix(e.Reason, "upstream: "):
 			list = &a.Failed
 		case e.Rule == "default" && e.Reason == "":
 			list = &a.Denied
