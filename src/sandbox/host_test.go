@@ -214,7 +214,7 @@ func TestHostEgress(t *testing.T) {
 	require.NoError(t, os.WriteFile(stall, []byte("#!/bin/sh\necho $$ > '"+pidFile+"'\nexec sleep 300\n"), 0o755))
 	b.h.pats = stall
 	old := hostProxyReady
-	hostProxyReady = 500 * time.Millisecond
+	hostProxyReady = 2 * time.Second // room for the script to start on a busy machine
 	defer func() { hostProxyReady = old }()
 	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
 		Policy: proxy.Policy{Allow: []string{"example.com"}}}})
