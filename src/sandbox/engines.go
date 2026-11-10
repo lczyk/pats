@@ -36,6 +36,11 @@ type engine struct {
 	// user namespace remap.
 	remaps     func(info string) bool
 	remapsInfo string
+	// confined is the info template, and the answer that means the daemon
+	// runs under an apparmor profile a no-new-privileges container cannot
+	// leave for its own: every exec in it is denied.
+	confined     func(info string) bool
+	confinedInfo string
 }
 
 var engines = map[string]engine{}
@@ -70,6 +75,11 @@ func init() {
 		remapsInfo: "{{json .SecurityOptions}}",
 		remaps: func(info string) bool {
 			return strings.Contains(info, "name=rootless") || strings.Contains(info, "name=userns")
+		},
+		// the docker snap's daemon runs as snap.docker.dockerd.
+		confinedInfo: "{{.DockerRootDir}}",
+		confined: func(info string) bool {
+			return strings.HasPrefix(strings.TrimSpace(info), "/var/snap/docker/")
 		},
 	})
 }

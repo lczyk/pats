@@ -201,6 +201,11 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		teardown()
 		return nil, nil, err
 	}
+	nnp, err := c.noNewPrivs(ctx)
+	if err != nil {
+		teardown()
+		return nil, nil, err
+	}
 
 	// the proxy sits at a fixed address on the internal net (the gateway takes
 	// the first), so the agent needs no resolver to find it.
@@ -212,8 +217,9 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		// could hand-craft frames at it to be routed out: it forwards nothing
 		// and needs no capability to listen on an unprivileged port.
 		"--sysctl", "net.ipv4.ip_forward=0", "--sysctl", "net.ipv6.conf.all.forwarding=0",
-		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--cap-drop", "ALL",
 	)
+	runArgs = append(runArgs, nnp...)
 	runArgs = append(runArgs, engines[c.driver].runFlags...)
 	// the machine's proxy reaches the sidecar under pats's keys alone: every
 	// name a tool reads is set empty, so one the engine would add (docker's

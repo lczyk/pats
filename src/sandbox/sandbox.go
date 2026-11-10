@@ -202,10 +202,48 @@ type container struct {
 	limits Limits
 	// egressPool is Options.EgressPool, parsed when a proxy needs it.
 	egressPool string
+	// confined is the daemon's answer, asked once and shared by every
+	// sandbox of the driver.
+	confined *confinedProbe
+}
+
+type confinedProbe struct {
+	mu   sync.Mutex
+	done bool
+	yes  bool
 }
 
 func newContainer(p *process, r runner, o Options) *container {
-	return &container{p: p, r: r, o: o, driver: o.Driver, egressPool: o.EgressPool}
+	return &container{p: p, r: r, o: o, driver: o.Driver, egressPool: o.EgressPool, confined: &confinedProbe{}}
+}
+
+// noNewPrivs are the run flags that keep a container's processes from gaining
+// privileges, none on a daemon whose confinement they would break.
+func (c *container) noNewPrivs(ctx context.Context) ([]string, error) {
+	e := engines[c.driver]
+	if e.confined == nil {
+		return []string{"--security-opt", "no-new-privileges"}, nil
+	}
+	pr := c.confined
+	pr.mu.Lock()
+	done, yes := pr.done, pr.yes
+	pr.mu.Unlock()
+	if !done {
+		// asked outside the lock, so a start that waits can still be
+		// cancelled: two first starts may both ask.
+		out, err := c.dockerOut(ctx, "info", "--format", e.confinedInfo)
+		if err != nil {
+			return nil, err
+		}
+		yes = e.confined(string(out))
+		pr.mu.Lock()
+		pr.done, pr.yes = true, yes
+		pr.mu.Unlock()
+	}
+	if yes {
+		return nil, nil
+	}
+	return []string{"--security-opt", "no-new-privileges"}, nil
 }
 
 // Sandbox is c for sandboxes of o.Image.
@@ -265,6 +303,11 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 		teardown = func() {}
 	}
 
+	nnp, err := c.noNewPrivs(ctx)
+	if err != nil {
+		teardown()
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
 	args := []string{
 		"run", "-d", "--rm",
 		"--init", // reap zombies if the agent spawns children
@@ -273,10 +316,10 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 		"--user", "0:0",
 		// an agent run as root (pats itself as root) could otherwise craft raw
 		// frames past its network's routing, or gain privileges via setuid.
-		"--cap-drop", "NET_RAW", "--security-opt", "no-new-privileges",
-		"-w", WorkMount,
-		"-v", abs + ":" + WorkMount,
+		"--cap-drop", "NET_RAW",
 	}
+	args = append(args, nnp...)
+	args = append(args, "-w", WorkMount, "-v", abs+":"+WorkMount)
 	// the run's labels go on every agent, named or not: they are what says
 	// the container is pats's, and whose.
 	args = append(args, c.p.runLabels()...)

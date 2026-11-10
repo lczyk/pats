@@ -45,6 +45,7 @@ type fakeDaemon struct {
 
 	canary     string // the canary's output
 	remapsInfo string // what info says of uid mapping
+	rootDir    string // what info says of the daemon's root dir
 	// upstream is the machine's proxy, ip:port, reached from the default
 	// network.
 	upstream     string
