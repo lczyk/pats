@@ -1,7 +1,6 @@
 # pats as a snap
 
-status: implemented and smoke-tested in a vm (testing, below), but for the docker snap, which pats cannot drive yet
-(limits). strict confinement, on the build-tag seams (`docs/spec/build-tags.md`) and the step sandbox
+status: implemented and smoke-tested in a vm (testing, below). strict confinement, on the build-tag seams (`docs/spec/build-tags.md`) and the step sandbox
 (`docs/spec/step-sandbox.md`). nothing in ci builds the snap, and nothing is published.
 
 ## purpose and limits
@@ -34,11 +33,12 @@ what it does not have:
   private registry needs a login through the snap's own cli: `pats.docker login <registry>` (an app the snap
   exposes for that, below). pats's own registry requests (digest checks, the proxy binary) go through oras and are
   anonymous (`src/sandbox/registry.go`), as in a native build.
-- **the docker snap, for now.** its daemon is confined (`snap.docker.dockerd`), and a container started with
-  `--security-opt no-new-privileges`, which pats puts on every container (`src/sandbox/sandbox.go`), cannot leave
-  that profile for `docker-default`: apparmor denies every exec in it ("no new privs"), and the container dies at
-  start. this is pats against the docker snap, not the strict snap: a native build fails the same way. an apt docker
-  works.
+- **no `no-new-privileges` on the docker snap.** its daemon is confined (`snap.docker.dockerd`), and a container
+  started with `--security-opt no-new-privileges` cannot leave that profile for `docker-default`: apparmor denies
+  every exec in it ("no new privs"), and the container dies at start. so pats asks the daemon its root dir once, and
+  under `/var/snap/docker/` leaves the flag off the agent and the egress sidecar (`src/sandbox/engines.go`). an agent
+  run as root there could gain privileges through a setuid binary in its image. this is the docker snap, not the
+  strict snap: a native build does the same.
 - **macos, ubuntu core.** no snap on macos. on ubuntu core the `docker` plug cannot connect
   (`deny-connection: on-classic: false`).
 
@@ -195,8 +195,8 @@ two installs are two clients, and the lxd server's lease is the one judge both s
 ## testing
 
 a smoke test of a built snap, in an ephemeral ubuntu 26.04 lxd vm, through pats only. checked on 2026-11-10, snapd
-2.78, snapcraft 9.2.1, lxd 6.10.1, docker 29.1.3 (apt) and 29.8.0 (snap), with a dev build
-(`1.0.0-beta.11+git9f4e167`):
+2.78, snapcraft 9.2.1, lxd 6.10.1 and 5.21.9, docker 29.1.3 (apt) and 29.8.0 (snap), with dev builds
+(`1.0.0-beta.11+git9f4e167`, then `+git16a1bc3` with the docker snap's flag change):
 
 - **build and install:** `snapcraft pack` built it, with the lxc, docker cli and buildx parts. `snap install
   --dangerous` installed it, strict, and `snap connect pats:docker` / `pats:lxd lxd:lxd` connected its plugs.
@@ -207,9 +207,10 @@ a smoke test of a built snap, in an ephemeral ubuntu 26.04 lxd vm, through pats 
   with a stub agent ran `stage` and `collect` in a docker step sandbox (as the host uid, `bin/` on `PATH`, the box's
   own `HOME`), its metadata names the step sandbox, and `pats score` ran its scorer in one.
 - **lxd:** the same through an lxd step sandbox behind an `egress:` policy, its audits in the pair dir and in
-  `.steps/`. the cache is at `~/snap/pats/common/cache/pats`.
-- **docker snap:** its daemon sees binds under `~/snap/pats/common`, but every container pats starts dies at start
-  (limits, above).
+  `.steps/`. the cache is at `~/snap/pats/common/cache/pats`. the same again on lxd 5.21: the snap's 6.10.1 `lxc`
+  drives a 5.21 server.
+- **docker snap:** its daemon sees binds under `~/snap/pats/common`. with `no-new-privileges` left off (limits,
+  above) the pair, its step sandbox and the scorer ran as on the apt docker.
 - **ca store:** the snap reads the host's `/etc/ssl` bundle, a ca just added to the host's store included.
 - **clean:** `pats clean -n` after the runs had nothing left to take.
 
