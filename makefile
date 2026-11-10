@@ -29,14 +29,14 @@ test:  ## Run the test suite with the race detector
 .PHONY: lint
 lint:  ## go vet + gofmt check (no writes)
 	go vet ./...
-	@out=$$(gofmt -s -l ./cmd ./internal ./src); \
+	@out=$$(gofmt -s -l ./cmd ./internal ./src ./images version.go); \
 	if [ -n "$$out" ]; then \
 		echo "unformatted files:"; echo "$$out"; exit 1; \
 	fi
 
 .PHONY: format
 format:  ## gofmt the tree in place
-	gofmt -s -w ./cmd ./internal ./src
+	gofmt -s -w ./cmd ./internal ./src ./images version.go
 
 .PHONY: cover
 cover:  ## Show test coverage per function in the CLI
