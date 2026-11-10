@@ -234,6 +234,9 @@ func TestDecideQueryAndClean(t *testing.T) {
 			assert.Equal(t, r.Decide("example.com", 443, "GET", p, "").Allowed, false, p)
 		}
 		assert.Equal(t, r.Decide("example.com", 443, "GET", "/public;private/key", "").Allowed, true)
+		for _, p := range []string{"/x/..\xc0\xafprivate/key", "/x/\uff0e\uff0e/private/key", "/x/%2e%2e/private/key", "/x/..\uff0fprivate/key", "/private/a\x00"} {
+			assert.Equal(t, r.Decide("example.com", 443, "GET", p, "").Allowed, false, "%q", p)
+		}
 	})
 }
 
@@ -251,6 +254,10 @@ func TestDecideAllowReadings(t *testing.T) {
 		"next.test ~^/sso\\?next=.*$",
 		"count.test ~^/x/[^/]{3}$",
 		"ext.test/x/*.json",
+		"wiki.test/wiki/Foo;bar",
+		"wiki.test/a;b/**",
+		`wiki.test/share/a\b`,
+		"wiki.test ~^/re/[^/;]+;v=[0-9]+$",
 	}, nil)
 	for _, c := range []struct {
 		host, path, query string
@@ -278,6 +285,29 @@ func TestDecideAllowReadings(t *testing.T) {
 		{"ext.test", "/x/a.json", "", true},
 		{"ext.test", "/x/secret;.json", "", false}, // /x/secret, to an origin that drops the parameter
 		{"ext.test", `/x/a\b.json`, "", false},     // /x/a/b.json, a segment deeper than the entry goes
+
+		// an entry that itself writes a ";" or a backslash means the path as
+		// sent, until reading it the other way uncovers a dot segment.
+		{"wiki.test", "/wiki/Foo;bar", "", true},
+		{"wiki.test", "/a;b/c/d", "", true},
+		{"wiki.test", `/share/a\b`, "", true},
+		{"wiki.test", "/re/page;v=2", "", true},
+		{"wiki.test", "/a;b/..;/..;/secret", "", false},
+		{"wiki.test", "/re/..;v=2", "", false},
+		// a path that is no text has no reading: bytes that are no utf-8
+		// (an overlong slash), a nul.
+		{"docs.example.com", "/public/..\xc0\xaf..\xc0\xafsecret", "", false},
+		{"docs.example.com", "/public/a\x00/../secret", "", false},
+		{"docs.example.com", "/public/a\tb", "", false},
+		// a slash or a dot written another way, and a dot still encoded.
+		{"docs.example.com", "/public/..\uff0f..\uff0fsecret", "", false},
+		{"docs.example.com", "/public/\uff0e\uff0e/secret", "", false},
+		{"docs.example.com", "/public/\u3002\u3002/secret", "", false},
+		{"docs.example.com", "/public/%2e%2e/secret", "", false},
+		{"docs.example.com", "/public/%2e%2e%2fsecret", "", false},
+		{"docs.example.com", "/public/caf\u00e9/a%20b", "", true},
+		{"docs.example.com", "/public/\u6a19\u984c\u3002", "", true},
+		{"docs.example.com", "/public/100%", "", true},
 
 		{"api.github.com", "/repos/o/x", "", true},
 		{"api.github.com", "/repos/o/x", "ref=main", true},

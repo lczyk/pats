@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	pathpkg "path"
 	"regexp"
 	"regexp/syntax"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 )
@@ -33,6 +35,8 @@ type Entry struct {
 	methods []string   // nil: any
 	urlRe   *regexp.Regexp
 	queryRe *regexp.Regexp // an allow's urlRe over path?query: see spelledQuery
+	urlText string         // the glob or the regexp as written
+	urlIsRe bool
 	deny    bool
 }
 
@@ -82,13 +86,13 @@ func ParseEntry(raw string, deny bool) (Entry, error) {
 		if err != nil {
 			return e, fmt.Errorf("regexp: %w", err)
 		}
-		e.urlRe = compiled
+		e.urlRe, e.urlText, e.urlIsRe = compiled, re, true
 	case glob != "":
 		compiled, err := globRe(glob, deny)
 		if err != nil {
 			return e, fmt.Errorf("glob: %w", err)
 		}
-		e.urlRe = compiled
+		e.urlRe, e.urlText = compiled, glob
 	}
 	if e.urlRe != nil && !deny {
 		var err error
@@ -301,8 +305,12 @@ func (e Entry) matchesURL(urlPath, rawQuery string) bool {
 }
 
 func urlCandidates(urlPath, rawQuery string) []string {
+	paths := []string{urlPath, pathpkg.Clean(urlPath)}
+	for _, r := range readings(urlPath) {
+		paths = append(paths, r.path)
+	}
 	var cands []string
-	for _, p := range append([]string{urlPath, pathpkg.Clean(urlPath)}, readings(urlPath)...) {
+	for _, p := range paths {
 		if (p == "." && urlPath == "") || slices.Contains(cands, p) {
 			continue // path.Clean("") is ".", which no request asked for
 		}
@@ -314,29 +322,89 @@ func urlCandidates(urlPath, rawQuery string) []string {
 	return cands
 }
 
+// reading is one path an origin may serve for a request's.
+type reading struct {
+	path    string
+	rewrote []rewrite // what was read another way to get it, none for the path as sent
+	dots    bool      // reading it that way uncovered a dot segment
+}
+
+// rewrite is one way an origin may read a path other than as sent.
+type rewrite struct {
+	apply func(string) string
+	// spelt says whether an entry's url part itself writes what the
+	// rewrite reads away: such an entry means the path as sent.
+	spelt func(e Entry) bool
+}
+
+var rewrites = []rewrite{
+	// a servlet container drops a segment's ;parameters before it resolves
+	// the path: "/public/..;/private" is "/private" to it.
+	{dropParams, func(e Entry) bool { return strings.Contains(e.urlText, ";") }},
+	// some servers take a backslash for a slash.
+	{func(p string) string { return strings.ReplaceAll(p, `\`, "/") }, func(e Entry) bool {
+		if e.urlIsRe {
+			return strings.Contains(e.urlText, `\\`)
+		}
+		return strings.Contains(e.urlText, `\`)
+	}},
+	// some fold a slash or a dot written another way to the ascii one.
+	{lookalikes.Replace, func(e Entry) bool { return lookalikes.Replace(e.urlText) != e.urlText }},
+	// and some decode a path twice: "%2e%2e" still there is "..".
+	{func(p string) string {
+		if u, err := url.PathUnescape(p); err == nil {
+			return u
+		}
+		return p
+	}, func(e Entry) bool { return strings.Contains(e.urlText, "%") }},
+}
+
+var lookalikes = strings.NewReplacer(
+	"\uff0f", "/", "\u2215", "/", "\u2044", "/", "\uff3c", "/",
+	"\uff0e", ".", "\u2024", ".", "\u3002", ".", "\ufe52", ".", "\uff61", ".")
+
 // readings are the paths an origin may serve for urlPath: the path as sent,
-// the path resolved (resolvePath), and both again as an origin reads a
-// segment's ";parameters" and a backslash when it has either: a servlet
-// container drops the parameters before it resolves the path, and some
-// servers take a backslash for a slash, so "/public/..;/private" and
-// "/public/..\private" are "/private" to those.
-func readings(urlPath string) []string {
-	out := []string{urlPath}
+// the path resolved (resolvePath), and both again for each rewrite an origin
+// may apply, alone and all together.
+func readings(urlPath string) []reading {
+	out := []reading{{path: urlPath}}
 	if urlPath == "" {
 		return out
 	}
-	add := func(p string) {
-		if !slices.Contains(out, p) {
-			out = append(out, p)
+	add := func(p string, by []rewrite) {
+		if !slices.ContainsFunc(out, func(r reading) bool { return r.path == p }) {
+			out = append(out, reading{path: p, rewrote: by, dots: by != nil && hasDotSegment(p)})
 		}
 	}
-	add(resolvePath(urlPath))
-	slashed := strings.ReplaceAll(urlPath, `\`, "/")
-	for _, as := range []string{dropParams(urlPath), slashed, dropParams(slashed)} {
-		add(as)
-		add(resolvePath(as))
+	add(resolvePath(urlPath), nil)
+	all, applied := urlPath, []rewrite(nil)
+	for _, rw := range rewrites {
+		if as := rw.apply(urlPath); as != urlPath {
+			add(as, []rewrite{rw})
+			if r := resolvePath(as); r != as {
+				out = append(out, reading{path: r, rewrote: []rewrite{rw}, dots: hasDotSegment(as)})
+			}
+		}
+		if as := rw.apply(all); as != all {
+			all, applied = as, append(applied, rw)
+		}
+	}
+	if len(applied) > 1 {
+		add(all, applied)
+		if r := resolvePath(all); r != all {
+			out = append(out, reading{path: r, rewrote: applied, dots: hasDotSegment(all)})
+		}
 	}
 	return out
+}
+
+func hasDotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // dropParams is urlPath with each segment cut at its first ";".
@@ -369,10 +437,15 @@ func resolvePath(urlPath string) string {
 
 // admitsURL is an allow's reading of a request, which errs the other way to
 // matchesURL: the entry admits a path only when every reading of it matches,
-// so "/public/../private" does not pass for "/public/**".
+// so "/public/../private" does not pass for "/public/**". an entry that
+// itself writes what a rewrite reads away ("/wiki/a;b") means the path as
+// sent, and is held to that rewrite only where it uncovers a dot segment.
 func (e Entry) admitsURL(urlPath, rawQuery string) bool {
-	for _, p := range readings(urlPath) {
-		if !e.admitsPath(p, rawQuery) {
+	for _, r := range readings(urlPath) {
+		if e.admitsPath(r.path, rawQuery) {
+			continue
+		}
+		if r.rewrote == nil || r.dots || slices.ContainsFunc(r.rewrote, func(rw rewrite) bool { return !rw.spelt(e) }) {
 			return false
 		}
 	}
@@ -562,11 +635,15 @@ func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string)
 	if err != nil {
 		return Verdict{Rule: "default", Reason: "bad-host"}
 	}
+	// a path that is no text (bytes that are no utf-8, a control character)
+	// has no reading to match on: an origin that makes something of it is
+	// not one to guess at, so a url deny takes it and no url allow admits it.
+	odd := !utf8.ValidString(urlPath) || strings.ContainsFunc(urlPath, unicode.IsControl)
 	for _, e := range r.Deny {
 		if !e.matchesHost(host, port) || !e.matchesMethod(method) {
 			continue
 		}
-		if !e.URL() || e.matchesURL(urlPath, rawQuery) {
+		if !e.URL() || odd || e.matchesURL(urlPath, rawQuery) {
 			return Verdict{Rule: e.Raw}
 		}
 	}
@@ -582,7 +659,7 @@ func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string)
 			if matched == nil {
 				matched = &r.Allow[i]
 			}
-		case e.matchesMethod(method) && e.admitsURL(urlPath, rawQuery):
+		case e.matchesMethod(method) && !odd && e.admitsURL(urlPath, rawQuery):
 			if e.methods != nil {
 				return Verdict{Allowed: true, Rule: e.Raw}
 			}
