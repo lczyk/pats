@@ -13,35 +13,11 @@ import (
 	"strings"
 )
 
-// Target is docker:<context> with the daemon's id and version, or
-// podman:<connection> with the connection's uri (podman has no daemon id),
-// podman:local when it has no connection configured.
+// Target is docker:<context> with the daemon's id and version, or what the
+// engine says it is (podman, engine_podman.go).
 func (c *container) Target(ctx context.Context) (Target, error) {
-	if c.driver == "podman" {
-		// the cli's own overrides first: a service uri, then a named connection.
-		if uri := c.o.ContainerHost; uri != "" {
-			return Target{Key: "podman:" + uri, Daemon: uri}, nil
-		}
-		want := c.o.ContainerConnection
-		out, err := c.dockerOut(ctx, "system", "connection", "list", "--format", "json")
-		if err != nil {
-			return Target{}, err
-		}
-		var conns []struct {
-			Name    string
-			URI     string
-			Default bool
-		}
-		_ = json.Unmarshal(out, &conns)
-		for _, cn := range conns {
-			if (want != "" && cn.Name == want) || (want == "" && cn.Default) {
-				return Target{Key: "podman:" + cn.Name, Daemon: cn.URI}, nil
-			}
-		}
-		if want != "" {
-			return Target{}, fmt.Errorf("podman connection %q (CONTAINER_CONNECTION) not found", want)
-		}
-		return Target{Key: "podman:local", Daemon: "local"}, nil
+	if t := engines[c.driver].target; t != nil {
+		return t(ctx, c)
 	}
 	name, err := c.dockerOut(ctx, "context", "show")
 	if err != nil {

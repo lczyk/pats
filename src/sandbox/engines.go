@@ -1,10 +1,14 @@
 package sandbox
 
-import "sort"
+import (
+	"context"
+	"sort"
+)
 
 // engine is what pats needs of a container engine's cli where engines
-// differ, nearly all of it in egress network setup: one entry per engine, so a new
-// one (nerdctl) is an entry and a ci job.
+// differ, nearly all of it in egress network setup: one entry per engine,
+// each registered from a file of its own, so a new one (nerdctl) is a file and
+// a ci job, and a build tag can leave one out.
 type engine struct {
 	// defaultNetwork is the engine's network with a way out.
 	defaultNetwork string
@@ -18,10 +22,32 @@ type engine struct {
 	runFlags []string
 	// cpus is the info template for the daemon's cpu count.
 	cpus string
+	// target, when set, is the place's pin target; nil is docker's context
+	// and daemon id.
+	target func(ctx context.Context, c *container) (Target, error)
+	// env, when set, is what aims the engine's cli where o says, as the
+	// environment it reads.
+	env func(o Options) []string
 }
 
-var engines = map[string]engine{
-	"docker": {
+var engines = map[string]engine{}
+
+// registerEngine adds an engine and its driver.
+func registerEngine(name string, e engine) {
+	engines[name] = e
+	registerDriver(name, driverDef{
+		open: func(p *process, r runner, o Options) Driver {
+			if r == nil {
+				r = engineRunner(o)
+			}
+			return newContainer(p, r, o)
+		},
+		reopen: reopenSame,
+	})
+}
+
+func init() {
+	registerEngine("docker", engine{
 		defaultNetwork: "bridge",
 		// docker gives the host an address on the bridge, which the agent
 		// could reach any host service through: --internal cuts only routes.
@@ -31,32 +57,7 @@ var engines = map[string]engine{
 		// (none needed, the proxy is an ip) keep resolving.
 		agentNet: []string{"--dns", "0.0.0.0"},
 		cpus:     "{{.NCPU}}",
-	},
-	"podman": {
-		defaultNetwork: "podman",
-		// podman's resolver on an internal network answers only for peers,
-		// and the sidecar would inherit it as its only nameserver: it could
-		// then resolve nothing upstream. nothing here needs peer names.
-		internalNet: []string{"--disable-dns"},
-		// podman copies the host's proxy variables into every container; the
-		// proxy env a sandbox gets is pats's to set.
-		runFlags: []string{"--http-proxy=false"},
-		cpus:     "{{.Host.CPUs}}",
-	},
-}
-
-func init() {
-	for name := range engines {
-		registerDriver(name, driverDef{
-			open: func(p *process, r runner, o Options) Driver {
-				if r == nil {
-					r = engineRunner(o)
-				}
-				return newContainer(p, r, o)
-			},
-			reopen: reopenSame,
-		})
-	}
+	})
 }
 
 // IsEngine says whether driver names a container engine pats drives.

@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/lczyk/pats/src/sandbox"
 	"github.com/lczyk/pats/src/sandbox/proxy"
 	"gopkg.in/yaml.v3"
 )
@@ -134,7 +135,7 @@ func (e *Egress) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // IsContainer reports whether the sandbox runs under a container driver.
-func (s Sandbox) IsContainer() bool { return s.Driver == "docker" || s.Driver == "podman" }
+func (s Sandbox) IsContainer() bool { return sandbox.IsEngine(s.Driver) }
 
 // IsHost reports whether the sandbox runs its agent on this machine, unboxed.
 func (s Sandbox) IsHost() bool { return s.Driver == "host" }

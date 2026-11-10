@@ -193,17 +193,12 @@ func newDriver(p *process, r runner, o Options) (Driver, error) {
 	return def.open(p, r, o), nil
 }
 
-// engineRunner runs o's container cli, aimed where o says: podman's
-// overrides go to the cli as the environment it reads them from.
+// engineRunner runs o's container cli, aimed where o says through the
+// environment its engine reads (podman's overrides).
 func engineRunner(o Options) runner {
 	r := execRunner{bin: o.Driver, waitDelay: 10 * time.Second}
-	if o.Driver == "podman" {
-		if o.ContainerHost != "" {
-			r.env = append(r.env, "CONTAINER_HOST="+o.ContainerHost)
-		}
-		if o.ContainerConnection != "" {
-			r.env = append(r.env, "CONTAINER_CONNECTION="+o.ContainerConnection)
-		}
+	if env := engines[o.Driver].env; env != nil {
+		r.env = env(o)
 	}
 	return r
 }
