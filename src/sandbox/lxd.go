@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -839,13 +840,24 @@ func (s *lxdSession) Pull(ctx context.Context, path, hostDir string) error {
 	return nil
 }
 
-// readTar extracts a tar stream into dir as the current user: names that
-// leave dir are refused, and symlinks are made last so nothing is written
-// through one.
+// readTar extracts a tar stream into dir as the current user. the stream is
+// the word of the tar inside an instance, not pats's own: a name or a hard
+// link that leaves dir is refused, and nothing is written through a symlink
+// under dir (dir itself may be reached through one). symlinks are made last,
+// so only another symlink can meet one the stream made, and its parents are
+// checked as every entry's are.
 func readTar(r io.Reader, dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
 	tr := tar.NewReader(r)
-	type link struct{ path, target string }
-	var links []link
+	links := map[string]string{} // a symlink's path -> its target
+	skipped := map[string]bool{} // what does not travel: fifos, devices
+	files := map[string]bool{}   // the regular files this stream made
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -854,26 +866,59 @@ func readTar(r io.Reader, dir string) error {
 		if err != nil {
 			return err
 		}
-		name := filepath.Clean(filepath.FromSlash(h.Name))
-		if name == "." {
+		rel, err := tarRel(h.Name)
+		if err != nil {
+			return err
+		}
+		switch {
+		case rel == ".":
+			continue
+		case h.Typeflag == tar.TypeSymlink:
+			links[rel] = h.Linkname
+			delete(skipped, rel)
+			delete(files, rel)
+			continue
+		case h.Typeflag != tar.TypeDir && h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeLink:
+			skipped[rel] = true
+			delete(links, rel)
+			delete(files, rel)
 			continue
 		}
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("tar entry %q leaves the destination", h.Name)
+		// tar names a file's second path by its first, which came before it.
+		// a name linked to itself is the entry it already is.
+		src := ""
+		if h.Typeflag == tar.TypeLink {
+			if src, err = tarRel(h.Linkname); err != nil || src == "." {
+				return fmt.Errorf("tar entry %q: hard link to %q %w", h.Name, h.Linkname, errEscape)
+			}
+			if src == rel {
+				continue
+			}
 		}
-		p := filepath.Join(dir, name)
+		// a later entry of a name replaces an earlier one, as tar unpacks.
+		delete(links, rel)
+		delete(skipped, rel)
+		delete(files, rel)
+		if err := safeParent(dir, path.Dir(rel)); err != nil {
+			return fmt.Errorf("tar entry %q: %w", h.Name, err)
+		}
+		p := filepath.Join(dir, filepath.FromSlash(rel))
 		switch h.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(p, 0o755); err != nil {
+			// a link or a file already at p gives way: MkdirAll and Chmod
+			// would both follow a link.
+			if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
+				if err := os.Remove(p); err != nil {
+					return err
+				}
+			}
+			if err := os.Mkdir(p, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
 				return err
 			}
 			_ = os.Chmod(p, fs.FileMode(h.Mode).Perm()|0o700)
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-				return err
-			}
 			_ = os.Remove(p)
-			f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fs.FileMode(h.Mode).Perm()|0o600)
+			f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_EXCL, fs.FileMode(h.Mode).Perm()|0o600)
 			if err != nil {
 				return err
 			}
@@ -884,21 +929,56 @@ func readTar(r io.Reader, dir string) error {
 			if err != nil {
 				return err
 			}
-		case tar.TypeSymlink:
-			links = append(links, link{p, h.Linkname})
+			files[rel] = true
+		case tar.TypeLink:
+			// the second name of a symlink is that symlink again, and of
+			// what does not travel, left out with it.
+			if target, isLink := links[src]; isLink {
+				links[rel] = target
+				continue
+			}
+			if skipped[src] {
+				skipped[rel] = true
+				continue
+			}
+			// only to a file this stream made: one that was there before
+			// may be another name of a file outside dir.
+			if !files[src] {
+				return fmt.Errorf("tar entry %q: hard link to %q, which is no file of this archive", h.Name, h.Linkname)
+			}
+			_ = os.Remove(p)
+			if err := os.Link(filepath.Join(dir, filepath.FromSlash(src)), p); err != nil {
+				return err
+			}
+			files[rel] = true
 		}
 	}
-	sort.Slice(links, func(i, j int) bool { return links[i].path < links[j].path })
-	for _, ln := range links {
-		if err := os.MkdirAll(filepath.Dir(ln.path), 0o755); err != nil {
-			return err
+	rels := make([]string, 0, len(links))
+	for rel := range links {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	for _, rel := range rels {
+		if err := safeParent(dir, path.Dir(rel)); err != nil {
+			return fmt.Errorf("tar entry %q: %w", rel, err)
 		}
-		_ = os.Remove(ln.path)
-		if err := os.Symlink(ln.target, ln.path); err != nil {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		_ = os.Remove(p)
+		if err := os.Symlink(links[rel], p); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// tarRel is a tar entry's name as a clean path relative to where it is
+// unpacked, "." for that directory itself; a name that leaves it is refused.
+func tarRel(name string) (string, error) {
+	rel := path.Clean(filepath.ToSlash(name))
+	if path.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("tar entry %q %w", name, errEscape)
+	}
+	return rel, nil
 }
 
 // Sync pulls every writable bind back to its host path, replacing what was

@@ -198,26 +198,179 @@ func TestLXDSync(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// a tar entry may not leave the destination, and nothing is written through
-// a symlink the stream itself made.
+// a tar entry may not leave the destination, and nothing is written, made or
+// removed through a symlink: one the stream itself made, or one already
+// there. whatever the archive, what is beside the destination stays as it was.
 func TestReadTarSafety(t *testing.T) {
+	type entry struct {
+		name, link string
+		typ        byte
+	}
+	archive := func(es ...entry) *bytes.Buffer {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		for _, e := range es {
+			h := &tar.Header{Name: e.name, Linkname: e.link, Typeflag: e.typ, Mode: 0o644}
+			if e.typ == tar.TypeReg {
+				h.Size = 1
+			}
+			require.NoError(t, tw.WriteHeader(h))
+			if e.typ == tar.TypeReg {
+				_, err := tw.Write([]byte("x"))
+				require.NoError(t, err)
+			}
+		}
+		require.NoError(t, tw.Close())
+		return &buf
+	}
+	for name, c := range map[string]struct {
+		before string // a symlink to outside already in the destination, "" for none
+		es     func(outside string) []entry
+	}{
+		"a name that climbs":       {es: func(string) []entry { return []entry{{"../victim", "", tar.TypeReg}} }},
+		"an absolute name":         {es: func(o string) []entry { return []entry{{o + "/victim", "", tar.TypeReg}} }},
+		"a file through its link":  {es: func(o string) []entry { return []entry{{"a", o, tar.TypeSymlink}, {"a/victim", "", tar.TypeReg}} }},
+		"a link through its link":  {es: func(o string) []entry { return []entry{{"a", o, tar.TypeSymlink}, {"a/victim", "x", tar.TypeSymlink}} }},
+		"a dir through its link":   {es: func(o string) []entry { return []entry{{"a", o, tar.TypeSymlink}, {"a/d", "", tar.TypeDir}} }},
+		"a hard link that climbs":  {es: func(string) []entry { return []entry{{"h", "../outside/victim", tar.TypeLink}} }},
+		"a hard link to a link":    {before: "a", es: func(string) []entry { return []entry{{"h", "a/victim", tar.TypeLink}} }},
+		"a file through a link":    {before: "a", es: func(string) []entry { return []entry{{"a/victim", "", tar.TypeReg}} }},
+		"a dir over a link":        {before: "a", es: func(string) []entry { return []entry{{"a", "", tar.TypeDir}} }},
+		"a file over a link":       {before: "victim", es: func(string) []entry { return []entry{{"victim", "", tar.TypeReg}} }},
+		"a link through a link":    {before: "a", es: func(string) []entry { return []entry{{"a/victim", "x", tar.TypeSymlink}} }},
+		"a hard link over a link":  {before: "a", es: func(string) []entry { return []entry{{"f", "", tar.TypeReg}, {"a/victim", "f", tar.TypeLink}} }},
+		"a link out, left a link":  {es: func(o string) []entry { return []entry{{"a", o, tar.TypeSymlink}} }},
+		"a file, then its own dir": {es: func(string) []entry { return []entry{{"a", "", tar.TypeReg}, {"a/b", "", tar.TypeReg}} }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			base := t.TempDir()
+			dir, outside := filepath.Join(base, "dest"), filepath.Join(base, "outside")
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			require.NoError(t, os.MkdirAll(outside, 0o750))
+			require.NoError(t, os.WriteFile(filepath.Join(outside, "victim"), []byte("precious"), 0o640))
+			if c.before != "" {
+				target := outside
+				if c.before == "victim" {
+					target = filepath.Join(outside, "victim")
+				}
+				require.NoError(t, os.Symlink(target, filepath.Join(dir, c.before)))
+			}
+
+			_ = readTar(archive(c.es(outside)...), dir) // refusing the archive is fine
+
+			got, err := os.ReadFile(filepath.Join(outside, "victim"))
+			require.NoError(t, err)
+			assert.Equal(t, string(got), "precious")
+			fi, err := os.Lstat(filepath.Join(outside, "victim"))
+			require.NoError(t, err)
+			assert.Equal(t, fi.Mode(), os.FileMode(0o640))
+			fi, err = os.Lstat(outside)
+			require.NoError(t, err)
+			assert.Equal(t, fi.Mode().Perm(), os.FileMode(0o750))
+			ents, err := os.ReadDir(outside)
+			require.NoError(t, err)
+			assert.Len(t, ents, 1, "an entry was made beside the destination's")
+			ents, err = os.ReadDir(base)
+			require.NoError(t, err)
+			assert.Len(t, ents, 2)
+		})
+	}
+
+	// the refusals say so.
+	assert.ErrorIs(t, readTar(archive(entry{"../escape", "", tar.TypeReg}), t.TempDir()), errEscape)
+	outside := t.TempDir()
+	err := readTar(archive(entry{"a", outside, tar.TypeSymlink}, entry{"a/victim", "x", tar.TypeSymlink}), t.TempDir())
+	assert.ErrorIs(t, err, errEscape)
+}
+
+// the destination may itself be reached through a symlink, as a project dir
+// under a linked home is: it is what lies under it that no link may stand in.
+func TestReadTarIntoLinkedDir(t *testing.T) {
+	real := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "linked")
+	require.NoError(t, os.Symlink(real, dir))
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	tw.WriteHeader(&tar.Header{Name: "../escape", Mode: 0o644, Typeflag: tar.TypeReg})
-	tw.Close()
-	assert.Error(t, readTar(&buf, t.TempDir()), "leaves the destination")
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./d/f", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}))
+	_, err := tw.Write([]byte("x"))
+	require.NoError(t, err)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./top", Linkname: "d/f", Typeflag: tar.TypeSymlink}))
+	require.NoError(t, tw.Close())
+	require.NoError(t, readTar(&buf, dir))
+	got, err := os.ReadFile(filepath.Join(real, "top"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "x")
+}
 
-	outside := t.TempDir()
-	buf.Reset()
-	tw = tar.NewWriter(&buf)
-	tw.WriteHeader(&tar.Header{Name: "link", Linkname: outside, Typeflag: tar.TypeSymlink})
-	tw.WriteHeader(&tar.Header{Name: "link/pwned", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg})
-	tw.Write([]byte("x"))
-	tw.Close()
+// a second name of a symlink is that symlink again, one of what does not
+// travel (a fifo) is left out with it, and neither fails the pull. a name
+// linked to itself is the file it is.
+func TestReadTarHardLinkToOthers(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "f", Mode: 0o644, Size: 4, Typeflag: tar.TypeReg}))
+	_, err := tw.Write([]byte("keep"))
+	require.NoError(t, err)
+	for _, h := range []tar.Header{
+		{Name: "ln", Linkname: "f", Typeflag: tar.TypeSymlink},
+		{Name: "ln2", Linkname: "ln", Typeflag: tar.TypeLink},
+		{Name: "fifo", Typeflag: tar.TypeFifo},
+		{Name: "fifo2", Linkname: "fifo", Typeflag: tar.TypeLink},
+		{Name: "f", Linkname: "f", Typeflag: tar.TypeLink},
+	} {
+		require.NoError(t, tw.WriteHeader(&h))
+	}
+	require.NoError(t, tw.Close())
 	dir := t.TempDir()
-	_ = readTar(&buf, dir)
-	_, err := os.Stat(filepath.Join(outside, "pwned"))
-	assert.That(t, os.IsNotExist(err), "a file was written through a symlink")
+	require.NoError(t, readTar(&buf, dir))
+	got, err := os.ReadFile(filepath.Join(dir, "f"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "keep")
+	for _, name := range []string{"ln", "ln2"} {
+		target, err := os.Readlink(filepath.Join(dir, name))
+		require.NoError(t, err, name)
+		assert.Equal(t, target, "f")
+	}
+	for _, name := range []string{"fifo", "fifo2"} {
+		_, err := os.Lstat(filepath.Join(dir, name))
+		assert.That(t, os.IsNotExist(err), "%s travelled", name)
+	}
+}
+
+// a hard link is to a file the stream itself brought: one already in the
+// destination may be another name of a file outside it.
+func TestReadTarHardLinkToWhatWasThere(t *testing.T) {
+	base := t.TempDir()
+	dir, victim := filepath.Join(base, "dest"), filepath.Join(base, "victim")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(victim, []byte("precious"), 0o640))
+	require.NoError(t, os.Link(victim, filepath.Join(dir, "x")))
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "y", Linkname: "x", Typeflag: tar.TypeLink}))
+	require.NoError(t, tw.Close())
+	assert.Error(t, readTar(&buf, dir), "no file of this archive")
+	_, err := os.Lstat(filepath.Join(dir, "y"))
+	assert.That(t, os.IsNotExist(err), "a second name was made for a file the stream did not bring")
+}
+
+// a file with two names in the instance comes home with both, one file still.
+func TestReadTarHardLink(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./d/first", Mode: 0o644, Size: 2, Typeflag: tar.TypeReg}))
+	_, err := tw.Write([]byte("hi"))
+	require.NoError(t, err)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./second", Linkname: "./d/first", Typeflag: tar.TypeLink}))
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./third", Linkname: "./nowhere", Typeflag: tar.TypeLink}))
+	require.NoError(t, tw.Close())
+	dir := t.TempDir()
+	assert.Error(t, readTar(&buf, dir), "no file of this archive")
+	first, err := os.Stat(filepath.Join(dir, "d", "first"))
+	require.NoError(t, err)
+	second, err := os.Stat(filepath.Join(dir, "second"))
+	require.NoError(t, err)
+	assert.That(t, os.SameFile(first, second), "the second name is another file")
 }
 
 // what writeTar packs, readTar unpacks: files, modes, dirs and symlinks.

@@ -214,9 +214,6 @@ func layerReader(file, mediaType string) (io.ReadCloser, error) {
 	return f, nil
 }
 
-// errEscape is a layer entry that would land outside the rootfs.
-var errEscape = errors.New("leaves the rootfs")
-
 // applyWhiteout removes what a whiteout in dir names: the opaque marker
 // empties dir, any other names one entry. a dir that is not there has
 // nothing to remove; a dir reached through a symlink is refused.
@@ -413,32 +410,6 @@ func linkEscapes(dir, target string) bool {
 		}
 	}
 	return false
-}
-
-// safeParent refuses a parent dir that is, or passes through, a symlink: an
-// entry written there would land wherever the link points.
-func safeParent(root, dir string) error {
-	p := root
-	for _, part := range strings.Split(strings.Trim(dir, "/"), "/") {
-		if part == "" {
-			continue
-		}
-		p = filepath.Join(p, part)
-		fi, err := os.Lstat(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			return os.MkdirAll(filepath.Join(root, filepath.FromSlash(dir)), 0o755)
-		}
-		if err != nil {
-			return err
-		}
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("written through the symlink %s, which %w", strings.TrimPrefix(p, root), errEscape)
-		}
-		if !fi.IsDir() {
-			return fmt.Errorf("%s is not a directory", strings.TrimPrefix(p, root))
-		}
-	}
-	return nil
 }
 
 // bwrapStore is the bwrap driver's image store.
