@@ -575,7 +575,7 @@ func (s *bwrapSession) Pull(_ context.Context, path, hostDir string) error {
 	for _, b := range all {
 		rel, err := filepath.Rel(b.path, path)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
-			return copyInto(filepath.Join(b.host, rel), hostDir)
+			return copyUnder(b.host, rel, hostDir)
 		}
 	}
 	return fmt.Errorf("bwrap pull %s: only a bound path can be pulled", path)

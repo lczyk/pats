@@ -347,3 +347,75 @@ func TestHostRelativeTrustFile(t *testing.T) {
 	want, _ := filepath.Abs("certs/corp.pem")
 	assert.Equal(t, sess.(*hostSession).env["SSL_CERT_FILE"], want)
 }
+
+// a tree is copied through a root on each side. a link is copied as the link
+// it is, nothing is written past a link that leaves the destination, a path
+// that leaves the directory a sandbox wrote is not read, and a directory
+// copied onto itself keeps its files.
+func TestCopyTreeStaysInside(t *testing.T) {
+	base := t.TempDir()
+	src, dst, outside := filepath.Join(base, "src"), filepath.Join(base, "dst"), filepath.Join(base, "outside")
+	for _, d := range []string{filepath.Join(src, "d"), dst, outside} {
+		require.NoError(t, os.MkdirAll(d, 0o755))
+	}
+	victim := filepath.Join(outside, "victim")
+	require.NoError(t, os.WriteFile(victim, []byte("precious"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "d", "victim"), []byte("new"), 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(src, "out")))
+	unharmed := func() {
+		t.Helper()
+		got, err := os.ReadFile(victim)
+		require.NoError(t, err)
+		assert.Equal(t, string(got), "precious")
+		ents, err := os.ReadDir(outside)
+		require.NoError(t, err)
+		assert.Len(t, ents, 1)
+	}
+
+	require.NoError(t, copyInto(src, dst))
+	got, err := os.ReadFile(filepath.Join(dst, "d", "victim"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "new")
+	fi, err := os.Stat(filepath.Join(dst, "d", "victim"))
+	require.NoError(t, err)
+	assert.Equal(t, fi.Mode().Perm(), os.FileMode(0o755))
+	target, err := os.Readlink(filepath.Join(dst, "out"))
+	require.NoError(t, err)
+	assert.Equal(t, target, outside)
+	unharmed()
+
+	// the destination already holds a link out where the tree has a dir.
+	linked := filepath.Join(base, "linked")
+	require.NoError(t, os.MkdirAll(linked, 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(linked, "d")))
+	assert.Error(t, copyInto(src, linked), "path escapes from parent")
+	unharmed()
+
+	// a path under what a sandbox wrote, through a link it left there.
+	assert.Error(t, copyUnder(src, "out", filepath.Join(base, "leak")), "path escapes from parent")
+	_, err = os.Stat(filepath.Join(base, "leak", "victim"))
+	assert.That(t, os.IsNotExist(err), "a file outside the sandbox's directory was copied")
+	require.NoError(t, copyUnder(src, "d", filepath.Join(base, "sub")))
+	got, err = os.ReadFile(filepath.Join(base, "sub", "victim"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "new")
+
+	// into a directory of its own: copied once, not into itself for ever.
+	require.NoError(t, copyInto(src, filepath.Join(src, "d", "out")))
+	got, err = os.ReadFile(filepath.Join(src, "d", "out", "d", "victim"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "new")
+	_, err = os.Lstat(filepath.Join(src, "d", "out", "d", "out"))
+	assert.That(t, os.IsNotExist(err), "the destination was copied into itself")
+	require.NoError(t, os.RemoveAll(filepath.Join(src, "d", "out")))
+
+	// onto itself, by its own name and by another.
+	alias := filepath.Join(base, "alias")
+	require.NoError(t, os.Symlink(src, alias))
+	require.NoError(t, copyInto(src, src))
+	require.NoError(t, copyInto(alias, src))
+	require.NoError(t, copyUnder(src, ".", alias))
+	got, err = os.ReadFile(filepath.Join(src, "d", "victim"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "new")
+}
