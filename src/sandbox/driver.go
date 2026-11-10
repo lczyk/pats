@@ -183,6 +183,9 @@ func Shutdown() { defaultProcess.shutdown() }
 // there: docker's, podman's and lxd's words for it.
 func notFound(err error) bool {
 	m := strings.ToLower(err.Error())
+	if strings.Contains(m, "executable file not found") {
+		return false // the engine's cli is missing, which says nothing of an image
+	}
 	return strings.Contains(m, "no such image") || strings.Contains(m, "image not known") ||
 		strings.Contains(m, "not found")
 }

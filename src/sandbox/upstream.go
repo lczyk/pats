@@ -54,7 +54,7 @@ func RegistryDigest(ctx context.Context, ref string) (string, error) {
 }
 
 func (reg registry) tagDigest(ctx context.Context, ref string) (string, error) {
-	host, repo, tag, err := splitRef(NormalizeRef(ref))
+	host, repo, tag, err := splitRefDigest(NormalizeRef(ref))
 	if err != nil {
 		return "", err
 	}
