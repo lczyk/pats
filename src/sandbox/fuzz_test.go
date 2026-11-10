@@ -252,13 +252,13 @@ func FuzzIgnore(f *testing.F) {
 	f.Add("a/**/b\n/abs\n", "a/x/y/b")
 	f.Fuzz(func(t *testing.T, body, rel string) {
 		rel = strings.TrimPrefix(pathpkg.Clean("/"+rel), "/")
-		if rel == "" || strings.Count(body, "**") > 3 {
-			return // not a path a walk yields; "**" is matched by trying every split
+		if rel == "" {
+			return // not a path a walk yields
 		}
-		patterns := parseIgnore(body)
-		if !ignored(patterns, rel) || strings.Contains(body, "!") {
+		ignore := ignoreMatcher([]byte(body))
+		if !ignored(ignore, rel) || ignore.Exclusions() {
 			return
 		}
-		assert.That(t, ignored(patterns, rel+"/below"), "%q is ignored, what is under it is not", rel)
+		assert.That(t, ignored(ignore, rel+"/below"), "%q is ignored, what is under it is not", rel)
 	})
 }

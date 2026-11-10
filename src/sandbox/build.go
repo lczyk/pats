@@ -9,9 +9,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/moby/patternmatcher"
+	"github.com/moby/patternmatcher/ignorefile"
 )
 
 // containerBuild is the docker build context of a build: sandbox, or of
@@ -302,9 +304,9 @@ func rehash(hash, extra string) string {
 // running it. a context-less dockerfile (no COPY/ADD) hashes the dockerfile
 // alone -- context churn (e.g. a growing .pats/) can't invalidate anything.
 //
-// the dockerignore matcher is approximate (see matchIgnore); it errs toward
-// hashing too much, which at worst degrades to today's behaviour: an
-// unnecessary `docker build` that the layer cache absorbs.
+// the dockerignore is matched as docker matches it (ignoreMatcher). a file
+// docker would refuse ignores nothing here: too much is hashed, which at
+// worst is an unnecessary `docker build` that says what is wrong with it.
 //
 // dfData/dfErr are the dockerfile's contents, already read by the caller (see
 // buildImages) -- shared with checkPatsIgnored/usesContext so the dockerfile
@@ -329,14 +331,14 @@ func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error, bas
 		fmt.Fprintf(h, "%s=%s\n", baseArg, base)
 	}
 
-	var patterns []ignorePattern
+	var ignore *patternmatcher.PatternMatcher
 	if data, err := os.ReadFile(effectiveIgnoreFile(ctxDir, dockerfile)); err == nil {
 		h.Write(data)
-		patterns = parseIgnore(string(data))
+		ignore = ignoreMatcher(data)
 	}
 
 	if usesContext(dfData, dfErr) {
-		if err := hashContextDir(h, ctxDir, patterns); err != nil {
+		if err := hashContextDir(h, ctxDir, ignore); err != nil {
 			return "", err
 		}
 	}
@@ -345,15 +347,10 @@ func buildContextHash(ctxDir, dockerfile string, dfData []byte, dfErr error, bas
 
 // hashContextDir feeds every non-ignored entry under ctxDir into h in walk
 // (lexical, deterministic) order.
-func hashContextDir(h io.Writer, ctxDir string, patterns []ignorePattern) error {
+func hashContextDir(h io.Writer, ctxDir string, ignore *patternmatcher.PatternMatcher) error {
 	// with negations present a pruned dir could hide re-included children, so
 	// only prune when there are none.
-	canPrune := true
-	for _, p := range patterns {
-		if p.negate {
-			canPrune = false
-		}
-	}
+	canPrune := ignore == nil || !ignore.Exclusions()
 	return filepath.WalkDir(ctxDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -363,7 +360,7 @@ func hashContextDir(h io.Writer, ctxDir string, patterns []ignorePattern) error 
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if ignored(patterns, rel) {
+		if ignored(ignore, rel) {
 			if d.IsDir() && canPrune {
 				return fs.SkipDir
 			}
@@ -412,83 +409,32 @@ func effectiveIgnoreFile(ctxDir, dockerfile string) string {
 	return filepath.Join(ctxDir, ".dockerignore")
 }
 
-// ignorePattern is one parsed dockerignore line.
-type ignorePattern struct {
-	pattern string // cleaned, slash-separated, no leading "/" or "./"
-	negate  bool
+// ignoreMatcher is the matcher of a dockerignore body: docker's own
+// (moby/patternmatcher, which buildkit sends a context by), so the hash
+// covers the files a build is sent. nil ignores nothing: a body of no
+// patterns, or one docker would refuse.
+func ignoreMatcher(body []byte) *patternmatcher.PatternMatcher {
+	lines, err := ignorefile.ReadAll(bytes.NewReader(body))
+	if err != nil || len(lines) == 0 {
+		return nil
+	}
+	pm, err := patternmatcher.New(lines)
+	if err != nil {
+		return nil
+	}
+	return pm
 }
 
-// parseIgnore parses a dockerignore body: comments and blanks dropped,
-// leading "!" marks a negation, paths normalised to the matcher's shape.
-func parseIgnore(body string) []ignorePattern {
-	var out []ignorePattern
-	for _, line := range strings.Split(body, "\n") {
-		l := strings.TrimSpace(line)
-		if l == "" || strings.HasPrefix(l, "#") {
-			continue
-		}
-		neg := strings.HasPrefix(l, "!")
-		l = strings.TrimPrefix(l, "!")
-		l = strings.TrimPrefix(l, "./")
-		l = strings.TrimPrefix(l, "/")
-		l = strings.TrimSuffix(l, "/")
-		if l == "" {
-			continue
-		}
-		out = append(out, ignorePattern{pattern: path.Clean(l), negate: neg})
-	}
-	return out
-}
-
-// ignored applies dockerignore semantics to one slash-separated relative
-// path: the last matching pattern wins; a pattern matching a parent directory
-// covers everything beneath it.
-//
-// matching is a deliberate approximation of docker's (per-segment globs plus
-// "**" spanning any depth). exotic patterns a fancier matcher would catch fall
-// through to "not ignored" -- the safe direction: the file gets hashed, and a
-// spurious mismatch just means an unnecessary (cheap, layer-cached) build.
-func ignored(patterns []ignorePattern, rel string) bool {
-	ig := false
-	for _, p := range patterns {
-		if matchIgnore(p.pattern, rel) {
-			ig = !p.negate
-		}
-	}
-	return ig
-}
-
-// matchIgnore reports whether pattern covers rel or one of rel's ancestors.
-func matchIgnore(pattern, rel string) bool {
-	for r := rel; r != "."; r = path.Dir(r) {
-		if segmentsMatch(strings.Split(pattern, "/"), strings.Split(r, "/")) {
-			return true
-		}
-	}
-	return false
-}
-
-// segmentsMatch matches pattern segments against path segments; "**" spans
-// zero or more segments, everything else is a per-segment glob (path.Match).
-func segmentsMatch(pat, segs []string) bool {
-	if len(pat) == 0 {
-		return len(segs) == 0
-	}
-	if pat[0] == "**" {
-		for i := 0; i <= len(segs); i++ {
-			if segmentsMatch(pat[1:], segs[i:]) {
-				return true
-			}
-		}
+// ignored says whether the matcher leaves the slash-separated relative path
+// rel out of the context: the last matching pattern wins, and a pattern
+// matching a parent directory covers what is beneath it. a pattern that
+// cannot be matched ignores nothing.
+func ignored(ignore *patternmatcher.PatternMatcher, rel string) bool {
+	if ignore == nil {
 		return false
 	}
-	if len(segs) == 0 {
-		return false
-	}
-	if ok, err := path.Match(pat[0], segs[0]); err != nil || !ok {
-		return false
-	}
-	return segmentsMatch(pat[1:], segs[1:])
+	ok, err := ignore.MatchesOrParentMatches(rel)
+	return err == nil && ok
 }
 
 // checkPatsIgnored refuses to build a context containing a .pats dir (run

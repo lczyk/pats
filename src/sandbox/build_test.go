@@ -94,7 +94,7 @@ func TestCheckPatsIgnored(t *testing.T) {
 }
 
 func TestIgnoreMatcher(t *testing.T) {
-	pats := parseIgnore("# comment\n\n.pats/\n*.log\nsub/**\n!sub/keep.txt\nbuild\n")
+	pats := ignoreMatcher([]byte("# comment\n\n.pats/\n*.log\nsub/**\n!sub/keep.txt\nbuild\n**/*.tmp\ndocs/[a-c]?.md\n!build/out\nmid/**end\n"))
 	for rel, want := range map[string]bool{
 		".pats":            true, // trailing-slash dir pattern
 		".pats/runs/1/x":   true, // parent-dir coverage
@@ -108,8 +108,23 @@ func TestIgnoreMatcher(t *testing.T) {
 		"Dockerfile":       false,
 		"src/main.go":      false,
 		".pats-cache/file": false, // .pats doesn't cover siblings
+		"x.tmp":            true,  // **/ spans no directory too
+		"deep/er/x.tmp":    true,
+		"docs/b1.md":       true, // a class and a single character
+		"docs/d1.md":       false,
+		"docs/b12.md":      false,
+		"build/out":        false, // re-included from under an ignored directory
+		"build/out/bin":    false,
+		"build/obj":        true,
+		"mid/x/end":        true, // "**end" is "**/end" to docker
+		"mid/end":          true,
+		"mid/x/y-end":      false,
 	} {
 		assert.Equal(t, ignored(pats, rel), want, "rel: %q", rel)
+	}
+	// no patterns, and a file docker would refuse: nothing is ignored.
+	for _, body := range []string{"", "# only a comment\n", "!\n", "ok\n[\n"} {
+		assert.Equal(t, ignored(ignoreMatcher([]byte(body)), "ok"), false, "body: %q", body)
 	}
 }
 
