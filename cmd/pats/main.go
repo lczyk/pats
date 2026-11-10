@@ -21,6 +21,7 @@ import (
 	"github.com/lczyk/pats/internal/eval"
 	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox"
+	"golang.org/x/term"
 )
 
 // Options is the global command structure parsed by go-flags. Config is
@@ -390,11 +391,7 @@ func main() {
 
 // useColor reports whether f is a terminal and NO_COLOR is unset (no-color.org).
 func useColor(f *os.File) bool {
-	if os.Getenv("NO_COLOR") != "" {
-		return false
-	}
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return os.Getenv("NO_COLOR") == "" && term.IsTerminal(int(f.Fd()))
 }
 
 var (

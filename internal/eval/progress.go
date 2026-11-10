@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // progress is a sticky multi-line terminal display for a parallel run: a total
@@ -33,6 +35,9 @@ type progress struct {
 	pollEvery int // refresh the net count every N redraw ticks (it's pricier i/o)
 	stop      chan struct{}
 	donec     chan struct{} // closed when the ticker goroutine has exited
+	// size is the terminal's columns and rows, asked for at each frame; nil
+	// when out is no terminal.
+	size func() (cols, rows int)
 }
 
 // redraw fast for a smooth spinner/timer; poll egress.log (per-pair file i/o)
@@ -116,6 +121,12 @@ func newProgress(out io.Writer, total, labelW int) *progress {
 		pollEvery: max(int(netPollEvery/redrawEvery), 1),
 		stop:      make(chan struct{}), donec: make(chan struct{}),
 		ticker: time.NewTicker(redrawEvery),
+	}
+	if f, ok := out.(*os.File); ok {
+		p.size = func() (int, int) {
+			cols, rows, _ := term.GetSize(int(f.Fd()))
+			return cols, rows
+		}
 	}
 	p.mu.Lock()
 	p.redraw()
@@ -278,6 +289,29 @@ func (p *progress) regionLines() []string {
 		sp := spinner[int(a.spin)%len(spinner)]
 		lines = append(lines, fmt.Sprintf("  %c %-*s  %s", sp, w, a.label, a.stat.cols(a.showTools)))
 	}
+	if p.size == nil {
+		return lines
+	}
+	cols, rows := p.size()
+	return fitRegion(lines, cols, rows)
+}
+
+// fitRegion cuts the region to a terminal of cols by rows, zero for a side
+// not known. a redraw moves the cursor up by the lines it drew: a line that
+// wraps, or a region taller than the screen, leaves it somewhere else. so
+// each line is cut short of the last column, and the lines to what leaves
+// the row under them on screen, the last one saying how many it stands for.
+func fitRegion(lines []string, cols, rows int) []string {
+	if keep := rows - 2; keep >= 1 && len(lines) > keep+1 {
+		lines = append(lines[:keep:keep], fmt.Sprintf("  ... and %d more", len(lines)-keep))
+	}
+	if cols > 1 {
+		for i, l := range lines {
+			if r := []rune(l); len(r) > cols-1 {
+				lines[i] = string(r[:cols-1])
+			}
+		}
+	}
 	return lines
 }
 
@@ -286,15 +320,12 @@ func mmss(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", s/60, s%60)
 }
 
-// isProgressTTY reports whether w is a terminal a bar can be drawn on (a char
-// device). a *bytes.Buffer (tests) or a pipe/file (ci, tee) is not.
+// isProgressTTY reports whether w is a terminal a bar can be drawn on. a
+// *bytes.Buffer (tests), a pipe or a file (ci, tee) is not, and neither is
+// /dev/null, a character device like a terminal.
 func isProgressTTY(w io.Writer) bool {
 	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return ok && term.IsTerminal(int(f.Fd()))
 }
 
 // useColor reports whether to colour log tags: only on a tty and only when

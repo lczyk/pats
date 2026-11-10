@@ -2,6 +2,7 @@ package eval
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,45 @@ func TestProgress(t *testing.T) {
 	assert.That(t, strings.Contains(out, "5 out"), "shows out count", out)
 	assert.That(t, strings.Contains(out, "2 tool"), "shows tool count when showTools", out)
 	assert.That(t, strings.Contains(out, "a/t1 ok (exit 0, 1.0s)"), "logs completion above bar", out)
+}
+
+// the region is cut to the terminal: a line that wrapped, or more lines than
+// the screen holds, would leave a redraw's cursor in the wrong row.
+func TestProgressFitsTerminal(t *testing.T) {
+	var buf bytes.Buffer
+	p := newProgress(&buf, 9, 0)
+	defer p.close()
+	cols, rows := 24, 6
+	p.mu.Lock()
+	p.size = func() (int, int) { return cols, rows }
+	p.mu.Unlock()
+	for i := range 9 {
+		p.start(fmt.Sprintf("agent-with-a-long-name/task-%d", i), &pairStat{}, "", true)
+	}
+	region := func() []string {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.regionLines()
+	}
+	lines := region()
+	assert.Len(t, lines, rows-1) // the row under the region stays on screen
+	assert.Equal(t, lines[len(lines)-1], "  ... and 6 more")
+	for _, l := range lines {
+		assert.That(t, len([]rune(l)) < cols, "%q reaches the last column", l)
+	}
+	assert.That(t, strings.HasPrefix(lines[0], "[----"), "the bar went: %q", lines[0])
+
+	// a side that is not known cuts nothing.
+	p.mu.Lock()
+	cols, rows = 0, 0
+	p.mu.Unlock()
+	lines = region()
+	assert.Len(t, lines, 10)
+	assert.That(t, strings.Contains(lines[9], "agent-with-a-long-name/task-8"), "%q", lines[9])
+	// room for every line: none stands for others.
+	assert.Len(t, fitRegion([]string{"bar", "a", "b"}, 80, 4), 3)
+	assert.EqualArrays(t, fitRegion([]string{"bar", "a", "b", "c"}, 80, 4), []string{"bar", "a", "  ... and 2 more"})
+	assert.Len(t, fitRegion([]string{"bar", "a", "b"}, 80, 2), 3) // too small to say anything in
 }
 
 func TestStatTap(t *testing.T) {
@@ -387,4 +427,13 @@ func TestScanCopilot(t *testing.T) {
 
 func TestIsProgressTTY(t *testing.T) {
 	assert.Equal(t, isProgressTTY(&bytes.Buffer{}), false) // a buffer is never a tty
+	// a character device that is no terminal: `pats run >/dev/null` draws no bar.
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	defer null.Close()
+	assert.Equal(t, isProgressTTY(null), false)
+	file, err := os.Create(filepath.Join(t.TempDir(), "out"))
+	require.NoError(t, err)
+	defer file.Close()
+	assert.Equal(t, isProgressTTY(file), false)
 }
