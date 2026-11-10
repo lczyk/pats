@@ -27,6 +27,11 @@ func TestRunHostRecords(t *testing.T) {
 	old := newSandbox
 	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
+	// preflight looks for the harness cli on PATH; the fake sandbox never
+	// runs it.
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "opencode"), []byte("#!/bin/sh\n"), 0o755))
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, egress: {allow: [a.test]}}}}
