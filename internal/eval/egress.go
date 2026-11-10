@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -220,12 +221,12 @@ func readEvents(path string) ([]proxy.Event, error) {
 		return nil, err
 	}
 	var out []proxy.Event
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "" {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var e proxy.Event
-		if json.Unmarshal([]byte(line), &e) == nil && e.Ev != "" {
+		if json.Unmarshal(line, &e) == nil && e.Ev != "" {
 			out = append(out, e)
 		}
 	}

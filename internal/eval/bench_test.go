@@ -175,8 +175,8 @@ func egressLog(n int) (log []byte, requests int) {
 	return b.Bytes(), requests
 }
 
-// what one net-count refresh costs a pair as its audit log grows: the poll
-// re-reads and re-folds the whole file every 2s, for every pair in flight.
+// what folding a pair's audit log costs when the pair ends, as the log
+// grows: the file is read whole, once.
 func BenchmarkEgressAudit(b *testing.B) {
 	for _, events := range []int{100, 10_000, 100_000} {
 		b.Run(fmt.Sprintf("events=%d", events), func(b *testing.B) {

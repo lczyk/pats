@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -107,12 +108,12 @@ func readEgressAudit(auditPath string) egressAudit {
 		return a
 	}
 	seen := map[string]bool{}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "" {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var e proxy.Event
-		if json.Unmarshal([]byte(line), &e) != nil {
+		if json.Unmarshal(line, &e) != nil {
 			continue
 		}
 		switch e.Ev {
