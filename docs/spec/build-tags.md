@@ -1,6 +1,6 @@
 # drivers behind build tags
 
-status: proposed.
+status: implemented. the `nohost` rule for host steps lands with `docs/spec/step-sandbox.md`.
 
 ## problem
 
@@ -71,7 +71,7 @@ one `feat:` after the seams:
 - `nohost` also rejects host steps at load (`docs/spec/step-sandbox.md`), so the rule lives in config behind the
   same tag: one small file per side of it.
 - ci gains a job that vets and tests with `-tags nohost,nobwrap,nopodman`, so a tagged build cannot rot.
-- `pats --version` prints the tags, from a constant each tag file sets.
+- `pats --version` prints the tags, from what the toolchain records in the build info.
 
 ## not in this
 
