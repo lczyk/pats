@@ -281,7 +281,7 @@ func runPair(
 
 	meta := pairMeta{
 		Agent: job.agentName, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: t.Name,
-		Sandbox: sbID, Driver: sb.Driver, SandNotBoxed: sb.IsHost(), Image: sb.Image, Sudo: h.spec.Sudo,
+		Sandbox: sbID, Driver: sb.Driver, SandNotBoxed: sandbox.TraitsOf(sb.Driver).Unboxed, Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, Synced: &synced,
 		PatsVersion:  version.Info.Version,
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
@@ -292,7 +292,7 @@ func runPair(
 		meta.LXD = lxdProvenanceOf(ctx, sb)
 	}
 	if h.spec.Egress.Set {
-		enforced := !sb.IsHost()
+		enforced := !sandbox.TraitsOf(sb.Driver).Unboxed
 		meta.Egress = &egressRecord{
 			Policy:   h.spec.Egress.Policy,
 			Image:    proxyImageID(ctx, sb),
@@ -365,7 +365,7 @@ func pairFailed(ctx context.Context, cfg *config.Config, job pairJob, sandboxes 
 	}
 	if id, err := cfg.ResolveSandbox(a); err == nil {
 		sb := sandboxes[id]
-		meta.Sandbox, meta.Driver, meta.SandNotBoxed, meta.Image, meta.Components = id, sb.Driver, sb.IsHost(), sb.Image, sb.Components
+		meta.Sandbox, meta.Driver, meta.SandNotBoxed, meta.Image, meta.Components = id, sb.Driver, sandbox.TraitsOf(sb.Driver).Unboxed, sb.Image, sb.Components
 	}
 	if job.meta != nil {
 		job.meta(&meta)

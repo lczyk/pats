@@ -99,7 +99,7 @@ func (s *stepLog) Write(p []byte) (int, error) {
 func warnUnboxed(cfg *config.Config, pairs []config.TestPair, lg logw) {
 	used := usedSandboxes(cfg, pairs)
 	for _, sb := range cfg.Sandboxes {
-		if used[sb.Name] && sb.IsHost() {
+		if used[sb.Name] && sandbox.TraitsOf(sb.Driver).Unboxed {
 			lg.warn("sandbox %q runs agents on this machine, unsandboxed (sand-not-boxed); egress is advisory", sb.Name)
 		}
 	}

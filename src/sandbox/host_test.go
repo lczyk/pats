@@ -568,3 +568,10 @@ func TestHostSweepSession(t *testing.T) {
 		})
 	}
 }
+
+func TestHostTraits(t *testing.T) {
+	assert.Equal(t, TraitsOf(HostDriver), Traits{Unboxed: true, NoImages: true, HostCLIs: true})
+	// no image is pinned to the host, so no pin target reopens it.
+	_, ok := OpenTarget(context.Background(), HostDriver, "")
+	assert.That(t, !ok, "host target reopened")
+}

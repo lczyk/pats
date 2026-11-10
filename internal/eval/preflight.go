@@ -49,7 +49,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	sb := sandboxes[sbID]
-	if sb.IsHost() {
+	if sandbox.TraitsOf(sb.Driver).HostCLIs {
 		// no image carries the cli: the machine's PATH must.
 		if cli, ok := agent.HarnessCLIs[a.Harness]; ok {
 			if _, err := sandbox.HostLookPath(cli); err != nil {
@@ -57,7 +57,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 			}
 		}
 	}
-	if sb.IsHost() && sb.Egress.Set {
+	if sandbox.TraitsOf(sb.Driver).Unboxed && sb.Egress.Set {
 		// no fail-closed self-test to run: nothing stops what goes around
 		// the proxy.
 		logw{opts.Out, opts.Color, opts.Verbose}.info("preflight: %s: egress is advisory under the host driver", a.Name)

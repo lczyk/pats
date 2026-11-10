@@ -43,7 +43,8 @@ type host struct {
 func init() {
 	registerDriver(HostDriver, driverDef{
 		// no reopen: the host has no images, so no pin names it.
-		open: func(p *process, _ runner, o Options) Driver { return newHost(p, o) },
+		open:   func(p *process, _ runner, o Options) Driver { return newHost(p, o) },
+		traits: Traits{Unboxed: true, NoImages: true, HostCLIs: true},
 	})
 }
 

@@ -18,8 +18,23 @@ type driverDef struct {
 	reopen func(ctx context.Context, target, rest, daemon string) (d Driver, ok bool)
 	// sweep, when set, takes what a crashed run of the driver left in the
 	// cache, reporting each removal.
-	sweep func(dryRun bool, report func(CleanEvent))
+	sweep  func(dryRun bool, report func(CleanEvent))
+	traits Traits
 }
+
+// Traits are what callers outside a driver need to know of it, asked
+// before any driver is open, so they never branch on its name.
+type Traits struct {
+	// Unboxed: the agent runs on this machine, egress only advisory.
+	Unboxed bool
+	// NoImages: nothing to pin, pull or build.
+	NoImages bool
+	// HostCLIs: a harness cli comes from this machine's PATH.
+	HostCLIs bool
+}
+
+// TraitsOf are driver's traits; the zero value for one this build lacks.
+func TraitsOf(driver string) Traits { return drivers[driver].traits }
 
 var drivers = map[string]driverDef{}
 

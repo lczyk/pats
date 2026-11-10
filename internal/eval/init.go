@@ -61,7 +61,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	var done []pinned
 	var failed []string
 	for _, sb := range sbs {
-		if sb.IsHost() {
+		if sandbox.TraitsOf(sb.Driver).NoImages {
 			lg.info("sandbox %q: host driver, nothing to make: its agents run this machine's own clis", sb.Name)
 			continue
 		}
@@ -433,7 +433,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		if !used[sb.Name] {
 			continue
 		}
-		if sb.IsHost() {
+		if sandbox.TraitsOf(sb.Driver).NoImages {
 			comps, err := hostComponents(ctx, sb, lg)
 			if err != nil {
 				return nil, err

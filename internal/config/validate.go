@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lczyk/pats/src/sandbox"
 	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
@@ -172,7 +173,7 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 		default:
 			add("sandbox %q: unknown driver %q (docker|podman|lxd|bwrap|host)", s.Name, s.Driver)
 		}
-		if s.SandNotBoxed && !s.IsHost() {
+		if s.SandNotBoxed && !sandbox.TraitsOf(s.Driver).Unboxed {
 			add("sandbox %q: sand-not-boxed is the host driver's (driver %q)", s.Name, s.Driver)
 		}
 		if s.MaxParallel < 0 {

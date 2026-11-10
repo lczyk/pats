@@ -19,8 +19,14 @@ func TestDriversRegistered(t *testing.T) {
 }
 
 func TestOpenTargetUnknown(t *testing.T) {
-	for _, target := range []string{"", "nope:x", "host"} {
+	for _, target := range []string{"", "nope:x"} {
 		_, ok := OpenTarget(context.Background(), target, "")
 		assert.That(t, !ok, "target %q reopened", target)
+	}
+}
+
+func TestTraitsOfBoxed(t *testing.T) {
+	for _, d := range append(Engines(), LXDDriver, "bwrap", "nope") {
+		assert.Equal(t, TraitsOf(d), Traits{}, "driver %q", d)
 	}
 }

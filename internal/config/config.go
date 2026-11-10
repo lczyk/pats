@@ -137,9 +137,6 @@ func (e *Egress) UnmarshalYAML(node *yaml.Node) error {
 // IsContainer reports whether the sandbox runs under a container driver.
 func (s Sandbox) IsContainer() bool { return sandbox.IsEngine(s.Driver) }
 
-// IsHost reports whether the sandbox runs its agent on this machine, unboxed.
-func (s Sandbox) IsHost() bool { return s.Driver == "host" }
-
 // Limits caps a sandbox's resources. docker maps cpu and memory to --cpus and
 // --memory; lxd maps all three to limits.cpu, limits.memory and the root
 // disk's size.
