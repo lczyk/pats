@@ -40,6 +40,13 @@ type host struct {
 	run func(ctx context.Context, cmd *exec.Cmd) error
 }
 
+func init() {
+	registerDriver(HostDriver, driverDef{
+		// no reopen: the host has no images, so no pin names it.
+		open: func(p *process, _ runner, o Options) Driver { return newHost(p, o) },
+	})
+}
+
 func newHost(p *process, o Options) *host {
 	// the agent runs in a workdir of its own: a relative SSL_CERT_FILE
 	// would name nothing there.

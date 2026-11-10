@@ -54,6 +54,22 @@ type lxd struct {
 
 func newLXD(p *process, r runner, o Options) *lxd { return &lxd{p: p, r: r, o: o} }
 
+func init() {
+	registerDriver(LXDDriver, driverDef{
+		open: func(p *process, r runner, o Options) Driver {
+			if r == nil {
+				r = lxcCLI
+			}
+			return newLXD(p, r, o)
+		},
+		// a pin names its remote, and lxd has no daemon id to hold it to.
+		reopen: func(_ context.Context, _, rest, _ string) (Driver, bool) {
+			d, err := Open(Options{Driver: LXDDriver, Remote: rest}.WithEnv())
+			return d, err == nil
+		},
+	})
+}
+
 // lxc runs the cli with args and returns its trimmed combined output.
 func (l *lxd) lxc(ctx context.Context, args ...string) (string, error) {
 	var out bytes.Buffer

@@ -45,6 +45,20 @@ var engines = map[string]engine{
 	},
 }
 
+func init() {
+	for name := range engines {
+		registerDriver(name, driverDef{
+			open: func(p *process, r runner, o Options) Driver {
+				if r == nil {
+					r = engineRunner(o)
+				}
+				return newContainer(p, r, o)
+			},
+			reopen: reopenSame,
+		})
+	}
+}
+
 // IsEngine says whether driver names a container engine pats drives.
 func IsEngine(driver string) bool {
 	_, ok := engines[driver]

@@ -132,19 +132,11 @@ type SandboxOptions struct {
 // against.
 func OpenTarget(ctx context.Context, target, daemon string) (d Driver, ok bool) {
 	kind, rest, _ := strings.Cut(target, ":")
-	switch {
-	case kind == LXDDriver:
-		d, err := Open(Options{Driver: LXDDriver, Remote: rest}.WithEnv())
-		return d, err == nil
-	case IsEngine(kind), kind == BwrapDriver:
-		d, err := Open(Options{Driver: kind}.WithEnv())
-		if err != nil {
-			return nil, false
-		}
-		now, err := d.Target(ctx)
-		return d, err == nil && now.Key == target && now.Daemon == daemon
+	def, ok := drivers[kind]
+	if !ok || def.reopen == nil {
+		return nil, false
 	}
-	return nil, false
+	return def.reopen(ctx, target, rest, daemon)
 }
 
 // Place is one place pats may have left things in, and a name for it.
@@ -191,30 +183,14 @@ func Open(o Options) (Driver, error) {
 // newDriver is the driver o names on p, running its cli through r (nil:
 // the driver's own cli).
 func newDriver(p *process, r runner, o Options) (Driver, error) {
-	switch {
-	case IsEngine(o.Driver):
-		if r == nil {
-			r = engineRunner(o)
-		}
-		return newContainer(p, r, o), nil
-	case o.Driver == "lxd":
-		if r == nil {
-			r = lxcCLI
-		}
-		return newLXD(p, r, o), nil
-	case o.Driver == HostDriver:
-		return newHost(p, o), nil
-	case o.Driver == BwrapDriver:
-		d := newBwrap(p, o)
-		if r != nil {
-			d.r = r
-		}
-		return d, nil
-	case o.Driver == "":
+	if o.Driver == "" {
 		return nil, errors.New("sandbox: empty driver")
-	default:
+	}
+	def, ok := drivers[o.Driver]
+	if !ok {
 		return nil, fmt.Errorf("sandbox: unknown driver %q", o.Driver)
 	}
+	return def.open(p, r, o), nil
 }
 
 // engineRunner runs o's container cli, aimed where o says: podman's

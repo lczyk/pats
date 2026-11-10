@@ -46,6 +46,30 @@ type bwrapDriver struct {
 	verErr  error
 }
 
+func init() {
+	registerDriver(BwrapDriver, driverDef{
+		open: func(p *process, r runner, o Options) Driver {
+			d := newBwrap(p, o)
+			if r != nil {
+				d.r = r
+			}
+			return d
+		},
+		reopen: reopenSame,
+		// an unpack a crash cut short leaves <id>.new, taken only when no
+		// unpack holds its lock.
+		sweep: func(dryRun bool, report func(CleanEvent)) {
+			st, err := newBwrapStore()
+			if err != nil {
+				return
+			}
+			for _, name := range st.sweepNew(dryRun) {
+				report(CleanEvent{Action: "remove", Kind: "temp", Name: filepath.Join(st.dir, "rootfs", name)})
+			}
+		},
+	})
+}
+
 func newBwrap(p *process, o Options) *bwrapDriver {
 	return &bwrapDriver{p: p, o: o, r: cliRunner("bwrap"), arch: runtime.GOARCH}
 }

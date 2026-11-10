@@ -576,11 +576,11 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 		gone[path], gone[path+ownerSuffix] = true, true
 		o.report(CleanEvent{Action: "remove", Kind: "temp", Name: path})
 	}
-	// a bwrap unpack a crash cut short leaves <id>.new, taken only when no
-	// unpack holds its lock.
-	if st, err := newBwrapStore(); err == nil {
-		for _, name := range st.sweepNew(dryRun) {
-			o.report(CleanEvent{Action: "remove", Kind: "temp", Name: filepath.Join(st.dir, "rootfs", name)})
+	// what a driver's own crashed work left in the cache (a bwrap unpack's
+	// <id>.new).
+	for _, name := range Drivers() {
+		if sweep := drivers[name].sweep; sweep != nil {
+			sweep(dryRun, o.report)
 		}
 	}
 	if listed == nil && !force {
