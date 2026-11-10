@@ -145,7 +145,8 @@ type Session interface {
 - files: tar over exec, one stream per dir, written and read in go on the host side: the workdir and every mount are
   pushed at start, and after the agent the writable ones are pulled back over their host copies (the session's
   `Sync`; a no-op for docker, whose paths are bound), names leaving the destination refused, symlinks made last and
-  every entry written through an `os.Root` of the destination, which no link under it leads out of.
+  every entry written through an `os.Root` of the destination, which no link under it leads out of. a dir is pulled
+  whole beside its host copy and swapped in only then, so a pull that fails leaves the host copy as it was.
   the whole `/workspace` comes back; a task-level filter (spread's `artifacts:`) is later work. no local bind-mount
   fast path at first.
 - a session's `HandOver`, once before the agent, gives what root left to the agent user and sets its sudo: the rule

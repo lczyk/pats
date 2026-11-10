@@ -261,8 +261,9 @@ for each agent score (judged pair x agent scorer) in the selected suites:
 ```
 
 - the table is read top down and the first row that matches wins. a pair dir without `metadata.json` is a run that
-  died mid-pair, or a prompt that failed to resolve (`runPair` returns before writing it); a judge can't tell which,
-  so it waits. (script scorers keep today's rule: a pair dir that exists is scored, metadata or not.)
+  died mid-pair, so its status is unknown and a judge waits. a pair `runPair` gave up on before the agent started
+  (a sandbox that did not open, a prompt that failed to resolve) is not one of these: the run writes it an `error`
+  `metadata.json`, not synced, and the second row makes it `na`. (script scorers keep today's rule: a pair dir that exists is scored, metadata or not.)
 - being synced is needed, not enough: a synced pair whose harness reported an error is still `na`, since the
   agent's own run failed whatever came home. that is `summary.is_error` in the pair's `metadata.json`, which every
   harness's summary already sets from its own stream (`progress.go`): claude's `result` event's `is_error`, codex's
@@ -274,8 +275,7 @@ for each agent score (judged pair x agent scorer) in the selected suites:
   never started the agent and never synced. not synced is unjudgeable whatever the reason (setup failed, the sync
   itself failed, an error came before it): `synced` records only whether the files came home, and the pair's
   `status` and `error` already say why, so `na` needs nothing more. `metadata.json` gains a `synced` field, written by the run phase into every
-  `metadata.json` it writes (a pair whose prompt failed to resolve returns before writing one, and is skipped by the
-  first row): true once the sandbox's files came home (`runPair` tracks it today and does not write it). a pair from before
+  `metadata.json` it writes: true once the sandbox's files came home (`runPair` tracks it today and does not write it). a pair from before
   the field counts as synced when its status is `ok` or `nonzero`, and as not synced otherwise.
 - every `pats judge` judges every agent score its selection holds. to iterate on one judge, narrow to it:
   `pats judge -s my-judge`, with `-a` / `-t` to narrow the pairs too. there is no cache key and no staleness check:
