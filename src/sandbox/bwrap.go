@@ -517,19 +517,31 @@ func (s *bwrapSession) exec(ctx context.Context, c Cmd, stdout, stderr io.Writer
 	done := make(chan error, 1)
 	go func() { done <- x.Wait() }()
 	var werr error
+	killed := false
 	select {
 	case werr = <-done:
 	case <-xctx.Done():
-		// bwrap is pid 1 of the sandbox's pid namespace: everything inside
-		// ends with it.
-		_ = x.Signal(os.Kill)
-		werr = <-done
+		select {
+		case werr = <-done: // it finished as the context ended
+		default:
+			// bwrap is pid 1 of the sandbox's pid namespace: everything
+			// inside ends with it.
+			_ = x.Signal(os.Kill)
+			werr = <-done
+			killed = true
+		}
 	}
 	code, err := exitResult(werr, "bwrap")
-	if xctx.Err() != nil && err == nil {
-		return -1, nil
+	// as execCancellable reads a cancelled exec: a bwrap that finished as the
+	// context ended keeps its result, a killed one's status is the result,
+	// and one that exited clean all the same reports the cancel.
+	switch {
+	case !killed || err != nil:
+		return code, err
+	case werr == nil:
+		return -1, fmt.Errorf("bwrap: %w", xctx.Err())
 	}
-	return code, err
+	return -1, nil
 }
 
 // Push copies a host file, or a directory's contents, to path inside, as

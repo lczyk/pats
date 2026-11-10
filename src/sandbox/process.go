@@ -237,15 +237,15 @@ func output(ctx context.Context, r runner, args ...string) ([]byte, error) {
 	return out.Bytes(), err
 }
 
-// execCancellable runs args to completion. when ctx ends first, cancel runs
-// (whatever stops the work the client started, which ending the client
-// alone does not), then the client gets sigterm, and sigkill after the
-// grace. a process that finished as ctx ended keeps its result. after a
-// cancel an exit status wins and a clean exit reports ctx's error, as
-// os/exec's Wait does.
+// execCancellable runs args to completion. on a ctx already done nothing
+// starts, which is ErrLaunch. when ctx ends first, cancel runs (whatever
+// stops the work the client started, which ending the client alone does
+// not), then the client gets sigterm, and sigkill after the grace. a process
+// that finished as ctx ended keeps its result. after a cancel an exit status
+// wins and a clean exit reports ctx's error, as os/exec's Wait does.
 func (p *process) execCancellable(ctx context.Context, r runner, stdin io.Reader, stdout, stderr io.Writer, cancel func(), args ...string) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
 	x, err := r.Start(stdin, stdout, stderr, args...)
 	if err != nil {
