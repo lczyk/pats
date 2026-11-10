@@ -68,6 +68,8 @@ judge:
 # task's scripts. timeout is per pair, 10m by default, and covers the agent only.
 # a task vector can instead take `dir: <path>`: every directory under it holding a task.yaml is one task, configured by that
 # file alone, with its scripts run and its paths resolved in its own directory.
+# `step-sandbox: <sandbox>` runs stage, prompt-cmd and collect in that sandbox instead of on the host, at their host
+# paths, with the tree read-only; `step-env: [NAME]` passes host variables in. unset: on the host.
 write-readme:
   kind: task
   defaults:
@@ -84,6 +86,7 @@ write-readme:
       #   deny: ['github.com/*/monorepo-answers**']
 
 # a scorer's `score` is a script: it reads a pair's collected output and prints a float in [0,1], or `na`, on its first stdout line.
+# `step-sandbox:` runs it in a sandbox, as for a task, with the run dir read-only.
 style:
   kind: scorer
   defaults:

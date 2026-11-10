@@ -24,6 +24,9 @@ an error but an over-broad one is a long, expensive run.
   INFO 3 pair(s), est $0.04 + 2 unknown
   ```
 
+a task with a step sandbox (`docs/spec/step-sandbox.md`) shows it after the sandbox: `sandbox docker  steps tools`, and
+`steps` in the json line.
+
 - **`--json`** only goes with `-n`: `pats run --json` alone is an error before anything runs, so a preview flag
   never starts a paid run. it prints the same content as json lines on stdout, and nothing else there: warnings and `-v` lines go
   to stderr in json mode. one object per pair, then one total:

@@ -43,7 +43,8 @@ projects share a layer only by accident of identical inputs.
 the selected pairs' sandboxes need -- by default every sandbox the config's suites use -- and pins it. `-S`, `-a`
 and `-t` are `run`'s selectors, so `pats init` and `pats run` with the same flags agree on what is needed;
 `--sandbox` and `--driver` narrow further. the driver comes from each sandbox, so a project mixing docker and lxd
-agents comes up with one command.
+agents comes up with one command. a step sandbox (`docs/spec/step-sandbox.md`) a selected task or scorer names is pinned
+with the rest.
 
 per driver:
 

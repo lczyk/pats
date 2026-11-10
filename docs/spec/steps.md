@@ -49,7 +49,8 @@ so each step is one field, a shell script, and nothing in `pats.yaml` or a `task
 
 ## where a step runs, and what it can reach
 
-unchanged by this, written down because the `-cmd` forms used to blur it:
+unchanged by this, written down because the `-cmd` forms used to blur it. a host step can run in a step sandbox
+instead (`docs/spec/step-sandbox.md`):
 
 - **host steps** (`stage`, `collect`, `score`, `prompt-cmd`) run in the directory the item was defined in (the pats
   root, or a `dir` task's own directory), with the pats root's `bin/` first on `PATH`. so a helper is called by name

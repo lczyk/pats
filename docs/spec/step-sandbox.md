@@ -1,7 +1,9 @@
 # steps in a sandbox
 
-status: proposed. it depends on the build-tag seams (`docs/spec/build-tags.md`) for `nohost`, and `docs/spec/snap.md`
-moves from classic to strict confinement with it.
+status: implemented. two small departures from the text below: the box's `HOME` (`/tmp/pats-step-home`) is made by
+the step user, not a root exec, and gets its `safe.directory` setting for git under every driver, not lxd alone; and
+the tree is probed by `pats.yaml` in the config dir, or an entry of the tree that no mask makes when the config is
+named otherwise.
 
 ## problem
 
