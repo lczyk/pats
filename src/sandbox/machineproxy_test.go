@@ -103,7 +103,7 @@ func TestMachineProxyStartRefusals(t *testing.T) {
 func TestMachineProxyContainer(t *testing.T) {
 	cert, _, err := GenCA()
 	require.NoError(t, err)
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		t.Run(driver, func(t *testing.T) {
 			f := newFakeDaemon(t, driver)
 			f.upstream = "proxy.corp:3128"

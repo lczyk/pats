@@ -26,6 +26,24 @@ jobs:
     - name: Test
       run: make test
 
+  # the reduced build the strict snap ships (docs/spec/build-tags.md): the
+  # drivers it leaves out must stay out cleanly, tests included.
+  tagged:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.26'
+
+    - name: Vet
+      run: go vet -tags nohost,nobwrap,nopodman ./...
+
+    - name: Test
+      run: go test -race -tags nohost,nobwrap,nopodman ./...
+
   # the lxd driver end to end on the runner's own lxd. the runner also runs
   # docker, whose FORWARD policy drops traffic on bridges it was not told
   # about, so pats's bridges are let through first -- the same rule an admin

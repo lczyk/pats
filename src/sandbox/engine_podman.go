@@ -1,3 +1,5 @@
+//go:build !nopodman
+
 package sandbox
 
 import (

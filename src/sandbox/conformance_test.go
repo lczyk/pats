@@ -67,7 +67,6 @@ var conformDrivers = []conformDriver{
 		}
 	}},
 	containerConform("docker"),
-	containerConform("podman"),
 }
 
 func containerConform(driver string) conformDriver {

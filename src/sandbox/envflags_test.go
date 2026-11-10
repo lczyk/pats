@@ -53,7 +53,7 @@ func TestLXDEnvScriptShell(t *testing.T) {
 // the value reaches the command, never the cli's command line or its
 // environment, and the command's own stdin is closed.
 func TestExecEnvOnDaemon(t *testing.T) {
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		t.Run(driver, func(t *testing.T) {
 			c := onDaemon(t, driver)
 			sb, err := c.Sandbox(SandboxOptions{Image: "docker.io/library/" + testImage})

@@ -31,7 +31,7 @@ var containerModes = lxdEgressModes
 // writes reach the host through the bound workdir, and nothing is left
 // after Close.
 func TestContainerSessionOnDaemon(t *testing.T) {
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		for _, mode := range containerModes {
 			t.Run(driver+"/"+mode.name, func(t *testing.T) {
 				f := newFakeDaemon(t, driver)
@@ -134,7 +134,7 @@ type containerRun struct {
 
 func containerRuns() []containerRun {
 	var out []containerRun
-	for _, d := range []string{"docker", "podman"} {
+	for _, d := range Engines() {
 		for _, m := range containerModes {
 			out = append(out, containerRun{d, m})
 		}
@@ -184,7 +184,7 @@ func TestContainerSweepClose(t *testing.T) {
 // every call of a clean of a dead run's leftovers: whatever a failed call
 // left, the next clean takes.
 func TestContainerSweepClean(t *testing.T) {
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		t.Run(driver, func(t *testing.T) {
 			containerSweep(t, driver, func(t *testing.T, f *fakeDaemon, ctx context.Context) *process {
 				plan := f.faults.plan

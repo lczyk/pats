@@ -1,3 +1,5 @@
+//go:build !nobwrap
+
 package sandbox
 
 import (

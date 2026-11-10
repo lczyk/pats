@@ -367,6 +367,7 @@ func TestNextSubnet(t *testing.T) {
 // podman's default network is `podman`, and its resolver forwards nothing on
 // an internal network, so the agent gets no dns override there.
 func TestPodmanDefaults(t *testing.T) {
+	needDriver(t, "podman")
 	fd := newFakeDocker(t)
 	c := fd.container()
 	c.driver = "podman"
@@ -502,11 +503,10 @@ func TestLoadClientID(t *testing.T) {
 
 // every engine says what its networks need; the table is the one place.
 func TestEngineTable(t *testing.T) {
-	assert.EqualArrays(t, Engines(), []string{"docker", "podman"})
 	for _, name := range Engines() {
 		assert.That(t, engines[name].defaultNetwork != "", "%s: no default network", name)
 	}
-	assert.That(t, IsEngine("docker") && IsEngine("podman") && !IsEngine("lxd"), "IsEngine")
+	assert.That(t, IsEngine("docker") && !IsEngine("lxd"), "IsEngine")
 }
 
 // a bundle is read once per key, a failed read is not kept, and a caller

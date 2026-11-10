@@ -263,12 +263,12 @@ func TestPinsUnreadable(t *testing.T) {
 func TestPinsNormalizeIDs(t *testing.T) {
 	hex := strings.Repeat("ab", 32)
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{
-		"podman:local": {"s": {Image: pinImage{ID: hex}, Proxy: &pinImage{ID: hex}}},
-		"lxd:srv":      {"l": {Image: pinImage{ID: hex}}},
-	}, Superseded: []superseded{{Target: "podman:local", ID: hex}, {Target: "lxd:srv", ID: hex}}}
+		"docker:default": {"s": {Image: pinImage{ID: hex}, Proxy: &pinImage{ID: hex}}},
+		"lxd:srv":        {"l": {Image: pinImage{ID: hex}}},
+	}, Superseded: []superseded{{Target: "docker:default", ID: hex}, {Target: "lxd:srv", ID: hex}}}
 	f.normalizeIDs()
-	require.Equal(t, f.Targets["podman:local"]["s"].Image.ID, "sha256:"+hex)
-	require.Equal(t, f.Targets["podman:local"]["s"].Proxy.ID, "sha256:"+hex)
+	require.Equal(t, f.Targets["docker:default"]["s"].Image.ID, "sha256:"+hex)
+	require.Equal(t, f.Targets["docker:default"]["s"].Proxy.ID, "sha256:"+hex)
 	require.Equal(t, f.Targets["lxd:srv"]["l"].Image.ID, hex)
 	require.Equal(t, f.Superseded[0].ID, "sha256:"+hex)
 	require.Equal(t, f.Superseded[1].ID, hex)

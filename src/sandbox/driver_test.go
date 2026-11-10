@@ -33,7 +33,6 @@ var driverCases = []driverCase{
 		return d, func() int { return f.copies }
 	}},
 	containerDriverCase("docker"),
-	containerDriverCase("podman"),
 }
 
 func containerDriverCase(driver string) driverCase {
@@ -158,6 +157,7 @@ func TestContainerTarget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, got, Target{Key: "docker:default", Daemon: "DAEMON:docker", Version: "27.1.1"})
 
+	needDriver(t, "podman")
 	got, err = open(Options{Driver: "podman", ContainerHost: "ssh://core@box/run/podman.sock"}).Target(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, got, Target{Key: "podman:ssh://core@box/run/podman.sock", Daemon: "ssh://core@box/run/podman.sock"})
@@ -215,8 +215,9 @@ func TestProvisionDockerfile(t *testing.T) {
 
 // podman's overrides reach the cli the driver runs, not only its target.
 func TestEngineRunnerEnv(t *testing.T) {
+	assert.Equal(t, engineRunner(Options{Driver: "docker", ContainerHost: "x"}).(execRunner).env == nil, true)
+	needDriver(t, "podman")
 	r := engineRunner(Options{Driver: "podman", ContainerHost: "ssh://box/run/podman.sock", ContainerConnection: "c"}).(execRunner)
 	assert.EqualArrays(t, r.env, []string{"CONTAINER_HOST=ssh://box/run/podman.sock", "CONTAINER_CONNECTION=c"})
-	assert.Equal(t, engineRunner(Options{Driver: "docker", ContainerHost: "x"}).(execRunner).env == nil, true)
 	assert.Equal(t, execRunner{bin: "podman"}.environ() == nil, true)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,9 @@ func TestOpenErrors(t *testing.T) {
 	assert.Error(t, err, "empty driver")
 
 	for _, driver := range []string{"docker", "lxd", "bwrap"} {
+		if !slices.Contains(Drivers(), driver) {
+			continue
+		}
 		d, err := Open(Options{Driver: driver})
 		assert.NoError(t, err)
 		_, err = d.Sandbox(SandboxOptions{})
@@ -154,7 +158,7 @@ func TestContainerSession(t *testing.T) {
 // the copy rules the fake daemon models, on a real docker and podman: a
 // directory's contents go into an existing path, and come out into hostDir.
 func TestContainerCopyRules(t *testing.T) {
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		t.Run(driver, func(t *testing.T) {
 			if _, err := exec.LookPath(driver); err != nil {
 				t.Skip(driver + " not on PATH")

@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -28,5 +29,13 @@ func TestOpenTargetUnknown(t *testing.T) {
 func TestTraitsOfBoxed(t *testing.T) {
 	for _, d := range append(Engines(), LXDDriver, "bwrap", "nope") {
 		assert.Equal(t, TraitsOf(d), Traits{}, "driver %q", d)
+	}
+}
+
+// needDriver skips a test of a driver this build leaves out.
+func needDriver(t testing.TB, name string) {
+	t.Helper()
+	if !slices.Contains(Drivers(), name) {
+		t.Skipf("driver %q is not in this build", name)
 	}
 }

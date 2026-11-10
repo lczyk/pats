@@ -404,6 +404,7 @@ su2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}
 }
 
 func TestValidateBwrapSandbox(t *testing.T) {
+	needDriver(t, "bwrap")
 	c := parseT(t, base+`bwx: {kind: sandbox, items: {bwx: {driver: bwrap, image: ghcr.io/x/y:1, max-parallel: 2, env: {A: b}, egress: {allow: [.ubuntu.com]}}}}
 bax: {kind: agent, items: {bax: {harness: opencode-openrouter, model: m, sandbox: bwx}}}
 su2: {kind: suite, items: {su2: {agents: bax, tasks: txx, scorers: scx}}}
@@ -412,6 +413,7 @@ su2: {kind: suite, items: {su2: {agents: bax, tasks: txx, scorers: scx}}}
 }
 
 func TestValidateHostSandbox(t *testing.T) {
+	needDriver(t, "host")
 	c := parseT(t, base+`hxx: {kind: sandbox, items: {hxx: {driver: host, sand-not-boxed: true, max-parallel: 2, env: {A: b}, egress: {allow: [.ubuntu.com]}}}}
 hax: {kind: agent, items: {hax: {harness: opencode-openrouter, model: m, sandbox: hxx}}}
 su2: {kind: suite, items: {su2: {agents: hax, tasks: txx, scorers: scx}}}
@@ -442,6 +444,9 @@ func TestValidateAccepts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if strings.Contains(tc.src, "driver: podman") {
+				needDriver(t, "podman")
+			}
 			c := parseT(t, tc.src)
 			assert.NoError(t, c.Validate())
 		})

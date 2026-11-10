@@ -36,7 +36,7 @@ func onDaemon(t *testing.T, driver string) *container {
 func TestContainerImagesOnDaemon(t *testing.T) {
 	ctx := context.Background()
 	ref := "docker.io/library/" + testImage
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		t.Run(driver, func(t *testing.T) {
 			c := onDaemon(t, driver)
 			img, _, err := c.Pull(ctx, ref, false, io.Discard)
@@ -93,7 +93,7 @@ func TestContainerImagesOnDaemon(t *testing.T) {
 // their labels, left while the run's lease is fresh, taken once it is stale.
 func TestContainerCleanOnDaemon(t *testing.T) {
 	ctx := context.Background()
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		t.Run(driver, func(t *testing.T) {
 			run := onDaemon(t, driver)
 			sb, err := run.Sandbox(SandboxOptions{Image: "docker.io/library/" + testImage})
@@ -165,7 +165,7 @@ func TestContainerEgressCleanOnDaemon(t *testing.T) {
 		t.Skip("set PATS_E2E_EGRESS_IMAGE to a proxy image built from this tree")
 	}
 	ctx := context.Background()
-	for _, driver := range []string{"docker", "podman"} {
+	for _, driver := range Engines() {
 		for _, mode := range lxdEgressModes[2:] {
 			t.Run(driver+"/"+mode.name, func(t *testing.T) {
 				eg := mode.egress

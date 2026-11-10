@@ -360,7 +360,11 @@ func wantsVersion(args []string) bool {
 func main() {
 	// handle --version before parsing -- go-flags would otherwise demand a command.
 	if wantsVersion(os.Args[1:]) {
-		fmt.Println(version.Info)
+		if tags := version.Tags(); tags != "" {
+			fmt.Printf("%s (tags: %s)\n", version.Info, tags)
+		} else {
+			fmt.Println(version.Info)
+		}
 		os.Exit(0)
 	}
 
