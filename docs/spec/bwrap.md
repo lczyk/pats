@@ -123,7 +123,8 @@ the forwarder's binary present (below, "egress"), so a run never fetches.
     runs them one after another today.
   - cancel: bwrap is killed. it is pid 1 of the sandbox's pid namespace, so everything inside ends with it, and
     `--die-with-parent` ends it if pats dies. a context cancelled before bwrap started is `ErrLaunch`; one that killed
-    it returns the killed result (exit -1, no error), as the other drivers do.
+    it returns the killed result (exit -1, no error), and a bwrap that exited clean all the same reports the cancel,
+    as the other drivers do.
 - **push** is a root exec that binds the host path read-only at a staging path and copies it to its path inside
   (`cp -a`), so what lands is an ordinary file of the overlay: `prepare` removes its material afterwards
   (`rm -rf /pats-prepare`), which a bind would refuse. **pull** of

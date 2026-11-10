@@ -59,7 +59,8 @@ the patterns every cli driver repeats live once, on the runner and the process:
 
 a killed exec reports its exit status, not an error (`Session.Exec`'s contract, what `internal/eval` relies on: it
 tells a timeout by its context). one that exits 0 once cancelled reports the context's error, as `os/exec` does. an exec
-on a context already done fails without starting. the cancel step runs
+on a context already done fails without starting, as `ErrLaunch` on every driver: a pair whose deadline passed before
+its exec began is an error with nothing to collect, never a timed-out agent. the cancel step runs
 before the signals, on a fresh context: a daemon that hangs there hangs the exec, as before this design.
 
 ## timings
@@ -98,11 +99,15 @@ behaviour every driver must share gets one table run against each driver's fake.
 passes before it ships:
 
 - `TestExecCancel`: the cancel step, then sigterm, then sigkill after the grace; the killed client's status as the
-  result; a clean exit after the cancel as the cancel; a context already done; a clean finish not signalled.
+  result; a clean exit after the cancel as the cancel; a context already done; a clean finish not signalled. bwrap's
+  client is the sandbox, so it has no cancel step and no grace: the client is killed outright, and the results are
+  the same. host has no client and no runner to fake: its rows run real processes, and the proof of its cancel is
+  that the command's process group is gone.
 - `TestSessionConformance`: what `Session` promises of Push, Pull and Exec (a directory's contents to a new or an
   existing path, a file to a path, a directory's contents out into hostDir, a non-zero exit as the command's), and a
-  second Close with nothing left. the drivers in it: lxd, docker and podman. the copy rules are also checked on a
-  real docker and podman where they run.
+  second Close with nothing left. the drivers in it: lxd, docker, podman, bwrap and host. bwrap's fake keeps a tree
+  for the sandbox's root and pulls a bound path, the only kind it pulls (`bwrap.md`); host's sandbox is the host, so
+  its paths are dirs of the test's. the copy rules are also checked on a real docker and podman where they run.
 
 per driver, on its fake: a whole session under each egress mode (`TestLXDSessionOnServer`,
 `TestContainerSessionOnDaemon`), and the sweep: every cli call of Start under each egress mode, of Close, and for lxd
@@ -256,7 +261,8 @@ two option levels land together with docker and podman's argv moving into `conta
 - eval's interfaces are `imageHost`, `puller`, `builder` and `host` (`internal/eval/hosts.go`); `hostFor`,
   `hostForTarget`, `newSandbox` and clean's `openDriver` are its seams.
 - tests: `TestDriverConformance` (pull then resolve, a second and a forced pull, a missing ref, remove, an image in
-  use, build then resolve, the target) on the lxd, docker and podman fakes; `TestContainerTarget`,
+  use, build then resolve, the target) on the lxd, docker and podman fakes, and on bwrap with a store and a registry
+  of the test's (it builds nothing, and says so; host holds no images and is not in it); `TestContainerTarget`,
   `TestContainerResolveDigest`, `TestProvisionDockerfile`, `TestEngineRunnerEnv`. `fakeDaemon` learned images,
   pulls, builds and the target commands (`dockerimages_test.go`).
 
