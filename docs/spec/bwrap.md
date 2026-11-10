@@ -85,7 +85,9 @@ the pin under the target `bwrap:<hostname>`. there is no daemon to hold it, so p
 - **unpack** the layers in order into the store, `<cache>/bwrap/rootfs/<digest>/`, as the invoking user: whiteouts
   and opaque dirs applied, the image config's `Env` kept beside it (`<digest>.env.json`), device nodes skipped
   (bwrap supplies `/dev`), setuid and setgid bits dropped, ownership not kept (one uid, above), and an entry whose
-  path or link target leaves the rootfs refused. it unpacks into
+  path or link target leaves the rootfs refused. every entry is written through an `os.Root` of the rootfs: one that
+  reaches past a symlink a lower layer left (a merged `/usr`'s `bin`) lands where that leads inside the rootfs, and
+  one past a link that leaves it, or an absolute one, is refused. it unpacks into
   `<digest>.new` and renames when complete, holding `<digest>.lock` exclusively from the first byte to the rename:
   a second init waits and then finds the rootfs there, and clean removes a `.new` only when it gets that lock without
   waiting, so it never takes an unpack in progress, only a crashed one's.
@@ -187,8 +189,8 @@ the forwarder's binary present (below, "egress"), so a run never fetches.
 - argv, on a fake runner: root and agent execs; open, `none` and policy; no env value in argv; the forwarder wrapping
   the command under a policy.
 - unpack, on crafted layers: whiteouts and opaque dirs, hardlinks, a symlink pointing out of the rootfs and a file
-  written through it refused, `../` entries refused, device nodes skipped, setuid dropped, a crash mid-unpack leaving
-  only `.new`.
+  written through it refused, a file written past a link that stays inside landing there, `../` entries refused,
+  device nodes skipped, setuid dropped, a crash mid-unpack leaving only `.new`.
 - store: two pulls of one digest converge; removing an image a session holds is refused; a crashed holder releases.
 - sessions, on linux ci with bwrap: what `prepare` writes as root the agent reads; a background child dies with its
   exec; ctrl-c kills the exec; close removes the session dir; the self-test passes under a policy and a direct dial
