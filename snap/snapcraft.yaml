@@ -124,31 +124,46 @@ parts:
       go build -trimpath -o "$CRAFT_PART_INSTALL/bin/lxc" ./lxc
 
   # docker publishes a static cli per arch. its source has no plain go.mod,
-  # so the published build is taken as is.
+  # so the published build is taken as is, checked against a hash per arch
+  # (source-checksum cannot vary by arch). the version is a pin, bumped by
+  # hand with its hashes.
   docker-cli:
-    plugin: dump
-    # docker names the arches x86_64 and aarch64. the version is a pin, bumped
-    # by hand.
-    source:
-      - on amd64: https://download.docker.com/linux/static/stable/x86_64/docker-28.5.1.tgz
-      - on arm64: https://download.docker.com/linux/static/stable/aarch64/docker-28.5.1.tgz
-    # the tarball's single top dir is stripped on extraction.
-    organize:
-      docker: bin/docker
-    stage:
-      - bin/docker
-
-  # buildkit for docker build: without it the cli falls back to the legacy
-  # builder. a static release, pinned and bumped by hand.
-  docker-buildx:
-    plugin: dump
-    source:
-      - on amd64: https://github.com/docker/buildx/releases/download/v0.29.1/buildx-v0.29.1.linux-amd64
-      - on arm64: https://github.com/docker/buildx/releases/download/v0.29.1/buildx-v0.29.1.linux-arm64
-    source-type: file
+    plugin: nil
+    build-packages:
+      - curl
+    override-pull: |
+      set -eu
+      v=28.5.1
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) arch=x86_64 sum=5c0d19f31fece1accd0358bb8cff591fe25d7b6cba19f0fd412cbfdc07f75ff6 ;;
+        arm64) arch=aarch64 sum=de54e37157f45a43f42f6271302372d95c0eb992cc35ecaee74989bb14058c94 ;;
+      esac
+      curl -fsSLo docker.tgz "https://download.docker.com/linux/static/stable/$arch/docker-$v.tgz"
+      printf '%s  docker.tgz\n' "$sum" | sha256sum -c -
+      tar -xzf docker.tgz --strip-components=1 docker/docker
     override-build: |
       set -eu
-      install -D -m 0755 "$CRAFT_PART_SRC"/buildx-* "$CRAFT_PART_INSTALL/lib/docker/cli-plugins/docker-buildx"
+      install -D -m 0755 "$CRAFT_PART_SRC/docker" "$CRAFT_PART_INSTALL/bin/docker"
+
+  # buildkit for docker build: without it the cli falls back to the legacy
+  # builder. a static release, pinned and checked like the cli; the hashes are
+  # the release's checksums.txt.
+  docker-buildx:
+    plugin: nil
+    build-packages:
+      - curl
+    override-pull: |
+      set -eu
+      v=0.29.1
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) sum=7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141 ;;
+        arm64) sum=50e85c4e290b698908421161c1aee069bcc5d4a65b7b7201bfac3a176b223a7e ;;
+      esac
+      curl -fsSLo buildx "https://github.com/docker/buildx/releases/download/v$v/buildx-v$v.linux-$CRAFT_ARCH_BUILD_FOR"
+      printf '%s  buildx\n' "$sum" | sha256sum -c -
+    override-build: |
+      set -eu
+      install -D -m 0755 "$CRAFT_PART_SRC/buildx" "$CRAFT_PART_INSTALL/lib/docker/cli-plugins/docker-buildx"
 
   docker-plugins:
     plugin: dump
