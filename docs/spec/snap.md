@@ -1,8 +1,9 @@
 # pats as a snap
 
 status: implemented and smoke-tested in a vm (testing, below). strict confinement, on the build-tag seams
-(`docs/spec/build-tags.md`) and the step sandbox (`docs/spec/step-sandbox.md`). ci packs it for amd64 and arm64 and
-smoke-tests it on ubuntu 22.04 and 24.04 (`.github/workflows/snap.yml`), and nothing is published.
+(`docs/spec/build-tags.md`) and the step sandbox (`docs/spec/step-sandbox.md`). ci packs it for amd64 and arm64, smoke-tests it
+on ubuntu 22.04 and 24.04, and runs a pair through it with docker and with lxd step sandboxes
+(`.github/workflows/snap.yml`). nothing is published.
 
 ## purpose and limits
 
@@ -65,8 +66,10 @@ a project that needs any of these runs a native build.
     `$SNAP_USER_COMMON/docker`, and a command-chain script links the revision's buildx there on every launch.
     a private-registry login made with the host's `docker login` (`~/.docker/config.json`) is not seen (limits).
   - both clients land in the snap's `bin/`, first on `PATH`. their versions are pinned in `snapcraft.yaml` and bumped by
-    hand.
-- **version and grade:** unchanged from the classic design. a clean tree at the tag `v$VERSION` builds with
+    hand. the docker cli tarball and the buildx binary are checked against a sha256 per arch in the part's own pull
+    (`source-checksum` cannot vary by arch), so a bump changes the hashes with the version.
+- **version and grade:** unchanged from the classic design. a clean tree whose HEAD is the tag `v$VERSION` (asked of
+  the tag itself, so another tag on the same commit does not hide it) builds with
   `-buildvcs=false` and is that release, keyed like a `go install` of it in `releaseBuild`
   (`src/sandbox/images.go`). any other tree carries its commit, is `VERSION+git<sha7>` and counts as a dev build.
   `grade` is `devel` for a pre-release.
@@ -216,8 +219,8 @@ a smoke test of a built snap, in an ephemeral ubuntu 26.04 lxd vm, through pats 
 - **clean:** `pats clean -n` after the runs had nothing left to take.
 
 the credential preflight of a real harness needs a real key, so the pair's agent was a stub; keyless logins through
-`PATS_*_AUTH_PATH` are covered by unit tests, not by this run. ci's smoke test (`hack/snap_smoke.sh`) checks only the
-tags and the load errors; the run above belongs there too.
+`PATS_*_AUTH_PATH` are covered by unit tests, not by this run. ci runs the apt docker and lxd halves of it on each
+arch (`hack/snap_smoke.sh` on the project in `hack/snap-smoke`).
 
 ## to decide later
 
