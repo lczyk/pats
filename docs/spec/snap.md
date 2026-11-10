@@ -1,9 +1,8 @@
 # pats as a snap
 
-status: proposed. strict confinement. it depends on two specs: the build-tag seams (`docs/spec/build-tags.md`),
-which let a build leave drivers out, and `docs/spec/step-sandbox.md`, which lets a build with no host run steps.
-neither is in code yet. `snap/snapcraft.yaml` is the target and packs only once the build tags exist. nothing in ci
-builds it, and nothing is published.
+status: implemented and smoke-tested in a vm (testing, below), but for the docker snap, which pats cannot drive yet
+(limits). strict confinement, on the build-tag seams (`docs/spec/build-tags.md`) and the step sandbox
+(`docs/spec/step-sandbox.md`). nothing in ci builds the snap, and nothing is published.
 
 ## purpose and limits
 
@@ -35,6 +34,11 @@ what it does not have:
   private registry needs a login through the snap's own cli: `pats.docker login <registry>` (an app the snap
   exposes for that, below). pats's own registry requests (digest checks, the proxy binary) go through oras and are
   anonymous (`src/sandbox/registry.go`), as in a native build.
+- **the docker snap, for now.** its daemon is confined (`snap.docker.dockerd`), and a container started with
+  `--security-opt no-new-privileges`, which pats puts on every container (`src/sandbox/sandbox.go`), cannot leave
+  that profile for `docker-default`: apparmor denies every exec in it ("no new privs"), and the container dies at
+  start. this is pats against the docker snap, not the strict snap: a native build fails the same way. an apt docker
+  works.
 - **macos, ubuntu core.** no snap on macos. on ubuntu core the `docker` plug cannot connect
   (`deny-connection: on-classic: false`).
 
@@ -102,9 +106,8 @@ a project that needs any of these runs a native build.
   gets privately. a project in a hidden directory at the top of the home (`~/.work/...`). the home's dotfiles.
 - **the docker snap's view.** the docker snap's daemon sees host paths under the home. pats binds its cache and the
   project into containers (`src/sandbox/tmp.go`), so both must be visible to it: the project under the home, the
-  cache under `~/snap/pats/common`. whether the docker snap's daemon reaches `~/snap/pats/...` is not known yet. its
-  own `home` plug denies `~/snap`, though a root daemon's view may differ (testing, below). if it does not, the cache
-  moves to a non-hidden directory pats owns under the home.
+  cache under `~/snap/pats/common`. the daemon does see `~/snap/pats/common/...` (testing, below), so the cache stays
+  there.
 
 ## keyless harnesses
 
@@ -133,10 +136,8 @@ strict snap cannot read either: both sit in hidden directories, which `home` den
 
 pats's own process makes tls connections to registries (`pats init`, oras). the credential preflight runs the
 harness in a real sandbox (`internal/eval/preflight.go`), so it trusts what the sandbox trusts (below), not pats.
-go reads the system roots from `/etc/ssl/certs`. in a strict snap that may be the base's bundle, not the host's,
-which drops a ca a company installed on the host. go honours `SSL_CERT_FILE` for its system roots, so a host with its
-own ca points `SSL_CERT_FILE` at a bundle under the home. which `/etc/ssl` a strict core24 snap sees is checked in
-testing (below), and this section is settled by it.
+go reads the system roots from `/etc/ssl/certs`, and a strict core24 snap sees the host's: the same bundle, a ca
+added to the host's store included (testing, below). so a company ca on the host reaches pats with nothing to set.
 
 this covers pats's own process only. the sandbox, the preflight's included, and the egress proxy each run in a
 container or instance of their own, and trust what pats gives them there today: the sandbox image's roots, plus the
@@ -193,21 +194,28 @@ two installs are two clients, and the lxd server's lease is the one judge both s
 
 ## testing
 
-a smoke test of a built snap, in an ephemeral ubuntu 26.04 lxd vm, through pats only:
+a smoke test of a built snap, in an ephemeral ubuntu 26.04 lxd vm, through pats only. checked on 2026-11-10, snapd
+2.78, snapcraft 9.2.1, lxd 6.10.1, docker 29.1.3 (apt) and 29.8.0 (snap), with a dev build
+(`1.0.0-beta.11+git9f4e167`):
 
-- `snapcraft pack`, then `snap install --dangerous` of the result, and the plugs connected by hand.
-- `pats --version` names the build tags. `readelf -l /snap/pats/current/bin/pats` shows no `INTERP`.
-- **load errors:** a config naming a host, bwrap or podman sandbox, or a host step with no `step-sandbox`, fails at
-  load with its line.
-- **docker**, once with an apt docker and once with the docker snap: `pats init` pins a sandbox and a step sandbox.
-  one real pair on the cheapest model, with a provider key from a ci secret, runs `stage` and `collect` in the step
-  sandbox and is then scored by a script scorer in it. this answers the docker snap's view of `~/snap/pats/...`.
-- **lxd:** the same pair under the lxd snap, with an `egress:` policy. `pats init` builds the proxy image from the
-  snap's own binary.
-- **keyless:** `codex-cli-keyless` with `PATS_CODEX_AUTH_PATH` at a copy under the home passes preflight. unset, it
-  fails preflight naming the variable. `claude-cli-keyless` with `CLAUDE_CODE_OAUTH_TOKEN` passes with no file.
-- **ca store:** a host ca added to the vm's store, and a registry behind it. the result settles the ca section.
-- **clean:** `pats clean -n` after the runs, and once more with a native build's run alive beside the snap's.
+- **build and install:** `snapcraft pack` built it, with the lxc, docker cli and buildx parts. `snap install
+  --dangerous` installed it, strict, and `snap connect pats:docker` / `pats:lxd lxd:lxd` connected its plugs.
+  `pats --version` names the tags (`nohost,nobwrap,nopodman`), and the binary has no `INTERP`.
+- **load errors:** a host sandbox reads `driver "host" is not in this build`, and a host step without a
+  `step-sandbox` reads `stage needs a step-sandbox: this build runs no host steps`.
+- **apt docker:** `pats init` pinned the sandboxes and built a `build:` context through the shipped buildx. a pair
+  with a stub agent ran `stage` and `collect` in a docker step sandbox (as the host uid, `bin/` on `PATH`, the box's
+  own `HOME`), its metadata names the step sandbox, and `pats score` ran its scorer in one.
+- **lxd:** the same through an lxd step sandbox behind an `egress:` policy, its audits in the pair dir and in
+  `.steps/`. the cache is at `~/snap/pats/common/cache/pats`.
+- **docker snap:** its daemon sees binds under `~/snap/pats/common`, but every container pats starts dies at start
+  (limits, above).
+- **ca store:** the snap reads the host's `/etc/ssl` bundle, a ca just added to the host's store included.
+- **clean:** `pats clean -n` after the runs had nothing left to take.
+
+the credential preflight of a real harness needs a real key, so the pair's agent was a stub; keyless logins through
+`PATS_*_AUTH_PATH` are covered by unit tests, not by this run. the same test belongs in ci on the snap the build job
+packs, once there is one.
 
 ## to decide later
 
