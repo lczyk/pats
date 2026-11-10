@@ -142,7 +142,7 @@ func runStatusTally(runDir string) (string, int) {
 		}
 	}
 	var parts []string
-	for _, s := range []string{"ok", "nonzero", "error"} {
+	for _, s := range []string{"ok", "nonzero", "timeout", "budget", "interrupted", "error"} {
 		if counts[s] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[s], s))
 		}

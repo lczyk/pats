@@ -82,8 +82,8 @@ func attempts(runDir string, rep *ScoreReport, warn io.Writer) []pairRecord {
 	}
 	agents, _ := os.ReadDir(runDir)
 	for _, a := range agents {
-		if !a.IsDir() {
-			continue
+		if !a.IsDir() || strings.HasPrefix(a.Name(), ".") {
+			continue // .judge and the like are the run's own, not agents
 		}
 		tasks, _ := os.ReadDir(filepath.Join(runDir, a.Name()))
 		for _, t := range tasks {
