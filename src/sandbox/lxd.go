@@ -26,6 +26,9 @@ import (
 // are pushed at start and the writable ones pulled back by Sync, so a remote
 // server needs no shared filesystem.
 
+// LXDDriver is the lxd driver's name in a config and a pin target.
+const LXDDriver = "lxd"
+
 // lxdProject is the lxd project pats works in.
 const lxdProject = "pats"
 

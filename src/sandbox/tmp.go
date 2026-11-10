@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -72,4 +73,20 @@ func TempRoot() (string, error) {
 		return "", err
 	}
 	return filepath.Join(cache, "tmp"), nil
+}
+
+// removeTree removes p, making what is under it writable first: an unpacked
+// image has read-only dirs, and overlayfs leaves its work dir mode 000.
+func removeTree(p string) error {
+	if _, err := os.Lstat(p); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	// a dir is visited before it is read, so its chmod comes first.
+	_ = filepath.WalkDir(p, func(q string, d fs.DirEntry, err error) error {
+		if d != nil && d.IsDir() {
+			_ = os.Chmod(q, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(p)
 }

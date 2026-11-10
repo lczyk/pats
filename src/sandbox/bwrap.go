@@ -30,9 +30,6 @@ import (
 // BwrapDriver is the bwrap driver's name.
 const BwrapDriver = "bwrap"
 
-// LXDDriver is the lxd driver's name in a config and a pin target.
-const LXDDriver = "lxd"
-
 // bwrapMin is the oldest bwrap with --overlay.
 var bwrapMin = [2]int{0, 10}
 
