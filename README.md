@@ -40,6 +40,81 @@ finally, suites select what runs. a suite is a named (`agents`, `tasks`, `scorer
 
 there are three (and a half) stages of a pats workflow. `pats init` makes every image your suites' sandboxes need -- pulls the published sandbox and egress proxy, builds `build:` and `base:` / `provision:` images, provisions lxd layers -- and pins each by id in `.pats/images.json`. it is the slow step, run when you say so: after cloning, after changing a sandbox, after upgrading pats. it takes `run`'s selectors (`-S`, `-a`, `-t`) plus `--sandbox <name>` and `--driver <d>`, and `--force` rebuilds and re-pulls what exists. `pats run` never builds or pulls: it starts every sandbox from its pinned image, and stops before the first pair, naming the `pats init` that fixes it, when a sandbox is not pinned, its image is gone, or the pin was made against another docker daemon or lxd remote than the one answering now. a sandbox whose provision material, build context, base or image ref, or pats version changed since its init gets a warning naming the `pats init --sandbox <name>` that rebuilds it, and runs on its pinned image. init removes what it replaces: an image pats built or pulled that a pin moved off goes once no project on this machine pins it (container engines; `~/.cache/pats/projects` lists the projects), or once it has gone 30 days without a use (lxd, whose server other machines share); what it cannot remove yet stays listed in the pin file and is tried again at the next init. while preflight runs, `pats run` also looks upstream for newer versions of what its images came from -- an `image:`, the `FROM` images of a `build:` or `base:`, an lxd base -- within 5s for all of them, and warns about each that moved (`--offline` skips it). before that, an `opencode-openrouter` agent's model is looked up in openrouter's public catalogue: a model it does not list, or one that does not take tools, stops the run before any sandbox starts, naming the closest ids (`--offline` skips this too; a catalogue that cannot be read is only a warning). init also stamps the harness versions inside each image into the pin and every pair's `metadata.json` (`components`), and a run warns when they are not the versions this pats pins. the egress proxy is the exception: a proxy pinned by another pats version or build stops the run, since it speaks this pats's protocol. then `pats run` runs your suites -- your agents across their tasks -- and saves the result to `.pats/runs/<run_number>-<date_slug>-<friendly-name>/` (e.g. `003-20260701-jacquard-runner`; the two words are generated from the numeric prefix) -- that usually takes a hot moment. then `pats score` scores the most recent run with its script scorers, or you can ofc instruct it to test an older run too. note that this is not intended as a way to keep old historic runs and therefore, if you change the scorers and rerun on the old run, you *are* going to just run the new scorers. finally, if you have any agent scorers, `pats judge` runs them, before or after `pats score`: it costs money, so it is a command of its own.
 
+```mermaid
+flowchart TD
+    yaml[pats.yaml] --> init[pats init]
+    init -->|images pinned by id| pins[.pats/images.json]
+    pins --> run[pats run]
+    yaml --> run
+    run -->|one dir per pair| rundir[.pats/runs/NNN-date-name/]
+    rundir --> score[pats score]
+    rundir --> judge[pats judge]
+    score --> scores[scores.json]
+    judge --> scores
+    scores --> report[pats report]
+    classDef pats stroke:#0072BD,stroke-width:2px
+    classDef state stroke:#EDB120,stroke-width:2px
+    class init,run,score,judge,report pats
+    class yaml,pins,rundir,scores state
+```
+
+blue is a pats command, yellow is a file it reads or writes. one pair, start to end:
+
+```mermaid
+sequenceDiagram
+    box rgba(0,114,189,0.12)
+    participant H as host (pats)
+    end
+    box rgba(217,83,25,0.12)
+    participant S as sandbox
+    end
+    box rgba(119,172,48,0.14)
+    participant P as egress proxy
+    end
+    H->>H: stage (host script, makes the workdir)
+    H->>S: start from the pinned image
+    H->>P: start beside it, with the pair's policy
+    H->>S: prepare (root, inside)
+    H->>S: run the harness on the prompt
+    S-->>P: every connection out
+    P-->>H: audit line per request (egress.log)
+    H->>S: sync the workdir back (lxd only)
+    H->>H: collect (host script)
+    H->>H: write metadata.json
+```
+
+what that leaves in the project (green is the egress proxy's audit):
+
+```mermaid
+flowchart LR
+    proj[project dir] --> patsdir[.pats/]
+    patsdir --> pinfile[images.json<br/>pins per target]
+    patsdir --> initlogs[init/sandbox.log]
+    patsdir --> runs[runs/NNN-date-adj-noun/]
+    runs --> pair[agent/task/]
+    pair --> meta[metadata.json]
+    pair --> out[stdout.log, stage.log,<br/>prepare.log, collect.log]
+    pair --> eg[egress.log]
+    runs --> sc[scores.json]
+    runs --> jd[.judge/scorer/agent/task/]
+    classDef state stroke:#EDB120,stroke-width:2px
+    classDef proxy stroke:#77AC30,stroke-width:2px
+    class pinfile,meta,sc state
+    class eg proxy
+```
+
+and per user, shared by every project on the machine:
+
+```mermaid
+flowchart LR
+    cache[~/.cache/pats/] --> leases[run leases]
+    cache --> tmp[temp dirs: ca, build, stamps]
+    cache --> store[bwrap/rootfs/digest/]
+    cache --> projects[projects: every project<br/>that ran init]
+    classDef state stroke:#EDB120,stroke-width:2px
+    class leases,projects state
+```
+
 `pats judge` makes each agent score a normal agent call on a task pats synthesises from the scorer: the judge agent runs in its own sandbox, through the same harness, egress, credentials, pins and preflight as a task's agent (so `pats init` makes the judge sandboxes too), and its spend shows as a pair's does. its workdir is a copy of what the judged agent produced -- the pair's `stdout.log` and whatever `collect` gathered, without the logs pats wrote about the run and without symlinks -- and the judge can never touch the run. an agent scorer takes a task's fields to shape what the judge sees: `stage` runs on the copy (to add ground truth, or take out an answer key the judge must not read), then `prepare`, `collect` (into the judge's own dir), `env`, `sudo`, `egress` (added to the judge sandbox's lists) and `timeout` (5m by default). its host steps get the judge's own run (`PATS_AGENT_NAME` is the judge, `PATS_WORKDIR` the copy, `PATS_OUTPUT_DIR` its own dir) and the graded pair as `PATS_SCORED_*`; nothing naming the graded agent or its model reaches the sandbox. pats appends a fixed footer to the prompt, and the last line of the judge's reply must be `SCORE: <a number between 0 and 1>` or `SCORE: na`. only a pair whose files came home is judged: one that never synced, or whose harness reported an error, is `na`, out of the mean, and counted per agent in the report's `failed` row; one with no `metadata.json` waits. `-N n` judges each score n times and scores it with the mean of the samples; `--runs n` judges the latest n runs in turn; `-j`, `--max-cost` (a cap over every judge call of the invocation) and `--offline` work as for `pats run`, and `-a` / `-t` / `-s` / `-S` narrow as for `pats score`. each judgement lands in `<run>/.judge/<scorer>/<agent>/<task>/`: a `verdict.json`, and a dir per sample holding the judge's logs, `metadata.json` and its own `verdict.json`. its number merges into `scores.json`, and a plain `pats score` keeps it. there is no cache: after editing a judge, `pats judge -s <scorer>` redoes its verdicts, which stand until then.
 
 `pats run -N 5` (`--repeat`) runs the selection five times, one run after another, each its own run dir; the credential preflight and the upstream checks happen once. `pats score -N 5` scores the latest five runs, and `pats report -N 5` reports them together: each pair's mean over its scored runs with its sd and n, the worst status of its attempts with how many were not ok, and the cost of every attempt. its `--json` is document version 2 (`docs/spec/repeats.md`); one run keeps version 1. "the latest five" is the five newest run dirs, whoever made them. an interrupted `pats run` now exits 130.
