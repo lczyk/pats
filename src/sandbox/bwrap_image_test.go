@@ -130,11 +130,139 @@ func TestUnpackRefusesEscapes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			err := unpackLayer(opener(tarLayer(t, es...)), root)
-			assert.ErrorIs(t, err, errEscape)
+			assert.That(t, refused(err), "not refused for leaving the rootfs: %v", err)
 			_, serr := os.Stat(filepath.Join(outside, "evil"))
 			assert.That(t, errors.Is(serr, os.ErrNotExist), "a file landed outside the rootfs")
 		})
 	}
+}
+
+// refused says whether err is an entry refused for leaving its destination:
+// by its own name, or by the root it was written through.
+func refused(err error) bool {
+	return errors.Is(err, errEscape) || (err != nil && strings.Contains(err.Error(), "path escapes from parent"))
+}
+
+// a layer may write past a symlink a lower one left, as long as that stays
+// inside the rootfs: a merged /usr is one. past a link that leaves it, or an
+// absolute one, nothing is written or removed.
+func TestUnpackThroughLinks(t *testing.T) {
+	base := t.TempDir()
+	root, outside := filepath.Join(base, "rootfs"), filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "d"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "d", "victim"), []byte("precious"), 0o644))
+	require.NoError(t, unpackLayer(opener(tarLayer(t,
+		entry{name: "usr/bin/sh", body: "sh"},
+		entry{name: "bin", typ: tar.TypeSymlink, link: "usr/bin"},
+		entry{name: "abs", typ: tar.TypeSymlink, link: outside},
+	)), root))
+	require.NoError(t, unpackLayer(opener(tarLayer(t,
+		entry{name: "bin/ls", body: "ls"},
+		entry{name: "bin/.wh.sh"},
+	)), root))
+	got, err := os.ReadFile(filepath.Join(root, "usr/bin/ls"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "ls")
+	_, err = os.Lstat(filepath.Join(root, "usr/bin/sh"))
+	assert.That(t, errors.Is(err, os.ErrNotExist), "a whiteout past an inner link removed nothing")
+
+	// an opaque marker in what a lower layer left as a file empties nothing.
+	require.NoError(t, unpackLayer(opener(tarLayer(t, entry{name: "usr/bin/ls/.wh..wh..opq"})), root))
+	got, err = os.ReadFile(filepath.Join(root, "usr/bin/ls"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "ls")
+	// a link is measured from where its path says it is: past a link on
+	// that path, one that climbs is refused, and one that does not lands.
+	err = unpackLayer(opener(tarLayer(t, entry{name: "bin/up", typ: tar.TypeSymlink, link: "../../etc"})), root)
+	assert.ErrorIs(t, err, errEscape)
+	require.NoError(t, unpackLayer(opener(tarLayer(t,
+		entry{name: "bin/flat", typ: tar.TypeSymlink, link: "ls"},
+		entry{name: "usr/bin/up", typ: tar.TypeSymlink, link: "../../etc"},
+	)), root))
+	target, err := os.Readlink(filepath.Join(root, "usr/bin/flat"))
+	require.NoError(t, err)
+	assert.Equal(t, target, "ls")
+
+	for name, es := range map[string][]entry{
+		"a file":     {{name: "abs/d/evil", body: "x"}},
+		"a dir":      {{name: "abs/evil/", typ: tar.TypeDir}},
+		"a link":     {{name: "abs/evil", typ: tar.TypeSymlink, link: "x"}},
+		"a hardlink": {{name: "usr/keep", body: "x"}, {name: "abs/evil", typ: tar.TypeLink, link: "usr/keep"}},
+		"a whiteout": {{name: "abs/d/.wh.victim"}},
+		"an opaque":  {{name: "abs/d/.wh..wh..opq"}},
+		"a chmod":    {{name: "abs/d/", typ: tar.TypeDir, mode: 0o700}},
+	} {
+		err := unpackLayer(opener(tarLayer(t, es...)), root)
+		assert.That(t, refused(err), "%s past a link out of the rootfs: %v", name, err)
+	}
+	got, err = os.ReadFile(filepath.Join(outside, "d", "victim"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "precious")
+	ents, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	assert.Len(t, ents, 1)
+	fi, err := os.Stat(filepath.Join(outside, "d"))
+	require.NoError(t, err)
+	assert.Equal(t, fi.Mode().Perm(), os.FileMode(0o755))
+}
+
+// a layer that brings a directory where a lower one left a link to one
+// (rm /lib && mkdir /lib on a merged /usr) marks it opaque, or whites a name
+// out in it. neither reaches what the link pointed at: the directory is the
+// layer's own, with nothing of the lower layers in it.
+func TestUnpackWhiteoutInOwnDir(t *testing.T) {
+	lower := tarLayer(t,
+		entry{name: "usr/lib/keep", body: "keep"},
+		entry{name: "usr/lib/sub/deep", body: "deep"},
+		entry{name: "lib", typ: tar.TypeSymlink, link: "usr/lib"},
+		entry{name: "a", typ: tar.TypeSymlink, link: "usr"},
+		entry{name: "var/run", typ: tar.TypeSymlink, link: "/run"},
+	)
+	for name, upper := range map[string][]entry{
+		"opaque":            {{name: "lib/", typ: tar.TypeDir}, {name: "lib/.wh..wh..opq"}},
+		"opaque, dir after": {{name: "lib/.wh..wh..opq"}, {name: "lib/", typ: tar.TypeDir}},
+		"a name":            {{name: "lib/", typ: tar.TypeDir}, {name: "lib/.wh.keep"}},
+		"a level down":      {{name: "a/", typ: tar.TypeDir}, {name: "a/lib/", typ: tar.TypeDir}, {name: "a/lib/.wh..wh..opq"}},
+		"an absolute link":  {{name: "var/run/", typ: tar.TypeDir}, {name: "var/run/.wh..wh..opq"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, unpackLayer(opener(lower), root))
+			require.NoError(t, unpackLayer(opener(tarLayer(t, upper...)), root))
+			for _, kept := range []string{"usr/lib/keep", "usr/lib/sub/deep"} {
+				_, err := os.Stat(filepath.Join(root, kept))
+				assert.NoError(t, err, "%s went with a whiteout in the layer's own directory", kept)
+			}
+			fi, err := os.Lstat(filepath.Join(root, upper[len(upper)-1].name, ".."))
+			require.NoError(t, err)
+			assert.That(t, fi.IsDir(), "the layer's directory is not one")
+		})
+	}
+}
+
+// a name longer than a path may be is refused, not made level by level, and
+// a regular file's sticky bit sits on the bits the umask left it.
+func TestUnpackLimits(t *testing.T) {
+	deep := strings.Repeat("p/", maxPath/2) + "f"
+	root := t.TempDir()
+	assert.ErrorIs(t, unpackLayer(opener(tarLayer(t, entry{name: deep, body: "x"})), root), errLong)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: deep, Typeflag: tar.TypeReg, Mode: 0o644}))
+	require.NoError(t, tw.Close())
+	assert.ErrorIs(t, readTar(&buf, root), errLong)
+	ents, err := os.ReadDir(root)
+	require.NoError(t, err)
+	assert.Len(t, ents, 0)
+
+	require.NoError(t, unpackLayer(opener(tarLayer(t, entry{name: "plain", mode: 0o666}, entry{name: "sticky", mode: 0o1666})), root))
+	plain, err := os.Stat(filepath.Join(root, "plain"))
+	require.NoError(t, err)
+	sticky, err := os.Stat(filepath.Join(root, "sticky"))
+	require.NoError(t, err)
+	assert.Equal(t, sticky.Mode().Perm(), plain.Mode().Perm())
+	assert.Equal(t, sticky.Mode()&os.ModeSticky, os.ModeSticky)
 }
 
 // imageRegistry serves one single-arch image of the given layers.

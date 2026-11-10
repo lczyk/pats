@@ -280,7 +280,7 @@ func TestReadTarSafety(t *testing.T) {
 	assert.ErrorIs(t, readTar(archive(entry{"../escape", "", tar.TypeReg}), t.TempDir()), errEscape)
 	outside := t.TempDir()
 	err := readTar(archive(entry{"a", outside, tar.TypeSymlink}, entry{"a/victim", "x", tar.TypeSymlink}), t.TempDir())
-	assert.ErrorIs(t, err, errEscape)
+	assert.That(t, refused(err), "not refused for leaving the destination: %v", err)
 }
 
 // the destination may itself be reached through a symlink, as a project dir

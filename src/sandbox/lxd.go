@@ -842,22 +842,42 @@ func (s *lxdSession) Pull(ctx context.Context, path, hostDir string) error {
 
 // readTar extracts a tar stream into dir as the current user. the stream is
 // the word of the tar inside an instance, not pats's own: a name or a hard
-// link that leaves dir is refused, and nothing is written through a symlink
-// under dir (dir itself may be reached through one). symlinks are made last,
-// so only another symlink can meet one the stream made, and its parents are
-// checked as every entry's are.
+// link that leaves dir is refused, and every entry is written through dir's
+// root, so nothing lands past a symlink that leaves dir (dir itself may be
+// reached through one). symlinks are made last, so only another symlink can
+// meet one the stream made.
 func readTar(r io.Reader, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	dir, err := filepath.EvalSymlinks(dir)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
+	defer root.Close()
 	tr := tar.NewReader(r)
 	links := map[string]string{} // a symlink's path -> its target
 	skipped := map[string]bool{} // what does not travel: fifos, devices
 	files := map[string]bool{}   // the regular files this stream made
+	// the directories known to be there, so each is looked for once: a root
+	// walks a path anew on every call. forgotten when an entry is removed,
+	// which may have been one of them.
+	made := map[string]bool{}
+	parent := func(rel string) error {
+		dir := path.Dir(rel)
+		if made[dir] {
+			return nil
+		}
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		made[dir] = true
+		return nil
+	}
+	remove := func(rel string) {
+		clear(made)
+		_ = root.Remove(rel)
+	}
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -899,26 +919,34 @@ func readTar(r io.Reader, dir string) error {
 		delete(links, rel)
 		delete(skipped, rel)
 		delete(files, rel)
-		if err := safeParent(dir, path.Dir(rel)); err != nil {
+		if err := parent(rel); err != nil {
 			return fmt.Errorf("tar entry %q: %w", h.Name, err)
 		}
-		p := filepath.Join(dir, filepath.FromSlash(rel))
 		switch h.Typeflag {
 		case tar.TypeDir:
-			// a link or a file already at p gives way: MkdirAll and Chmod
-			// would both follow a link.
-			if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
-				if err := os.Remove(p); err != nil {
-					return err
+			err := root.Mkdir(rel, 0o755)
+			if errors.Is(err, fs.ErrExist) {
+				// a directory already there is kept. a link or a file gives
+				// way: Chmod would follow a link to the directory it names.
+				if fi, lerr := root.Lstat(rel); lerr == nil && fi.IsDir() {
+					err = nil
+				} else if err = root.Remove(rel); err == nil {
+					clear(made)
+					err = root.Mkdir(rel, 0o755)
 				}
 			}
-			if err := os.Mkdir(p, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			if err != nil {
 				return err
 			}
-			_ = os.Chmod(p, fs.FileMode(h.Mode).Perm()|0o700)
+			_ = root.Chmod(rel, fs.FileMode(h.Mode).Perm()|0o700)
+			made[rel] = true
 		case tar.TypeReg:
-			_ = os.Remove(p)
-			f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_EXCL, fs.FileMode(h.Mode).Perm()|0o600)
+			perm := fs.FileMode(h.Mode).Perm() | 0o600
+			f, err := root.OpenFile(rel, os.O_CREATE|os.O_WRONLY|os.O_EXCL, perm)
+			if errors.Is(err, fs.ErrExist) {
+				remove(rel)
+				f, err = root.OpenFile(rel, os.O_CREATE|os.O_WRONLY|os.O_EXCL, perm)
+			}
 			if err != nil {
 				return err
 			}
@@ -946,8 +974,12 @@ func readTar(r io.Reader, dir string) error {
 			if !files[src] {
 				return fmt.Errorf("tar entry %q: hard link to %q, which is no file of this archive", h.Name, h.Linkname)
 			}
-			_ = os.Remove(p)
-			if err := os.Link(filepath.Join(dir, filepath.FromSlash(src)), p); err != nil {
+			err := root.Link(src, rel)
+			if errors.Is(err, fs.ErrExist) {
+				remove(rel)
+				err = root.Link(src, rel)
+			}
+			if err != nil {
 				return err
 			}
 			files[rel] = true
@@ -959,12 +991,15 @@ func readTar(r io.Reader, dir string) error {
 	}
 	sort.Strings(rels)
 	for _, rel := range rels {
-		if err := safeParent(dir, path.Dir(rel)); err != nil {
+		if err := parent(rel); err != nil {
 			return fmt.Errorf("tar entry %q: %w", rel, err)
 		}
-		p := filepath.Join(dir, filepath.FromSlash(rel))
-		_ = os.Remove(p)
-		if err := os.Symlink(links[rel], p); err != nil {
+		err := root.Symlink(links[rel], rel)
+		if errors.Is(err, fs.ErrExist) {
+			remove(rel)
+			err = root.Symlink(links[rel], rel)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -974,6 +1009,9 @@ func readTar(r io.Reader, dir string) error {
 // tarRel is a tar entry's name as a clean path relative to where it is
 // unpacked, "." for that directory itself; a name that leaves it is refused.
 func tarRel(name string) (string, error) {
+	if len(name) > maxPath {
+		return "", fmt.Errorf("tar entry %.40q... %w", name, errLong)
+	}
 	rel := path.Clean(filepath.ToSlash(name))
 	if path.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, "../") {
 		return "", fmt.Errorf("tar entry %q %w", name, errEscape)
