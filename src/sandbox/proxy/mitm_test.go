@@ -556,6 +556,36 @@ func TestMitmNoSwitchedProtocol(t *testing.T) {
 	assert.Equal(t, body, "/after")
 }
 
+// a target with a scheme and no slashes has no path to decide on, and would
+// go on as one: it is refused, on a terminated connection and on plain http,
+// where a scheme other than http would also be dialled on another port.
+func TestOpaqueAndSchemeRefused(t *testing.T) {
+	calls := 0
+	p, pool, audit := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return echoPath(r)
+	}))
+	tconn, br := mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "GET http:secret/x HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	resp, _ := answer(t, br)
+	assert.Equal(t, resp.StatusCode, http.StatusForbidden)
+	assert.Equal(t, audit.last(t).Reason, "bad-url")
+
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+	for _, target := range []string{"https://mitm.test/x", "http:secret/x", "/x"} {
+		conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+		require.NoError(t, err)
+		fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: mitm.test\r\n\r\n", target)
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		require.NoError(t, err, target)
+		conn.Close()
+		assert.Equal(t, resp.StatusCode, http.StatusForbidden, target)
+		assert.Equal(t, audit.last(t).Reason, "bad-url", target)
+	}
+	assert.Equal(t, calls, 0)
+}
+
 // "OPTIONS *" is a request like any other: decided, relayed and audited,
 // not answered by the server on the origin's behalf.
 func TestMitmOptionsStar(t *testing.T) {

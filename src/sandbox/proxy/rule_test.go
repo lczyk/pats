@@ -426,6 +426,15 @@ func TestDecideMethodsAndRegexp(t *testing.T) {
 	assert.Equal(t, allow.Decide("gist.github.com", 443, "GET", "/x", "").Allowed, true)
 }
 
+// a deny on a method takes it in any case: an origin may.
+func TestMethodCase(t *testing.T) {
+	r := mustRule(t, true, nil, []string{"PUT,DELETE example.com/**"})
+	for _, m := range []string{"PUT", "put", "Delete"} {
+		assert.That(t, !r.Decide("example.com", 443, m, "/x", "").Allowed, "%s passes a deny on its method", m)
+	}
+	assert.That(t, r.Decide("example.com", 443, "GET", "/x", "").Allowed)
+}
+
 func TestNormalizeHost(t *testing.T) {
 	cases := map[string]string{
 		"GitHub.com":          "github.com",

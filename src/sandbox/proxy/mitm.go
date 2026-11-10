@@ -159,6 +159,10 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 		}
 		v := p.Rule.Decide(host, port, inner.Method, inner.URL.Path, inner.URL.RawQuery)
 		ev.Rule, ev.Reason = v.Rule, v.Reason
+		if v.Allowed && inner.URL.Opaque != "" {
+			// "http:secret/x" has no path to decide on, and goes on as one.
+			v.Allowed, ev.Rule, ev.Reason = false, "url", "bad-url"
+		}
 		if !v.Allowed {
 			ev.Status = p.refuse(w)
 			p.audit(ev)

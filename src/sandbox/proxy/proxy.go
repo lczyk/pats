@@ -260,6 +260,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	v := p.Rule.Decide(host, port, req.Method, req.URL.Path, req.URL.RawQuery)
 	ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "http", Rule: v.Rule, Reason: v.Reason,
 		Method: req.Method, URL: auditURL(host, req.URL), UA: req.UserAgent()}
+	// decided as plain http to that host and path: another scheme would be
+	// dialled on its own port, and an opaque target has no path to decide on.
+	if v.Allowed && (req.URL.Scheme != "http" || req.URL.Opaque != "") {
+		v.Allowed, ev.Rule, ev.Reason = false, "url", "bad-url"
+	}
 	if !v.Allowed {
 		ev.Status = p.refuse(w)
 		p.audit(ev)

@@ -285,7 +285,7 @@ func (e Entry) matchesMethod(method string) bool {
 		return true
 	}
 	for _, m := range e.methods {
-		if m == method {
+		if strings.EqualFold(m, method) { // an origin may take "put" for PUT
 			return true
 		}
 	}
