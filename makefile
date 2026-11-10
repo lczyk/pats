@@ -45,8 +45,8 @@ cover:  ## Show test coverage per function in the CLI
 
 # every model in docs/spec/fizz must pass as written. publish.fizz also keeps the designs it rejects:
 # snapshot and selfres must still fail R2 (the race the aliases job exists for).
-.PHONY: specs
-specs:  ## Model-check the fizzbee specs in docs/spec/fizz
+.PHONY: fizz
+fizz:  ## Model-check the fizzbee specs in docs/spec/fizz
 	@if ! command -v fizz >/dev/null 2>&1; then echo "fizz not found, skipping (https://github.com/fizzbee-io/fizzbee)"; exit 0; fi; \
 	cd docs/spec/fizz && for f in *.fizz; do \
 		printf '%-24s ' "$$f"; \

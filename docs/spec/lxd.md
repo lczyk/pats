@@ -347,5 +347,5 @@ whether the agent had sudo.
 - checked on the target server: stateful vm snapshots (they do not complete, see above), `lxc publish` of a vm
   (works), a bridge in a non-default project (needs ovn), forwarding from a new bridge on a host running docker
   (ipv4 dropped until the admin rule is in place).
-- fizzbee models in `docs/spec/fizz/` (`make specs`): `lxd_delete.fizz` (an instance delete racing a create its
+- fizzbee models in `docs/spec/fizz/` (`make fizz`): `lxd_delete.fizz` (an instance delete racing a create its
   client stopped waiting for) and `lxd_lease.fizz` (pats clean vs a live run with a skewed clock).
