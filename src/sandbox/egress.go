@@ -200,10 +200,13 @@ func (c *container) openBehindProxy(ctx context.Context, selfTest bool) ([]strin
 }
 
 // readBundle reads the image's trust bundle in a throwaway container, once
-// per image for the process: every pair of a sandbox asks for the same one.
+// per image of an engine's endpoint for the process: every pair of a
+// sandbox asks for the same one. a run starts from pinned image ids, so the
+// name is the image.
 func (c *container) readBundle(ctx context.Context) func() ([]byte, error) {
 	return func() ([]byte, error) {
-		return c.p.bundles.get(c.driver+"\x00"+c.image, func() ([]byte, error) {
+		key := strings.Join([]string{c.driver, c.o.ContainerHost, c.o.ContainerConnection, c.image}, "\x00")
+		return c.p.bundles.get(ctx, key, func() ([]byte, error) {
 			args := append(append([]string{"run", "--rm"}, c.p.runLabels()...), "--entrypoint", "cat", c.image, caBundlePath)
 			return c.dockerOut(ctx, args...)
 		})
@@ -218,24 +221,30 @@ type bundleCache struct {
 }
 
 type bundleEntry struct {
-	mu   sync.Mutex
+	turn chan struct{} // held by the one reading or looking
 	data []byte
 	ok   bool
 }
 
-func (b *bundleCache) get(key string, read func() ([]byte, error)) ([]byte, error) {
+// get is key's bundle, read when nobody has yet. a caller waiting on
+// another's read stops waiting when its own ctx ends.
+func (b *bundleCache) get(ctx context.Context, key string, read func() ([]byte, error)) ([]byte, error) {
 	b.mu.Lock()
 	if b.m == nil {
 		b.m = map[string]*bundleEntry{}
 	}
 	e := b.m[key]
 	if e == nil {
-		e = &bundleEntry{}
+		e = &bundleEntry{turn: make(chan struct{}, 1)}
 		b.m[key] = e
 	}
 	b.mu.Unlock()
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	select {
+	case e.turn <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-e.turn }()
 	if !e.ok {
 		data, err := read()
 		if err != nil {

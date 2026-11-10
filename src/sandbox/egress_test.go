@@ -508,3 +508,33 @@ func TestEngineTable(t *testing.T) {
 	}
 	assert.That(t, IsEngine("docker") && IsEngine("podman") && !IsEngine("lxd"), "IsEngine")
 }
+
+// a bundle is read once per key, a failed read is not kept, and a caller
+// waiting on another's read leaves when its own context ends.
+func TestBundleCache(t *testing.T) {
+	var c bundleCache
+	reads := 0
+	read := func() ([]byte, error) { reads++; return []byte("pem"), nil }
+	_, err := c.get(context.Background(), "a", func() ([]byte, error) { return nil, errors.New("down") })
+	assert.Error(t, err, "down")
+	for range 3 {
+		got, err := c.get(context.Background(), "a", read)
+		require.NoError(t, err)
+		assert.Equal(t, string(got), "pem")
+	}
+	assert.Equal(t, reads, 1)
+	_, err = c.get(context.Background(), "b", read)
+	require.NoError(t, err)
+	assert.Equal(t, reads, 2)
+
+	started, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_, _ = c.get(context.Background(), "slow", func() ([]byte, error) { close(started); <-release; return nil, nil })
+	}()
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = c.get(ctx, "slow", read)
+	assert.ErrorIs(t, err, context.Canceled)
+	close(release)
+}
