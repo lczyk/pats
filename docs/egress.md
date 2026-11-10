@@ -49,9 +49,12 @@ sandbox:
   `github.com/x/docs/repo`. a `*` that should cross segments is a `**`. a regexp is unanchored unless you anchor it. a
   `..` in the request path does not dodge an entry: each is tried against the path as sent and as an origin resolves
   it (dot segments and doubled slashes gone), and against both again as an origin reads them that drops a segment's
-  `;parameters` or takes a backslash for a slash. a `deny` takes the request when any of these matches, an `allow`
-  admits it only when all do, so neither `/public/../private` nor `/public/..;/private` passes for `/public/**`, and
-  an `allow` cannot ask for a `;parameter` by name. in an `allow` no wildcard takes the `?` before
+  `;parameters`, takes a backslash for a slash, folds a slash or a dot written another way, or decodes the path
+  twice. a `deny` takes the request when any of these matches, an `allow` admits it only when all do, so neither
+  `/public/../private` nor `/public/..;/private` passes for `/public/**`. an `allow` that itself writes a `;` or a
+  backslash means the path as sent, and is held to the other reading only where that uncovers a dot segment. a path
+  that is no text (bytes that are no utf-8, a control character) is taken by every url `deny` on its host and admitted
+  by no url `allow`. in an `allow` no wildcard takes the `?` before
   the query: the query is matched only through a `?` the entry spells (`/search?q=*`, `~^/search\?q=`), and a regexp's
   match has to begin in the path, so a query cannot stand in for it. an `allow` url entry matches the path
   case-sensitively, a `deny` one case-insensitively, each erring toward closed. a host with `allow` url entries passes
