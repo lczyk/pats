@@ -15,10 +15,14 @@ import (
 
 type driverCase struct {
 	name string
+	// open is the driver on its fake; fetches counts the fake's pulls, nil
+	// where the fake keeps no count.
 	open func(t *testing.T) (d Driver, fetches func() int)
 	// inUse starts something on image ref, or is nil where a place lets
 	// an image in use go (lxd: an instance does not hold its image).
 	inUse func(t *testing.T, d Driver, ref string)
+	// noBuild is a driver that builds no images, and says so.
+	noBuild bool
 }
 
 var driverCases = []driverCase{
@@ -30,6 +34,28 @@ var driverCases = []driverCase{
 	}},
 	containerDriverCase("docker"),
 	containerDriverCase("podman"),
+	// bwrap has no daemon to fake: its store is a cache dir of the test's,
+	// and its registry a local server.
+	{name: "bwrap", noBuild: true,
+		open: func(t *testing.T) (Driver, func() int) {
+			t.Setenv("XDG_CACHE_HOME", t.TempDir())
+			p := testProcess(t)
+			p.reg, _ = imageRegistry(t, nil, tarLayer(t, entry{name: "etc/os-release", body: "ubuntu"}))
+			d, err := newDriver(p, nil, Options{Driver: BwrapDriver})
+			require.NoError(t, err)
+			return d, nil
+		},
+		// a session holds its image's lock, shared, for as long as it lives.
+		inUse: func(t *testing.T, d Driver, ref string) {
+			img, err := d.Resolve(context.Background(), ref)
+			require.NoError(t, err)
+			st, err := newBwrapStore()
+			require.NoError(t, err)
+			unlock, err := st.lock(img.ID, false, false)
+			require.NoError(t, err)
+			t.Cleanup(unlock)
+		},
+	},
 }
 
 func containerDriverCase(driver string) driverCase {
@@ -70,7 +96,9 @@ func TestDriverConformance(t *testing.T) {
 				require.NoError(t, err)
 				assert.That(t, !fetched, "a second pull fetched")
 				assert.Equal(t, again.ID, img.ID)
-				assert.Equal(t, fetches(), 1)
+				if fetches != nil {
+					assert.Equal(t, fetches(), 1)
+				}
 
 				_, fetched, err = d.Pull(ctx, "ubuntu:26.04", true, io.Discard)
 				require.NoError(t, err)
@@ -107,6 +135,11 @@ func TestDriverConformance(t *testing.T) {
 			t.Run("build, then resolve", func(t *testing.T) {
 				d, _ := c.open(t)
 				spec := BuildSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}
+				if c.noBuild {
+					_, _, _, err := d.Build(ctx, spec, io.Discard)
+					assert.Error(t, err, "builds no images")
+					return
+				}
 				img, _, built, err := d.Build(ctx, spec, io.Discard)
 				require.NoError(t, err)
 				assert.That(t, built, "the first build did not build")
