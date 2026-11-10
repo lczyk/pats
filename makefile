@@ -82,6 +82,7 @@ fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
 		./src/sandbox:FuzzIgnore \
 		./src/sandbox/proxy:FuzzDecide \
 		./src/sandbox/proxy:FuzzDecideAllow \
+		./src/sandbox/proxy:FuzzSpelledQuery \
 		./src/sandbox/proxy:FuzzNormalizeHost \
 		./src/sandbox/proxy:FuzzParseEntry \
 		./src/sandbox/proxy:FuzzParseClientHello \

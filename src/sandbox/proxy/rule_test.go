@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	pathpkg "path"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -209,10 +210,117 @@ func TestDecideQueryAndClean(t *testing.T) {
 		}
 	})
 	t.Run("dot-dot deny", func(t *testing.T) {
-		r := mustRule(t, true, nil, []string{"example.com/b*"})
+		r := mustRule(t, true, nil, []string{"example.com/b*", "example.com/private/**"})
 		assert.Equal(t, r.Decide("example.com", 443, "GET", "/a/../b", "").Allowed, false)
 		assert.Equal(t, r.Decide("example.com", 443, "GET", "/a/../c", "").Allowed, true)
+		// a trailing dot segment names the directory, slash and all.
+		assert.Equal(t, r.Decide("example.com", 443, "GET", "/private/x/..", "").Allowed, false)
+		assert.Equal(t, r.Decide("example.com", 443, "GET", "/private/.", "").Allowed, false)
 	})
+}
+
+// an allow errs the other way to a deny: it admits a path only when every
+// reading of it matches, and a query only through a "?" the entry spells.
+func TestDecideAllowReadings(t *testing.T) {
+	r := mustRule(t, false, []string{
+		"docs.example.com/public/**",
+		"api.github.com ~^/repos/[^/]+/x$",
+		"github.com/*/repo",
+		"loose.test ~/public/",
+		"search.test ~^/search\\?q=[a-z]+$",
+		"class.test ~^/s[?&]x=1$",
+		"next.test/login?next=**",
+		"next.test ~^/sso\\?next=.*$",
+		"count.test ~^/x/[^/]{3}$",
+	}, nil)
+	for _, c := range []struct {
+		host, path, query string
+		want              bool
+	}{
+		{"docs.example.com", "/public/x", "", true},
+		{"docs.example.com", "/public/", "", true},
+		{"docs.example.com", "/public/x", "a=b", true},
+		{"docs.example.com", "/public/a/../b", "", true}, // both readings are under /public/
+		{"docs.example.com", "/public/./x", "", true},
+		{"docs.example.com", "/public//x", "", true},
+		{"docs.example.com", "/public/../private", "", false},
+		{"docs.example.com", "/public/..", "", false},
+		{"docs.example.com", "/public/x/../../private", "", false},
+		{"docs.example.com", "/private", "/public/x", false},
+
+		{"api.github.com", "/repos/o/x", "", true},
+		{"api.github.com", "/repos/o/x", "ref=main", true},
+		{"api.github.com", "/repos/", "/x", false}, // the query is no segment
+		{"api.github.com", "/repos/o", "/x", false},
+		{"api.github.com", "/repos/o?/x", "", true}, // a "?" in the path (%3F on the wire) is a character of its segment
+		{"api.github.com", "/repos/?/x", "", true},
+		{"count.test", "/x/?", "", false}, // and one character, not the three it is on the wire
+		{"count.test", "/x/abc", "", true},
+		{"github.com", "/o/repo", "", true},
+		{"github.com", "/", "/repo", false},
+		{"github.com", "/o//repo", "", false}, // an origin that merges slashes serves /o/repo: allowed. one that does not, does not
+
+		{"loose.test", "/a/public/b", "", true},
+		{"loose.test", "/x", "/public/", false}, // an unanchored match, but inside the query alone
+
+		{"search.test", "/search", "q=abc", true},
+		{"search.test", "/search", "", false},
+		{"search.test", "/search", "q=abc?x", false},
+		{"search.test", "/other", "/search?q=abc", false},
+		{"class.test", "/s", "x=1", true},
+
+		{"next.test", "/login", "next=/home", true},
+		{"next.test", "/login", "next=/a?b=1", true}, // a ? inside the query is a character of it
+		{"next.test", "/sso", "next=/a?b=1&c=2", true},
+		{"next.test", "/login/x", "next=1", false},
+		{"next.test", "/", "/login?next=1", false},
+		{"next.test", "/other", "x=1?next=2", false},
+	} {
+		got := r.Decide(c.host, 443, "GET", c.path, c.query).Allowed
+		assert.Equal(t, got, c.want, "%s %s?%s", c.host, c.path, c.query)
+	}
+}
+
+// spelledQuery changes what matches the join of a path and its query, and
+// nothing else: text without the join matches as it did, a spelled "?" takes
+// the join where it took a "?", and no wildcard does.
+func TestSpelledQuery(t *testing.T) {
+	join := string(querySep)
+	for _, pattern := range []string{
+		`^/repos/[^/]+/x$`, `.*`, `(?s)^/a.b$`, `^/[[:punct:]]+$`, `\S+`, `^/x[^a-z]*$`, `^/s[?&]x$`, `^/q\?a=.*$`, `^/[>-@]$`, `^/a|/b.c$`,
+		`(?i)^/Q\?A=[^/]*$`, `^/a\??b$`, `^/(?:x\?y|z)+$`,
+	} {
+		re := regexp.MustCompile(pattern)
+		strict, err := spelledQuery(re)
+		require.NoError(t, err, pattern)
+		for _, text := range []string{"/repos/o/x", "/a\nb", "/a?b", "/!!", "/x?", "/s?x", "/q?a=1", "/q?a=1?2", "/?", "/b?c", "/repos/?/x", "", "/Q?a=x", "/ab", "/x?yz"} {
+			assert.Equal(t, strict.MatchString(text), re.MatchString(text), "%s on %q", pattern, text)
+			if i := strings.Index(text, "?"); i >= 0 && strict.MatchString(text[:i]+join+text[i+1:]) {
+				assert.That(t, re.MatchString(text), "%s takes %q with its first ? as the join, and not as it is", pattern, text)
+			}
+		}
+	}
+	for _, c := range []struct {
+		pattern, text string
+		want          bool
+	}{
+		{`^/q\?a=[^/]*$`, "/q" + join + "a=1", true},
+		{`^/q\?a=[^/]*$`, "/q" + join + "a=1?2", true},       // past the join a ? is a character
+		{`^/q\?a=[^/]*$`, "/q?a=1" + join + "2", false},      // and the join is not
+		{`^/repos/[^/]+/x$`, "/repos/" + join + "/x", false}, // no wildcard takes the join
+		{`^/repos/.+/x$`, "/repos/" + join + "/x", false},
+		{`(?s)^/repos/.+/x$`, "/repos/" + join + "/x", false},
+		{`^/s[?&]x$`, "/s" + join + "x", true}, // a class that lists ? spells it
+		{`^/s[>-@]x$`, "/s" + join + "x", false},
+		{`^/a\S*$`, "/a" + join + "b", false},
+		{`^/a\PLb$`, "/a" + join + "b", false},
+		{"^/a" + join + "b$", "/a" + join + "b", false}, // nor does the rune itself, written into an entry
+		{`^/a[\x{E000}]b$`, "/a" + join + "b", false},
+	} {
+		strict, err := spelledQuery(regexp.MustCompile(c.pattern))
+		require.NoError(t, err)
+		assert.Equal(t, strict.MatchString(c.text), c.want, "%s on %q", c.pattern, c.text)
+	}
 }
 
 // COVER: path.Clean("") returns "." (it differs from ""), so without a guard
@@ -223,6 +331,8 @@ func TestURLCandidatesEmptyPath(t *testing.T) {
 	assert.EqualArrays(t, urlCandidates("", "q=1"), []string{"", "?q=1"})
 	assert.EqualArrays(t, urlCandidates("/b", ""), []string{"/b"})
 	assert.EqualArrays(t, urlCandidates("/a/../b", "q"), []string{"/a/../b", "/a/../b?q", "/b", "/b?q"})
+	assert.EqualArrays(t, urlCandidates("/a/../b", ""), []string{"/a/../b", "/b"})
+	assert.EqualArrays(t, urlCandidates("/a/x/..", ""), []string{"/a/x/..", "/a", "/a/"})
 }
 
 func TestDecideMethodsAndRegexp(t *testing.T) {
@@ -360,9 +470,11 @@ func FuzzDecide(f *testing.F) {
 		if urlPath == "" {
 			return
 		}
-		if c := denies.Decide(host, 443, "GET", pathpkg.Clean(urlPath), rawQuery); !c.Allowed {
-			assert.That(t, !denies.Decide(host, 443, "GET", urlPath, rawQuery).Allowed,
-				"%q dodges the deny %q that takes its cleaned form", urlPath, c.Rule)
+		for _, read := range []string{pathpkg.Clean(urlPath), resolvePath(urlPath)} {
+			if c := denies.Decide(host, 443, "GET", read, rawQuery); !c.Allowed {
+				assert.That(t, !denies.Decide(host, 443, "GET", urlPath, rawQuery).Allowed,
+					"%q dodges the deny %q that takes it as %q", urlPath, c.Rule, read)
+			}
 		}
 	})
 }
@@ -389,21 +501,35 @@ func FuzzDecideAllow(f *testing.F) {
 		}
 		assert.That(t, allowed(host, urlPath, ""),
 			"%q is allowed only with the query %q", urlPath, rawQuery)
-		assert.That(t, allowed(host, resolve(urlPath), rawQuery),
-			"%q is allowed, but it resolves to %q, which is not", urlPath, resolve(urlPath))
+		assert.That(t, allowed(host, resolvePath(urlPath), rawQuery),
+			"%q is allowed, but it resolves to %q, which is not", urlPath, resolvePath(urlPath))
 	})
 }
 
-// resolve is the path an origin serves for urlPath: path.Clean's, dot
-// segments and doubled slashes gone, with the slash a directory keeps.
-func resolve(urlPath string) string {
-	r := pathpkg.Clean(urlPath)
-	for _, dir := range []string{"/", "/.", "/.."} {
-		if strings.HasSuffix(urlPath, dir) && r != "/" {
-			return r + "/"
+// FuzzSpelledQuery: the rewrite an allow's matcher goes through changes what
+// matches the join of a path and its query, and nothing else. text without
+// the join matches as it did, and with its first "?" made the join it matches
+// no more than it did.
+func FuzzSpelledQuery(f *testing.F) {
+	f.Add(`^/repos/[^/]+/x$`, "/repos/o/x")
+	f.Add(`(?s)^/a.b\?c=.*$`, "/a\nb?c=1")
+	f.Add(`^/[[:punct:]]+$|\S+`, "/?!")
+	f.Add(`^/s[?&]x$`, "/s?x")
+	f.Add(`(?i)^/[^a-z]{2,3}?$`, "/A?")
+	f.Add(`^/q\??a=(x|\?)*$`, "/q?a=x?")
+	f.Fuzz(func(t *testing.T, pattern, text string) {
+		re, err := regexp.Compile(pattern)
+		if err != nil || strings.ContainsRune(pattern, querySep) || strings.ContainsRune(text, querySep) {
+			return
 		}
-	}
-	return r
+		strict, err := spelledQuery(re)
+		require.NoError(t, err, "%q compiles, its rewrite does not", pattern)
+		plain := re.MatchString(text)
+		assert.Equal(t, strict.MatchString(text), plain, "%q on %q", pattern, text)
+		if i := strings.Index(text, "?"); i >= 0 && strict.MatchString(text[:i]+string(querySep)+text[i+1:]) {
+			assert.That(t, plain, "%q takes %q with its first ? as the join, and not as it is", pattern, text)
+		}
+	})
 }
 
 // FuzzNormalizeHost: every verdict is on the normalised host, so it has to be

@@ -6,8 +6,12 @@ import (
 	"net/netip"
 	pathpkg "path"
 	"regexp"
+	"regexp/syntax"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"golang.org/x/net/idna"
 )
@@ -28,6 +32,7 @@ type Entry struct {
 	port    uint16     // 0: 80 or 443
 	methods []string   // nil: any
 	urlRe   *regexp.Regexp
+	queryRe *regexp.Regexp // an allow's urlRe over path?query: see spelledQuery
 	deny    bool
 }
 
@@ -80,6 +85,12 @@ func ParseEntry(raw string, deny bool) (Entry, error) {
 		e.urlRe = compiled
 	case glob != "":
 		e.urlRe = globRe(glob, deny)
+	}
+	if e.urlRe != nil && !deny {
+		var err error
+		if e.queryRe, err = spelledQuery(e.urlRe); err != nil {
+			return e, fmt.Errorf("regexp: %w", err)
+		}
 	}
 	if e.methods != nil && e.urlRe == nil {
 		return e, fmt.Errorf("a method needs a url entry: write %s %s/**", strings.Join(e.methods, ","), hostPart)
@@ -231,9 +242,10 @@ func (e Entry) matchesMethod(method string) bool {
 	return false
 }
 
-// matchesURL tries the entry's url matcher against every candidate form of
-// the request path: the path itself, the path with its query, and both again
-// after path.Clean, so "a/../b" cannot dodge an entry anchored on "/b".
+// matchesURL is a deny's reading of a request: the entry's url matcher is
+// tried against every candidate form of the path, the path itself, the path
+// with its query, and both again with the path resolved, so "a/../b" cannot
+// dodge an entry anchored on "/b".
 func (e Entry) matchesURL(urlPath, rawQuery string) bool {
 	for _, c := range urlCandidates(urlPath, rawQuery) {
 		if e.urlRe.MatchString(c) {
@@ -248,13 +260,163 @@ func urlCandidates(urlPath, rawQuery string) []string {
 	if rawQuery != "" {
 		cands = append(cands, urlPath+"?"+rawQuery)
 	}
-	if cleaned := pathpkg.Clean(urlPath); urlPath != "" && cleaned != urlPath {
-		cands = append(cands, cleaned)
+	if urlPath == "" {
+		return cands
+	}
+	// path.Clean drops the slash a directory keeps: "/private/x/.." is
+	// "/private/" to an origin, so both spellings are tried.
+	last := urlPath
+	for _, p := range []string{pathpkg.Clean(urlPath), resolvePath(urlPath)} {
+		if p == urlPath || p == last {
+			continue
+		}
+		last = p
+		cands = append(cands, p)
 		if rawQuery != "" {
-			cands = append(cands, cleaned+"?"+rawQuery)
+			cands = append(cands, p+"?"+rawQuery)
 		}
 	}
 	return cands
+}
+
+// resolvePath is the path an origin serves for urlPath: dot segments and
+// doubled slashes gone, as path.Clean leaves it, with the trailing slash a
+// directory keeps ("/a/b/.." is "/a/").
+func resolvePath(urlPath string) string {
+	if urlPath == "" {
+		return ""
+	}
+	r := pathpkg.Clean(urlPath)
+	for _, dir := range []string{"/", "/.", "/.."} {
+		if strings.HasSuffix(urlPath, dir) && r != "/" {
+			return r + "/"
+		}
+	}
+	return r
+}
+
+// admitsURL is an allow's reading of a request, which errs the other way to
+// matchesURL: the entry admits a path only when every reading of it matches,
+// as sent and as an origin resolves it, so "/public/../private" does not pass
+// for "/public/**".
+func (e Entry) admitsURL(urlPath, rawQuery string) bool {
+	if !e.admitsPath(urlPath, rawQuery) {
+		return false
+	}
+	if r := resolvePath(urlPath); r != urlPath {
+		return e.admitsPath(r, rawQuery)
+	}
+	return true
+}
+
+// querySep stands for the "?" between a path and its query in what queryRe
+// is matched against: a rune of its own, so that "?" can be told from one
+// inside the query. a request that holds the rune itself matches nothing.
+const querySep = '\uE000'
+
+// admitsPath matches one reading of a path: alone, or with the query behind
+// it when the entry spells the "?" between them. the match must begin in the
+// path or at that "?": one inside the query would let a query stand in for
+// the path the entry asks for.
+func (e Entry) admitsPath(p, rawQuery string) bool {
+	if e.urlRe.MatchString(p) {
+		return true
+	}
+	if rawQuery == "" || strings.ContainsRune(p, querySep) || strings.ContainsRune(rawQuery, querySep) {
+		return false
+	}
+	loc := e.queryRe.FindStringIndex(p + string(querySep) + rawQuery)
+	return loc != nil && loc[0] <= len(p)
+}
+
+// spelledQuery is re for matching a path and its query joined by querySep:
+// a "?" the entry spells matches the join as well as a "?", and no wildcard
+// does. so the query is reached only through a spelled "?", and a "*" or a
+// "[^/]+" written for a path segment cannot take the join and what follows
+// it ("/repos/?/x" for "/repos/*/x"), while past it a "?" is a character
+// like any other.
+func spelledQuery(re *regexp.Regexp) (*regexp.Regexp, error) {
+	tree, err := syntax.Parse(re.String(), syntax.Perl)
+	if err != nil {
+		return nil, err
+	}
+	return regexp.Compile(spellQuery(tree).String())
+}
+
+func spellQuery(re *syntax.Regexp) *syntax.Regexp {
+	spelled := func() *syntax.Regexp {
+		return &syntax.Regexp{Op: syntax.OpCharClass, Rune: []rune{'?', '?', querySep, querySep}}
+	}
+	switch re.Op {
+	case syntax.OpAnyChar:
+		re.Op, re.Rune = syntax.OpCharClass, []rune{0, querySep - 1, querySep + 1, unicode.MaxRune}
+	case syntax.OpAnyCharNotNL:
+		re.Op, re.Rune = syntax.OpCharClass, []rune{0, '\n' - 1, '\n' + 1, querySep - 1, querySep + 1, unicode.MaxRune}
+	case syntax.OpCharClass:
+		// a class that lists "?" by itself spells it; a range is a wildcard.
+		var out []rune
+		for i := 0; i+1 < len(re.Rune); i += 2 {
+			lo, hi := re.Rune[i], re.Rune[i+1]
+			switch {
+			case lo == '?' && hi == '?':
+				out = append(out, lo, hi, querySep, querySep)
+			case querySep < lo || hi < querySep:
+				out = append(out, lo, hi)
+			default:
+				if lo < querySep {
+					out = append(out, lo, querySep-1)
+				}
+				if querySep < hi {
+					out = append(out, querySep+1, hi)
+				}
+			}
+		}
+		// the join is listed after the "?" it stands for: back in order.
+		pairs := make([][2]rune, 0, len(out)/2)
+		for i := 0; i+1 < len(out); i += 2 {
+			pairs = append(pairs, [2]rune{out[i], out[i+1]})
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+		out = out[:0]
+		for _, pr := range pairs {
+			out = append(out, pr[0], pr[1])
+		}
+		if re.Rune = out; len(out) == 0 {
+			re.Op = syntax.OpNoMatch
+		}
+	case syntax.OpLiteral:
+		if !slices.Contains(re.Rune, '?') && !slices.Contains(re.Rune, querySep) {
+			break
+		}
+		var parts []*syntax.Regexp
+		start := 0
+		for i, r := range re.Rune {
+			if r != '?' && r != querySep {
+				continue
+			}
+			if i > start {
+				parts = append(parts, &syntax.Regexp{Op: syntax.OpLiteral, Flags: re.Flags, Rune: slices.Clone(re.Rune[start:i])})
+			}
+			if r == '?' {
+				parts = append(parts, spelled())
+			} else {
+				// the rune itself, written into an entry, is not the join.
+				parts = append(parts, &syntax.Regexp{Op: syntax.OpNoMatch})
+			}
+			start = i + 1
+		}
+		if start < len(re.Rune) {
+			parts = append(parts, &syntax.Regexp{Op: syntax.OpLiteral, Flags: re.Flags, Rune: slices.Clone(re.Rune[start:])})
+		}
+		if len(parts) == 1 {
+			return parts[0]
+		}
+		return &syntax.Regexp{Op: syntax.OpConcat, Sub: parts}
+	}
+	for i, sub := range re.Sub {
+		re.Sub[i] = spellQuery(sub)
+	}
+	return re
 }
 
 // Rule is one egress policy: a default verdict and the parsed exceptions.
@@ -350,7 +512,7 @@ func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string)
 			if matched == nil {
 				matched = &r.Allow[i]
 			}
-		case e.matchesMethod(method) && e.matchesURL(urlPath, rawQuery):
+		case e.matchesMethod(method) && e.admitsURL(urlPath, rawQuery):
 			if e.methods != nil {
 				return Verdict{Allowed: true, Rule: e.Raw}
 			}
