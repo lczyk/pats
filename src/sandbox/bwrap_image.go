@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,6 +19,8 @@ import (
 	"syscall"
 
 	"github.com/klauspost/compress/zstd"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/registry/remote"
 )
 
 // the bwrap driver's images have no daemon to hold them: pats fetches a
@@ -36,160 +37,42 @@ import (
 
 // remoteImage is one image as its registry describes it for one arch.
 type remoteImage struct {
-	c        *registryClient
+	repo     *remote.Repository
 	ref      string
-	repo     string // host/repo, as a docker repo digest names it
+	name     string // host/repo, as a docker repo digest names it
 	digest   string // what the ref names: the index, or the manifest when there is none
 	manifest string // the arch's manifest digest: the image's id here
-	layers   []layerDesc
+	layers   []ocispec.Descriptor
 	env      []string
-}
-
-type layerDesc struct {
-	Digest    string `json:"digest"`
-	MediaType string `json:"mediaType"`
-}
-
-// splitRefDigest is splitRef that also takes host/repo@sha256:...: the
-// "tag" is then the digest.
-func splitRefDigest(ref string) (host, repo, tag string, err error) {
-	if name, d, ok := strings.Cut(ref, "@"); ok {
-		host, repo, _, err = splitRef(name)
-		return host, repo, d, err
-	}
-	return splitRef(ref)
 }
 
 // image resolves ref to its manifest for linux/arch and reads its config.
 func (reg registry) image(ctx context.Context, ref, arch string) (*remoteImage, error) {
 	nref := NormalizeRef(ref)
-	host, repo, tag, err := splitRefDigest(nref)
+	repo, what, err := reg.repo(nref)
 	if err != nil {
 		return nil, err
 	}
-	api := host
-	if host == "docker.io" {
-		api = "registry-1.docker.io"
-	}
-	c := &registryClient{ctx: ctx, http: reg.client, root: reg.url(api), base: reg.url(api) + "/v2/" + repo}
-	if err := c.challenge(); err != nil {
-		return nil, err
-	}
-	digest, mediaType, err := c.manifest(tag)
+	top, man, id, err := platformManifest(ctx, repo, ref, what, arch)
 	if err != nil {
 		return nil, err
 	}
-	// a ref pinned by digest is that digest: the registry may not name
-	// another, and the manifests below are checked against it.
-	if strings.HasPrefix(tag, "sha256:") {
-		if digest != "" && digest != tag {
-			return nil, fmt.Errorf("%s: the registry answered with %s", ref, digest)
-		}
-		digest = tag
-	}
-	ri := &remoteImage{c: c, ref: ref, repo: host + "/" + repo, digest: digest, manifest: digest}
-	if strings.Contains(mediaType, "index") || strings.Contains(mediaType, "manifest.list") {
-		var idx struct {
-			Manifests []struct {
-				Digest   string `json:"digest"`
-				Platform struct {
-					OS           string `json:"os"`
-					Architecture string `json:"architecture"`
-				} `json:"platform"`
-			} `json:"manifests"`
-		}
-		if err := c.getVerified("/manifests/"+digest, indexAccept, digest, &idx); err != nil {
-			return nil, err
-		}
-		ri.manifest = ""
-		for _, m := range idx.Manifests {
-			if m.Platform.OS == "linux" && m.Platform.Architecture == arch {
-				ri.manifest = m.Digest
-				break
-			}
-		}
-		if ri.manifest == "" {
-			return nil, fmt.Errorf("%s has no linux/%s image", ref, arch)
-		}
-	}
-	var man struct {
-		Config layerDesc   `json:"config"`
-		Layers []layerDesc `json:"layers"`
-	}
-	if err := c.getVerified("/manifests/"+ri.manifest, manifestAccept, ri.manifest, &man); err != nil {
-		return nil, err
-	}
-	if len(man.Layers) == 0 {
-		return nil, fmt.Errorf("%s: no layers", ref)
-	}
-	ri.layers = man.Layers
 	var cfg struct {
 		Config struct {
 			Env []string `json:"Env"`
 		} `json:"config"`
 	}
-	if err := c.getVerified("/blobs/"+man.Config.Digest, "", man.Config.Digest, &cfg); err != nil {
+	if err := fetchJSON(ctx, repo, man.Config, &cfg); err != nil {
 		return nil, fmt.Errorf("%s: image config: %w", ref, err)
 	}
-	ri.env = cfg.Config.Env
-	return ri, nil
+	return &remoteImage{repo: repo, ref: ref, name: Repository(nref), digest: top.Digest.String(), manifest: id,
+		layers: man.Layers, env: cfg.Config.Env}, nil
 }
-
-// challenge gets an anonymous token the way the registry asks for one (ghcr,
-// docker hub), or none when it asks for none.
-func (c *registryClient) challenge() error {
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.root+"/v2/", nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		return nil
-	}
-	// the bare /v2/ challenge names no scope, or a placeholder one (ghcr's
-	// "user/image"): the scope is always this repo's pull.
-	ch := scopeRe.ReplaceAllString(resp.Header.Get("WWW-Authenticate"), "")
-	repo := strings.TrimPrefix(c.base, c.root+"/v2/")
-	ch = strings.TrimRight(ch, ", ") + `,scope="repository:` + repo + `:pull"`
-	c.token, err = registry{client: c.http}.challengeToken(c.ctx, ch)
-	return err
-}
-
-var scopeRe = regexp.MustCompile(`,?\s*scope="[^"]*"`)
 
 // fetchLayer downloads a layer whole into a temp file under dir and checks it
 // against its digest before anything reads it.
-func (ri *remoteImage) fetchLayer(l layerDesc, dir string) (string, error) {
-	f, err := os.CreateTemp(dir, ".pats-layer-")
-	if err != nil {
-		return "", err
-	}
-	body, err := ri.c.get("/blobs/"+l.Digest, "")
-	if err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", err
-	}
-	h := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, h), body)
-	body.Close()
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		if got := "sha256:" + hex.EncodeToString(h.Sum(nil)); got != l.Digest {
-			err = fmt.Errorf("%s: layer digest %s, want %s", ri.ref, got, l.Digest)
-		}
-	}
-	if err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
+func (ri *remoteImage) fetchLayer(ctx context.Context, l ocispec.Descriptor, dir string) (string, error) {
+	return fetchBlob(ctx, ri.repo, l, dir, ri.ref)
 }
 
 // layerReader opens a fetched layer as a tar stream, by its media type.
@@ -618,7 +501,7 @@ func (st bwrapStore) pull(ctx context.Context, ri *remoteImage, force bool, prog
 	}
 	defer func() {
 		if err == nil {
-			err = writeAtomic(st.refFile(ri.ref), []byte(id+"\n"+ri.repo+"@"+ri.digest+"\n"))
+			err = writeAtomic(st.refFile(ri.ref), []byte(id+"\n"+ri.name+"@"+ri.digest+"\n"))
 		}
 	}()
 	if st.has(id) && !force {
@@ -639,9 +522,9 @@ func (st bwrapStore) pull(ctx context.Context, ri *remoteImage, force bool, prog
 	}
 	for i, l := range ri.layers {
 		if progress != nil {
-			progress(fmt.Sprintf("layer %d/%d %s", i+1, len(ri.layers), short12(l.Digest)))
+			progress(fmt.Sprintf("layer %d/%d %s", i+1, len(ri.layers), short12(l.Digest.String())))
 		}
-		file, err := ri.fetchLayer(l, dl)
+		file, err := ri.fetchLayer(ctx, l, dl)
 		if err != nil {
 			return false, err
 		}

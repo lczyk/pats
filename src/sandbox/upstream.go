@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -54,94 +52,15 @@ func RegistryDigest(ctx context.Context, ref string) (string, error) {
 }
 
 func (reg registry) tagDigest(ctx context.Context, ref string) (string, error) {
-	host, repo, tag, err := splitRefDigest(NormalizeRef(ref))
+	repo, what, err := reg.repo(NormalizeRef(ref))
 	if err != nil {
 		return "", err
 	}
-	if host == "docker.io" {
-		host = "registry-1.docker.io" // docker hub's api host
-	}
-	u := reg.url(host) + "/v2/" + repo + "/manifests/" + tag
-	head := func(token string) (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
-		if err != nil {
-			return nil, err
-		}
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		req.Header.Set("Accept", indexAccept+", "+manifestAccept)
-		return reg.client.Do(req)
-	}
-	resp, err := head("")
+	desc, err := repo.Resolve(ctx, what)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("registry manifest %s: %w", ref, err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		token, err := reg.challengeToken(ctx, resp.Header.Get("WWW-Authenticate"))
-		if err != nil {
-			return "", err
-		}
-		if resp, err = head(token); err != nil {
-			return "", err
-		}
-		resp.Body.Close()
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("registry manifest %s: %s", ref, resp.Status)
-	}
-	d := resp.Header.Get("Docker-Content-Digest")
-	if d == "" {
-		return "", fmt.Errorf("registry manifest %s: no digest", ref)
-	}
-	return d, nil
-}
-
-// challengeToken follows a Bearer challenge (realm, service, scope) to an
-// anonymous token, as docker hub and ghcr both issue them.
-func (reg registry) challengeToken(ctx context.Context, challenge string) (string, error) {
-	scheme, params, ok := strings.Cut(challenge, " ")
-	if !ok || !strings.EqualFold(scheme, "bearer") {
-		return "", fmt.Errorf("registry: unsupported auth challenge %q", challenge)
-	}
-	kv := map[string]string{}
-	for _, p := range strings.Split(params, ",") {
-		k, v, _ := strings.Cut(strings.TrimSpace(p), "=")
-		kv[strings.ToLower(k)] = strings.Trim(v, `"`)
-	}
-	if kv["realm"] == "" {
-		return "", fmt.Errorf("registry: auth challenge with no realm")
-	}
-	q := url.Values{}
-	for _, k := range []string{"service", "scope"} {
-		if kv[k] != "" {
-			q.Set(k, kv[k])
-		}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, kv["realm"]+"?"+q.Encode(), nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := reg.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("registry token: %s", resp.Status)
-	}
-	var t struct {
-		Token       string `json:"token"`
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
-		return "", err
-	}
-	if t.Token == "" {
-		t.Token = t.AccessToken
-	}
-	return t.Token, nil
+	return desc.Digest.String(), nil
 }
 
 // debianArch is the suffix image remotes put on an alias for each kernel

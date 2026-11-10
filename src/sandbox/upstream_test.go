@@ -38,7 +38,7 @@ func TestTagDigest(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, d, r.tags["v1"])
 	_, err = reg.tagDigest(context.Background(), "reg.example/org/pats:v2")
-	assert.Error(t, err, "404")
+	assert.Error(t, err, "not found")
 }
 
 // an image remote's alias resolves to its fingerprint through image list,
@@ -56,10 +56,10 @@ func TestLXDRemoteFingerprint(t *testing.T) {
 
 func TestSplitRefHosts(t *testing.T) {
 	for _, ref := range []string{"localhost/a/b:c", "localhost:5000/team/image:latest", "registry:5000/team/image:latest", "reg.example/a:b"} {
-		_, _, _, err := splitRef(ref)
+		_, _, err := defaultRegistry.repo(ref)
 		assert.That(t, err == nil, "%s: %v", ref, err)
 	}
-	_, _, _, err := splitRef("team/image:latest")
+	_, _, err := defaultRegistry.repo("team/image:latest")
 	assert.Error(t, err, "names no registry host")
 }
 

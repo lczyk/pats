@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -46,6 +47,11 @@ func (r *fakeRegistry) put(b []byte, mediaType string) string {
 	return d
 }
 
+// desc is the descriptor a manifest names a put blob by.
+func (r *fakeRegistry) desc(d string) map[string]any {
+	return map[string]any{"digest": d, "mediaType": r.types[d], "size": len(r.blobs[d])}
+}
+
 // layer is a gzipped tar of files.
 func layer(t *testing.T, files map[string]string) []byte {
 	var buf bytes.Buffer
@@ -65,7 +71,7 @@ func layer(t *testing.T, files map[string]string) []byte {
 func (r *fakeRegistry) image(t *testing.T, files map[string]string) string {
 	l := r.put(layer(t, files), "application/vnd.oci.image.layer.v1.tar+gzip")
 	base := r.put(layer(t, map[string]string{"etc/base": "x"}), "application/vnd.oci.image.layer.v1.tar+gzip")
-	m, _ := json.Marshal(map[string]any{"layers": []map[string]string{{"digest": base}, {"digest": l}}})
+	m, _ := json.Marshal(map[string]any{"layers": []map[string]any{r.desc(base), r.desc(l)}})
 	return r.put(m, "application/vnd.oci.image.manifest.v1+json")
 }
 
@@ -73,7 +79,9 @@ func (r *fakeRegistry) image(t *testing.T, files map[string]string) string {
 func (r *fakeRegistry) index(tag string, arches map[string]string) {
 	var ms []map[string]any
 	for arch, d := range arches {
-		ms = append(ms, map[string]any{"digest": d, "platform": map[string]string{"os": "linux", "architecture": arch}})
+		m := r.desc(d)
+		m["platform"] = map[string]string{"os": "linux", "architecture": arch}
+		ms = append(ms, m)
 	}
 	b, _ := json.Marshal(map[string]any{"manifests": ms})
 	r.tags[tag] = r.put(b, "application/vnd.oci.image.index.v1+json")
@@ -89,9 +97,7 @@ func (r *fakeRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if req.Header.Get("Authorization") != "Bearer tok" {
-		if r.challenge {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="http://`+req.Host+`/token",service="reg",scope="repository:org/pats:pull"`)
-		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="http://`+req.Host+`/token",service="reg",scope="repository:org/pats:pull"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -101,23 +107,23 @@ func (r *fakeRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	kind, ref, _ := strings.Cut(rest, "/")
-	if kind == "manifests" && req.Method == http.MethodHead {
-		d, ok := r.tags[ref]
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Docker-Content-Digest", d)
-		w.Header().Set("Content-Type", r.types[d])
-		return
+	if d, ok := r.tags[ref]; ok && kind == "manifests" {
+		ref = d
 	}
 	b, ok := r.blobs[ref]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	w.Header().Set("Docker-Content-Digest", ref)
+	w.Header().Set("Content-Type", r.types[ref])
+	if req.Method == http.MethodHead {
+		w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+		return
+	}
 	if r.tamper[ref] {
-		b = append(append([]byte(nil), b...), ' ')
+		b = append([]byte(nil), b...)
+		b[len(b)-1] ^= 1
 	}
 	w.Write(b)
 }
@@ -183,7 +189,7 @@ func TestFetchImageFile(t *testing.T) {
 		r := newFakeRegistry()
 		d := r.image(t, map[string]string{"pats": "windows binary"})
 		b, _ := json.Marshal(map[string]any{"manifests": []map[string]any{
-			{"digest": d, "platform": map[string]string{"os": "windows", "architecture": "amd64"}}}})
+			{"digest": d, "mediaType": r.types[d], "size": len(r.blobs[d]), "platform": map[string]string{"os": "windows", "architecture": "amd64"}}}})
 		r.tags["v1"] = r.put(b, "application/vnd.oci.image.index.v1+json")
 		_, err := fetch(t, r, "amd64")
 		assert.Error(t, err, "has no linux/amd64 image")
@@ -212,7 +218,7 @@ func TestFetchImageFile(t *testing.T) {
 			}
 		}
 		_, err := fetch(t, r, "amd64")
-		assert.Error(t, err, "layer digest")
+		assert.Error(t, err, "digest")
 	})
 	t.Run("no binary in the top layer", func(t *testing.T) {
 		r := newFakeRegistry()
@@ -224,12 +230,12 @@ func TestFetchImageFile(t *testing.T) {
 		r := setup(t)
 		r.tokenStatus = http.StatusForbidden
 		_, err := fetch(t, r, "amd64")
-		assert.Error(t, err, "registry token: 403")
+		assert.Error(t, err, "403")
 	})
 	t.Run("no such tag", func(t *testing.T) {
 		r := setup(t)
 		delete(r.tags, "v1")
 		_, err := fetch(t, r, "amd64")
-		assert.Error(t, err, "404")
+		assert.Error(t, err, "not found")
 	})
 }

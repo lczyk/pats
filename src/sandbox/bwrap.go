@@ -145,7 +145,7 @@ func (d *bwrapDriver) Pull(ctx context.Context, ref string, force bool, log io.W
 	if err != nil {
 		return Image{}, false, err
 	}
-	return Image{ID: ri.manifest, Name: ref, Digest: ri.digest, Repo: ri.repo}, fetched, nil
+	return Image{ID: ri.manifest, Name: ref, Digest: ri.digest, Repo: ri.name}, fetched, nil
 }
 
 func (d *bwrapDriver) Build(context.Context, BuildSpec, io.Writer) (Image, string, bool, error) {

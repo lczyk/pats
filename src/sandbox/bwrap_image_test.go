@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -319,7 +320,12 @@ func imageRegistry(t *testing.T, env []string, layers ...[]byte) (registry, stri
 		s := sha256.Sum256(b)
 		return "sha256:" + hex.EncodeToString(s[:])
 	}
-	var descs []layerDesc
+	type desc struct {
+		Digest    string `json:"digest"`
+		MediaType string `json:"mediaType"`
+		Size      int    `json:"size"`
+	}
+	var descs []desc
 	for _, l := range layers {
 		var gz bytes.Buffer
 		w := gzip.NewWriter(&gz)
@@ -327,11 +333,11 @@ func imageRegistry(t *testing.T, env []string, layers ...[]byte) (registry, stri
 		_ = w.Close()
 		d := digest(gz.Bytes())
 		blobs[d] = gz.Bytes()
-		descs = append(descs, layerDesc{Digest: d, MediaType: "application/vnd.oci.image.layer.v1.tar+gzip"})
+		descs = append(descs, desc{d, "application/vnd.oci.image.layer.v1.tar+gzip", gz.Len()})
 	}
 	cfg, _ := json.Marshal(map[string]any{"config": map[string]any{"Env": env}})
 	blobs[digest(cfg)] = cfg
-	man, _ := json.Marshal(map[string]any{"config": layerDesc{Digest: digest(cfg)}, "layers": descs})
+	man, _ := json.Marshal(map[string]any{"config": desc{digest(cfg), "application/vnd.oci.image.config.v1+json", len(cfg)}, "layers": descs})
 	md := digest(man)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -339,6 +345,7 @@ func imageRegistry(t *testing.T, env []string, layers ...[]byte) (registry, stri
 		case strings.Contains(r.URL.Path, "/manifests/"):
 			w.Header().Set("Docker-Content-Digest", md)
 			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(man)))
 			if r.Method != http.MethodHead {
 				_, _ = w.Write(man)
 			}
@@ -518,7 +525,7 @@ func TestBwrapPinnedRef(t *testing.T) {
 	reg, ref := imageRegistry(t, nil, tarLayer(t, entry{name: "a", body: "a"}))
 	pinned := strings.TrimSuffix(ref, ":latest") + "@sha256:" + strings.Repeat("0", 64)
 	_, err := reg.image(context.Background(), pinned, "amd64")
-	assert.Error(t, err, "the registry answered with sha256:")
+	assert.Error(t, err, "igest")
 	st, err := newBwrapStore()
 	require.NoError(t, err)
 	assert.NotEqual(t, st.refFile("registry.example/team/a_b:latest"), st.refFile("registry.example/team_a/b:latest"))
