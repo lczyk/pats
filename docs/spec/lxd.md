@@ -22,7 +22,7 @@ through the `lxc` cli; incus (the community fork) could come later as a second c
 this builds on the 1.x egress work as shipped, all five tiers: one binary with `pats egress run`, the private-range
 guard and `PATS_EGRESS_REFUSE`, the subnet pool, the preflight canary, the per-run mitm CA and merged trust bundle,
 the `methods` posture, the audit events and `pats clean`. the driver-neutral half of it (`material` in
-`src/sandbox/egress.go`: policy, CA, bundle, proxy env, agent env, audit folding) is reused as is. lxd adds only how
+`src/sandbox/egress_material.go`: policy, CA, bundle, proxy env, agent env, audit folding) is reused as is. lxd adds only how
 the sandbox reaches the proxy and how it is fail-closed.
 
 ## schema

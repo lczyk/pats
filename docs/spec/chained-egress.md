@@ -41,7 +41,7 @@ directly, as today):
 - **tunnels and tls inspection**: the dial connects to the upstream and sends `CONNECT host:port`, with
   `Proxy-Authorization` when the url has credentials. a 2xx hands the connection back as if dialled directly, so the
   tunnel splice, the sni binding check and the mitm transport's tls to the origin work unchanged. any other status is
-  a failed upstream, audited with the reason `upstream: <status>`, and `readEgressAudit` (`run.go`), which counts only
+  a failed upstream, audited with the reason `upstream: <status>`, and `readEgressAudit` (`meta.go`), which counts only
   `dial` and `revoked` as failures today, counts `upstream:` reasons too, so they land in `failed_egress`, apart from
   pats's own denials. there is no fallback to a direct dial.
 - **plain http**: forwarded to the upstream in absolute form (`GET http://host/path`), not by CONNECT, since proxies
