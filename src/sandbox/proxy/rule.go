@@ -84,7 +84,11 @@ func ParseEntry(raw string, deny bool) (Entry, error) {
 		}
 		e.urlRe = compiled
 	case glob != "":
-		e.urlRe = globRe(glob, deny)
+		compiled, err := globRe(glob, deny)
+		if err != nil {
+			return e, fmt.Errorf("glob: %w", err)
+		}
+		e.urlRe = compiled
 	}
 	if e.urlRe != nil && !deny {
 		var err error
@@ -105,7 +109,7 @@ func (e *Entry) parseHost(s string) error {
 		return errors.New("missing host")
 	}
 	if ip, err := netip.ParseAddr(s); err == nil { // bare ip, v6 included
-		e.ip = ip.Unmap()
+		e.ip = ip.Unmap().WithZone("")
 		return nil
 	}
 	host, port := s, ""
@@ -124,7 +128,7 @@ func (e *Entry) parseHost(s string) error {
 		e.port = uint16(n)
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
-		e.ip = ip.Unmap()
+		e.ip = ip.Unmap().WithZone("")
 		return nil
 	}
 	if strings.HasPrefix(host, "*.") {
@@ -165,7 +169,7 @@ func splitHostPortStrict(s string) (host, port string, err error) {
 // appended when the glob names one. "*" matches within one path segment, "/"
 // excluded, and "**" matches anything, "/" included, as gitignore reads them:
 // "github.com/*/repo**" pins the owner segment and takes all under the repo.
-func globRe(glob string, deny bool) *regexp.Regexp {
+func globRe(glob string, deny bool) (*regexp.Regexp, error) {
 	var b strings.Builder
 	if deny {
 		b.WriteString("(?i)")
@@ -191,22 +195,30 @@ func globRe(glob string, deny bool) *regexp.Regexp {
 		}
 	}
 	b.WriteString("$")
-	return regexp.MustCompile(b.String())
+	return regexp.Compile(b.String())
 }
 
-// NormalizeHost canonicalises a hostname for matching: lowercase, one trailing
-// dot stripped, idna to ascii. an ip literal comes back as its canonical text.
+// NormalizeHost canonicalises a hostname for matching: lowercase, the root's
+// trailing dot stripped, idna to ascii. an ip literal comes back as its
+// canonical text. there is one form per name, so what comes out normalises to
+// itself: a name with an empty label ("a..b", ".a", "a..") is no host, and is
+// not made one by stripping dots until it is.
 func NormalizeHost(h string) (string, error) {
-	h = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
-	if h == "" {
-		return "", errors.New("empty host")
-	}
-	if ip, err := netip.ParseAddr(strings.Trim(h, "[]")); err == nil {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if ip, err := netip.ParseAddr(strings.Trim(strings.TrimSuffix(h, "."), "[]")); err == nil {
 		return ip.Unmap().String(), nil
 	}
+	// idna first: it is what turns a full-width dot into a dot.
 	a, err := idna.Lookup.ToASCII(h)
 	if err != nil {
 		return "", err
+	}
+	a = strings.TrimSuffix(a, ".")
+	if a == "" {
+		return "", errors.New("empty host")
+	}
+	if strings.HasPrefix(a, ".") || strings.HasSuffix(a, ".") || strings.Contains(a, "..") {
+		return "", fmt.Errorf("host %q has an empty label", h)
 	}
 	return a, nil
 }
@@ -221,8 +233,9 @@ func (e Entry) matchesHost(host string, port uint16) bool {
 		return false
 	}
 	if e.ip.IsValid() {
+		// a zone names an interface of the client's, not a destination.
 		ip, err := netip.ParseAddr(host)
-		return err == nil && ip.Unmap() == e.ip
+		return err == nil && ip.Unmap().WithZone("") == e.ip
 	}
 	if host == e.host {
 		return true

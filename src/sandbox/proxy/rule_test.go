@@ -42,6 +42,7 @@ func TestParseEntry(t *testing.T) {
 		{raw: "10.0.5.20", ip: "10.0.5.20"},
 		{raw: "::1", ip: "::1"},
 		{raw: "[::1]:443", ip: "::1", port: 443},
+		{raw: "fe80::1%ETH0", ip: "fe80::1"},
 		{raw: "b\u00fccher.example", host: "xn--bcher-kva.example"},
 	}
 	for _, c := range ok {
@@ -73,6 +74,11 @@ func TestParseEntry(t *testing.T) {
 		"github.com evil.com", // whitespace
 		"[::1]",               // bracket form needs a port
 		"a:b:c",               // not host:port
+		"github.com..",        // an empty label: it could match no request
+		"..github.com",
+		"a..b",
+		"xn--",            // a name that is nothing once decoded
+		"github.com/\xff", // a glob that is no regexp
 	}
 	for _, raw := range bad {
 		_, err := ParseEntry(raw, false)
@@ -173,7 +179,9 @@ func TestGlobRe(t *testing.T) {
 		{"/a.b", "/axb", false}, // the rest is literal
 		{"/***", "/a/b", true},
 	} {
-		assert.Equal(t, globRe(c.glob, false).MatchString(c.path), c.want, "%s ~ %s", c.glob, c.path)
+		re, err := globRe(c.glob, false)
+		require.NoError(t, err)
+		assert.Equal(t, re.MatchString(c.path), c.want, "%s ~ %s", c.glob, c.path)
 	}
 }
 
@@ -371,13 +379,39 @@ func TestNormalizeHost(t *testing.T) {
 		"[::1]":               "::1",
 		"::FFFF:1.2.3.4":      "1.2.3.4",
 	}
+	cases["github\uff0ecom\u3002"] = "github.com" // idna's dots are dots, the root's too
+	cases["1.2.3.4."] = "1.2.3.4"
+	cases[" github.com "] = "github.com"
 	for in, want := range cases {
 		got, err := NormalizeHost(in)
 		require.NoError(t, err, in)
 		assert.Equal(t, got, want, in)
+		again, err := NormalizeHost(got)
+		require.NoError(t, err, got)
+		assert.Equal(t, again, got, "%q is not normalised in one go", in)
 	}
-	_, err := NormalizeHost("")
-	assert.Error(t, err, assert.AnyError)
+	// no host: nothing, and a name with an empty label, which stripping dots
+	// until it parses would turn into another name.
+	for _, in := range []string{"", ".", "..", "github.com..", ".github.com", "a..b", "xn--", "github.com\u3002."} {
+		_, err := NormalizeHost(in)
+		assert.Error(t, err, assert.AnyError, "%q", in)
+	}
+}
+
+// a host that is no host is refused whatever the default: under default
+// allow a deny on a name is not dodged by a second trailing dot.
+func TestDecideBadHost(t *testing.T) {
+	r := mustRule(t, true, nil, []string{"evil.test"})
+	for _, host := range []string{"evil.test..", ".evil.test", "evil..test", "xn--"} {
+		v := r.DecideHost(host, 443)
+		assert.That(t, !v.Allowed && v.Reason == "bad-host", "%q: %+v", host, v)
+		v = r.Decide(host, 443, "GET", "/", "")
+		assert.That(t, !v.Allowed && v.Reason == "bad-host", "%q: %+v", host, v)
+	}
+	assert.That(t, !r.DecideHost("evil.test.", 443).Allowed, "the root's dot dodged the deny")
+	zoned := mustRule(t, false, []string{"fe80::1%ETH0"}, nil)
+	assert.That(t, zoned.DecideHost("fe80::1%eth0", 443).Allowed, "an address entry does not admit its address under a zone")
+	assert.That(t, r.DecideHost("fine.test.", 443).Allowed, "a name with the root's dot is refused")
 }
 
 func TestPolicyRule(t *testing.T) {
