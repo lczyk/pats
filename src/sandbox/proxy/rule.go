@@ -140,9 +140,18 @@ func (e *Entry) parseHost(s string) error {
 	if host == "" || strings.Contains(host, "*") {
 		return fmt.Errorf("host %q must be a literal hostname or a .suffix", s)
 	}
+
 	n, err := NormalizeHost(host)
 	if err != nil {
 		return fmt.Errorf("host %q: %w", host, err)
+	}
+	if ip, err := netip.ParseAddr(n); err == nil {
+		// an address written with the root's dot.
+		if e.suffix {
+			return fmt.Errorf("host %q: an address has no subdomains", s)
+		}
+		e.ip = ip
+		return nil
 	}
 	e.host = n
 	return nil
@@ -198,29 +207,53 @@ func globRe(glob string, deny bool) (*regexp.Regexp, error) {
 	return regexp.Compile(b.String())
 }
 
-// NormalizeHost canonicalises a hostname for matching: lowercase, the root's
-// trailing dot stripped, idna to ascii. an ip literal comes back as its
-// canonical text. there is one form per name, so what comes out normalises to
-// itself: a name with an empty label ("a..b", ".a", "a..") is no host, and is
-// not made one by stripping dots until it is.
+// NormalizeHost canonicalises a hostname for matching: idna to ascii (which
+// maps case as a resolver does), the root's trailing dot stripped. an ip
+// literal comes back as its canonical text. there is one form per name, so
+// what comes out normalises to itself, and what is no name is refused, never
+// turned into one: an empty label ("a..b", ".a", "a.."), a label or a name
+// too long for dns, and a name ending in a number that is no address
+// ("127.1", "0x7f000001"), which some resolvers read as one.
 func NormalizeHost(h string) (string, error) {
-	h = strings.ToLower(strings.TrimSpace(h))
+	h = strings.TrimSpace(h)
 	if ip, err := netip.ParseAddr(strings.Trim(strings.TrimSuffix(h, "."), "[]")); err == nil {
-		return ip.Unmap().String(), nil
+		// without its zone, which names an interface of the client's.
+		return ip.Unmap().WithZone("").String(), nil
 	}
-	// idna first: it is what turns a full-width dot into a dot.
+	// idna first: it is what turns a full-width dot into a dot, and what
+	// lowers a letter the way the name is looked up (strings.ToLower lowers
+	// a dotted capital I to another name).
 	a, err := idna.Lookup.ToASCII(h)
 	if err != nil {
 		return "", err
 	}
-	a = strings.TrimSuffix(a, ".")
+	a = strings.ToLower(strings.TrimSuffix(a, "."))
 	if a == "" {
 		return "", errors.New("empty host")
 	}
-	if strings.HasPrefix(a, ".") || strings.HasSuffix(a, ".") || strings.Contains(a, "..") {
-		return "", fmt.Errorf("host %q has an empty label", h)
+	if len(a) > 253 {
+		return "", fmt.Errorf("host %q is longer than a name can be", h)
+	}
+	labels := strings.Split(a, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 {
+			return "", fmt.Errorf("host %q has an empty or an overlong label", h)
+		}
+	}
+	if last := labels[len(labels)-1]; numeric(last) {
+		return "", fmt.Errorf("host %q ends in a number and is no address", h)
 	}
 	return a, nil
+}
+
+// numeric says whether a label reads as a number to inet_aton: digits, or
+// hex behind 0x.
+func numeric(label string) bool {
+	digits := "0123456789"
+	if rest, ok := strings.CutPrefix(label, "0x"); ok {
+		label, digits = rest, "0123456789abcdef"
+	}
+	return strings.Trim(label, digits) == ""
 }
 
 // matchesHost reports whether the entry covers host (normalised) on port.

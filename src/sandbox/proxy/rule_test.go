@@ -43,6 +43,7 @@ func TestParseEntry(t *testing.T) {
 		{raw: "::1", ip: "::1"},
 		{raw: "[::1]:443", ip: "::1", port: 443},
 		{raw: "fe80::1%ETH0", ip: "fe80::1"},
+		{raw: "10.0.5.20.", ip: "10.0.5.20"},
 		{raw: "b\u00fccher.example", host: "xn--bcher-kva.example"},
 	}
 	for _, c := range ok {
@@ -77,7 +78,10 @@ func TestParseEntry(t *testing.T) {
 		"github.com..",        // an empty label: it could match no request
 		"..github.com",
 		"a..b",
-		"xn--",            // a name that is nothing once decoded
+		"xn--",      // a name that is nothing once decoded
+		".10.0.0.1", // an address has no subdomains
+		".10.0.0.1.",
+		"127.1",           // a number that is no address
 		"github.com/\xff", // a glob that is no regexp
 	}
 	for _, raw := range bad {
@@ -413,7 +417,23 @@ func TestNormalizeHost(t *testing.T) {
 	}
 	// no host: nothing, and a name with an empty label, which stripping dots
 	// until it parses would turn into another name.
-	for _, in := range []string{"", ".", "..", "github.com..", ".github.com", "a..b", "xn--", "github.com\u3002."} {
+	cases2 := map[string]string{
+		"\u0130stanbul.com": "xn--istanbul-o0e.com", // a dotted capital I is not an i
+		"EXAMPLE.Com":       "example.com",
+		"host-1.internal":   "host-1.internal",
+		"3com.example":      "3com.example",
+	}
+	for in, want := range cases2 {
+		got, err := NormalizeHost(in)
+		require.NoError(t, err, in)
+		assert.Equal(t, got, want, in)
+	}
+	long := strings.Repeat("a", 64)
+	for _, in := range []string{"", ".", "..", "github.com..", ".github.com", "a..b", "xn--", "github.com\u3002.",
+		// a number that is no address: inet_aton reads these as one.
+		"2130706433", "0x7f000001", "0x7f.1", "127.1", "0177.0.0.1", "127.0.0.01", "example.123", "0x",
+		long + ".example", long + "\ub8c0.example", strings.Repeat("a.", 127) + "example",
+	} {
 		_, err := NormalizeHost(in)
 		assert.Error(t, err, assert.AnyError, "%q", in)
 	}
@@ -433,6 +453,11 @@ func TestDecideBadHost(t *testing.T) {
 	zoned := mustRule(t, false, []string{"fe80::1%ETH0"}, nil)
 	assert.That(t, zoned.DecideHost("fe80::1%eth0", 443).Allowed, "an address entry does not admit its address under a zone")
 	assert.That(t, r.DecideHost("fine.test.", 443).Allowed, "a name with the root's dot is refused")
+	// an address under a deny is not reached by another spelling of it.
+	ip := mustRule(t, true, nil, []string{"203.0.113.7", "xn--istanbul-o0e.com"})
+	for _, host := range []string{"203.0.113.7", "203.0.113.7.", "3405803783", "0xcb007107", "203.0.28935", "::ffff:203.0.113.7", "\u0130stanbul.com"} {
+		assert.That(t, !ip.DecideHost(host, 443).Allowed, "%q passes a deny on what it names", host)
+	}
 }
 
 func TestPolicyRule(t *testing.T) {
