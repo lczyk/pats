@@ -47,6 +47,8 @@ type process struct {
 
 	slot atomic.Uint32 // the next egress subnet
 
+	bundles bundleCache
+
 	lxd lxdProcess
 }
 

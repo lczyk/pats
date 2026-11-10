@@ -199,12 +199,51 @@ func (c *container) openBehindProxy(ctx context.Context, selfTest bool) ([]strin
 	return append(args, m.trustMounts()...), mergeEnv(env, m.trustEnv()), m.cleanup, nil
 }
 
-// readBundle reads the image's trust bundle in a throwaway container.
+// readBundle reads the image's trust bundle in a throwaway container, once
+// per image for the process: every pair of a sandbox asks for the same one.
 func (c *container) readBundle(ctx context.Context) func() ([]byte, error) {
 	return func() ([]byte, error) {
-		args := append(append([]string{"run", "--rm"}, c.p.runLabels()...), "--entrypoint", "cat", c.image, caBundlePath)
-		return c.dockerOut(ctx, args...)
+		return c.p.bundles.get(c.driver+"\x00"+c.image, func() ([]byte, error) {
+			args := append(append([]string{"run", "--rm"}, c.p.runLabels()...), "--entrypoint", "cat", c.image, caBundlePath)
+			return c.dockerOut(ctx, args...)
+		})
 	}
+}
+
+// bundleCache keeps what was read of each key. a read that failed is not
+// kept: the next asker reads again.
+type bundleCache struct {
+	mu sync.Mutex
+	m  map[string]*bundleEntry
+}
+
+type bundleEntry struct {
+	mu   sync.Mutex
+	data []byte
+	ok   bool
+}
+
+func (b *bundleCache) get(key string, read func() ([]byte, error)) ([]byte, error) {
+	b.mu.Lock()
+	if b.m == nil {
+		b.m = map[string]*bundleEntry{}
+	}
+	e := b.m[key]
+	if e == nil {
+		e = &bundleEntry{}
+		b.m[key] = e
+	}
+	b.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.ok {
+		data, err := read()
+		if err != nil {
+			return nil, err
+		}
+		e.data, e.ok = data, true
+	}
+	return append([]byte(nil), e.data...), nil
 }
 
 // material is the driver-neutral half of a proxy-mode setup: what the proxy
