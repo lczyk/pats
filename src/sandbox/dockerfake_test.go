@@ -43,7 +43,8 @@ type fakeDaemon struct {
 	pulls    int
 	builds   int
 
-	canary string // the canary's output
+	canary     string // the canary's output
+	remapsInfo string // what info says of uid mapping
 	// upstream is the machine's proxy, ip:port, reached from the default
 	// network.
 	upstream     string

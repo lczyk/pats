@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 func init() {
@@ -17,10 +18,12 @@ func init() {
 		internalNet: []string{"--disable-dns"},
 		// podman copies the host's proxy variables into every container; the
 		// proxy env a sandbox gets is pats's to set.
-		runFlags: []string{"--http-proxy=false"},
-		cpus:     "{{.Host.CPUs}}",
-		target:   podmanTarget,
-		env:      podmanEnv,
+		runFlags:   []string{"--http-proxy=false"},
+		cpus:       "{{.Host.CPUs}}",
+		remapsInfo: "{{.Host.Security.Rootless}}",
+		remaps:     func(info string) bool { return strings.TrimSpace(info) == "true" },
+		target:     podmanTarget,
+		env:        podmanEnv,
 		// podman fills a tmpfs with what lies beneath it unless told not to;
 		// a mask must read empty.
 		maskOpts: ",notmpcopyup",

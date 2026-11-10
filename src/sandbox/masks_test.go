@@ -36,3 +36,28 @@ func TestContainerMountMasks(t *testing.T) {
 		})
 	}
 }
+
+// an engine that maps uids elsewhere says so: rootless docker or a userns
+// remap, rootless podman.
+func TestRemapsUIDs(t *testing.T) {
+	cases := map[string][]struct {
+		info string
+		want bool
+	}{
+		"docker": {{`["name=apparmor","name=seccomp,profile=builtin"]`, false}, {`["name=seccomp","name=rootless"]`, true}, {`["name=userns"]`, true}},
+		"podman": {{"false", false}, {"true", true}},
+	}
+	for _, driver := range Engines() {
+		for _, c := range cases[driver] {
+			f := newFakeDaemon(t, driver)
+			f.remapsInfo = c.info
+			d, err := newDriver(testProcess(t), runFunc(f.run), Options{Driver: driver})
+			require.NoError(t, err)
+			got, err := d.(interface {
+				RemapsUIDs(context.Context) (bool, error)
+			}).RemapsUIDs(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, got, c.want, "%s: %s", driver, c.info)
+		}
+	}
+}

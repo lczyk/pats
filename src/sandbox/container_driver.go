@@ -196,3 +196,18 @@ func (c *container) RemoveImage(ctx context.Context, id string) error {
 func (c *container) Upstream(ctx context.Context, ref string) (string, error) {
 	return c.p.reg.tagDigest(ctx, ref)
 }
+
+// RemapsUIDs says whether the engine maps the uid pats runs a command as to
+// another on the host (rootless, userns-remap): files written through a bind
+// are then not the user's, and pats's 0700 temp dirs not readable inside.
+func (c *container) RemapsUIDs(ctx context.Context) (bool, error) {
+	e := engines[c.driver]
+	if e.remaps == nil {
+		return false, nil
+	}
+	out, err := c.dockerOut(ctx, "info", "--format", e.remapsInfo)
+	if err != nil {
+		return false, err
+	}
+	return e.remaps(string(out)), nil
+}

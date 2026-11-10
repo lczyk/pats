@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"sort"
+	"strings"
 )
 
 // engine is what pats needs of a container engine's cli where engines
@@ -30,6 +31,11 @@ type engine struct {
 	env func(o Options) []string
 	// maskOpts go on a mask's tmpfs mount, after its destination.
 	maskOpts string
+	// remaps is the info template, and the answer that means the engine
+	// maps the uid pats passes to another on the host: rootless, or a
+	// user namespace remap.
+	remaps     func(info string) bool
+	remapsInfo string
 }
 
 var engines = map[string]engine{}
@@ -59,6 +65,12 @@ func init() {
 		// (none needed, the proxy is an ip) keep resolving.
 		agentNet: []string{"--dns", "0.0.0.0"},
 		cpus:     "{{.NCPU}}",
+		// rootless docker says name=rootless, a userns-remap daemon
+		// name=userns.
+		remapsInfo: "{{json .SecurityOptions}}",
+		remaps: func(info string) bool {
+			return strings.Contains(info, "name=rootless") || strings.Contains(info, "name=userns")
+		},
 	})
 }
 

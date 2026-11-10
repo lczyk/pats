@@ -91,6 +91,8 @@ func (f *fakeDaemon) imageCmd(stdout, stderr io.Writer, args []string) (handled 
 			fmt.Fprintf(stdout, "%s|27.1.1\n", f.daemonID)
 		case engines[f.driver].cpus:
 			fmt.Fprintln(stdout, f.cpus)
+		case engines[f.driver].remapsInfo:
+			fmt.Fprintln(stdout, f.remapsInfo)
 		default:
 			f.t.Errorf("fake %s: info format %q", f.driver, args[2])
 			return true, dockerFail(stderr, "template: unknown field")
