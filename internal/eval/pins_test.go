@@ -178,6 +178,7 @@ func FuzzReadPins(f *testing.F) {
 	hex := strings.Repeat("ab", 32)
 	for _, s := range []string{
 		`{"version":1}`, `{"version":2}`, `{}`, `[]`, `{"version":1,"superseded":[]}`, `{"version":1,"docker:local":{}}`,
+		`{"version":1,"docker:local":{"s":null}}`, `{"version":1,"lxd:srv":{"s":null}}`, `{"version":1,"docker:local":null}`,
 		`{"version":1,"superseded":[{"target":"podman:local","id":"` + hex + `","built":true,"since":"2026-11-01T10:00:00Z"}],` +
 			`"podman:local":{"sxx":{"daemon":"d","image":{"id":"` + hex + `","name":"img","pulled":true},"layers":["sha256:l1"],` +
 			`"proxy":{"id":"` + hex + `"},"pats_version":"1.0.0","pats_build":"dev","built":"2026-11-01","inputs":{"image_ref":"img"},` +
@@ -207,6 +208,52 @@ func FuzzReadPins(f *testing.F) {
 
 		// what an init does next with a sandbox the config dropped.
 		pins.dropMissing(nil, time.Unix(0, 0))
+	})
+}
+
+// a pin file that is not one is an error to a run and is remade by an init;
+// one that cannot be read at all is neither replaced nor taken for empty,
+// since the images it lists as pats's own would never be removed.
+func TestPinsUnreadable(t *testing.T) {
+	write := func(t *testing.T, body string) (dir, path string) {
+		dir = t.TempDir()
+		path = filepath.Join(dir, ".pats", pinsName)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return dir, path
+	}
+	pin := func(f *pinFile) error {
+		f.setPin("docker:local", "sxx", &pinEntry{Image: pinImage{ID: "sha256:aa", Pulled: true}}, time.Unix(0, 0))
+		return nil
+	}
+	for name, body := range map[string]string{
+		"cut short":            `{"version":1,"docker:local":{"sxx":`,
+		"another format":       `{"version":2}`,
+		"a null container pin": `{"version":1,"docker:local":{"sxx":null}}`,
+		"a null lxd pin":       `{"version":1,"lxd:srv":{"sxx":null}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, _ := write(t, body)
+			_, err := readPins(dir)
+			assert.Error(t, err, "pats init")
+			require.NoError(t, updatePins(dir, pin))
+			back, err := readPins(dir)
+			require.NoError(t, err)
+			assert.Equal(t, back.entry("docker:local", "sxx").Image.ID, "sha256:aa")
+		})
+	}
+	t.Run("not readable", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root reads every file")
+		}
+		const body = `{"version":1,"superseded":[{"target":"docker:local","id":"sha256:bb","built":true,"since":"2026-11-01T10:00:00Z"}]}`
+		dir, path := write(t, body)
+		require.NoError(t, os.Chmod(path, 0))
+		assert.Error(t, updatePins(dir, pin), "permission denied")
+		require.NoError(t, os.Chmod(path, 0o644))
+		kept, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, string(kept), body)
 	})
 }
 

@@ -111,6 +111,11 @@ func (f *pinFile) UnmarshalJSON(b []byte) error {
 		default:
 			var entries map[string]*pinEntry
 			err = json.Unmarshal(v, &entries)
+			for sb, e := range entries {
+				if e == nil && err == nil {
+					err = fmt.Errorf("sandbox %q has no pin", sb)
+				}
+			}
 			f.Targets[k] = entries
 		}
 		if err != nil {
@@ -125,6 +130,13 @@ func (f *pinFile) entry(target, sb string) *pinEntry {
 	return f.Targets[target][sb]
 }
 
+// badPins is a pin file that is there and is not one this pats reads: cut
+// short, hand-edited, or another format. init replaces it; a file that could
+// not be read at all is no badPins, and is left as it is.
+type badPins struct{ error }
+
+func (e badPins) Unwrap() error { return e.error }
+
 // readPins reads the pin file; a missing one is an empty file.
 func readPins(configDir string) (*pinFile, error) {
 	f := &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
@@ -136,10 +148,10 @@ func readPins(configDir string) (*pinFile, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(b, f); err != nil {
-		return nil, fmt.Errorf(".pats/%s: %w (run `pats init` to make it again)", pinsName, err)
+		return nil, badPins{fmt.Errorf(".pats/%s: %w (run `pats init` to make it again)", pinsName, err)}
 	}
 	if f.Version != pinsVersion {
-		return nil, fmt.Errorf(".pats/%s is format %d, this pats reads %d: run `pats init`", pinsName, f.Version, pinsVersion)
+		return nil, badPins{fmt.Errorf(".pats/%s is format %d, this pats reads %d: run `pats init`", pinsName, f.Version, pinsVersion)}
 	}
 	f.normalizeIDs()
 	return f, nil
@@ -190,9 +202,11 @@ func updatePins(configDir string, change func(*pinFile) error) error {
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
 	f, err := readPins(configDir)
-	if err != nil {
-		// a pin file this pats cannot read is replaced: init remakes what it needs.
+	if errors.As(err, new(badPins)) {
+		// init remakes what it needs.
 		f = &pinFile{Version: pinsVersion, Targets: map[string]map[string]*pinEntry{}}
+	} else if err != nil {
+		return err
 	}
 	if err := change(f); err != nil {
 		return err
