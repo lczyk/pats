@@ -455,3 +455,116 @@ func TestHostRunSeam(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Equal(t, seen[1][0], "/bin/sh")
 }
+
+// hostModes are the egress modes a host sweep covers. trust says the mode
+// needs a bundle the user vouches for.
+var hostModes = []struct {
+	name   string
+	egress Egress
+	trust  bool
+}{
+	{"none", Egress{None: true}, false},
+	{"open", Egress{}, false},
+	{"hosts", Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}, false},
+	{"mitm", Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com/x/*"}}}, true},
+}
+
+// hostSweep is sweep for the host driver: one entry run per command it
+// reaches through the driver's seam, each fault kind. there is no server to
+// leave things on: what a run makes is on this machine -- its proxy child,
+// its CA material, its execs -- and none of it may be there once the entry
+// has closed its session and the run's process has ended. the proxy child is
+// started for real and is not a swept call.
+func hostSweep(t *testing.T, o Options, entry func(t *testing.T, b *hostSandbox, ctx context.Context) *hostSession) {
+	bin, err := hostPats()
+	require.NoError(t, err)
+	for _, kind := range faultKinds {
+		for k := 0; ; k++ {
+			b := hostOn(t, o)
+			b.h.pats = bin
+			fs := &faults{}
+			b.h.run = func(ctx context.Context, cmd *exec.Cmd) error {
+				return fs.call(ctx, cmd.Args, io.Discard, func(bool) error {
+					if len(cmd.Args) == 3 && cmd.Args[2] == stampScript {
+						return nil // the clis of the machine the tests run on are not asked
+					}
+					return RunGroup(ctx, cmd)
+				})
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			var stop context.CancelFunc
+			if kind.cancel {
+				stop = cancel
+			}
+			fs.arm(k, kind.after, stop)
+			s := entry(t, b, ctx)
+			cancel()
+			b.h.p.shutdown()
+			hit, call := fs.reached()
+			if left := hostLeftovers(t, b, s); len(left) > 0 {
+				t.Errorf("%s at fault %d (%s) left:\n  %s", kind.name, k, call, strings.Join(left, "\n  "))
+				return
+			}
+			if !hit {
+				assert.That(t, k > 0, "%s: the entry ran no commands; the sweep tested nothing", kind.name)
+				break
+			}
+		}
+	}
+}
+
+// hostLeftovers is what a host run left on the machine: a proxy child still
+// alive, an exec still tracked, anything in the run's temp dir.
+func hostLeftovers(t *testing.T, b *hostSandbox, s *hostSession) []string {
+	var left []string
+	if s != nil {
+		if s.proxy != nil && exec.Command("kill", "-0", strconv.Itoa(s.proxy.cmd.Process.Pid)).Run() == nil {
+			left = append(left, "proxy child "+strconv.Itoa(s.proxy.cmd.Process.Pid))
+		}
+		s.mu.Lock()
+		if n := len(s.running); n > 0 {
+			left = append(left, strconv.Itoa(n)+" exec(s) still tracked")
+		}
+		s.mu.Unlock()
+	}
+	home, err := b.h.p.home()
+	require.NoError(t, err)
+	ents, _ := os.ReadDir(filepath.Join(home, "tmp"))
+	for _, e := range ents {
+		left = append(left, "tmp/"+e.Name())
+	}
+	return left
+}
+
+// every command of a host pair -- the stamps, a root step, the agent --
+// under every egress mode: whichever one fails or is cancelled, before it
+// ran or after, a closed session leaves no proxy, no CA and no exec.
+func TestHostSweepSession(t *testing.T) {
+	cert, _, err := GenCA()
+	require.NoError(t, err)
+	trust := filepath.Join(t.TempDir(), "trust.pem")
+	require.NoError(t, os.WriteFile(trust, cert, 0o644))
+	for _, mode := range hostModes {
+		t.Run(mode.name, func(t *testing.T) {
+			o := Options{Driver: HostDriver}
+			if mode.trust {
+				o.TrustFile = trust
+			}
+			hostSweep(t, o, func(t *testing.T, b *hostSandbox, ctx context.Context) *hostSession {
+				_, _ = b.h.Stamps(ctx, "")
+				sess, err := b.Start(ctx, Spec{Workdir: t.TempDir(), Egress: mode.egress})
+				if err != nil {
+					assert.That(t, ctx.Err() != nil, "a start with no fault in it failed: %v", err)
+					return nil
+				}
+				s := sess.(*hostSession)
+				_, _ = s.Exec(ctx, Cmd{Argv: []string{"true"}, Root: true}, io.Discard, io.Discard)
+				_ = s.HandOver(ctx, s.workdir)
+				_, _ = s.Exec(ctx, Cmd{Argv: []string{"sh", "-c", "echo done > out.txt"}}, io.Discard, io.Discard)
+				_ = s.Sync(ctx)
+				require.NoError(t, s.Close())
+				return s
+			})
+		})
+	}
+}
