@@ -35,7 +35,7 @@ var hostForTarget = func(ctx context.Context, target, daemon string) (h imageHos
 	case "lxd":
 		d, err := sandbox.Open(sandbox.Options{Driver: "lxd", Remote: rest}.WithEnv())
 		return d, err == nil
-	case "docker", "podman": // sandbox.Engines()
+	case "docker", "podman", sandbox.BwrapDriver: // sandbox.Engines(), and bwrap's store on this machine
 		d, err := sandbox.Open(sandbox.Options{Driver: kind}.WithEnv())
 		if err != nil {
 			return nil, false

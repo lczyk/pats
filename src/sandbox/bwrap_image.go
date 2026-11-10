@@ -423,8 +423,16 @@ func newBwrapStore() (bwrapStore, error) {
 	return bwrapStore{dir: filepath.Join(c, "bwrap")}, nil
 }
 
-// key is an image id as a file name.
-func storeKey(id string) string { return strings.ReplaceAll(id, ":", "-") }
+// storeKey is an image id as a file name. an id comes from a pin file as
+// well as from a registry, so one that is no image id is never made a path
+// of: it gets a name of its own, which no image is under.
+func storeKey(id string) string {
+	if !imageIDRe.MatchString(id) {
+		sum := sha256.Sum256([]byte(id))
+		return "no-image-" + hex.EncodeToString(sum[:8])
+	}
+	return strings.ReplaceAll(id, ":", "-")
+}
 
 func (st bwrapStore) rootfs(id string) string { return filepath.Join(st.dir, "rootfs", storeKey(id)) }
 func (st bwrapStore) envFile(id string) string {

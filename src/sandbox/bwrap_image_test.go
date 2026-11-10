@@ -184,6 +184,26 @@ func imageRegistry(t *testing.T, env []string, layers ...[]byte) (registry, stri
 	return registry{client: srv.Client(), url: func(string) string { return srv.URL }}, host + "/pats/img:latest"
 }
 
+// an id reaches the store from a pin file too: one that is no image id names
+// nothing in it, and is never a path out of it.
+func TestBwrapStoreKey(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	st, err := newBwrapStore()
+	require.NoError(t, err)
+	victim := filepath.Join(st.dir, "victim")
+	require.NoError(t, os.MkdirAll(filepath.Join(victim, "d"), 0o755))
+	image := "sha256:" + strings.Repeat("ab", 32)
+	require.NoError(t, os.MkdirAll(st.rootfs(image), 0o755))
+	for _, id := range []string{"", ".", "..", "../victim", "../../victim", "sha256:../../victim", "/abs", "sha256:" + strings.Repeat("AB", 32)} {
+		assert.That(t, !st.has(id), "%q is in the store", id)
+		assert.That(t, filepath.Dir(st.rootfs(id)) == filepath.Join(st.dir, "rootfs"), "%q is a path out of the store: %s", id, st.rootfs(id))
+		require.NoError(t, st.remove(id))
+	}
+	_, err = os.Stat(filepath.Join(victim, "d"))
+	assert.NoError(t, err, "a dir beside the store was removed")
+	assert.That(t, st.has(image), "an image was removed")
+}
+
 func TestBwrapStorePull(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	reg, ref := imageRegistry(t, []string{"PATH=/opt/tools/bin:/usr/bin"},
