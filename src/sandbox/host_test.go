@@ -262,11 +262,15 @@ func TestHostCloseEndsExecs(t *testing.T) {
 	sess, err := b.Start(context.Background(), Spec{Workdir: t.TempDir()})
 	require.NoError(t, err)
 	done := make(chan int, 1)
+	pr, pw := io.Pipe()
 	go func() {
-		code, _ := sess.Exec(context.Background(), Cmd{Argv: []string{"sleep", "300"}}, io.Discard, io.Discard)
+		code, _ := sess.Exec(context.Background(), Cmd{Argv: []string{"sh", "-c", "echo up; exec sleep 300"}}, pw, io.Discard)
 		done <- code
 	}()
-	time.Sleep(200 * time.Millisecond)
+	// the exec is running, not merely asked for: close has one to end.
+	up := make([]byte, 3)
+	_, err = io.ReadFull(pr, up)
+	require.NoError(t, err)
 	require.NoError(t, sess.Close())
 	select {
 	case code := <-done:

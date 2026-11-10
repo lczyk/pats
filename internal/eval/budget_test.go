@@ -165,3 +165,46 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	assert.That(t, i < strings.Index(text, "axx/t1x"), "start line after the first pair: %q", text)
 	assert.That(t, !strings.Contains(text, "secret"), "credential in the output: %q", text)
 }
+
+// pairs run several at once, under -j and a sandbox's max-parallel: each
+// still ends with its own metadata, and a run-wide budget stops the ones
+// not yet started once those running have spent it.
+func TestRunParallel(t *testing.T) {
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{preRun: steps(1, 1)}, nil
+	}
+	defer func() { newSandbox = old }()
+	cfg := parseCfg(t, `
+svx: {kind: sandbox, items: {sxx: {image: s, max-parallel: 2}, syy: {image: s}}}
+avx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}, ayy: {harness: opencode-openrouter, model: m, sandbox: syy}}}
+tvx: {kind: task, items: {t1x: {prompt: p}, t2x: {prompt: p}, t3x: {prompt: p}, t4x: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
+`)
+	ran := func(runDir string) (n int) {
+		for _, agent := range []string{"axx", "ayy"} {
+			for _, task := range []string{"t1x", "t2x", "t3x", "t4x"} {
+				if _, err := os.Stat(filepath.Join(runDir, agent, task)); err == nil {
+					n++
+					assert.Equal(t, readMeta(t, runDir, agent, task).Status, "ok", "%s/%s", agent, task)
+				}
+			}
+		}
+		return n
+	}
+	dir := t.TempDir()
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 4})
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, ran(runDir), 8)
+
+	dir = t.TempDir()
+	pinAll(t, dir, cfg)
+	out.Reset()
+	runDir, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 4, MaxCost: 2.5})
+	assert.ErrorIs(t, err, ErrBudget)
+	n := ran(runDir)
+	assert.That(t, n >= 3 && n < 8, "%d pairs ran under a budget three of them spend: %s", n, out.String())
+	assert.ContainsString(t, out.String(), "pair(s) not started")
+}

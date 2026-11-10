@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -182,16 +182,25 @@ func TestBwrapStartPreflight(t *testing.T) {
 func TestBwrapQueuedExecCancelled(t *testing.T) {
 	f := &fakeBwrap{}
 	s := bwrapSessionOn(f, netNone)
-	s.mu.Lock()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := s.Exec(ctx, Cmd{Argv: []string{"true"}}, io.Discard, io.Discard)
-		done <- err
-	}()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	s.mu.Unlock()
-	assert.ErrorIs(t, <-done, ErrLaunch)
+	// live when the exec is asked for, ended by the time it has the session:
+	// the check before the wait would pass a test that only cancelled early.
+	ctx := &endsOnSecondLook{Context: context.Background()}
+	_, err := s.Exec(ctx, Cmd{Argv: []string{"true"}}, io.Discard, io.Discard)
+	assert.ErrorIs(t, err, ErrLaunch)
+	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, len(f.calls), 0)
+}
+
+// endsOnSecondLook is a context that is live the first time its Err is
+// asked for and cancelled from then on.
+type endsOnSecondLook struct {
+	context.Context
+	looks atomic.Int32
+}
+
+func (c *endsOnSecondLook) Err() error {
+	if c.looks.Add(1) > 1 {
+		return context.Canceled
+	}
+	return nil
 }
