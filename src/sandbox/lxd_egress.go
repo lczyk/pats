@@ -122,7 +122,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 		}
 	}
 
-	m, err := prepare(spec.Egress, l.o.Machine.trust(), s.readBundle(ctx))
+	m, err := l.p.prepare(spec.Egress, l.o.Machine.trust(), s.readBundle(ctx))
 	if err != nil {
 		return err
 	}
@@ -263,7 +263,7 @@ func (s *lxdSession) openBehindProxy(ctx context.Context) error {
 	}
 	env := mp.Chain.AgentEnv()
 	if mp.trust() != nil {
-		m, err := prepare(Egress{}, mp.trust(), s.readBundle(ctx))
+		m, err := s.l.p.prepare(Egress{}, mp.trust(), s.readBundle(ctx))
 		if err != nil {
 			return err
 		}
@@ -410,7 +410,7 @@ func (l *lxd) buildProxyImage(ctx context.Context, force bool, log io.Writer) (s
 	if err != nil {
 		return "", false, err
 	}
-	material, err := MkTemp("pats-proxy-material-")
+	material, err := l.p.mkTemp("pats-proxy-material-")
 	if err != nil {
 		return "", false, err
 	}

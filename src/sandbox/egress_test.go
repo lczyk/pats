@@ -318,13 +318,29 @@ func TestStartEgressProxyAuditCreateFails(t *testing.T) {
 	assert.NotNil(t, fd.find("network rm"))
 }
 
+// what a driver makes is its process's: under that process's temp root and
+// owned by its run, so two processes stay two runs to pats clean.
+func TestPrepareUsesItsProcess(t *testing.T) {
+	p := testProcess(t)
+	home, err := p.home()
+	require.NoError(t, err)
+	eg := Egress{Set: true, Policy: proxy.Policy{Deny: []string{"a.test/x*"}}}
+	m, err := p.prepare(eg, nil, func() ([]byte, error) { return []byte("roots"), nil })
+	require.NoError(t, err)
+	defer m.cleanup()
+	assert.Equal(t, filepath.Dir(m.caDir), filepath.Join(home, "tmp"))
+	owner, err := os.ReadFile(m.caDir + ownerSuffix)
+	require.NoError(t, err)
+	assert.Equal(t, string(owner), p.token)
+}
+
 // a failed prepare removes the CA dir it already made.
 func TestPrepareCleansUpOnError(t *testing.T) {
-	cache := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cache)
-	t.Setenv("HOME", cache)
+	p := testProcess(t)
+	cache, err := p.home()
+	require.NoError(t, err)
 	eg := Egress{Set: true, Policy: proxy.Policy{Deny: []string{"a.test/x*"}}}
-	_, err := prepare(eg, nil, func() ([]byte, error) { return nil, errors.New("no bundle") })
+	_, err = p.prepare(eg, nil, func() ([]byte, error) { return nil, errors.New("no bundle") })
 	assert.Error(t, err, "trust bundle")
 	var left []string
 	_ = filepath.WalkDir(cache, func(p string, d os.DirEntry, err error) error {

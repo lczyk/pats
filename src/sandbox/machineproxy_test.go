@@ -314,7 +314,7 @@ func TestMachineProxyTrust(t *testing.T) {
 	}
 	patsProxy := func(t *testing.T, pol proxy.Policy) (*url.URL, *material) {
 		t.Helper()
-		m, err := prepare(Egress{Set: true, Policy: pol}, corpCert, system)
+		m, err := testProcess(t).prepare(Egress{Set: true, Policy: pol}, corpCert, system)
 		require.NoError(t, err)
 		t.Cleanup(m.cleanup)
 		penv := mergeEnv(m.proxyEnv(m.bundlePath), chain.Env())
@@ -329,7 +329,7 @@ func TestMachineProxyTrust(t *testing.T) {
 	}
 
 	t.Run("open", func(t *testing.T) {
-		m, err := prepare(Egress{}, corpCert, system)
+		m, err := testProcess(t).prepare(Egress{}, corpCert, system)
 		require.NoError(t, err)
 		defer m.cleanup()
 		assert.Equal(t, agentGet(t, corpURL, m.bundlePath, "https://example.com/open"), "origin:/open")

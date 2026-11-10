@@ -282,14 +282,14 @@ func (s *hostSession) startProxy(ctx context.Context, eg Egress) error {
 		if err != nil {
 			return fmt.Errorf("egress: SSL_CERT_FILE: %w", err)
 		}
-		m, err := prepare(eg, nil, func() ([]byte, error) { return roots, nil })
+		m, err := s.b.h.p.prepare(eg, nil, func() ([]byte, error) { return roots, nil })
 		if err != nil {
 			return err
 		}
 		s.caDir, bundle, added = m.caDir, m.bundlePath, m.certPath
 		penv = mergeEnv(penv, m.proxyEnv(o.TrustFile))
 	} else {
-		m, err := prepare(eg, nil, nil)
+		m, err := s.b.h.p.prepare(eg, nil, nil)
 		if err != nil {
 			return err
 		}

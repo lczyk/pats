@@ -32,7 +32,7 @@ type containerBuild struct {
 // fresh build. base gives the pats sandbox image, asked for only when the
 // dockerfile names PATS_SANDBOX, and handed in as that build arg; baseImg is
 // what it gave, "" when not asked. built reports whether a build ran.
-func buildContainerImage(ctx context.Context, r runner, driver string, b containerBuild, base func() string) (id, baseImg string, built bool, err error) {
+func buildContainerImage(ctx context.Context, p *process, r runner, driver string, b containerBuild, base func() string) (id, baseImg string, built bool, err error) {
 	// read once, shared by checkPatsIgnored (via usesContext) and
 	// buildContextHash below.
 	dfData, dfErr := os.ReadFile(b.Dockerfile)
@@ -79,7 +79,7 @@ func buildContainerImage(ctx context.Context, r runner, driver string, b contain
 		}
 		defer steps.start()()
 	}
-	id, err = buildImage(ctx, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, log)
+	id, err = buildImage(ctx, p, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, log)
 	return id, baseImg, err == nil, err
 }
 
@@ -129,8 +129,8 @@ const baseArg = "PATS_SANDBOX"
 // buildImage builds one resolved context and returns the image id. a non-empty
 // hash is stamped onto the image (see hashLabel) so the next run can find it;
 // a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
-func buildImage(ctx context.Context, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool, log io.Writer) (string, error) {
-	iid, err := MkTemp("pats-iid-")
+func buildImage(ctx context.Context, p *process, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool, log io.Writer) (string, error) {
+	iid, err := p.mkTemp("pats-iid-")
 	if err != nil {
 		return "", err
 	}

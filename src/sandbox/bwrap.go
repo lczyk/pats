@@ -237,7 +237,7 @@ func (d *bwrapDriver) Stamps(ctx context.Context, id string) (map[string]string,
 			return out, nil
 		}
 	}
-	work, err := MkTemp("pats-stamp-")
+	work, err := d.p.mkTemp("pats-stamp-")
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +365,7 @@ func (b *bwrapSandbox) Start(ctx context.Context, spec Spec) (Session, error) {
 		s.Close()
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
-	if s.dir, err = MkTemp("pats-bwrap-"); err != nil {
+	if s.dir, err = b.d.p.mkTemp("pats-bwrap-"); err != nil {
 		return fail(err)
 	}
 	for _, sub := range []string{"upper", "work", "egress"} {
@@ -629,7 +629,7 @@ func (s *bwrapSession) openNetwork(ctx context.Context, selfTest bool) error {
 	if c := mp.chain(); c != nil {
 		s.env = c.AgentEnv()
 		if mp.trust() != nil {
-			m, err := prepare(Egress{}, mp.trust(), s.readBundle)
+			m, err := s.d.p.prepare(Egress{}, mp.trust(), s.readBundle)
 			if err != nil {
 				return err
 			}
@@ -713,7 +713,7 @@ func (s *bwrapSession) startProxy(ctx context.Context, eg Egress) error {
 	if err != nil {
 		return err
 	}
-	m, err := prepare(eg, s.d.o.Machine.trust(), s.readBundle)
+	m, err := s.d.p.prepare(eg, s.d.o.Machine.trust(), s.readBundle)
 	if err != nil {
 		return err
 	}

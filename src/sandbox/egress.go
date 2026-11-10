@@ -192,7 +192,7 @@ func (c *container) openBehindProxy(ctx context.Context, selfTest bool) ([]strin
 	if mp.trust() == nil {
 		return args, env, nil, nil
 	}
-	m, err := prepare(Egress{}, mp.trust(), c.readBundle(ctx))
+	m, err := c.p.prepare(Egress{}, mp.trust(), c.readBundle(ctx))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -225,7 +225,7 @@ type material struct {
 // inspecting upstream) it merges both into the image's trust bundle
 // (readBundle fetches that bundle from the driver). the caller removes
 // caDir.
-func prepare(eg Egress, trust []byte, readBundle func() ([]byte, error)) (_ *material, err error) {
+func (p *process) prepare(eg Egress, trust []byte, readBundle func() ([]byte, error)) (_ *material, err error) {
 	y, err := yaml.Marshal(eg.Policy)
 	if err != nil {
 		return nil, err
@@ -251,7 +251,7 @@ func prepare(eg Egress, trust []byte, readBundle func() ([]byte, error)) (_ *mat
 	if trust != nil {
 		added = append(append(added, '\n'), trust...)
 	}
-	if m.caDir, err = MkTemp(namePrefix + "mitm-ca-"); err != nil {
+	if m.caDir, err = p.mkTemp(namePrefix + "mitm-ca-"); err != nil {
 		return nil, fmt.Errorf("egress: ca dir: %w", err)
 	}
 	m.certPath = filepath.Join(m.caDir, "ca.pem")
@@ -432,7 +432,7 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 		}
 	}
 
-	m, err = prepare(spec.Egress, c.o.Machine.trust(), c.readBundle(ctx))
+	m, err = c.p.prepare(spec.Egress, c.o.Machine.trust(), c.readBundle(ctx))
 	if err != nil {
 		teardown()
 		return nil, nil, err

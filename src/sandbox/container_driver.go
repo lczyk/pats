@@ -147,7 +147,7 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 	}
 	b := containerBuild{Dir: spec.Dir, Dockerfile: spec.Dockerfile, Force: spec.Force, Log: log, Progress: spec.Progress}
 	if spec.Dockerfile == "" {
-		gen, err := MkTemp("pats-build-")
+		gen, err := c.p.mkTemp("pats-build-")
 		if err != nil {
 			return Image{}, "", false, err
 		}
@@ -165,7 +165,7 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 			}
 		}
 	}
-	id, base, built, err := buildContainerImage(ctx, c.r, c.driver, b, sandbox)
+	id, base, built, err := buildContainerImage(ctx, c.p, c.r, c.driver, b, sandbox)
 	if err != nil {
 		return Image{}, "", false, err
 	}
