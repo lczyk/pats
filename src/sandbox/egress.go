@@ -602,10 +602,10 @@ func (c *container) createNetwork(ctx context.Context, name string, pool netip.P
 
 // nameTaken recognises the daemon saying a network of that name exists:
 // docker's "network with name x already exists", podman's "network name x
-// already used".
+// already used" and, from netavark, "network already exists x".
 func nameTaken(out string) bool {
 	l := strings.ToLower(out)
-	return (strings.Contains(l, "network with name ") && strings.Contains(l, "already exists")) ||
+	return (strings.Contains(l, "network") && strings.Contains(l, "already exists")) ||
 		(strings.Contains(l, "network name ") && strings.Contains(l, "already used"))
 }
 
