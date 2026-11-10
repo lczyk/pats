@@ -9,14 +9,17 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"unicode"
 
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox/proxy"
+	"gopkg.in/yaml.v3"
 )
 
 // EffectivePolicy is the egress policy a pair runs under: the sandbox's, the
@@ -296,11 +299,20 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 	fmt.Fprintf(out, "# from %s -- review before use: everything here was reached, not vetted.\n", relToCwd(runDir))
 	fmt.Fprintln(out, "egress:")
 	fmt.Fprintln(out, "  allow:")
+	// the entries as yaml writes a list of strings: a host is not always a
+	// plain scalar, and the quoting is the encoder's to know.
+	entries := func(hosts []string) {
+		if len(hosts) == 0 {
+			return
+		}
+		b, _ := yaml.Marshal(hosts)
+		for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+			fmt.Fprintf(out, "    %s\n", line)
+		}
+	}
 	if len(tunnels) > 0 {
 		fmt.Fprintln(out, "    # tunnels (no user agent or method visible)")
-		for _, h := range sortedSet(tunnels) {
-			fmt.Fprintf(out, "    - %s\n", yamlScalar(h))
-		}
+		entries(sortedSet(tunnels))
 	}
 	uas := make([]string, 0, len(byUA))
 	for ua := range byUA {
@@ -308,12 +320,15 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 	}
 	sort.Strings(uas)
 	for _, ua := range uas {
-		fmt.Fprintf(out, "    # %s\n", strings.ReplaceAll(ua, "\n", " "))
-		for _, h := range sortedSet(byUA[ua]) {
-			if !tunnels[h] {
-				fmt.Fprintf(out, "    - %s\n", yamlScalar(h))
+		// a comment is one line: a line break of any kind in a user agent,
+		// which the agent chose, would end it.
+		fmt.Fprintf(out, "    # %s\n", strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == '\u0085' {
+				return ' '
 			}
-		}
+			return r
+		}, ua))
+		entries(slices.DeleteFunc(sortedSet(byUA[ua]), func(h string) bool { return tunnels[h] }))
 	}
 	switch {
 	case len(tunnels) > 0:
@@ -357,14 +372,6 @@ func sortedSet(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// yamlScalar quotes a host when yaml would read it as something else.
-func yamlScalar(s string) string {
-	if strings.ContainsAny(s, ":*#[]{},&!|>'\"%@`") || strings.HasPrefix(s, ".") {
-		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-	}
-	return s
 }
 
 // humanBytes renders a byte count with a binary suffix: 512, 1.5k, 3.2M.

@@ -3,9 +3,11 @@ package eval
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 	"github.com/lczyk/pats/src/sandbox/proxy"
+	"gopkg.in/yaml.v3"
 )
 
 const egressCfg = `box: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [a.test, '.ubuntu.com'], deny: ['a.test/secret**']}}, open: {image: img}}}
@@ -146,6 +149,39 @@ func writeRun(t *testing.T, audit string) string {
 	return dir
 }
 
+// a suggestion is pasted into a config: whatever a host is spelt as, the
+// block reads back as yaml, to the hosts that were reached.
+func TestSuggestEgressReadsBack(t *testing.T) {
+	hosts := []string{"plain.test", "port.test:8443", "12:30:45", "true", "null", "~", "1e3", "0x1f", "- dash", "a: b", "#hash",
+		"*.star", "[::1]:22", "q'uote", `d"quote`, "%percent", "@at", "back`tick", "{brace}", "", " lead", "trail ", "tab\there", "new\nline", "\u00e9t\u00e9.test"}
+	var audit strings.Builder
+	for _, h := range hosts {
+		line, err := json.Marshal(map[string]any{"ev": "open", "host": h, "port": "443", "kind": "tunnel", "allowed": true})
+		require.NoError(t, err)
+		audit.Write(append(line, '\n'))
+	}
+	// a user agent is the agent's to choose too, and is written in a comment.
+	for _, ua := range []string{"curl/1\rdefault: allow", "curl/2\ndeny: ['*']", "curl/3\u2028x: y", "curl/4\x00"} {
+		line, err := json.Marshal(map[string]any{"ev": "req", "host": "plain.test", "port": "443", "kind": "mitm", "allowed": true, "method": "POST", "ua": ua})
+		require.NoError(t, err)
+		audit.Write(append(line, '\n'))
+	}
+	var out bytes.Buffer
+	require.NoError(t, SuggestEgress(writeRun(t, audit.String()), "", &out))
+	var top map[string]any
+	require.NoError(t, yaml.Unmarshal(out.Bytes(), &top), "%s", out.String())
+	assert.Len(t, top, 1, "a key beside egress: %s", out.String())
+	var got struct {
+		Egress struct {
+			Allow []string `yaml:"allow"`
+		} `yaml:"egress"`
+	}
+	require.NoError(t, yaml.Unmarshal(out.Bytes(), &got), "%s", out.String())
+	want := slices.Clone(hosts)
+	slices.Sort(want)
+	assert.EqualArrays(t, got.Egress.Allow, want, "%s", out.String())
+}
+
 func TestSuggestEgress(t *testing.T) {
 	dir := writeRun(t, sampleAudit)
 	var out bytes.Buffer
@@ -153,7 +189,7 @@ func TestSuggestEgress(t *testing.T) {
 	s := out.String()
 	for _, want := range []string{
 		"egress:\n  allow:\n",
-		"# tunnels (no user agent or method visible)\n    - archive.ubuntu.com\n    - evil.test\n    - 'git.test:22'\n",
+		"# tunnels (no user agent or method visible)\n    - archive.ubuntu.com\n    - evil.test\n    - git.test:22\n",
 		"# curl/8.5.0\n    - gist.github.com\n",
 		"# pip/24.0\n    - pypi.org\n",
 		"# methods: unknown -- tunnels hide them",
