@@ -145,7 +145,14 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 	maps.Copy(env, agent.HomeEnv(harness, home))
 
 	hasCreds := hasToken
-	if cf, rel := agent.HostCredsFile(harness); cf != "" {
+	// a token in the env is a way in of its own: a default login file this
+	// process may not read (a strict snap) is then no error.
+	cf, rel, err := agent.HostCredsFile(harness)
+	if err != nil && !(hasToken && os.Getenv(agent.AuthPathVar[harness]) == "") {
+		sandbox.RemoveTemp(homeDir)
+		return harnessSetup{}, err
+	}
+	if cf != "" {
 		dst := filepath.Join(homeDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 			sandbox.RemoveTemp(homeDir)

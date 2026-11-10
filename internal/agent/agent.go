@@ -3,7 +3,9 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -183,35 +185,60 @@ func CredEnv(harness string) (env map[string]string, hasToken bool) {
 	return env, hasToken
 }
 
+// AuthPathVar names the variable that points a keyless harness at its login
+// file, in every build: unset, the file is the harness's own under the
+// user's home.
+var AuthPathVar = map[string]string{
+	"claude-cli-keyless": "PATS_CLAUDE_AUTH_PATH",
+	"codex-cli-keyless":  "PATS_CODEX_AUTH_PATH",
+}
+
 // HostCredsFile returns a harness credential file and its HOME-relative
-// destination. keyring-backed logins have no file and return empty strings.
-func HostCredsFile(harness string) (host, relative string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", ""
-	}
+// destination: what AuthPathVar names, else the harness's own file under the
+// user's real home. keyring-backed logins have no file and return empty
+// strings, as does a default file that is not there. a named file that cannot
+// be read, or a default one this process may not read (a strict snap and a
+// home's dotfiles), is an error naming the variable.
+func HostCredsFile(harness string) (host, relative string, err error) {
 	switch harness {
 	case "claude-cli-keyless":
 		relative = filepath.Join(".claude", ".credentials.json")
 	case "codex-cli-keyless":
 		relative = filepath.Join(".codex", "auth.json")
 	default:
-		return "", ""
+		return "", "", nil
+	}
+	v := AuthPathVar[harness]
+	if p := os.Getenv(v); p != "" {
+		if _, err := os.ReadFile(p); err != nil {
+			return "", "", fmt.Errorf("%s=%s: %w", v, p, err)
+		}
+		return p, relative, nil
+	}
+	home := os.Getenv("SNAP_REAL_HOME")
+	if home == "" {
+		if home, err = os.UserHomeDir(); err != nil {
+			return "", "", nil
+		}
 	}
 	p := filepath.Join(home, relative)
-	if _, err := os.Stat(p); err == nil {
-		return p, relative
+	_, err = os.ReadFile(p)
+	switch {
+	case err == nil:
+		return p, relative, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return "", "", nil
 	}
-	return "", ""
+	return "", "", fmt.Errorf("%s cannot be read here (%w): set %s to a copy of it", p, err, v)
 }
 
 // CredentialHint describes the host credential source used in auth warnings.
 func CredentialHint(harness string) string {
 	switch harness {
 	case "claude-cli-keyless":
-		return "a claude token env or ~/.claude/.credentials.json"
+		return "a claude token env (CLAUDE_CODE_OAUTH_TOKEN) or ~/.claude/.credentials.json (or PATS_CLAUDE_AUTH_PATH)"
 	case "codex-cli-keyless":
-		return "~/.codex/auth.json (file-based codex login)"
+		return "~/.codex/auth.json (file-based codex login, or PATS_CODEX_AUTH_PATH)"
 	case "copilot-cli-keyless":
 		return `COPILOT_GITHUB_TOKEN (macos: security find-generic-password -s copilot-cli -w; or gh auth token)`
 	case "opencode-openrouter":

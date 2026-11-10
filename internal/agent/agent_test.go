@@ -145,9 +145,60 @@ func TestHostCredsFileCodex(t *testing.T) {
 	want := filepath.Join(dir, "auth.json")
 	require.NoError(t, os.WriteFile(want, []byte("{}"), 0o600))
 
-	host, rel := HostCredsFile("codex-cli-keyless")
+	t.Setenv("PATS_CODEX_AUTH_PATH", "")
+	t.Setenv("SNAP_REAL_HOME", "")
+	host, rel, err := HostCredsFile("codex-cli-keyless")
+	require.NoError(t, err)
 	assert.Equal(t, host, want)
 	assert.Equal(t, rel, filepath.Join(".codex", "auth.json"))
+}
+
+// the auth path variable names the login file, in every build; one that
+// cannot be read is an error naming it, never the default instead.
+func TestHostCredsFileAuthPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SNAP_REAL_HOME", "")
+	login := filepath.Join(t.TempDir(), "codex.json")
+	require.NoError(t, os.WriteFile(login, []byte("{}"), 0o600))
+	t.Setenv("PATS_CODEX_AUTH_PATH", login)
+	host, rel, err := HostCredsFile("codex-cli-keyless")
+	require.NoError(t, err)
+	assert.Equal(t, host, login)
+	assert.Equal(t, rel, filepath.Join(".codex", "auth.json"))
+
+	t.Setenv("PATS_CLAUDE_AUTH_PATH", filepath.Join(t.TempDir(), "missing"))
+	_, _, err = HostCredsFile("claude-cli-keyless")
+	assert.Error(t, err, "PATS_CLAUDE_AUTH_PATH=")
+}
+
+// a strict snap's HOME is its own: the login is looked for in the real one.
+func TestHostCredsFileRealHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	real := t.TempDir()
+	t.Setenv("SNAP_REAL_HOME", real)
+	t.Setenv("PATS_CLAUDE_AUTH_PATH", "")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, ".claude"), 0o700))
+	want := filepath.Join(real, ".claude", ".credentials.json")
+	require.NoError(t, os.WriteFile(want, []byte("{}"), 0o600))
+	host, _, err := HostCredsFile("claude-cli-keyless")
+	require.NoError(t, err)
+	assert.Equal(t, host, want)
+}
+
+// a default login this process may not read is an error naming the
+// variable that points at a copy.
+func TestHostCredsFileUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0 mode file")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SNAP_REAL_HOME", "")
+	t.Setenv("PATS_CODEX_AUTH_PATH", "")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte("{}"), 0o000))
+	_, _, err := HostCredsFile("codex-cli-keyless")
+	assert.Error(t, err, "set PATS_CODEX_AUTH_PATH")
 }
 
 func TestSpecUnsupportedHarness(t *testing.T) {

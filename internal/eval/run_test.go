@@ -1236,3 +1236,28 @@ extra: {kind: suite, defaults: {manual: true}, items: {abl: {agents: bxx, tasks:
 	_, err := Run(cfg, Options{ConfigDir: t.TempDir(), Now: time.Now(), Out: io.Discard, Agents: []string{"bxx"}, DryRun: true})
 	assert.Error(t, err, "manual suite abl holds it: add -S abl")
 }
+
+// a token in the env is a way in of its own: a default login file this
+// process may not read does not stop it, while a named one that cannot be
+// read does, naming its variable.
+func TestHarnessHomeAuthPath(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0 mode file")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SNAP_REAL_HOME", "")
+	t.Setenv("PATS_CLAUDE_AUTH_PATH", "")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte("{}"), 0o000))
+	var out bytes.Buffer
+	hs, err := harnessHome(Options{Out: &out}, "claude x", "claude-cli-keyless", map[string]string{}, true, nil)
+	require.NoError(t, err)
+	hs.cleanup()
+	_, err = harnessHome(Options{Out: &out}, "claude x", "claude-cli-keyless", map[string]string{}, false, nil)
+	assert.Error(t, err, "set PATS_CLAUDE_AUTH_PATH")
+
+	t.Setenv("PATS_CLAUDE_AUTH_PATH", t.TempDir())
+	_, err = harnessHome(Options{Out: &out}, "claude x", "claude-cli-keyless", map[string]string{}, true, nil)
+	assert.Error(t, err, "PATS_CLAUDE_AUTH_PATH=")
+}
