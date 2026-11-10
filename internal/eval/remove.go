@@ -30,20 +30,11 @@ type remover interface {
 // a var so tests fake it. ok is false for a target this pats cannot reach
 // as named: another context, connection or daemon answering now.
 var hostForTarget = func(ctx context.Context, target, daemon string) (h imageHost, ok bool) {
-	kind, rest, _ := strings.Cut(target, ":")
-	switch kind {
-	case "lxd":
-		d, err := sandbox.Open(sandbox.Options{Driver: "lxd", Remote: rest}.WithEnv())
-		return d, err == nil
-	case "docker", "podman", sandbox.BwrapDriver: // sandbox.Engines(), and bwrap's store on this machine
-		d, err := sandbox.Open(sandbox.Options{Driver: kind}.WithEnv())
-		if err != nil {
-			return nil, false
-		}
-		now, err := d.Target(ctx)
-		return d, err == nil && now.Key == target && now.Daemon == daemon
+	d, ok := sandbox.OpenTarget(ctx, target, daemon)
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	return d, true
 }
 
 // projectsFile lists every project whose init ran on this machine, one path
@@ -56,7 +47,7 @@ func projectsFile() string {
 // machineLock serialises what inits on this machine do with each other's
 // pins: the projects file, a commit of new pins, and the removal that reads
 // every project's pins. it does not cover building, which can take minutes.
-func machineLock() (func(), error) {
+func machineLock(ctx context.Context) (func(), error) {
 	path := projectsFile() + ".lock"
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -65,7 +56,7 @@ func machineLock() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := sandbox.Flock(ctx, f, true); err != nil {
 		f.Close()
 		return nil, err
 	}

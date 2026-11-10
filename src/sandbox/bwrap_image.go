@@ -562,8 +562,8 @@ func (st bwrapStore) refFile(ref string) string {
 }
 
 // lock opens id's lock file and takes it (exclusive or shared), waiting
-// unless nowait; the returned func releases it.
-func (st bwrapStore) lock(id string, exclusive, nowait bool) (func(), error) {
+// until ctx ends unless nowait; the returned func releases it.
+func (st bwrapStore) lock(ctx context.Context, id string, exclusive, nowait bool) (func(), error) {
 	if err := os.MkdirAll(filepath.Join(st.dir, "rootfs"), 0o700); err != nil {
 		return nil, err
 	}
@@ -571,14 +571,16 @@ func (st bwrapStore) lock(id string, exclusive, nowait bool) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	how := syscall.LOCK_SH
-	if exclusive {
-		how = syscall.LOCK_EX
-	}
 	if nowait {
-		how |= syscall.LOCK_NB
+		how := syscall.LOCK_SH | syscall.LOCK_NB
+		if exclusive {
+			how = syscall.LOCK_EX | syscall.LOCK_NB
+		}
+		err = syscall.Flock(int(f.Fd()), how)
+	} else {
+		err = Flock(ctx, f, exclusive)
 	}
-	if err := syscall.Flock(int(f.Fd()), how); err != nil {
+	if err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -604,9 +606,9 @@ func (st bwrapStore) imageEnv(id string) ([]string, error) {
 // pull makes ri's rootfs present: unpacked into <id>.new under the image's
 // lock and renamed when whole. one already there is kept unless force.
 // fetched says whether this call unpacked it.
-func (st bwrapStore) pull(ri *remoteImage, force bool, progress func(string)) (fetched bool, err error) {
+func (st bwrapStore) pull(ctx context.Context, ri *remoteImage, force bool, progress func(string)) (fetched bool, err error) {
 	id := ri.manifest
-	unlock, err := st.lock(id, true, false)
+	unlock, err := st.lock(ctx, id, true, false)
 	if err != nil {
 		return false, err
 	}
@@ -693,7 +695,7 @@ func (st bwrapStore) ids() []string {
 
 // remove takes id out of the store, refusing one a session holds.
 func (st bwrapStore) remove(id string) error {
-	unlock, err := st.lock(id, true, true)
+	unlock, err := st.lock(context.Background(), id, true, true)
 	if err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return fmt.Errorf("image %s is in use by a running sandbox", short12(id))
@@ -729,7 +731,7 @@ func (st bwrapStore) sweepNew(dryRun bool) []string {
 			continue
 		}
 		id := strings.Replace(n, "-", ":", 1)
-		unlock, err := st.lock(id, true, true)
+		unlock, err := st.lock(context.Background(), id, true, true)
 		if err != nil {
 			continue
 		}

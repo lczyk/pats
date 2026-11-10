@@ -386,7 +386,7 @@ func TestBwrapStorePull(t *testing.T) {
 	require.NoError(t, err)
 	ri, err := reg.image(t.Context(), ref, "amd64")
 	require.NoError(t, err)
-	fetched, err := st.pull(ri, false, nil)
+	fetched, err := st.pull(context.Background(), ri, false, nil)
 	require.NoError(t, err)
 	assert.Equal(t, fetched, true)
 	b, err := os.ReadFile(filepath.Join(st.rootfs(ri.manifest), "etc/os-release"))
@@ -400,13 +400,13 @@ func TestBwrapStorePull(t *testing.T) {
 	assert.Equal(t, id, ri.manifest)
 
 	// a second pull of the same digest converges on the first.
-	fetched, err = st.pull(ri, false, nil)
+	fetched, err = st.pull(context.Background(), ri, false, nil)
 	require.NoError(t, err)
 	assert.Equal(t, fetched, false)
 
 	// a session's shared lock keeps the image; a crashed holder's lock
 	// goes with it.
-	unlock, err := st.lock(ri.manifest, false, false)
+	unlock, err := st.lock(context.Background(), ri.manifest, false, false)
 	require.NoError(t, err)
 	assert.Error(t, st.remove(ri.manifest), "in use")
 	unlock()
@@ -427,7 +427,7 @@ func TestBwrapStoreSweepNew(t *testing.T) {
 	require.NoError(t, os.WriteFile(st.rootfs(id)+".dl/.pats-layer-1", []byte("half a layer"), 0o600))
 	require.NoError(t, os.Chmod(filepath.Join(half, "etc"), 0o500))
 	assert.Equal(t, st.has(id), false)
-	unlock, err := st.lock(id, true, false)
+	unlock, err := st.lock(context.Background(), id, true, false)
 	require.NoError(t, err)
 	assert.Equal(t, len(st.sweepNew(false)), 0)
 	unlock()
@@ -459,7 +459,7 @@ func TestBwrapStoreConcurrentPull(t *testing.T) {
 				errs[i] = err
 				return
 			}
-			fetched[i], errs[i] = st.pull(ri, false, nil)
+			fetched[i], errs[i] = st.pull(context.Background(), ri, false, nil)
 		}()
 	}
 	wg.Wait()
@@ -480,7 +480,7 @@ func TestBwrapStoreCrashedHolder(t *testing.T) {
 	if os.Getenv("PATS_HOLD_LOCK") != "" {
 		st, err := newBwrapStore()
 		if err == nil {
-			_, err = st.lock(os.Getenv("PATS_HOLD_LOCK"), false, false)
+			_, err = st.lock(context.Background(), os.Getenv("PATS_HOLD_LOCK"), false, false)
 		}
 		if err != nil {
 			fmt.Println("error", err)

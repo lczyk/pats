@@ -30,6 +30,9 @@ import (
 // BwrapDriver is the bwrap driver's name.
 const BwrapDriver = "bwrap"
 
+// LXDDriver is the lxd driver's name in a config and a pin target.
+const LXDDriver = "lxd"
+
 // bwrapMin is the oldest bwrap with --overlay.
 var bwrapMin = [2]int{0, 10}
 
@@ -134,7 +137,7 @@ func (d *bwrapDriver) Pull(ctx context.Context, ref string, force bool, log io.W
 	if err != nil {
 		return Image{}, false, err
 	}
-	fetched, err := st.pull(ri, force, func(msg string) {
+	fetched, err := st.pull(ctx, ri, force, func(msg string) {
 		if log != nil {
 			fmt.Fprintln(log, msg)
 		}
@@ -351,7 +354,7 @@ func (b *bwrapSandbox) Start(ctx context.Context, spec Spec) (Session, error) {
 		}
 		id = img.ID
 	}
-	unlock, err := st.lock(id, false, false)
+	unlock, err := st.lock(ctx, id, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}

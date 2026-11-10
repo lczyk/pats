@@ -41,7 +41,7 @@ func upstreamInputs(ctx context.Context, sb config.Sandbox, configDir string, h 
 			e.Inputs[upstreamPrefix+ref] = id
 		}
 	}
-	if sb.Driver == "lxd" {
+	if sb.Driver == sandbox.LXDDriver {
 		// a base the build keyed on is recorded by initLXD; an image of
 		// another remote was copied, and its fingerprint is the pin's.
 		if strings.Contains(sb.Image, ":") {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -122,6 +123,64 @@ type SandboxOptions struct {
 	ProxyImage string
 	Profiles   []string          // lxd: in the pats project
 	Config     map[string]string // lxd: instance config, passed through
+}
+
+// OpenTarget is the driver of the place a pin file's target names
+// (docker:<context>, lxd:<remote>, bwrap:<host>), as it answers now. ok is
+// false for a target this process cannot reach as named: an unknown kind,
+// or another context, connection or daemon answering than the pin was made
+// against.
+func OpenTarget(ctx context.Context, target, daemon string) (d Driver, ok bool) {
+	kind, rest, _ := strings.Cut(target, ":")
+	switch {
+	case kind == LXDDriver:
+		d, err := Open(Options{Driver: LXDDriver, Remote: rest}.WithEnv())
+		return d, err == nil
+	case IsEngine(kind), kind == BwrapDriver:
+		d, err := Open(Options{Driver: kind}.WithEnv())
+		if err != nil {
+			return nil, false
+		}
+		now, err := d.Target(ctx)
+		return d, err == nil && now.Key == target && now.Daemon == daemon
+	}
+	return nil, false
+}
+
+// Place is one place pats may have left things in, and a name for it.
+type Place struct {
+	Name    string
+	Options Options
+}
+
+// Places are the places to sweep: the engines and lxd remotes named, or with
+// neither named, every engine whose cli is on PATH and the default lxd
+// remote when lxc is.
+func Places(drivers, remotes []string) []Place {
+	var out []Place
+	if drivers == nil {
+		for _, d := range Engines() {
+			if _, err := exec.LookPath(d); err == nil {
+				out = append(out, Place{d, Options{Driver: d}.WithEnv()})
+			}
+		}
+		if remotes == nil {
+			if _, err := exec.LookPath("lxc"); err == nil {
+				remotes = []string{""}
+			}
+		}
+	}
+	for _, d := range drivers {
+		out = append(out, Place{d, Options{Driver: d}.WithEnv()})
+	}
+	for _, r := range remotes {
+		name := LXDDriver
+		if r != "" {
+			name += " " + r
+		}
+		out = append(out, Place{name, Options{Driver: LXDDriver, Remote: r}.WithEnv()})
+	}
+	return out
 }
 
 // Open is the driver o names, on this process.

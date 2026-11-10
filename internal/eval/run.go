@@ -255,16 +255,7 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 	// buffered (bar active, or jobs>1) each pair writes to its own buffer,
 	// emitted atomically on completion so concurrent progress + host-script
 	// output don't interleave; serial non-tty writes straight to opts.Out.
-	sem := make(chan struct{}, jobs)
-	// a sandbox's max-parallel caps its pairs under the run-wide -j. a pair
-	// takes its sandbox's slot before a run-wide one, so pairs queued on a
-	// capped sandbox never hold a slot another sandbox could use.
-	sbSem := map[string]chan struct{}{}
-	for _, sb := range cfg.Sandboxes {
-		if sb.MaxParallel > 0 {
-			sbSem[sb.Name] = make(chan struct{}, sb.MaxParallel)
-		}
-	}
+	slots := newSlots(cfg, jobs)
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
 	var interrupted sync.Once
@@ -275,12 +266,7 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 		wg.Add(1)
 		go func(p config.TestPair, stat *pairStat) {
 			defer wg.Done()
-			if sbID, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil && sbSem[sbID] != nil {
-				sbSem[sbID] <- struct{}{}
-				defer func() { <-sbSem[sbID] }()
-			}
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			defer slots.take(cfg, agents[p.Agent])()
 			if ctx.Err() != nil {
 				interrupted.Do(func() {
 					if bar != nil {
@@ -367,7 +353,7 @@ func autoCPUs(ctx context.Context, cfg *config.Config, pairs []config.TestPair) 
 	used := usedSandboxes(cfg, pairs)
 	var pick *config.Sandbox
 	for i, sb := range cfg.Sandboxes {
-		if used[sb.Name] && (pick == nil || (sb.Driver == "lxd" && pick.Driver != "lxd")) {
+		if used[sb.Name] && (pick == nil || (sb.Driver == sandbox.LXDDriver && pick.Driver != sandbox.LXDDriver)) {
 			pick = &cfg.Sandboxes[i]
 		}
 	}
@@ -524,6 +510,43 @@ func readEgressAudit(auditPath string) egressAudit {
 		}
 	}
 	return a
+}
+
+// slots bounds the agent calls running at once: -j run-wide, and a
+// sandbox's max-parallel under it. a call takes its sandbox's slot before a
+// run-wide one, so calls queued on a capped sandbox never hold a slot
+// another sandbox could use.
+type slots struct {
+	all     chan struct{}
+	sandbox map[string]chan struct{}
+}
+
+func newSlots(cfg *config.Config, jobs int) *slots {
+	s := &slots{all: make(chan struct{}, jobs), sandbox: map[string]chan struct{}{}}
+	for _, sb := range cfg.Sandboxes {
+		if sb.MaxParallel > 0 {
+			s.sandbox[sb.Name] = make(chan struct{}, sb.MaxParallel)
+		}
+	}
+	return s
+}
+
+// take waits for a's slots and returns what gives them back.
+func (s *slots) take(cfg *config.Config, a config.Agent) (release func()) {
+	var own chan struct{}
+	if id, err := cfg.ResolveSandbox(a); err == nil {
+		own = s.sandbox[id]
+	}
+	if own != nil {
+		own <- struct{}{}
+	}
+	s.all <- struct{}{}
+	return func() {
+		<-s.all
+		if own != nil {
+			<-own
+		}
+	}
 }
 
 // pairJob is one agent call: an agent on a task, a suite's own or one an
@@ -797,7 +820,7 @@ func runPair(
 		Summary:    summarize(a.Harness, filepath.Join(outDir, "stdout.log")),
 		Components: sb.Components,
 	}
-	if sb.Driver == "lxd" {
+	if sb.Driver == sandbox.LXDDriver {
 		meta.LXD = lxdProvenanceOf(ctx, sb)
 	}
 	if h.spec.Egress.Set {

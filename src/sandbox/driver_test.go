@@ -51,7 +51,7 @@ var driverCases = []driverCase{
 			require.NoError(t, err)
 			st, err := newBwrapStore()
 			require.NoError(t, err)
-			unlock, err := st.lock(img.ID, false, false)
+			unlock, err := st.lock(context.Background(), img.ID, false, false)
 			require.NoError(t, err)
 			t.Cleanup(unlock)
 		},

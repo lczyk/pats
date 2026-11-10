@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -110,35 +109,7 @@ var openDriver = sandbox.Open
 // the temp root, by the rule in sandbox.Clean. it holds init's machine lock
 // while it removes, so the two never act on one daemon at once.
 func Clean(ctx context.Context, o CleanOptions) error {
-	type place struct {
-		name string
-		o    sandbox.Options
-	}
-	var places []place
-	drivers := o.Drivers
-	if drivers == nil {
-		for _, d := range sandbox.Engines() {
-			if _, err := exec.LookPath(d); err == nil {
-				drivers = append(drivers, d)
-			}
-		}
-	}
-	for _, d := range drivers {
-		places = append(places, place{d, sandbox.Options{Driver: d}.WithEnv()})
-	}
-	remotes := o.LXDRemotes
-	if remotes == nil && o.Drivers == nil {
-		if _, err := exec.LookPath("lxc"); err == nil {
-			remotes = []string{""}
-		}
-	}
-	for _, r := range remotes {
-		name := "lxd"
-		if r != "" {
-			name += " " + r
-		}
-		places = append(places, place{name, sandbox.Options{Driver: "lxd", Remote: r}.WithEnv()})
-	}
+	places := sandbox.Places(o.Drivers, o.LXDRemotes)
 
 	// leases the run sweep removes, or would: the temp sweep counts them gone.
 	planned := map[string]bool{}
@@ -149,7 +120,7 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		}
 		render(e)
 	}
-	unlock, err := machineLock()
+	unlock, err := machineLock(ctx)
 	if err != nil {
 		return fmt.Errorf("cannot take %s.lock: %w", projectsFile(), err)
 	}
@@ -158,14 +129,14 @@ func Clean(ctx context.Context, o CleanOptions) error {
 	listed := map[string]bool{}
 	complete := true
 	for _, p := range places {
-		d, err := openDriver(p.o)
+		d, err := openDriver(p.Options)
 		if err != nil {
 			errs = append(errs, err)
 			complete = false
 			continue
 		}
-		co := sandbox.CleanOptions{Place: p.name, All: o.All, Force: o.Force, Run: o.Run, DryRun: o.DryRun, Report: report}
-		if (o.All || o.Force) && sandbox.IsEngine(p.o.Driver) {
+		co := sandbox.CleanOptions{Place: p.Name, All: o.All, Force: o.Force, Run: o.Run, DryRun: o.DryRun, Report: report}
+		if (o.All || o.Force) && sandbox.IsEngine(p.Options.Driver) {
 			co.Pinned = pinnedHere(ctx, d)
 		}
 		runs, err := sandbox.Clean(ctx, d, co)
@@ -176,7 +147,7 @@ func Clean(ctx context.Context, o CleanOptions) error {
 			if runs == nil {
 				// the place could not be listed: its daemon is down, or
 				// the cli is not set up for it.
-				report(sandbox.CleanEvent{Action: "skip", Place: p.name, DryRun: o.DryRun, Why: err.Error()})
+				report(sandbox.CleanEvent{Action: "skip", Place: p.Name, DryRun: o.DryRun, Why: err.Error()})
 				complete = false
 				continue
 			}

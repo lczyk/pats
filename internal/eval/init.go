@@ -87,7 +87,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	// another project's init may remove an image this one found or made
 	// before it is pinned; under the lock, what is still there is pinned
 	// and what is gone is a failure to rerun.
-	unlock, lerr := machineLock()
+	unlock, lerr := machineLock(ctx)
 	if lerr != nil {
 		lg.warn("cannot take %s.lock: %v; removing nothing", projectsFile(), lerr)
 		unlock = func() {}
@@ -199,7 +199,7 @@ func judgePairsOf(cfg *config.Config, suites []string) ([]config.TestPair, error
 // initWhat says what init is about to do for sb, and where a build logs.
 func initWhat(sb config.Sandbox, configDir string) string {
 	build := provisions(sb) || sb.Build != ""
-	if sb.Driver == "lxd" {
+	if sb.Driver == sandbox.LXDDriver {
 		build = sb.Image == ""
 		if !build && !strings.Contains(sb.Image, ":") {
 			return "pinning its image"
@@ -232,7 +232,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 		Built:       opts.Now.UTC().Format(time.RFC3339),
 		Inputs:      inputs,
 	}
-	if sb.Driver == "lxd" {
+	if sb.Driver == sandbox.LXDDriver {
 		err = initLXD(ctx, sb, ro, opts, h, e)
 	} else {
 		err = initContainer(ctx, sb, ro, opts, h, e)
@@ -555,5 +555,5 @@ func hostComponents(ctx context.Context, sb config.Sandbox, lg logw) (map[string
 // docker's and podman's sidecar, lxd's proxy instance. bwrap and host run
 // theirs on this machine.
 func pinsProxy(sb config.Sandbox) bool {
-	return sb.Egress.Set && (sb.IsContainer() || sb.Driver == "lxd")
+	return sb.Egress.Set && (sb.IsContainer() || sb.Driver == sandbox.LXDDriver)
 }

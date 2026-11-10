@@ -288,13 +288,7 @@ func judgeRun(ctx context.Context, cfg *config.Config, ro Options, runDir string
 	}
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
-	sbSem := map[string]chan struct{}{}
-	for _, sb := range cfg.Sandboxes {
-		if sb.MaxParallel > 0 {
-			sbSem[sb.Name] = make(chan struct{}, sb.MaxParallel)
-		}
-	}
-	sem := make(chan struct{}, jobs)
+	slots := newSlots(cfg, jobs)
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
 	for _, j := range js {
@@ -308,12 +302,7 @@ func judgeRun(ctx context.Context, cfg *config.Config, ro Options, runDir string
 				defer wg.Done()
 				defer j.sampleDone(ctx, n, lg)
 				a := agents[j.sc.Agent]
-				if sbID, err := cfg.ResolveSandbox(a); err == nil && sbSem[sbID] != nil {
-					sbSem[sbID] <- struct{}{}
-					defer func() { <-sbSem[sbID] }()
-				}
-				sem <- struct{}{}
-				defer func() { <-sem }()
+				defer slots.take(cfg, a)()
 				if ctx.Err() != nil {
 					return
 				}
