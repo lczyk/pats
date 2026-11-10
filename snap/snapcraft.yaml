@@ -79,9 +79,9 @@ parts:
       craftctl default
       v="$(cat VERSION)"
       sha="$(git rev-parse --short=7 HEAD)"
-      tag="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+      tagged="$(git rev-parse -q --verify "refs/tags/v$v^{commit}" || true)"
       changes="$(git status --porcelain --untracked-files=all)"
-      if [ "$tag" = "v$v" ] && [ -z "$changes" ]; then
+      if [ "$tagged" = "$(git rev-parse HEAD)" ] && [ -z "$changes" ]; then
         echo false > "$CRAFT_PART_SRC/../buildvcs"
         craftctl set version="$v"
       else
