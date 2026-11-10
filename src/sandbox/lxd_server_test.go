@@ -388,7 +388,10 @@ func crash(p *process) {
 	defer x.mu.Unlock()
 	for k, srv := range x.servers {
 		if srv.stop != nil {
+			// a dead process renews nothing: without the wait, a renewal
+			// still on its way would land after the crash.
 			close(srv.stop)
+			<-srv.done
 		}
 		delete(x.servers, k)
 	}
