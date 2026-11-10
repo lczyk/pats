@@ -224,6 +224,12 @@ func TestDecideQueryAndClean(t *testing.T) {
 		// a trailing dot segment names the directory, slash and all.
 		assert.Equal(t, r.Decide("example.com", 443, "GET", "/private/x/..", "").Allowed, false)
 		assert.Equal(t, r.Decide("example.com", 443, "GET", "/private/.", "").Allowed, false)
+		// nor do a segment's ;parameters or a backslash, as the origins that
+		// drop the one and take the other for a slash read them.
+		for _, p := range []string{"/private;x/key", "/public/..;/private/key", `/public/..\private/key`, `\private\key`, "/private;/key;v=2"} {
+			assert.Equal(t, r.Decide("example.com", 443, "GET", p, "").Allowed, false, p)
+		}
+		assert.Equal(t, r.Decide("example.com", 443, "GET", "/public;private/key", "").Allowed, true)
 	})
 }
 
@@ -240,6 +246,7 @@ func TestDecideAllowReadings(t *testing.T) {
 		"next.test/login?next=**",
 		"next.test ~^/sso\\?next=.*$",
 		"count.test ~^/x/[^/]{3}$",
+		"ext.test/x/*.json",
 	}, nil)
 	for _, c := range []struct {
 		host, path, query string
@@ -255,6 +262,18 @@ func TestDecideAllowReadings(t *testing.T) {
 		{"docs.example.com", "/public/..", "", false},
 		{"docs.example.com", "/public/x/../../private", "", false},
 		{"docs.example.com", "/private", "/public/x", false},
+		// as an origin that drops a segment's ;parameters reads it, or one
+		// that takes a backslash for a slash.
+		{"docs.example.com", "/public/a;v=1/b", "", true},
+		{"docs.example.com", "/public/..;/private", "", false},
+		{"docs.example.com", "/public/..;x=1/..;/private", "", false},
+		{"docs.example.com", `/public/..\private`, "", false},
+		{"docs.example.com", `/public\..\private`, "", false},
+		{"docs.example.com", `/public/a\b`, "", true},
+		{"docs.example.com", `/public/..;\..\private`, "", false},
+		{"ext.test", "/x/a.json", "", true},
+		{"ext.test", "/x/secret;.json", "", false}, // /x/secret, to an origin that drops the parameter
+		{"ext.test", `/x/a\b.json`, "", false},     // /x/a/b.json, a segment deeper than the entry goes
 
 		{"api.github.com", "/repos/o/x", "", true},
 		{"api.github.com", "/repos/o/x", "ref=main", true},
@@ -341,6 +360,8 @@ func TestURLCandidatesEmptyPath(t *testing.T) {
 	assert.EqualArrays(t, urlCandidates("/a/../b", "q"), []string{"/a/../b", "/a/../b?q", "/b", "/b?q"})
 	assert.EqualArrays(t, urlCandidates("/a/../b", ""), []string{"/a/../b", "/b"})
 	assert.EqualArrays(t, urlCandidates("/a/x/..", ""), []string{"/a/x/..", "/a", "/a/"})
+	assert.EqualArrays(t, urlCandidates("/a/..;/b", ""), []string{"/a/..;/b", "/a/../b", "/b"})
+	assert.EqualArrays(t, urlCandidates(`/a\b`, "q"), []string{`/a\b`, `/a\b?q`, "/a/b", "/a/b?q"})
 }
 
 func TestDecideMethodsAndRegexp(t *testing.T) {

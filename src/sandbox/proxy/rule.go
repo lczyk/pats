@@ -256,9 +256,8 @@ func (e Entry) matchesMethod(method string) bool {
 }
 
 // matchesURL is a deny's reading of a request: the entry's url matcher is
-// tried against every candidate form of the path, the path itself, the path
-// with its query, and both again with the path resolved, so "a/../b" cannot
-// dodge an entry anchored on "/b".
+// tried against every candidate form of the path, each reading of it alone
+// and with its query, so "a/../b" cannot dodge an entry anchored on "/b".
 func (e Entry) matchesURL(urlPath, rawQuery string) bool {
 	for _, c := range urlCandidates(urlPath, rawQuery) {
 		if e.urlRe.MatchString(c) {
@@ -269,27 +268,54 @@ func (e Entry) matchesURL(urlPath, rawQuery string) bool {
 }
 
 func urlCandidates(urlPath, rawQuery string) []string {
-	cands := []string{urlPath}
-	if rawQuery != "" {
-		cands = append(cands, urlPath+"?"+rawQuery)
-	}
-	if urlPath == "" {
-		return cands
-	}
-	// path.Clean drops the slash a directory keeps: "/private/x/.." is
-	// "/private/" to an origin, so both spellings are tried.
-	last := urlPath
-	for _, p := range []string{pathpkg.Clean(urlPath), resolvePath(urlPath)} {
-		if p == urlPath || p == last {
-			continue
+	var cands []string
+	for _, p := range append([]string{urlPath, pathpkg.Clean(urlPath)}, readings(urlPath)...) {
+		if (p == "." && urlPath == "") || slices.Contains(cands, p) {
+			continue // path.Clean("") is ".", which no request asked for
 		}
-		last = p
 		cands = append(cands, p)
 		if rawQuery != "" {
 			cands = append(cands, p+"?"+rawQuery)
 		}
 	}
 	return cands
+}
+
+// readings are the paths an origin may serve for urlPath: the path as sent,
+// the path resolved (resolvePath), and both again as an origin reads a
+// segment's ";parameters" and a backslash when it has either: a servlet
+// container drops the parameters before it resolves the path, and some
+// servers take a backslash for a slash, so "/public/..;/private" and
+// "/public/..\private" are "/private" to those.
+func readings(urlPath string) []string {
+	out := []string{urlPath}
+	if urlPath == "" {
+		return out
+	}
+	add := func(p string) {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	add(resolvePath(urlPath))
+	slashed := strings.ReplaceAll(urlPath, `\`, "/")
+	for _, as := range []string{dropParams(urlPath), slashed, dropParams(slashed)} {
+		add(as)
+		add(resolvePath(as))
+	}
+	return out
+}
+
+// dropParams is urlPath with each segment cut at its first ";".
+func dropParams(urlPath string) string {
+	if !strings.Contains(urlPath, ";") {
+		return urlPath
+	}
+	segs := strings.Split(urlPath, "/")
+	for i, seg := range segs {
+		segs[i], _, _ = strings.Cut(seg, ";")
+	}
+	return strings.Join(segs, "/")
 }
 
 // resolvePath is the path an origin serves for urlPath: dot segments and
@@ -310,14 +336,12 @@ func resolvePath(urlPath string) string {
 
 // admitsURL is an allow's reading of a request, which errs the other way to
 // matchesURL: the entry admits a path only when every reading of it matches,
-// as sent and as an origin resolves it, so "/public/../private" does not pass
-// for "/public/**".
+// so "/public/../private" does not pass for "/public/**".
 func (e Entry) admitsURL(urlPath, rawQuery string) bool {
-	if !e.admitsPath(urlPath, rawQuery) {
-		return false
-	}
-	if r := resolvePath(urlPath); r != urlPath {
-		return e.admitsPath(r, rawQuery)
+	for _, p := range readings(urlPath) {
+		if !e.admitsPath(p, rawQuery) {
+			return false
+		}
 	}
 	return true
 }
