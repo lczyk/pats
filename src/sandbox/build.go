@@ -385,7 +385,7 @@ func hashContextDir(h io.Writer, ctxDir string, ignore *patternmatcher.PatternMa
 			if err != nil {
 				return err
 			}
-			_, err = io.Copy(h, f)
+			_, err = copyFileBytes(h, f)
 			f.Close()
 			if err != nil {
 				return err

@@ -780,7 +780,7 @@ func writeTar(w io.Writer, hostPath string, fi fs.FileInfo) error {
 			if err != nil {
 				return err
 			}
-			_, err = io.Copy(tw, f)
+			_, err = copyFileBytes(tw, f)
 			f.Close()
 			return err
 		}
@@ -950,7 +950,7 @@ func readTar(r io.Reader, dir string) error {
 			if err != nil {
 				return err
 			}
-			_, err = io.Copy(f, tr)
+			_, err = copyFileBytes(f, tr)
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}

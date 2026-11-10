@@ -391,7 +391,7 @@ func applyLayer(r io.Reader, root *os.Root, whiteouts bool) error {
 			if err != nil {
 				return err
 			}
-			_, err = io.Copy(f, tr)
+			_, err = copyFileBytes(f, tr)
 			if err == nil && mode&fs.ModeSticky != 0 {
 				// a root's OpenFile takes the nine bits only: the tenth is
 				// added to the ones the umask left.
