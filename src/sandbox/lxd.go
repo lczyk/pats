@@ -725,12 +725,14 @@ func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
 	if !fi.IsDir() {
 		dest = filepath.Dir(path)
 	}
+	// the file's name goes in as an argument, never as script text: it is
+	// whatever the host path was called, and the script runs as root.
 	script := `mkdir -p "$1" && tar -x -m -C "$1"`
 	if !fi.IsDir() {
-		script = `mkdir -p "$1" && tar -x -m -C "$1" && { [ "$1/` + filepath.Base(hostPath) + `" = "$2" ] || mv "$1/` + filepath.Base(hostPath) + `" "$2"; }`
+		script += ` && { [ "$1/$3" = "$2" ] || mv "$1/$3" "$2"; }`
 	}
 	var out bytes.Buffer
-	code, err := s.execIn(ctx, pr, Cmd{Argv: []string{"sh", "-c", script, "push", dest, path}, Root: true, Dir: "/"}, &out, &out)
+	code, err := s.execIn(ctx, pr, Cmd{Argv: []string{"sh", "-c", script, "push", dest, path, filepath.Base(hostPath)}, Root: true, Dir: "/"}, &out, &out)
 	pr.Close()
 	// the local side failing is what made the remote tar complain, so it
 	// leads the error.
@@ -1020,16 +1022,40 @@ func tarRel(name string) (string, error) {
 }
 
 // Sync pulls every writable bind back to its host path, replacing what was
-// there, so the host sees what the agent left: collect reads it.
+// there, so the host sees what the agent left: collect reads it. a bind is
+// pulled whole beside its host path first and swapped in only then, so a
+// pull that fails (a deadline, a server gone, a name readTar refuses) leaves
+// the host copy as it was.
 func (s *lxdSession) Sync(ctx context.Context) error {
 	for _, b := range s.binds {
 		if b.ro {
 			continue
 		}
-		if err := clearDir(b.host); err != nil {
+		if err := s.syncBind(ctx, b); err != nil {
 			return err
 		}
-		if err := s.Pull(ctx, b.path, b.host); err != nil {
+	}
+	return nil
+}
+
+func (s *lxdSession) syncBind(ctx context.Context, b bind) error {
+	fresh, err := os.MkdirTemp(filepath.Dir(b.host), "."+filepath.Base(b.host)+".sync-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(fresh)
+	if err := s.Pull(ctx, b.path, fresh); err != nil {
+		return err
+	}
+	if err := clearDir(b.host); err != nil {
+		return err
+	}
+	ents, err := os.ReadDir(fresh)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if err := os.Rename(filepath.Join(fresh, e.Name()), filepath.Join(b.host, e.Name())); err != nil {
 			return err
 		}
 	}

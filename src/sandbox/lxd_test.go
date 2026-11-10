@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -419,6 +420,53 @@ func TestWriteTarSkipsSpecialFiles(t *testing.T) {
 		names = append(names, h.Name)
 	}
 	assert.Equal(t, strings.Join(names, ","), "keep")
+}
+
+// a sync whose pull fails part-way leaves the host copy as it was: nothing
+// cleared, nothing half-written, no scratch left beside it.
+func TestLXDSyncFailedPullKeepsHostCopy(t *testing.T) {
+	l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "img"})
+	parent := t.TempDir()
+	work := filepath.Join(parent, "work")
+	require.NoError(t, os.Mkdir(work, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(work, "kept"), []byte("before"), 0o644))
+	sess, err := l.Start(context.Background(), Spec{Workdir: work, Egress: Egress{None: true}})
+	require.NoError(t, err)
+	inner := f.run
+	sess.(*lxdSession).l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		if strings.Contains(strings.Join(args, " "), "tar -c") {
+			tw := tar.NewWriter(stdout)
+			tw.WriteHeader(&tar.Header{Name: "kept", Mode: 0o644, Size: 5, Typeflag: tar.TypeReg})
+			tw.Write([]byte("after"))
+			tw.Flush()
+			io.WriteString(stderr, "tar: connection lost")
+			return &fakeExit{}
+		}
+		return inner(ctx, stdin, stdout, stderr, args...)
+	})
+	require.Error(t, sess.Sync(context.Background()), "pull /workspace")
+	b, err := os.ReadFile(filepath.Join(work, "kept"))
+	require.NoError(t, err)
+	assert.Equal(t, string(b), "before")
+	ents, err := os.ReadDir(parent)
+	require.NoError(t, err)
+	assert.Len(t, ents, 1)
+}
+
+// a pushed file's name reaches the instance as an argument of the root
+// script, never as its text.
+func TestLXDPushFileNameIsAnArgument(t *testing.T) {
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv"})
+	name := `x"; touch pwned; "$(id)`
+	src := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
+	s := &lxdSession{l: l, name: "pats-x"}
+	require.NoError(t, s.Push(context.Background(), src, "/etc/ca.pem"))
+	args := f.call("exec")
+	i := slices.Index(args, "push")
+	require.That(t, i > 0, "no push script in %v", args)
+	assert.That(t, !strings.Contains(args[i-1], "pwned"), "the name is in the script: %s", args[i-1])
+	assert.EqualArrays(t, args[i+1:], []string{"/etc", "/etc/ca.pem", name})
 }
 
 // when the local tar fails, the instance's tar sees a cut stream and
