@@ -24,6 +24,7 @@ type dryPair struct {
 	Agent    string   `json:"agent"`
 	Task     string   `json:"task"`
 	Sandbox  string   `json:"sandbox"`
+	Steps    string   `json:"steps,omitempty"` // the step sandbox the task's steps run in
 	Estimate *float64 `json:"estimate_usd"`
 	Samples  int      `json:"samples"`
 	Unknown  *string  `json:"unknown"`
@@ -65,6 +66,11 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 		a := agents[p.Agent]
 		sb, _ := cfg.ResolveSandbox(a)
 		d := dryPair{Agent: p.Agent, Task: p.Task, Sandbox: sb, Repeat: repeat}
+		for _, t := range cfg.Tasks {
+			if t.Name == p.Task && t.StepSandbox != "" {
+				d.Steps, _ = cfg.One("sandbox", t.StepSandbox)
+			}
+		}
 		costs := hist[historyKey{p.Agent, p.Task, a.Harness, a.Model, a.Effort}]
 		d.Samples = len(costs)
 		if len(costs) > 0 {
@@ -105,7 +111,11 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 			}
 			est += fmt.Sprintf(" (median of %d)", d.Samples)
 		}
-		lg.info("%s/%s  sandbox %s  %s", d.Agent, d.Task, d.Sandbox, est)
+		where := "sandbox " + d.Sandbox
+		if d.Steps != "" {
+			where += "  steps " + d.Steps
+		}
+		lg.info("%s/%s  %s  %s", d.Agent, d.Task, where, est)
 	}
 	sum := fmt.Sprintf("%d pair(s)", total.Pairs)
 	if repeat > 1 {
