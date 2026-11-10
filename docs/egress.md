@@ -135,6 +135,9 @@ the proxy writes one json line per event to the pair's `egress.log`:
 - `failed_egress` -- upstream trouble: a dial failure, a revoked certificate, the machine's proxy refusing
   (`reason: upstream: 407`, see below).
 
+a request its client hung up on before the origin answered is none of the three: it stays `allowed: true`, with
+`reason: client-gone` and no status. an origin that switches protocols unasked is refused with `reason: upgrade`.
+
 only `denied_egress` is warned about at the end of each pair, the other two are in `metadata.json` alone. it also
 records the effective policy, the sidecar image (its registry digest when pulled), and the requests and bytes that
 crossed the proxy.
@@ -225,7 +228,9 @@ binary with `pats egress run` as its entrypoint.
 
 ## ceilings
 
-- mitm'd connections are http/1.1; clients downgrade from h2. websockets through a mitm'd host are not passed.
+- mitm'd connections are http/1.1; clients downgrade from h2. websockets through a mitm'd host are not passed: the
+  upgrade is not offered to the origin, whose plain answer comes back. a mitm'd connection idle for two minutes is
+  closed.
 - a tool that pins certificates fails on a mitm'd host. keep pinned hosts out of url entries.
 - a copy of denied content on a host the policy allows is not caught. `default: deny` mostly moots this.
 - a tunnel to an allowed ip literal carries no sni and is not bound to a name.
