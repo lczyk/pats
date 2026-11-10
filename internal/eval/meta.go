@@ -34,6 +34,13 @@ func (m *pairMeta) advisoryEgress() bool {
 	return m != nil && m.Egress != nil && m.Egress.Enforced != nil && !*m.Egress.Enforced
 }
 
+// stepsRecord is where a pair's or a scorer's steps ran: the step sandbox
+// and the pinned image, when not on the host.
+type stepsRecord struct {
+	Sandbox string `json:"sandbox"`
+	Image   string `json:"image,omitempty"`
+}
+
 type pairMeta struct {
 	Agent   string `json:"agent"`
 	Harness string `json:"harness,omitempty"`
@@ -51,11 +58,13 @@ type pairMeta struct {
 	Image        string `json:"image"`
 	Sudo         bool   `json:"sudo,omitempty"` // the agent could sudo (lxd)
 	// the lxd server and image the pair ran on.
-	LXD       *lxdProvenance `json:"lxd,omitempty"`
-	ExitCode  int            `json:"exit_code"`
-	DurationS float64        `json:"duration_s"`
-	Status    string         `json:"status"` // ok | nonzero | error
-	Error     string         `json:"error,omitempty"`
+	LXD *lxdProvenance `json:"lxd,omitempty"`
+	// Steps is where the task's host steps ran, absent on the host.
+	Steps     *stepsRecord `json:"steps,omitempty"`
+	ExitCode  int          `json:"exit_code"`
+	DurationS float64      `json:"duration_s"`
+	Status    string       `json:"status"` // ok | nonzero | error
+	Error     string       `json:"error,omitempty"`
 	// Synced is whether the agent's files came home, so collect saw them; a
 	// pair from before the field has nil (see filesHome).
 	Synced      *bool  `json:"synced"`

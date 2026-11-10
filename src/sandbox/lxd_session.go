@@ -423,3 +423,6 @@ check() {
 }
 up() { d=$1; while :; do check "$d"; [ "$d" = / ] && break; d=$(dirname "$d"); done; }
 for p; do up "$(dirname "$p")"; up "$(readlink -f "$(dirname "$p")")"; up "$(dirname "$(readlink -f "$p")")"; done`
+
+// AgentUID is the uid commands run as unless they ask for root.
+func (s *lxdSession) AgentUID() string { return s.uid }

@@ -61,6 +61,8 @@ type ScoreReport struct {
 	// came home, or the harness reported an error): they drop out of the
 	// means, and this shows how many did.
 	FailedPairs map[string]int `json:"failed_pairs"`
+	// Steps is where each scorer that names a step sandbox ran its steps.
+	Steps map[string]stepsRecord `json:"steps,omitempty"`
 }
 
 // ScoreResult is one scorer's score for one pair.
@@ -167,6 +169,38 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	}
 
 	njobs := resolveJobs(opts.Jobs, runtime.NumCPU)
+
+	// a scorer's steps run in its step sandbox when it names one: pinned as
+	// a run's are, then a pool of boxes per sandbox (scorePool).
+	places := map[string]*stepPlace{}
+	steps := map[string]bool{}
+	for _, j := range jobs {
+		if j.sc.StepSandbox == "" {
+			continue
+		}
+		if name, err := cfg.One("sandbox", j.sc.StepSandbox); err == nil {
+			steps[name] = true
+		}
+	}
+	if len(steps) > 0 {
+		if _, err := usePins(context.Background(), cfg, Options{ConfigDir: opts.ConfigDir, Out: opts.Out, Color: opts.Color, Verbose: opts.Verbose}, nil, steps); err != nil {
+			return nil, err
+		}
+		sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
+		for _, j := range jobs {
+			if _, ok := places[j.sc.Name]; ok || j.sc.StepSandbox == "" {
+				continue
+			}
+			sp, err := stepPlaceOf(cfg, sandboxes, j.sc.StepSandbox, j.sc.StepEnv)
+			if err != nil {
+				return nil, fmt.Errorf("scorer %q: %w", j.sc.Name, err)
+			}
+			places[j.sc.Name] = sp
+		}
+	}
+	pool := &scorePool{opts: opts, runDir: runDir, lg: lg, idle: map[string][]*stepBox{}}
+	defer pool.close()
+
 	var bar *progress
 	if isProgressTTY(opts.Out) {
 		labelW := 0
@@ -222,7 +256,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 				bar.start(label, &pairStat{}, "", false)
 			}
 
-			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.taskDir, j.agent, j.task, agents[j.agent])
+			score, serr := runScorer(ctx, po, j.sc, runDir, j.outDir, j.taskDir, j.agent, j.task, agents[j.agent], places[j.sc.Name], pool)
 			switch {
 			case errors.Is(serr, errScorerNA):
 				jlg.detail("%s/%s %s = n/a", j.agent, j.task, j.sc.Name)
@@ -266,6 +300,26 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		}
 	} else {
 		rep = aggregate(runDir, results, testPairs)
+	}
+	// a stored judge score keeps where its scorer's steps ran.
+	if prev, err := readScores(runDir); err == nil {
+		for _, r := range stored {
+			if rec, ok := prev.Steps[r.Scorer]; ok {
+				if rep.Steps == nil {
+					rep.Steps = map[string]stepsRecord{}
+				}
+				rep.Steps[r.Scorer] = rec
+			}
+		}
+	}
+	for name, sp := range places {
+		if rep.Steps == nil {
+			rep.Steps = map[string]stepsRecord{}
+		}
+		rep.Steps[name] = stepsRecord{Sandbox: sp.sb.Name, Image: sp.sb.Image}
+	}
+	if err := pool.close(); err != nil {
+		lg.warn("scorer step sandboxes: %v", err)
 	}
 	if !opts.noReport {
 		report(opts.Out, runDir, rep, opts.Color, opts.Out)
@@ -314,7 +368,7 @@ type agentInfo struct {
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
 // script scorers run on the host (trusted user scripts) in the dir they were
 // defined in. agent scorers pending (they will run under ctx).
-func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir, outDir, taskDir, agent, task string, info agentInfo) (float64, error) {
+func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir, outDir, taskDir, agent, task string, info agentInfo, sp *stepPlace, pool *scorePool) (float64, error) {
 	if sc.IsAgent() {
 		return 0, fmt.Errorf("agent scorer %q is pats judge's to run", sc.Name)
 	}
@@ -335,7 +389,19 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 		"PATS_SCORER_NAME":   sc.Name,
 		"PATS_SCORER_VECTOR": sc.Vector,
 	})
-	out, err := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}.outputTee(ctx, opts.ConfigDir, env, tee)
+	s := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}
+	var out []byte
+	var err error
+	if sp != nil {
+		var box *stepBox
+		if box, err = pool.get(ctx, sp); err != nil {
+			return 0, err
+		}
+		out, err = box.output(ctx, sp, s, opts.ConfigDir, env, tee)
+		pool.put(sp, box)
+	} else {
+		out, err = s.outputTee(ctx, opts.ConfigDir, env, tee)
+	}
 	if err != nil { // non-zero exit = failure
 		return 0, fmt.Errorf("run: %w", err)
 	}
@@ -680,6 +746,8 @@ func mergeScores(cfg *config.Config, runDir string, results []ScoreResult, scope
 	}
 
 	merged := append([]ScoreResult(nil), results...)
+	var prevSteps map[string]stepsRecord
+	var kept []ScoreResult
 	prev, err := readScores(runDir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -692,8 +760,106 @@ func mergeScores(cfg *config.Config, runDir string, results []ScoreResult, scope
 			key := ScoreResult{Agent: r.Agent, Task: r.Task, Scorer: r.Scorer}
 			if !scope[key] && valid[key] {
 				merged = append(merged, r)
+				kept = append(kept, r)
+			}
+		}
+		prevSteps = prev.Steps
+	}
+	rep := aggregate(runDir, merged, allPairs)
+	// where a kept score's scorer ran its steps stays with it; a scorer this
+	// invocation ran is recorded as it ran now, by the caller.
+	for _, r := range kept {
+		if rec, ok := prevSteps[r.Scorer]; ok {
+			if rep.Steps == nil {
+				rep.Steps = map[string]stepsRecord{}
+			}
+			rep.Steps[r.Scorer] = rec
+		}
+	}
+	return rep, nil
+}
+
+// scorePool lends a run's scorers step boxes: per step sandbox, a box idle
+// or a new one, so at most -j per sandbox, one scorer at a time in each. a
+// box binds the tree and the run dir read-only. close ends them all and
+// gathers each sandbox's audits into .steps/ in the run dir.
+type scorePool struct {
+	opts   ScoreOptions
+	runDir string
+	lg     logw
+	mu     sync.Mutex
+	idle   map[string][]*stepBox
+	all    []*stepBox
+	closed bool
+}
+
+func (p *scorePool) get(ctx context.Context, sp *stepPlace) (*stepBox, error) {
+	p.mu.Lock()
+	if bs := p.idle[sp.sb.Name]; len(bs) > 0 {
+		b := bs[len(bs)-1]
+		p.idle[sp.sb.Name] = bs[:len(bs)-1]
+		p.mu.Unlock()
+		return b, nil
+	}
+	p.mu.Unlock()
+	mounts, err := stepBindsFor(p.opts.ConfigDir, nil, []string{p.runDir})
+	if err != nil {
+		return nil, err
+	}
+	b, err := openStepBox(ctx, sp, mounts, "score-egress.log", configProbe(p.opts.ConfigDir))
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.all = append(p.all, b)
+	p.mu.Unlock()
+	return b, nil
+}
+
+// put takes a box back; one whose last exec failed to run goes, and the
+// next scorer gets a fresh one.
+func (p *scorePool) put(sp *stepPlace, b *stepBox) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if b.broken {
+		_ = b.sess.Close()
+		return
+	}
+	p.idle[sp.sb.Name] = append(p.idle[sp.sb.Name], b)
+}
+
+func (p *scorePool) close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	p.closed = true
+	audits := map[string][]byte{}
+	var errs []error
+	for _, b := range p.all {
+		_ = b.sess.Close()
+		if a, err := os.ReadFile(filepath.Join(b.staging, "score-egress.log")); err == nil {
+			audits[b.sb.Name] = append(audits[b.sb.Name], a...)
+		}
+		_ = b.close("")
+	}
+	if len(audits) > 0 {
+		dir := filepath.Join(p.runDir, ".steps")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		for name, a := range audits {
+			f := filepath.Join(dir, "score-egress-"+name+".log")
+			if err := os.WriteFile(f, a, 0o644); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			a := readEgressAudit(f)
+			if denied := append(a.Denied, a.Blocked...); len(denied) > 0 {
+				p.lg.warn("scorers' step sandbox %s egress denied %d host(s) (see %s): %s", name, len(denied), relToCwd(f), strings.Join(denied, ", "))
 			}
 		}
 	}
-	return aggregate(runDir, merged, allPairs), nil
+	return errors.Join(errs...)
 }

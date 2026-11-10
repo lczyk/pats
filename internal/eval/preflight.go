@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -25,7 +26,7 @@ const preflightTimeout = 90 * time.Second
 // through its real sandbox + egress + creds path, and fails if any can't
 // authenticate. catches expired/missing creds up front instead of after a
 // per-pair clone + container spin. returns the first failing agent's error.
-func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
+func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair, judged ...config.Scorer) error {
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 
@@ -40,7 +41,47 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 		}
 		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok", p.Agent)
 	}
+	// each step sandbox the tasks name starts once, with its checks, and
+	// runs a step: a box that cannot see the tree fails here, not mid-run.
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
+	var placed []config.Task
+	for _, p := range pairs {
+		placed = append(placed, tasks[p.Task])
+	}
+	for _, sc := range judged {
+		placed = append(placed, sc.Task())
+	}
+	done := map[string]bool{}
+	for _, t := range placed {
+		sp, err := stepPlaceOf(cfg, sandboxes, t.StepSandbox, t.StepEnv)
+		if err != nil {
+			return err
+		}
+		if sp == nil || done[sp.sb.Name] {
+			continue
+		}
+		done[sp.sb.Name] = true
+		if err := preflightSteps(ctx, opts, sp); err != nil {
+			return fmt.Errorf("step sandbox %q failed preflight: %w", sp.sb.Name, err)
+		}
+		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: step sandbox %s ok", sp.sb.Name)
+	}
 	return nil
+}
+
+// preflightSteps starts a step sandbox on the tree alone and runs `true`
+// in it as a step.
+func preflightSteps(ctx context.Context, opts Options, sp *stepPlace) error {
+	mounts, err := stepBindsFor(opts.ConfigDir, nil, nil)
+	if err != nil {
+		return err
+	}
+	box, err := openStepBox(ctx, sp, mounts, "preflight-egress.log", configProbe(opts.ConfigDir))
+	if err != nil {
+		return err
+	}
+	defer box.close("")
+	return box.run(ctx, sp, step{script: "true", dir: opts.ConfigDir}, opts.ConfigDir, nil, io.Discard, io.Discard)
 }
 
 func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a config.Agent, sandboxes map[string]config.Sandbox) error {

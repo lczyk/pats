@@ -40,6 +40,9 @@ type pairJob struct {
 	agentEnv map[string]string
 	// meta adds the job's own fields to its metadata.json.
 	meta func(*pairMeta)
+	// stepRO are host dirs a step box binds read-only beside the pair's
+	// own (a judge's scored pair).
+	stepRO []string
 }
 
 // taskJob is pair p of a run: its agent on its task, into the pair dir.
@@ -121,10 +124,20 @@ func runPair(
 		hostEnv[k] = v
 	}
 
+	// where the host steps run: nil on the host, else a step sandbox,
+	// started for each phase that has one (docs/spec/step-sandbox.md).
+	sp, err := stepPlaceOf(cfg, sandboxes, t.StepSandbox, t.StepEnv)
+	if err != nil {
+		return err
+	}
+
 	// a failed setup step (stage, start, prepare) is the pair's error: the
 	// agent never runs, nothing is collected, and the metadata names the step.
 	var setupErr error
-	if stage := (step{t.Stage, taskDir}); stage.set() {
+	var promptData []byte
+	if sp != nil && (t.Stage != "" || t.PromptCmd != "") {
+		promptData, setupErr = beforeBox(ctx, opts, sp, job, t, taskDir, []string{workDir, outDir, h.homeDir}, hostEnv)
+	} else if stage := (step{t.Stage, taskDir}); stage.set() {
 		if err := runLogged(filepath.Join(outDir, "stage.log"), opts.stream(), func(w io.Writer) error {
 			return stage.run(ctx, opts.ConfigDir, hostEnv, w)
 		}); err != nil {
@@ -133,9 +146,11 @@ func runPair(
 	}
 
 	if setupErr == nil {
-		promptData, err := taskPrompt(ctx, opts.ConfigDir, taskDir, t, hostEnv)
-		if err != nil {
-			return fmt.Errorf("prompt: %w", err)
+		// a prompt-cmd that ran in the box has given the prompt, empty or not.
+		if sp == nil || t.PromptCmd == "" {
+			if promptData, err = taskPrompt(ctx, opts.ConfigDir, taskDir, t, hostEnv); err != nil {
+				return fmt.Errorf("prompt: %w", err)
+			}
 		}
 		promptData = append(promptData, job.footer...)
 		if err := os.WriteFile(h.promptPath(), promptData, 0o644); err != nil {
@@ -252,31 +267,48 @@ func runPair(
 
 	lg := logw{opts.Out, opts.Color, opts.Verbose}
 
+	// closing removes the proxy, and its log follower drains the audit's
+	// tail (denied hosts included) only then: before collect, so egress.log
+	// is whole before anything reads it or a step box holds the output dir.
+	// Close is idempotent; the deferred one is a no-op after this.
+	if sess != nil {
+		_ = sess.Close()
+	}
+
 	// collect when the agent ran, left something to gather (it finished, or
 	// timed out mid-run) and its files are on the host. a launch failure left
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
 	if collect := (step{t.Collect, taskDir}); (r.err == nil || stopped) && synced && collect.set() {
-		if err := runLogged(filepath.Join(outDir, "collect.log"), opts.stream(), func(w io.Writer) error {
-			return collect.run(ctx, opts.ConfigDir, hostEnv, w)
-		}); err != nil {
+		var err error
+		if sp != nil {
+			err = afterBox(ctx, opts, sp, job, collect, []string{workDir, outDir}, hostEnv)
+		} else {
+			err = runLogged(filepath.Join(outDir, "collect.log"), opts.stream(), func(w io.Writer) error {
+				return collect.run(ctx, opts.ConfigDir, hostEnv, w)
+			})
+		}
+		if err != nil {
 			lg.warn("%s collect: %v", job.label, err)
 		}
 	}
 	if ctx.Err() != nil {
 		status, errStr = "error", "interrupted" // an interrupt during sync or collect too
 	}
-
-	// closing removes the proxy, and its log follower drains the audit's
-	// tail (denied hosts included) only then. Close is idempotent; the
-	// deferred one is a no-op after this.
-	if sess != nil {
-		_ = sess.Close()
-	}
 	// only what no rule anticipated is news; the policy's own refusals are
 	// in metadata.json.
 	ea := readEgressAudit(filepath.Join(outDir, "egress.log"))
 	if len(ea.Denied) > 0 {
 		lg.warn("%s egress denied (no rule): %s", job.label, strings.Join(ea.Denied, ", "))
+	}
+	if sp != nil {
+		var denied []string
+		for _, f := range []string{"stage-egress.log", "collect-egress.log"} {
+			a := readEgressAudit(filepath.Join(outDir, f))
+			denied = append(append(denied, a.Denied...), a.Blocked...)
+		}
+		if len(denied) > 0 {
+			lg.warn("%s steps' egress denied %d host(s) (see stage-egress.log, collect-egress.log): %s", job.label, len(denied), strings.Join(denied, ", "))
+		}
 	}
 
 	meta := pairMeta{
@@ -290,6 +322,9 @@ func runPair(
 	}
 	if sb.Driver == sandbox.LXDDriver {
 		meta.LXD = lxdProvenanceOf(ctx, sb)
+	}
+	if sp != nil {
+		meta.Steps = &stepsRecord{Sandbox: sp.sb.Name, Image: sp.sb.Image}
 	}
 	if h.spec.Egress.Set {
 		enforced := !sandbox.TraitsOf(sb.Driver).Unboxed
@@ -420,4 +455,65 @@ func stderrTail(b *bytes.Buffer) string {
 		s = "... " + strings.Join(lines[len(lines)-keep:], "\n")
 	}
 	return "\nstderr: " + s
+}
+
+// beforeBox runs a pair's stage and prompt-cmd in its step sandbox, with
+// the workdir, the output dir and the agent's home writable: stage's log and
+// the box's audit staged and moved in once the box has synced and closed,
+// prompt-cmd's stdout returned. a failure is the pair's setup error.
+func beforeBox(ctx context.Context, opts Options, sp *stepPlace, job pairJob, t config.Task, taskDir string, rw []string, env map[string]string) (_ []byte, err error) {
+	mounts, err := stepBindsFor(opts.ConfigDir, rw, job.stepRO)
+	if err != nil {
+		return nil, fmt.Errorf("stage: %w", err)
+	}
+	box, err := openStepBox(ctx, sp, mounts, "stage-egress.log", configProbe(opts.ConfigDir))
+	if err != nil {
+		return nil, fmt.Errorf("stage: %w", err)
+	}
+	defer func() {
+		if cerr := box.close(job.outDir); cerr != nil && err == nil {
+			err = fmt.Errorf("stage: move the step logs in: %w", cerr)
+		}
+	}()
+	if stage := (step{t.Stage, taskDir}); stage.set() {
+		if err := runLogged(filepath.Join(box.staging, "stage.log"), opts.stream(), func(w io.Writer) error {
+			return box.run(ctx, sp, stage, opts.ConfigDir, env, w, w)
+		}); err != nil {
+			return nil, fmt.Errorf("stage: %w (see stage.log)", err)
+		}
+	}
+	var prompt []byte
+	if t.PromptCmd != "" {
+		if prompt, err = box.output(ctx, sp, step{script: t.PromptCmd, dir: taskDir}, opts.ConfigDir, env, nil); err != nil {
+			return nil, fmt.Errorf("prompt: %w", err)
+		}
+	}
+	if err := box.sync(ctx); err != nil {
+		return nil, fmt.Errorf("stage: sync: %w", err)
+	}
+	return prompt, nil
+}
+
+// afterBox runs a pair's collect in its step sandbox, with the workdir and
+// the output dir writable, staging its log and audit as beforeBox does.
+func afterBox(ctx context.Context, opts Options, sp *stepPlace, job pairJob, collect step, rw []string, env map[string]string) (err error) {
+	mounts, err := stepBindsFor(opts.ConfigDir, rw, job.stepRO)
+	if err != nil {
+		return err
+	}
+	box, err := openStepBox(ctx, sp, mounts, "collect-egress.log", configProbe(opts.ConfigDir))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := box.close(job.outDir); cerr != nil && err == nil {
+			err = fmt.Errorf("move the step logs in: %w", cerr)
+		}
+	}()
+	if err := runLogged(filepath.Join(box.staging, "collect.log"), opts.stream(), func(w io.Writer) error {
+		return box.run(ctx, sp, collect, opts.ConfigDir, env, w, w)
+	}); err != nil {
+		return err
+	}
+	return box.sync(ctx)
 }

@@ -422,16 +422,18 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 	return nil
 }
 
-// usePins points each sandbox the pairs use at its pinned images, and stops
-// the run, naming the init that fixes it, when one is not pinned for where
-// the run would start it, or its image is gone.
-func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) ([]upstreamCheck, error) {
+// usePins points each sandbox the pairs use, and the extra ones (scorers'
+// step sandboxes), at its pinned images, and stops the run, naming the init
+// that fixes it, when one is not pinned for where the run would start it, or
+// its image is gone.
+func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair, extra map[string]bool) ([]upstreamCheck, error) {
 	pins, err := readPins(opts.ConfigDir)
 	if err != nil {
 		return nil, err
 	}
 	var checks []upstreamCheck
 	used := usedSandboxes(cfg, pairs)
+	maps.Copy(used, extra)
 	lg := logw{opts.Out, opts.Color, opts.Verbose}
 	var missing []string
 	var reasons []string

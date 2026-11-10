@@ -144,7 +144,11 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 	}
 	jobs := 1
 	if len(toJudge) > 0 {
-		if err := judgeSetup(ctx, cfg, ro, judgePairs, lg); err != nil {
+		var judged []config.Scorer
+		for _, j := range toJudge {
+			judged = append(judged, j.sc)
+		}
+		if err := judgeSetup(ctx, cfg, ro, judgePairs, judged, lg); err != nil {
 			return err
 		}
 		var names []string
@@ -248,9 +252,19 @@ func judgeSelection(cfg *config.Config, jo JudgeOptions, runDirs []string) (map[
 
 // judgeSetup does for the judge agents what Run does for its agents, with
 // the same code: their pins, the model check, the credential preflight.
-func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs []config.TestPair, lg logw) error {
+func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs []config.TestPair, judged []config.Scorer, lg logw) error {
 	warnUnboxed(cfg, judgePairs, lg)
-	checks, err := usePins(ctx, cfg, ro, judgePairs)
+	// a judged scorer's own steps may run in a step sandbox, pinned with the
+	// rest.
+	steps := map[string]bool{}
+	for _, sc := range judged {
+		if sc.StepSandbox != "" {
+			if name, err := cfg.One("sandbox", sc.StepSandbox); err == nil {
+				steps[name] = true
+			}
+		}
+	}
+	checks, err := usePins(ctx, cfg, ro, judgePairs, steps)
 	if err != nil {
 		return err
 	}
@@ -268,7 +282,7 @@ func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs 
 		go func() { upstream <- checkUpstream(ctx, checks, upstreamBudget) }()
 	}
 	lg.detail("preflight: checking judge credentials")
-	if err := Preflight(ctx, cfg, ro, judgePairs); err != nil {
+	if err := Preflight(ctx, cfg, ro, judgePairs, judged...); err != nil {
 		return err
 	}
 	for _, w := range <-upstream {
@@ -361,6 +375,23 @@ func judgeRun(ctx context.Context, cfg *config.Config, ro Options, runDir string
 	rep, err := mergeScores(cfg, runDir, results, scope)
 	if err != nil {
 		return err
+	}
+	// a judged scorer's own steps ran in its step sandbox: recorded with the
+	// score, as a script scorer's are.
+	for _, j := range js {
+		if j.sc.StepSandbox == "" || j.committed == nil || !j.committed.OK {
+			continue
+		}
+		if name, err := cfg.One("sandbox", j.sc.StepSandbox); err == nil {
+			for _, sb := range cfg.Sandboxes {
+				if sb.Name == name {
+					if rep.Steps == nil {
+						rep.Steps = map[string]stepsRecord{}
+					}
+					rep.Steps[j.sc.Name] = stepsRecord{Sandbox: name, Image: sb.Image}
+				}
+			}
+		}
 	}
 	if err := writeJSON(filepath.Join(runDir, "scores.json"), rep); err != nil {
 		return err
@@ -530,6 +561,9 @@ func judgeSample(ctx context.Context, cfg *config.Config, ro Options, j *judgeme
 		meta: func(m *pairMeta) {
 			m.Judged, m.Sample = &jd, i
 		},
+		// in a step box the scored pair's output sits under the masked
+		// runs dir: it goes back in, read-only.
+		stepRO: []string{pairDir},
 	}
 	v := verdict{FooterVersion: footerVersion, Judge: j.sc.Agent, Scorer: j.sc.Name, Judged: jd, Sample: i}
 	if stageErr != nil {

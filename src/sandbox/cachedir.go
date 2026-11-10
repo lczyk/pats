@@ -90,3 +90,7 @@ func knownOwner() string {
 	host, _ := os.Hostname()
 	return fmt.Sprintf("%s/%d/%s", host, os.Getuid(), id)
 }
+
+// LegacyCacheDir is the cache dir an older pats may still use, "" when it
+// is CacheDir itself (see legacyCacheDir).
+func LegacyCacheDir() string { return legacyCacheDir() }

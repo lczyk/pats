@@ -122,7 +122,7 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 
 	// the images `pats init` pinned, first: everything after (preflight
 	// included) starts from them, and a run never builds or pulls.
-	checks, err := usePins(ctx, cfg, opts, pairs)
+	checks, err := usePins(ctx, cfg, opts, pairs, nil)
 	if err != nil {
 		return "", err
 	}
