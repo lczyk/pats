@@ -22,9 +22,6 @@ const stampScript = `for c in claude codex copilot opencode; do
   printf '%s=%s\n' "$c" "$(printf '%s\n' "$v" | head -n1)"
 done`
 
-// stampTimeout bounds a stamp: a hung --version must not hang the init.
-var stampTimeout = 2 * time.Minute
-
 // componentProp prefixes the lxd image properties holding the stamps;
 // stampedProp marks an image pats stamped, so one with no harness is not
 // stamped again.
@@ -110,7 +107,7 @@ func (l *lxd) imageStamps(ctx context.Context, fp string) (map[string]string, er
 // runStamp runs stampScript in a throwaway instance of image fp, with no
 // network, and removes the instance.
 func (l *lxd) runStamp(ctx context.Context, fp string) (stamps map[string]string, err error) {
-	ctx, cancel := context.WithTimeout(ctx, stampTimeout)
+	ctx, cancel := context.WithTimeout(ctx, l.p.t.stamp)
 	defer cancel()
 	s := &lxdSession{l: l, name: "pats-stamp-" + l.p.token + "-" + fp[:min(12, len(fp))]}
 	defer func() {

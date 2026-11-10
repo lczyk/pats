@@ -39,6 +39,10 @@ type host struct {
 	// pats is the binary the egress proxy runs from: this one, but a test's
 	// binary is not pats.
 	pats string
+	// run runs one command of this machine to its end, in a process group
+	// of its own that goes with ctx. the driver's seam, as a cli runner is
+	// the others': a test answers for the machine.
+	run func(ctx context.Context, cmd *exec.Cmd) error
 }
 
 func newHost(p *process, o Options) *host {
@@ -49,7 +53,7 @@ func newHost(p *process, o Options) *host {
 			o.TrustFile = abs
 		}
 	}
-	return &host{p: p, o: o}
+	return &host{p: p, o: o, run: RunGroup}
 }
 
 var errHostNoImages = errors.New("the host driver has no images")
@@ -81,14 +85,14 @@ func (h *host) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (in
 // Stamps are the harness clis on this machine's PATH (the agent's, as
 // hostEnv gives it), by stampScript; id is ignored, there is no image.
 func (h *host) Stamps(ctx context.Context, _ string) (map[string]string, error) {
-	rctx, cancel := context.WithTimeout(ctx, stampTimeout)
+	rctx, cancel := context.WithTimeout(ctx, h.p.t.stamp)
 	defer cancel()
 	cmd := exec.Command("/bin/sh", "-c", stampScript)
 	cmd.Env = hostEnv(nil)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := RunGroup(rctx, cmd); err != nil {
+	if err := h.run(rctx, cmd); err != nil {
 		return nil, fmt.Errorf("harness versions on this machine: %w: %s", err, strings.TrimSpace(errb.String()))
 	}
 	return parseStamps(out.String())
@@ -300,7 +304,7 @@ func (s *hostSession) startProxy(ctx context.Context, eg Egress) error {
 		// machine's trust, which the agent's env would otherwise lose.
 		bundle, added = o.TrustFile, o.TrustFile
 	}
-	pc, err := startProxyChild(ctx, s.b.h.pats, mergeEnv(penv, map[string]string{"PATS_EGRESS_LISTEN": "127.0.0.1:0"}), eg.AuditPath)
+	pc, err := startProxyChild(ctx, s.b.h.p, s.b.h.pats, mergeEnv(penv, map[string]string{"PATS_EGRESS_LISTEN": "127.0.0.1:0"}), eg.AuditPath)
 	if err != nil {
 		return err
 	}
@@ -364,7 +368,7 @@ func (s *hostSession) Exec(ctx context.Context, c Cmd, stdout, stderr io.Writer)
 			}
 		}()
 	}
-	err = RunGroup(xctx, cmd)
+	err = s.b.h.run(xctx, cmd)
 	if cmd.Process == nil {
 		return -1, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
@@ -588,9 +592,6 @@ func PathsOf(sb Sandbox, workdir, home string) Paths {
 	return Paths{Work: WorkMount, Home: HomeMount, Prepare: PrepareMount}
 }
 
-// hostProxyReady bounds the wait for a proxy child's listening line.
-var hostProxyReady = 15 * time.Second
-
 // proxyChild is `pats egress run` as a child of this process, its audit
 // (stdout) going to a file: the host and bwrap drivers run their proxy so.
 type proxyChild struct {
@@ -600,13 +601,16 @@ type proxyChild struct {
 	addr  string // what it listens on, from its listening line
 	// forwarder is the static pats bwrap binds into a sandbox, beside it.
 	forwarder string
+	// how long stop waits between asking and killing, on whose clock.
+	clock clock
+	grace time.Duration
 }
 
 // startProxyChild runs exe (this pats when "") as the proxy with env over
 // pats's own, the machine's proxy included, so it chains through it; the
 // policy and CA ride in env, never argv. it waits for the listening line,
 // bounded; a proxy that fails to listen is stopped and reaped.
-func startProxyChild(ctx context.Context, exe string, env map[string]string, auditPath string) (*proxyChild, error) {
+func startProxyChild(ctx context.Context, p *process, exe string, env map[string]string, auditPath string) (*proxyChild, error) {
 	if exe == "" {
 		var err error
 		if exe, err = os.Executable(); err != nil {
@@ -617,7 +621,7 @@ func startProxyChild(ctx context.Context, exe string, env map[string]string, aud
 	cmd.Env = append(os.Environ(), sortedEnv(env)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	dieWithParent(cmd.SysProcAttr)
-	pc := &proxyChild{cmd: cmd, done: make(chan struct{})}
+	pc := &proxyChild{cmd: cmd, done: make(chan struct{}), clock: p.clock, grace: p.t.execGrace}
 	if auditPath != "" {
 		f, err := os.Create(auditPath)
 		if err != nil {
@@ -669,8 +673,8 @@ func startProxyChild(ctx context.Context, exe string, env map[string]string, aud
 			return fail(fmt.Errorf("egress: proxy exited before listening: %s", a[1:]))
 		}
 		pc.addr = a
-	case <-time.After(hostProxyReady):
-		return fail(fmt.Errorf("egress: proxy not listening after %s", hostProxyReady))
+	case <-p.clock.After(p.t.childReady):
+		return fail(fmt.Errorf("egress: proxy not listening after %s", p.t.childReady))
 	case <-ctx.Done():
 		return fail(ctx.Err())
 	}
@@ -682,7 +686,7 @@ func (pc *proxyChild) stop() {
 	_ = syscall.Kill(-pc.cmd.Process.Pid, syscall.SIGTERM)
 	select {
 	case <-pc.done:
-	case <-time.After(5 * time.Second):
+	case <-pc.clock.After(pc.grace):
 		_ = syscall.Kill(-pc.cmd.Process.Pid, syscall.SIGKILL)
 		<-pc.done
 	}

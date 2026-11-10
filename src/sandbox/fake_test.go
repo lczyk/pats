@@ -90,6 +90,7 @@ func testProcess(t *testing.T) *process {
 		deleteRetry: time.Millisecond, ready: 5 * time.Second, readyPoll: time.Millisecond,
 		onlineRetry: time.Millisecond, proxyReady: 5 * time.Second, execGrace: 100 * time.Millisecond,
 		followerGrace: 100 * time.Millisecond, cliCleanup: 5 * time.Second, proxyFetch: 5 * time.Second,
+		stamp: 30 * time.Second, childReady: 5 * time.Second,
 	})
 	home := t.TempDir()
 	p.home = func() (string, error) { return home, nil }

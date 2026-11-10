@@ -250,7 +250,7 @@ func (d *bwrapDriver) Stamps(ctx context.Context, id string) (map[string]string,
 		return nil, err
 	}
 	defer sess.Close()
-	rctx, cancel := context.WithTimeout(ctx, stampTimeout)
+	rctx, cancel := context.WithTimeout(ctx, d.p.t.stamp)
 	defer cancel()
 	var out, errb bytes.Buffer
 	code, err := sess.Exec(rctx, Cmd{Argv: []string{"/bin/sh", "-c", stampScript}, Root: true, Dir: "/"}, &out, &errb)
@@ -723,7 +723,7 @@ func (s *bwrapSession) startProxy(ctx context.Context, eg Egress) error {
 	s.trust = m
 	penv := m.proxyEnv(m.bundlePath)
 	penv["PATS_EGRESS_LISTEN"] = "unix:" + filepath.Join(s.dir, "egress", "proxy.sock")
-	if s.proxy, err = startProxyChild(ctx, s.d.pats, penv, eg.AuditPath); err != nil {
+	if s.proxy, err = startProxyChild(ctx, s.d.p, s.d.pats, penv, eg.AuditPath); err != nil {
 		return err
 	}
 	s.proxy.forwarder = fwd

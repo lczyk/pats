@@ -326,12 +326,12 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	}
 	// the harness versions inside, as image properties init pins and runs check.
 	var stampOut, stampErr bytes.Buffer
-	sctx, scancel := context.WithTimeout(ctx, stampTimeout)
+	sctx, scancel := context.WithTimeout(ctx, l.p.t.stamp)
 	code, err := s.exec(sctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &stampOut, &stampErr)
 	timedOut := errors.Is(sctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	scancel()
 	if timedOut {
-		return "", fmt.Errorf("stamping the harness versions took over %s", stampTimeout)
+		return "", fmt.Errorf("stamping the harness versions took over %s", l.p.t.stamp)
 	}
 	if err != nil {
 		return "", err

@@ -119,9 +119,6 @@ func TestContainerStampsFailures(t *testing.T) {
 // an lxd stamp that hangs fails the build at its timeout, and the builder
 // goes with it.
 func TestLXDStampTimeoutOnServer(t *testing.T) {
-	old := stampTimeout
-	stampTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { stampTimeout = old })
 	f := newFakeServer(t)
 	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
 		if len(argv) == 3 && argv[2] == stampScript {
@@ -130,6 +127,7 @@ func TestLXDStampTimeoutOnServer(t *testing.T) {
 		return nil
 	}
 	l := lxdOn(t, f, Options{})
+	l.p.t.stamp = 200 * time.Millisecond
 	_, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
 	assert.Error(t, err, "stamping the harness versions took over")
 	assert.Len(t, f.insts, 0) // the builder went with the failed build

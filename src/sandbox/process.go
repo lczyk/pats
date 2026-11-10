@@ -79,6 +79,8 @@ type timings struct {
 	followerGrace time.Duration // a log follower's own exit, once what it follows is gone
 	cliCleanup    time.Duration // removing a failed run's container, after the caller's context is gone
 	proxyFetch    time.Duration // the egress proxy binary from the registry
+	stamp         time.Duration // reading the harness versions: a hung --version must not hang an init
+	childReady    time.Duration // a proxy child's listening line (host, bwrap)
 }
 
 var defaultTimings = timings{
@@ -95,6 +97,8 @@ var defaultTimings = timings{
 	followerGrace: 2 * time.Second,
 	cliCleanup:    30 * time.Second,
 	proxyFetch:    5 * time.Minute,
+	stamp:         2 * time.Minute,
+	childReady:    15 * time.Second,
 }
 
 func newProcess(c clock, t timings) *process {

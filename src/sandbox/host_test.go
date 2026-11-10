@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -213,9 +214,7 @@ func TestHostEgress(t *testing.T) {
 	pidFile := stall + ".pid"
 	require.NoError(t, os.WriteFile(stall, []byte("#!/bin/sh\necho $$ > '"+pidFile+"'\nexec sleep 300\n"), 0o755))
 	b.h.pats = stall
-	old := hostProxyReady
-	hostProxyReady = 2 * time.Second // room for the script to start on a busy machine
-	defer func() { hostProxyReady = old }()
+	b.h.p.t.childReady = 2 * time.Second // room for the script to start on a busy machine
 	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
 		Policy: proxy.Policy{Allow: []string{"example.com"}}}})
 	assert.Error(t, err, "not listening after")
@@ -422,4 +421,37 @@ func TestCopyTreeStaysInside(t *testing.T) {
 	got, err = os.ReadFile(filepath.Join(src, "d", "victim"))
 	require.NoError(t, err)
 	assert.Equal(t, string(got), "new")
+}
+
+// the host driver runs every command of this machine through one seam, as
+// the others run their cli through a runner: a machine that cannot start a
+// command is a launch failure, one whose command dies is that command's
+// exit, and the versions on it are read under the stamp's own timeout.
+func TestHostRunSeam(t *testing.T) {
+	b := hostOn(t, Options{Driver: HostDriver})
+	var seen [][]string
+	fail := error(nil)
+	b.h.run = func(ctx context.Context, cmd *exec.Cmd) error {
+		seen = append(seen, cmd.Args)
+		if fail != nil {
+			return fail
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	sess, err := b.Start(context.Background(), Spec{Workdir: t.TempDir()})
+	require.NoError(t, err)
+	defer sess.Close()
+
+	fail = errors.New("fork: resource temporarily unavailable")
+	_, err = sess.Exec(context.Background(), Cmd{Argv: []string{"true"}}, io.Discard, io.Discard)
+	assert.ErrorIs(t, err, ErrLaunch)
+	assert.Equal(t, strings.Join(seen[0], " "), "true")
+
+	// a stamp that hangs ends at the stamp timeout, not the caller's.
+	fail = nil
+	b.h.p.t.stamp = 50 * time.Millisecond
+	_, err = b.h.Stamps(context.Background(), "")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, seen[1][0], "/bin/sh")
 }
