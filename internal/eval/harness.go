@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -110,4 +111,117 @@ func bounded(ctx context.Context, timeout time.Duration, f func(context.Context)
 	// agent, and the real cause belongs in the metadata.
 	timedOut := errors.Is(rctx.Err(), context.DeadlineExceeded) && !errors.Is(err, sandbox.ErrLaunch)
 	return harnessRun{code: code, err: err, timedOut: timedOut, dur: dur}
+}
+
+// homeMount is the in-sandbox HOME for a harness -- a writable dir the agent
+// (running as an arbitrary uid) owns, where its creds + cache live. under
+// the host driver the agent is told the dir itself (sandbox.PathsOf).
+const homeMount = sandbox.HomeMount
+
+type harnessSetup struct {
+	dir     string // host side of homeMount
+	mounts  []sandbox.Mount
+	cleanup func()
+}
+
+// harnessHome gives a harness a writable HOME (the --user uid owns nothing),
+// copies its file-based credentials when present, and warns when no supported
+// credential source is available. copies are writable for token refreshes but
+// discarded after the invocation; pats never modifies the host credential file.
+// label ("agent/task") prefixes the warning.
+//
+// inBox names the home as the agent is told it, given its host dir; nil is
+// homeMount.
+func harnessHome(opts Options, label, harness string, env map[string]string, hasToken bool, inBox func(string) string) (harnessSetup, error) {
+	homeDir, err := sandbox.MkTemp("pats-home-")
+	if err != nil {
+		return harnessSetup{}, err
+	}
+	home := homeMount
+	if inBox != nil {
+		home = inBox(homeDir)
+	}
+	env["HOME"] = home
+	maps.Copy(env, agent.HomeEnv(harness, home))
+
+	hasCreds := hasToken
+	if cf, rel := agent.HostCredsFile(harness); cf != "" {
+		dst := filepath.Join(homeDir, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			sandbox.RemoveTemp(homeDir)
+			return harnessSetup{}, err
+		}
+		if err := copyFile(cf, dst); err != nil {
+			sandbox.RemoveTemp(homeDir)
+			return harnessSetup{}, err
+		}
+		hasCreds = true
+	}
+	if !hasCreds {
+		logw{opts.Out, opts.Color, opts.Verbose}.warn("%s no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(harness))
+	}
+	return harnessSetup{
+		dir:     homeDir,
+		mounts:  []sandbox.Mount{{Host: homeDir, Container: home}},
+		cleanup: func() { sandbox.RemoveTemp(homeDir) },
+	}, nil
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o600)
+}
+
+// egressFor renders the egress policy one agent run gets: the sandbox's, with
+// the task's lists unioned in (the sandbox keeps every scalar), and under an
+// allowlisting proxy the harness's own hosts (inference, token refresh), so
+// pats.yaml only lists what the task needs. selfTest asks the driver to prove
+// the sandbox has no route out first (preflight does).
+func egressFor(sb config.Sandbox, te config.TaskEgress, harness, auditPath string, selfTest bool) sandbox.Egress {
+	eg := sandbox.Egress{
+		None:      sb.Egress.None,
+		Set:       sb.Egress.Set,
+		Policy:    sb.Egress.Policy,
+		Image:     sb.ProxyImage,
+		AuditPath: auditPath,
+		SelfTest:  selfTest,
+	}
+	if !eg.Set {
+		return eg
+	}
+	eg.Policy.Allow = mergeHosts(eg.Policy.Allow, te.Allow)
+	eg.Policy.Deny = mergeHosts(eg.Policy.Deny, te.Deny)
+	if eg.Policy.Default != "allow" {
+		eg.Policy.Allow = mergeHosts(eg.Policy.Allow, agent.RequiredHosts[harness])
+	}
+	// the harness's hosts are exempt from the methods posture either way: its
+	// inference traffic is not the task's to inspect.
+	eg.Policy.Harness = mergeHosts(nil, agent.RequiredHosts[harness])
+	return eg
+}
+
+// mergeHosts appends extras not already in hosts (exact string match; overlap
+// via wildcards is harmless -- the proxy just sees a redundant entry).
+//
+// hosts is copied before appending: the caller passes cfg.Sandboxes[i].Egress.Allow,
+// shared by every concurrent pair. today an in-place append is safe because
+// yaml.v3 decodes sequences with cap == len (verified), so the append below
+// always reallocates -- but nothing enforces that invariant, and a future
+// caller (or yaml.v3 change) could silently start corrupting a sibling pair's
+// egress policy.
+func mergeHosts(hosts, extras []string) []string {
+	seen := map[string]bool{}
+	for _, h := range hosts {
+		seen[h] = true
+	}
+	out := append([]string(nil), hosts...)
+	for _, e := range extras {
+		if !seen[e] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
