@@ -80,9 +80,9 @@ sandboxes:
 an image is a registry ref, as under docker, and pinned the same way: `pats init` resolves it to a digest and records
 the pin under the target `bwrap:<hostname>`. there is no daemon to hold it, so pats does:
 
-- **fetch** the manifest for the host's architecture and its layers over the registry's http api, extending the
-  client the lxd driver already fetches its proxy binary with (`registry.go`), with no new dependency. anonymous
-  pulls only, as that client does: a public image.
+- **fetch** the manifest for the host's architecture and its layers from the registry with `oras-go`, the client
+  the lxd driver fetches its proxy binary with too (`registry.go`): the token exchange, and every manifest and blob
+  checked against its digest and size, are its work. anonymous pulls only: a public image.
 - **unpack** the layers in order into the store, `<cache>/bwrap/rootfs/<digest>/`, as the invoking user: whiteouts
   and opaque dirs applied, the image config's `Env` kept beside it (`<digest>.env.json`), device nodes skipped
   (bwrap supplies `/dev`), setuid and setgid bits dropped, ownership not kept (one uid, above), and an entry whose
