@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -85,4 +86,11 @@ func envValue(env []string, key string) string {
 // relative and empty entries.
 func HostLookPath(name string) (string, error) {
 	return lookIn(envValue(hostEnv(nil), "PATH"), name)
+}
+
+// ReservedPaths are the in-sandbox paths pats puts its own things at, under
+// every driver: a host path bound at its own path must not be one of them,
+// or under one.
+func ReservedPaths() []string {
+	return []string{WorkMount, HomeMount, PrepareMount, ProvisionMount, path.Dir(agentBundlePath), "/run/pats", "/run/pats-egress", "/run/pats-push"}
 }

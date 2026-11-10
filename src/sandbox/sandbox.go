@@ -57,11 +57,16 @@ type Egress struct {
 	SelfTest  bool         // prove the sandbox has no route out before running
 }
 
-// Mount is an extra host path bound into the sandbox.
+// Mount is an extra host path bound into the sandbox. a driver keeps the
+// order mounts come in, so a mount under another comes after it.
 type Mount struct {
 	Host      string
 	Container string
 	ReadOnly  bool
+	// Masks are paths under Container the sandbox sees as empty
+	// directories: a tmpfs over each where the mount is a bind, left out of
+	// the copy where it is pushed. a mount under a mask goes back over it.
+	Masks []string
 }
 
 // Sandbox runs a Spec in isolation. Start brings it up idle and returns a
@@ -263,6 +268,9 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	args := []string{
 		"run", "-d", "--rm",
 		"--init", // reap zombies if the agent spawns children
+		// the keepalive runs as root whatever the image's USER, so what ends
+		// the agent user's processes (a step's cleanup) never ends the box.
+		"--user", "0:0",
 		// an agent run as root (pats itself as root) could otherwise craft raw
 		// frames past its network's routing, or gain privileges via setuid.
 		"--cap-drop", "NET_RAW", "--security-opt", "no-new-privileges",
@@ -288,6 +296,9 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 			v += ":ro"
 		}
 		args = append(args, "-v", v)
+		for _, mask := range m.Masks {
+			args = append(args, "--mount", "type=tmpfs,destination="+mask+engines[c.driver].maskOpts)
+		}
 	}
 	if c.limits.CPU > 0 {
 		args = append(args, "--cpus", fmt.Sprint(c.limits.CPU))

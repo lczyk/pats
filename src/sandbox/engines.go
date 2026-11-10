@@ -28,6 +28,8 @@ type engine struct {
 	// env, when set, is what aims the engine's cli where o says, as the
 	// environment it reads.
 	env func(o Options) []string
+	// maskOpts go on a mask's tmpfs mount, after its destination.
+	maskOpts string
 }
 
 var engines = map[string]engine{}

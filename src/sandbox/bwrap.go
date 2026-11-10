@@ -408,7 +408,7 @@ func (b *bwrapSandbox) Start(ctx context.Context, spec Spec) (Session, error) {
 		if err != nil {
 			return fail(err)
 		}
-		s.binds = append(s.binds, bind{host: mh, path: m.Container, ro: m.ReadOnly})
+		s.binds = append(s.binds, bind{host: mh, path: m.Container, ro: m.ReadOnly, masks: m.Masks})
 	}
 	switch {
 	case spec.Egress.None:
@@ -465,6 +465,9 @@ func (s *bwrapSession) argv(c Cmd, extra ...string) []string {
 			flag = "--ro-bind"
 		}
 		a = append(a, flag, b.host, b.path)
+		for _, m := range b.masks {
+			a = append(a, "--tmpfs", m)
+		}
 	}
 	if s.trust != nil && s.trust.bundlePath != "" {
 		a = append(a, "--ro-bind", s.trust.bundlePath, agentBundlePath, "--ro-bind", s.trust.certPath, agentCertPath)

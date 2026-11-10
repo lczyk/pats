@@ -405,7 +405,7 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		if err != nil {
 			return fail(fmt.Errorf("resolve mount %s: %w", m.Host, err))
 		}
-		s.binds = append(s.binds, bind{host: mh, path: m.Container, ro: m.ReadOnly})
+		s.binds = append(s.binds, bind{host: mh, path: m.Container, ro: m.ReadOnly, masks: m.Masks})
 	}
 	for _, b := range s.binds {
 		if err := s.Push(ctx, b.host, b.path); err != nil {

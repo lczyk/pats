@@ -233,7 +233,7 @@ func (f *fakeDaemon) remove(c *fakeCtr) {
 
 var runValued = map[string]bool{"--cap-drop": true, "--security-opt": true, "-w": true, "-v": true, "--name": true,
 	"--label": true, "--network": true, "--dns": true, "--ip": true, "--sysctl": true, "-e": true, "--cpus": true,
-	"--memory": true, "--cidfile": true, "--entrypoint": true}
+	"--memory": true, "--cidfile": true, "--entrypoint": true, "--user": true, "--mount": true}
 var runBool = map[string]bool{"-d": true, "--rm": true, "--init": true, "--http-proxy=false": true}
 
 func (f *fakeDaemon) runCtr(ctx context.Context, stdout, stderr io.Writer, args []string) error {

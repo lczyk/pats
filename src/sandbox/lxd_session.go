@@ -16,6 +16,7 @@ import (
 type bind struct {
 	host, path string
 	ro         bool
+	masks      []string // in-box paths under path the box sees empty
 }
 
 type lxdSession struct {

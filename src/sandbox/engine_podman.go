@@ -21,6 +21,9 @@ func init() {
 		cpus:     "{{.Host.CPUs}}",
 		target:   podmanTarget,
 		env:      podmanEnv,
+		// podman fills a tmpfs with what lies beneath it unless told not to;
+		// a mask must read empty.
+		maskOpts: ",notmpcopyup",
 	})
 }
 
