@@ -211,7 +211,9 @@ func Serve(ctx context.Context, o Options) error {
 	srv := &http.Server{
 		Handler:           p,
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+		IdleTimeout:       idleWait,
+		// "OPTIONS *" is a request like any other: decided and audited.
+		DisableGeneralOptionsHandler: true,
 	}
 	go func() {
 		<-ctx.Done()

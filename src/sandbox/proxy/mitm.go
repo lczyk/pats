@@ -4,7 +4,6 @@
 package proxy
 
 import (
-	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -15,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -85,10 +85,11 @@ func (s *Signer) leaf(host string) (*tls.Certificate, error) {
 var errSNIMismatch = errors.New("sni does not name the CONNECT host")
 
 // handleMitm terminates the CONNECT tls with a leaf for the CONNECT host, then
-// serves the decrypted requests, filtering each by url and forwarding the
-// allowed ones to the real host via Upstream. the leaf is only ever for the
-// CONNECT host and each inner request's Host must name it too: a shared
-// front end must not be reached under a name the policy never saw.
+// serves the decrypted connection as http: each request is filtered by url
+// and the allowed ones forwarded to the real host via Upstream. the leaf is
+// only ever for the CONNECT host and each inner request's Host must name it
+// too: a shared front end must not be reached under a name the policy never
+// saw.
 func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string, port uint16) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -99,10 +100,10 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 	if err != nil {
 		return
 	}
-	defer raw.Close()
 	// the 200 must go straight to the wire, not through WriteHeader -- see the
 	// matching comment in handleConnect (proxy.go).
 	if _, err := raw.Write([]byte("HTTP/1.1 200 OK\r\n\r\n")); err != nil {
+		raw.Close()
 		return
 	}
 
@@ -122,7 +123,6 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 		},
 		NextProtos: []string{"http/1.1"}, // NOTE: no h2; clients downgrade fine
 	})
-	defer tconn.Close()
 	// the server's header timeout stopped applying at the hijack: bound the
 	// handshake here, or a client that never finishes it holds the conn.
 	_ = raw.SetDeadline(time.Now().Add(helloWait))
@@ -138,110 +138,95 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 			}
 			p.audit(Event{Ev: "open", Host: host, Port: portStr(port), Kind: "mitm", Rule: "mitm", Reason: reason})
 		}
+		tconn.Close()
 		return
 	}
 	_ = raw.SetDeadline(time.Time{})
 
-	br := bufio.NewReader(tconn)
-	for {
-		inner, err := http.ReadRequest(br)
-		if err != nil {
-			return
-		}
-		fullURL := host + inner.URL.Path
-		if inner.URL.RawQuery != "" {
-			fullURL += "?" + inner.URL.RawQuery
-		}
+	origin := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, portStr(port))}
+	idle := p.Idle
+	if idle <= 0 {
+		idle = idleWait
+	}
+	serveConn(tconn, idle, http.HandlerFunc(func(w http.ResponseWriter, inner *http.Request) {
 		ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "mitm",
-			Method: inner.Method, URL: fullURL, UA: inner.UserAgent()}
+			Method: inner.Method, URL: auditURL(host, inner.URL), UA: inner.UserAgent()}
 		if innerHost, _ := splitHostPort(inner.Host, port); !sameHost(innerHost, want) {
 			ev.Rule, ev.Reason = "mitm", "host-mismatch"
-			ev.Status = p.refuseTLS(tconn)
+			ev.Status = p.refuse(w)
 			p.audit(ev)
 			return
 		}
 		v := p.Rule.Decide(host, port, inner.Method, inner.URL.Path, inner.URL.RawQuery)
 		ev.Rule, ev.Reason = v.Rule, v.Reason
 		if !v.Allowed {
-			ev.Status = p.refuseTLS(tconn)
+			ev.Status = p.refuse(w)
 			p.audit(ev)
 			return
 		}
-
-		start := time.Now()
-		body := countBody(inner)
-		inner.URL.Scheme = "https"
-		inner.URL.Host = net.JoinHostPort(host, portStr(port))
-		inner.RequestURI = ""
-		resp, err := p.Upstream.RoundTrip(inner)
-		if err != nil {
-			ev.Reason, ev.Status = upstreamReason(err), http.StatusBadGateway
-			ev.Out, ev.MS = body.n, time.Since(start).Milliseconds()
-			p.audit(ev)
-			(&http.Response{StatusCode: http.StatusBadGateway, ProtoMajor: 1, ProtoMinor: 1,
-				Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
-			return
-		}
-		ev.Revocation = "unchecked"
-		if resp.TLS != nil {
-			ev.Revocation = stapleStatus(*resp.TLS)
-		}
-		// the upstream leg may be http/2, but the client side of this conn is
-		// http/1.1 (see NextProtos above), so the response can't be written
-		// verbatim: Write puts resp.Proto in the status line ("HTTP/2.0 200 OK"
-		// on an http/1.1 stream), and when resp.ContentLength is -1 it adds
-		// Transfer-Encoding: chunked while a stale upstream Content-Length
-		// header line survives alongside -- double framing. lenient parsers
-		// (curl, node) shrug both off; strict ones (rust hyper, e.g. github
-		// copilot's auth stack) kill the request. renumber and let Write
-		// re-derive the framing from resp.ContentLength alone.
-		resp.Proto, resp.ProtoMajor, resp.ProtoMinor = "HTTP/1.1", 1, 1
-		resp.Header.Del("Content-Length")
-		resp.Header.Del("Transfer-Encoding")
-		if resp.ContentLength < 0 {
-			// unknown length must be chunked explicitly: Write would fall back
-			// to close-delimiting, which stalls a keep-alive client forever.
-			resp.TransferEncoding = []string{"chunked"}
-		} else {
-			resp.TransferEncoding = nil
-		}
-		in := &countReader{r: resp.Body}
-		resp.Body = in
-		err = resp.Write(tconn)
-		resp.Body.Close()
-		ev.Allowed, ev.Status, ev.In, ev.Out, ev.MS = true, resp.StatusCode, in.n, body.n, time.Since(start).Milliseconds()
-		p.audit(ev)
-		if err != nil || resp.Close || inner.Close {
-			return
-		}
-	}
+		p.forward(w, inner, ev, origin)
+	}))
 }
+
+// idleWait is how long a client's connection may sit between requests.
+const idleWait = 2 * time.Minute
+
+// serveConn serves the one connection c as net/http serves any it accepts:
+// its framing, its keep-alive and what a handler left unread are the
+// server's. it returns once the connection is closed, or a handler took it
+// over (a refusal by reset). idle bounds its silences.
+func serveConn(c net.Conn, idle time.Duration, h http.Handler) {
+	ln := &oneConn{conn: c, done: make(chan struct{})}
+	h1 := new(http.Protocols)
+	h1.SetHTTP1(true)
+	srv := &http.Server{
+		Handler:   h,
+		Protocols: h1,
+		// "OPTIONS *" is a request like any other: decided, relayed, audited.
+		DisableGeneralOptionsHandler: true,
+		// the wait for a connection's first request counts as its headers'.
+		ReadHeaderTimeout: idle,
+		IdleTimeout:       idle,
+		ConnState: func(_ net.Conn, s http.ConnState) {
+			if s == http.StateClosed || s == http.StateHijacked {
+				ln.Close()
+			}
+		},
+	}
+	_ = srv.Serve(ln)
+}
+
+// oneConn is a listener of one connection: accepted once, and then nothing
+// more until it is closed.
+type oneConn struct {
+	conn net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func (l *oneConn) Accept() (net.Conn, error) {
+	if c := l.conn; c != nil {
+		l.conn = nil
+		return c, nil
+	}
+	<-l.done
+	return nil, net.ErrClosed
+}
+
+func (l *oneConn) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *oneConn) Addr() net.Addr { return oneAddr{} }
+
+type oneAddr struct{}
+
+func (oneAddr) Network() string { return "conn" }
+func (oneAddr) String() string  { return "conn" }
 
 // sameHost compares a request host to the normalised CONNECT host.
 func sameHost(got, want string) bool {
 	n, err := NormalizeHost(got)
 	return err == nil && n == want
-}
-
-// refuseTLS is refuse for a request inside a mitm'd connection: the same
-// DenyResponse shapes, written through the tls conn. it returns the status
-// sent, 0 for a reset.
-func (p *Proxy) refuseTLS(tconn *tls.Conn) int {
-	status := http.StatusForbidden
-	switch p.DenyResponse {
-	case "404":
-		status = http.StatusNotFound
-	case "timeout":
-		time.Sleep(denyHold)
-		fallthrough
-	case "reset":
-		if tc, ok := tconn.NetConn().(*net.TCPConn); ok {
-			_ = tc.SetLinger(0)
-		}
-		tconn.NetConn().Close()
-		return 0
-	}
-	(&http.Response{StatusCode: status, ProtoMajor: 1, ProtoMinor: 1,
-		Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
-	return status
 }

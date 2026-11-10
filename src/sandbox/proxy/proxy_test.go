@@ -139,6 +139,55 @@ func TestHandleHTTP(t *testing.T) {
 	assert.Equal(t, audit.last(t).Rule, "default")
 }
 
+// plain http is relayed as a terminated connection is: what a client says to
+// the proxy stays with it, a body the origin did not read is not the next
+// request, and a refusal leaves the connection to the request after it.
+func TestHandleHTTPRelay(t *testing.T) {
+	var seen []http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header)
+		io.WriteString(w, r.Method+" "+r.URL.RequestURI())
+	}))
+	defer upstream.Close()
+	uhost := strings.TrimPrefix(upstream.URL, "http://")
+	var audit auditBuf
+	p := &Proxy{Rule: mustRule(t, false, []string{uhost}, []string{uhost + "/secret**"}), Audit: &audit, Dial: looseDial}
+	proxy := httptest.NewServer(p)
+	defer proxy.Close()
+
+	conn, err := net.Dial("tcp", proxy.Listener.Addr().String())
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	br := bufio.NewReader(conn)
+	read := func() (int, string) {
+		t.Helper()
+		resp, err := http.ReadResponse(br, nil)
+		require.NoError(t, err)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body)
+	}
+	fmt.Fprintf(conn, "POST http://%s/secret/x HTTP/1.1\r\nHost: %s\r\nContent-Length: 15\r\n\r\nGET /smuggled x", uhost, uhost)
+	code, _ := read()
+	assert.Equal(t, code, http.StatusForbidden)
+	fmt.Fprintf(conn, "GET http://%s/a?y=2;x=1 HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic abc\r\nProxy-Connection: keep-alive\r\n"+
+		"Connection: X-Hop\r\nX-Hop: secret\r\nUpgrade: websocket\r\nX-Forwarded-For: 10.1.2.3\r\n\r\n", uhost, uhost)
+	code, body := read()
+	assert.Equal(t, code, 200)
+	assert.Equal(t, body, "GET /a?y=2;x=1")
+	require.Len(t, seen, 1)
+	for _, h := range []string{"Proxy-Authorization", "Proxy-Connection", "X-Hop", "Upgrade", "User-Agent"} {
+		assert.Equal(t, seen[0].Get(h), "", "%s went on to the origin", h)
+	}
+	assert.Equal(t, seen[0].Get("X-Forwarded-For"), "10.1.2.3")
+	var urls []string
+	for _, ev := range audit.events(t) {
+		urls = append(urls, ev.Method+" "+ev.URL)
+	}
+	assert.EqualArrays(t, urls, []string{"POST 127.0.0.1/secret/x", "GET 127.0.0.1/a?y=2;x=1"})
+}
+
 func TestDenyResponse(t *testing.T) {
 	for _, shape := range []string{"403", "404", "reset"} {
 		t.Run(shape, func(t *testing.T) {

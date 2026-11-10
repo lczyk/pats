@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -352,4 +353,262 @@ func TestMitmNonTLSAudited(t *testing.T) {
 	assert.Equal(t, ev.Ev, "open")
 	assert.Equal(t, ev.Allowed, false)
 	assert.Equal(t, ev.Reason, "not-tls")
+}
+
+// mitmConn opens a connection to host through p, terminated by p's CA.
+func mitmConn(t testing.TB, p *Proxy, pool *x509.CertPool, host string) (*tls.Conn, *bufio.Reader) {
+	t.Helper()
+	srv := httptest.NewServer(p)
+	t.Cleanup(srv.Close)
+	conn, _ := connect(t, srv.Listener.Addr().String(), host+":443")
+	t.Cleanup(func() { conn.Close() })
+	tconn := tls.Client(conn, &tls.Config{RootCAs: pool, ServerName: host})
+	require.NoError(t, tconn.Handshake())
+	return tconn, bufio.NewReader(tconn)
+}
+
+// answer reads one response off a mitm'd connection, body and all.
+func answer(t testing.TB, br *bufio.Reader) (*http.Response, string) {
+	t.Helper()
+	resp, err := http.ReadResponse(br, nil)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	resp.Body.Close()
+	return resp, string(body)
+}
+
+// echoPath answers every request with its path, and reads no request body.
+var echoPath = rtFunc(func(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{"Content-Type": {"text/plain"}},
+		Body: io.NopCloser(strings.NewReader(r.URL.Path)), ContentLength: int64(len(r.URL.Path))}, nil
+})
+
+// a request body the origin never read is not the next request: the two
+// requests of one connection are each decided and answered as themselves.
+func TestMitmUnreadBody(t *testing.T) {
+	p, pool, audit := mitmProxy(t, "mitm.test", echoPath)
+	tconn, br := mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "POST /a HTTP/1.1\r\nHost: mitm.test\r\nContent-Length: 14\r\n\r\nGET /secret/x GET /b HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	_, body := answer(t, br)
+	assert.Equal(t, body, "/a")
+	resp, body := answer(t, br)
+	assert.Equal(t, resp.StatusCode, 200)
+	assert.Equal(t, body, "/b")
+	var urls []string
+	for _, ev := range audit.events(t) {
+		urls = append(urls, ev.Method+" "+ev.URL)
+	}
+	assert.EqualArrays(t, urls, []string{"POST mitm.test/a", "GET mitm.test/b"})
+}
+
+// what a client says to the proxy stays with the proxy, and the rest goes on
+// as it was sent and decided on: the query as spelt, the client's own
+// forwarding headers, no user agent where it sent none.
+func TestMitmForwardsAsSent(t *testing.T) {
+	var got *http.Request
+	var sent string
+	var trailer http.Header
+	p, pool, _ := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Body != nil {
+			b, _ := io.ReadAll(r.Body)
+			sent, trailer = string(b), r.Trailer
+		} else {
+			got = r
+		}
+		return echoPath(r)
+	}))
+	tconn, br := mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "GET /v1/x?b=2;a=1&c=%%zz HTTP/1.1\r\nHost: mitm.test\r\nConnection: keep-alive, X-Hop\r\nX-Hop: secret\r\n"+
+		"Proxy-Authorization: Basic abc\r\nKeep-Alive: timeout=5\r\nX-Forwarded-For: 10.1.2.3\r\nForwarded: for=10.1.2.3\r\nX-Kept: yes\r\n\r\n")
+	answer(t, br)
+	require.That(t, got != nil, "the request did not reach the origin")
+	for _, h := range []string{"X-Hop", "Proxy-Authorization", "Keep-Alive", "Connection"} {
+		assert.Equal(t, len(got.Header[h]), 0, "%s went on to the origin", h)
+	}
+	assert.EqualArrays(t, got.Header["X-Forwarded-For"], []string{"10.1.2.3"})
+	assert.EqualArrays(t, got.Header["Forwarded"], []string{"for=10.1.2.3"})
+	assert.Equal(t, got.Header.Get("X-Kept"), "yes")
+	assert.Equal(t, got.Header.Get("User-Agent"), "")
+	assert.Equal(t, got.URL.RawQuery, "b=2;a=1&c=%zz")
+
+	// a trailer the client sends after a chunked body goes on with it.
+	fmt.Fprintf(tconn, "POST /t HTTP/1.1\r\nHost: mitm.test\r\nTransfer-Encoding: chunked\r\nTrailer: X-T\r\n\r\n3\r\nabc\r\n0\r\nX-T: tv\r\n\r\n")
+	answer(t, br)
+	assert.Equal(t, sent, "abc")
+	assert.Equal(t, trailer.Get("X-T"), "tv")
+	assert.Equal(t, got.URL.String(), "https://mitm.test:443/v1/x?b=2;a=1&c=%zz")
+	assert.Equal(t, got.Host, "mitm.test")
+}
+
+// the answer is the origin's: nothing it did not send is added, and a
+// stream reaches the client as it comes, not when it ends.
+func TestMitmAnswerAsSent(t *testing.T) {
+	pr, pw := io.Pipe()
+	p, pool, _ := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/stream" {
+			return &http.Response{StatusCode: 200, ProtoMajor: 1, ProtoMinor: 1,
+				Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: pr, ContentLength: -1}, nil
+		}
+		return &http.Response{StatusCode: 200, ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader("<html><body>")), ContentLength: 12}, nil
+	}))
+	tconn, br := mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "GET /bare HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	resp, body := answer(t, br)
+	assert.Equal(t, body, "<html><body>")
+	assert.Equal(t, len(resp.Header["Content-Type"]), 0, "a content type was guessed: %v", resp.Header)
+	assert.Equal(t, len(resp.Header["Date"]), 0, "a date was added: %v", resp.Header)
+
+	fmt.Fprintf(tconn, "GET /stream HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	go func() { _, _ = pw.Write([]byte("data: one\n\n")) }()
+	resp, err := http.ReadResponse(br, nil)
+	require.NoError(t, err)
+	first := make([]byte, len("data: one\n\n"))
+	_, err = io.ReadFull(resp.Body, first) // the origin has not ended its answer yet
+	require.NoError(t, err)
+	assert.Equal(t, string(first), "data: one\n\n")
+	go func() { _, _ = pw.Write([]byte("data: two\n\n")); pw.Close() }()
+	rest, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, string(rest), "data: two\n\n")
+}
+
+// a refusal inside a terminated connection takes the policy's shape, and one
+// that answers leaves the connection to the next request. an origin that
+// could not be reached is a 502, and no more.
+func TestMitmRefusals(t *testing.T) {
+	for _, shape := range []string{"403", "404", "reset"} {
+		t.Run(shape, func(t *testing.T) {
+			fail := true
+			p, pool, audit := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/down" && fail {
+					return nil, &RefusedError{Reason: "private"}
+				}
+				return echoPath(r)
+			}))
+			p.DenyResponse = shape
+			tconn, br := mitmConn(t, p, pool, "mitm.test")
+			fmt.Fprintf(tconn, "GET /down HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+			resp, _ := answer(t, br)
+			assert.Equal(t, resp.StatusCode, http.StatusBadGateway)
+			ev := audit.last(t)
+			assert.Equal(t, ev.Reason, "private")
+			assert.Equal(t, ev.Allowed, false)
+			assert.Equal(t, ev.Status, http.StatusBadGateway)
+
+			fmt.Fprintf(tconn, "POST /secret/x HTTP/1.1\r\nHost: mitm.test\r\nContent-Length: 3\r\n\r\nabc")
+			if shape == "reset" {
+				_, err := http.ReadResponse(br, nil)
+				assert.Error(t, err, assert.AnyError)
+				assert.Equal(t, audit.last(t).Status, 0)
+				return
+			}
+			resp, _ = answer(t, br)
+			assert.Equal(t, strconv.Itoa(resp.StatusCode), shape)
+			assert.Equal(t, strconv.Itoa(audit.last(t).Status), shape)
+			fmt.Fprintf(tconn, "GET /after HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+			resp, body := answer(t, br)
+			assert.Equal(t, resp.StatusCode, 200)
+			assert.Equal(t, body, "/after")
+		})
+	}
+}
+
+// a switch of protocols (a websocket) is not passed: the origin is not
+// offered it, its plain answer comes back, and the connection goes on.
+func TestMitmNoSwitchedProtocol(t *testing.T) {
+	var got http.Header
+	p, pool, audit := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Header
+		if r.URL.Path == "/099" {
+			return &http.Response{StatusCode: 99, ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{}, Body: http.NoBody}, nil
+		}
+		if r.URL.Path == "/insists" {
+			return &http.Response{StatusCode: http.StatusSwitchingProtocols, ProtoMajor: 1, ProtoMinor: 1,
+				Header: http.Header{"Connection": {"Upgrade"}, "Upgrade": {"websocket"}}, Body: http.NoBody}, nil
+		}
+		return echoPath(r)
+	}))
+	tconn, br := mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "GET /ws HTTP/1.1\r\nHost: mitm.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: x\r\n\r\n")
+	resp, body := answer(t, br)
+	assert.Equal(t, resp.StatusCode, 200)
+	assert.Equal(t, body, "/ws")
+	assert.Equal(t, got.Get("Upgrade"), "")
+	assert.Equal(t, got.Get("Connection"), "")
+
+	// an origin that switches unasked is a failed exchange, not a tunnel,
+	// and so is one whose status is no status.
+	fmt.Fprintf(tconn, "GET /insists HTTP/1.1\r\nHost: mitm.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+	resp, body = answer(t, br)
+	assert.Equal(t, resp.StatusCode, http.StatusBadGateway)
+	assert.Equal(t, body, "egress: upgrade\n")
+	ev := audit.last(t)
+	assert.Equal(t, ev.Status, http.StatusBadGateway)
+	assert.Equal(t, ev.Allowed, false)
+	assert.Equal(t, ev.Reason, "upgrade")
+	fmt.Fprintf(tconn, "GET /099 HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	resp, _ = answer(t, br)
+	assert.Equal(t, resp.StatusCode, http.StatusBadGateway)
+	fmt.Fprintf(tconn, "GET /after HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	_, body = answer(t, br)
+	assert.Equal(t, body, "/after")
+}
+
+// "OPTIONS *" is a request like any other: decided, relayed and audited,
+// not answered by the server on the origin's behalf.
+func TestMitmOptionsStar(t *testing.T) {
+	var got *http.Request
+	p, pool, audit := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
+		got = r
+		return echoPath(r)
+	}))
+	tconn, br := mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "OPTIONS * HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	resp, _ := answer(t, br)
+	assert.Equal(t, resp.StatusCode, 200)
+	require.That(t, got != nil, "the origin was not asked")
+	assert.Equal(t, got.Method+" "+got.URL.Path, "OPTIONS *")
+	ev := audit.last(t)
+	assert.Equal(t, ev.Method+" "+ev.URL, "OPTIONS mitm.test*")
+	assert.Equal(t, ev.Allowed, true)
+}
+
+// a client that hangs up on a request it was allowed is not a refusal, and
+// no failure of the way out: the origin's work is called off, and the audit
+// says who left.
+func TestMitmClientGone(t *testing.T) {
+	asked := make(chan struct{})
+	p, pool, audit := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
+		close(asked)
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	}))
+	tconn, _ := mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "GET /slow HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	<-asked
+	tconn.NetConn().Close()
+	ev := audit.last(t)
+	assert.Equal(t, ev.URL, "mitm.test/slow")
+	assert.Equal(t, ev.Reason, "client-gone")
+	assert.Equal(t, ev.Allowed, true)
+	assert.Equal(t, ev.Status, 0)
+}
+
+// a terminated connection that says nothing is not held for ever: before
+// its first request, and between two.
+func TestMitmIdle(t *testing.T) {
+	p, pool, _ := mitmProxy(t, "mitm.test", echoPath)
+	p.Idle = 200 * time.Millisecond
+	tconn, br := mitmConn(t, p, pool, "mitm.test")
+	_, err := br.ReadByte()
+	assert.ErrorIs(t, err, io.EOF)
+
+	tconn, br = mitmConn(t, p, pool, "mitm.test")
+	fmt.Fprintf(tconn, "GET /a HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
+	_, body := answer(t, br)
+	assert.Equal(t, body, "/a")
+	_, err = br.ReadByte()
+	assert.ErrorIs(t, err, io.EOF)
 }

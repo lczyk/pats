@@ -10,11 +10,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +40,9 @@ type Proxy struct {
 	// Chain is the upstream proxy, when there is one: a 407 it answers a
 	// plain http request with is its failure, not the origin's answer.
 	Chain *Chain
+	// Idle is how long a terminated connection may sit between requests.
+	// zero: idleWait.
+	Idle time.Duration
 
 	once sync.Once
 	mu   sync.Mutex
@@ -128,7 +136,8 @@ func (p *Proxy) refuse(w http.ResponseWriter) int {
 }
 
 // resetConn hijacks the connection, holds it for d, and closes it with a
-// zero linger so the peer sees a reset rather than a clean close.
+// zero linger so the peer sees a reset rather than a clean close. the close
+// is of the transport under any tls, which would say goodbye first.
 func resetConn(w http.ResponseWriter, d time.Duration) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -141,6 +150,13 @@ func resetConn(w http.ResponseWriter, d time.Duration) {
 	}
 	if d > 0 {
 		time.Sleep(d)
+	}
+	for {
+		under, ok := conn.(interface{ NetConn() net.Conn })
+		if !ok {
+			break
+		}
+		conn = under.NetConn()
 	}
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetLinger(0)
@@ -241,72 +257,149 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 // path is visible without mitm, so url entries apply directly.
 func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	host, port := splitHostPort(req.Host, 80)
-	fullURL := host + req.URL.Path
-	if req.URL.RawQuery != "" {
-		fullURL += "?" + req.URL.RawQuery
-	}
 	v := p.Rule.Decide(host, port, req.Method, req.URL.Path, req.URL.RawQuery)
 	ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "http", Rule: v.Rule, Reason: v.Reason,
-		Method: req.Method, URL: fullURL, UA: req.UserAgent()}
+		Method: req.Method, URL: auditURL(host, req.URL), UA: req.UserAgent()}
 	if !v.Allowed {
 		ev.Status = p.refuse(w)
 		p.audit(ev)
 		return
 	}
+	p.forward(w, req, ev, nil)
+}
 
+// auditURL is a request's url as the audit records it: the host the policy
+// saw, the path and the query.
+func auditURL(host string, u *url.URL) string {
+	if u.RawQuery != "" {
+		return host + u.Path + "?" + u.RawQuery
+	}
+	return host + u.Path
+}
+
+// errChainAuth is the upstream proxy asking for a credential it was given,
+// or was not: its failure, not the origin's answer.
+var errChainAuth = errors.New("upstream proxy: 407")
+
+// errSwitched is an origin switching protocols, which it was not asked to.
+var errSwitched = errors.New("the origin switched protocols")
+
+// forwarded are the headers a client may say its own forwarding in. the
+// reverse proxy drops them for a rewrite to set anew; this proxy is not a
+// hop the origin is told of, and passes them as sent.
+var forwarded = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
+
+// forward sends an admitted request to its origin, relays the answer and
+// audits the exchange as ev. origin is where a request read off a terminated
+// connection goes; nil is plain http, whose request names its own. the relay
+// is net/http's reverse proxy: hop-by-hop headers stay on their hop, a
+// stream is flushed as it comes, and a request body nobody read is the
+// serving connection's to settle.
+func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, origin *url.URL) {
 	start := time.Now()
-	body := countBody(req)
-	req.RequestURI = ""
-	resp, err := p.Upstream.RoundTrip(req)
-	if err != nil {
-		ev.Reason, ev.Status = upstreamReason(err), http.StatusBadGateway
-		ev.Out, ev.MS = body.n, time.Since(start).Milliseconds()
+	var sent, got countReader
+	defer func() {
+		ev.In, ev.Out, ev.MS = got.n.Load(), sent.n.Load(), time.Since(start).Milliseconds()
 		p.audit(ev)
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusProxyAuthRequired && p.Chain.For("http", req.URL.Host) != nil {
-		ev.Reason, ev.Status = "upstream: 407", http.StatusBadGateway
-		ev.Out, ev.MS = body.n, time.Since(start).Milliseconds()
-		p.audit(ev)
-		http.Error(w, "upstream proxy: 407", http.StatusBadGateway)
-		return
-	}
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	// count what came from upstream, not what reached the client: a client
-	// that hangs up early still cost the upstream bytes already read.
-	in := &countReader{r: resp.Body}
-	_, _ = io.Copy(w, in)
-	ev.Allowed, ev.Status, ev.In, ev.Out, ev.MS = true, resp.StatusCode, in.n, body.n, time.Since(start).Milliseconds()
-	p.audit(ev)
+	}()
+	(&httputil.ReverseProxy{
+		Transport:  p.Upstream,
+		BufferPool: copyBufs,
+		ErrorLog:   log.New(io.Discard, "", 0), // a failed exchange is the audit's to tell
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			if origin != nil {
+				pr.Out.URL.Scheme, pr.Out.URL.Host = origin.Scheme, origin.Host
+			}
+			// the request goes on as it was decided on: the reverse proxy
+			// re-encodes a query it cannot parse.
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
+			pr.Out.Trailer = pr.In.Trailer
+			for _, h := range forwarded {
+				if v, ok := pr.In.Header[h]; ok {
+					pr.Out.Header[h] = v
+				}
+			}
+			// a switch of protocols (a websocket) is not offered to the
+			// origin: what followed it would pass uninspected.
+			pr.Out.Header.Del("Upgrade")
+			pr.Out.Header.Del("Connection")
+			if pr.Out.Body != nil {
+				sent.r, pr.Out.Body = pr.Out.Body, &sent
+			}
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if origin == nil && resp.StatusCode == http.StatusProxyAuthRequired && p.Chain.For("http", req.URL.Host) != nil {
+				return errChainAuth
+			}
+			// what cannot be relayed as an answer: a switch nobody asked
+			// for, whose body is the origin's connection, and a status
+			// the server has no line for.
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				return errSwitched
+			}
+			if resp.StatusCode < 100 {
+				return fmt.Errorf("the origin answered with status %d", resp.StatusCode)
+			}
+			ev.Allowed, ev.Status = true, resp.StatusCode
+			if origin != nil {
+				ev.Revocation = "unchecked"
+				if resp.TLS != nil {
+					ev.Revocation = stapleStatus(*resp.TLS)
+				}
+			}
+			// the answer is the origin's: the server would add a date and
+			// guess a content type where it sent none.
+			for _, h := range []string{"Content-Type", "Date"} {
+				if _, ok := resp.Header[h]; !ok {
+					w.Header()[h] = nil
+				}
+			}
+			// count what came from upstream, not what reached the client: a
+			// client that hangs up early still cost the upstream bytes
+			// already read.
+			got.r, resp.Body = resp.Body, &got
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			ev.Allowed, ev.Status = false, http.StatusBadGateway
+			switch {
+			case errors.Is(err, errChainAuth):
+				ev.Reason = "upstream: 407"
+			case errors.Is(err, errSwitched):
+				ev.Reason = "upgrade"
+			case req.Context().Err() != nil:
+				// the client hung up on a request it was allowed: not a
+				// refusal, and no failure of the way out.
+				ev.Allowed, ev.Status, ev.Reason = true, 0, "client-gone"
+			default:
+				ev.Reason = upstreamReason(err)
+			}
+			// the reason, not the error: that may name an address a
+			// sandbox has no way to learn.
+			http.Error(w, "egress: "+ev.Reason, http.StatusBadGateway)
+		},
+	}).ServeHTTP(w, req)
 }
 
-// countBody wraps req's body to count it. a request without one keeps its nil
-// or NoBody: a non-empty Body of unknown length would turn a plain GET into a
-// chunked upload on the way out.
-func countBody(req *http.Request) *countReader {
-	c := &countReader{r: req.Body}
-	if req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0 {
-		req.Body = c
-	}
-	return c
-}
+// copyBufs lends the reverse proxy the buffer it copies an answer through,
+// which it would otherwise make anew for each.
+var copyBufs = &bufPool{sync.Pool{New: func() any { return new([32 << 10]byte) }}}
 
-// countReader counts the bytes read through it.
+type bufPool struct{ sync.Pool }
+
+func (p *bufPool) Get() []byte  { return p.Pool.Get().(*[32 << 10]byte)[:] }
+func (p *bufPool) Put(b []byte) { p.Pool.Put((*[32 << 10]byte)(b)) }
+
+// countReader counts the bytes read through it. the count is read while a
+// transport may still be sending the request body it wraps.
 type countReader struct {
 	r io.ReadCloser
-	n int64
+	n atomic.Int64
 }
 
 func (c *countReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
-	c.n += int64(n)
+	c.n.Add(int64(n))
 	return n, err
 }
 
@@ -354,3 +447,6 @@ type bufConn struct {
 }
 
 func (c bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// NetConn is the connection under the reader, as a tls.Conn names its own.
+func (c bufConn) NetConn() net.Conn { return c.Conn }
