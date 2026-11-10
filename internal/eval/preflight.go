@@ -30,19 +30,9 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 
-	seen := map[string]bool{}
-	for _, p := range pairs {
-		if seen[p.Agent] {
-			continue
-		}
-		seen[p.Agent] = true
-		if err := preflightAgent(ctx, cfg, opts, agents[p.Agent], sandboxes); err != nil {
-			return fmt.Errorf("agent %q failed credential preflight: %w", p.Agent, err)
-		}
-		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok", p.Agent)
-	}
 	// each step sandbox the tasks name starts once, with its checks, and
-	// runs a step: a box that cannot see the tree fails here, not mid-run.
+	// runs a step: a box that cannot see the tree fails here, not mid-run,
+	// and before the credential checks, since it needs none.
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
 	var placed []config.Task
 	for _, p := range pairs {
@@ -65,6 +55,17 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 			return fmt.Errorf("step sandbox %q failed preflight: %w", sp.sb.Name, err)
 		}
 		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: step sandbox %s ok", sp.sb.Name)
+	}
+	seen := map[string]bool{}
+	for _, p := range pairs {
+		if seen[p.Agent] {
+			continue
+		}
+		seen[p.Agent] = true
+		if err := preflightAgent(ctx, cfg, opts, agents[p.Agent], sandboxes); err != nil {
+			return fmt.Errorf("agent %q failed credential preflight: %w", p.Agent, err)
+		}
+		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok", p.Agent)
 	}
 	return nil
 }
