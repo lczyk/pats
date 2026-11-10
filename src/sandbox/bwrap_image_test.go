@@ -1,3 +1,5 @@
+//go:build !nobwrap
+
 package sandbox
 
 import (
@@ -137,12 +139,6 @@ func TestUnpackRefusesEscapes(t *testing.T) {
 			assert.That(t, errors.Is(serr, os.ErrNotExist), "a file landed outside the rootfs")
 		})
 	}
-}
-
-// refused says whether err is an entry refused for leaving its destination:
-// by its own name, or by the root it was written through.
-func refused(err error) bool {
-	return errors.Is(err, errEscape) || (err != nil && strings.Contains(err.Error(), "path escapes from parent"))
 }
 
 // a layer may write past a symlink a lower one left, as long as that stays

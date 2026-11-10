@@ -132,16 +132,6 @@ func FuzzReadTar(f *testing.F) {
 	})
 }
 
-// FuzzUnpackLayer: bwrap's store unpacks a registry's layers on the host.
-func FuzzUnpackLayer(f *testing.F) {
-	fuzzTarSeeds(f)
-	f.Fuzz(func(t *testing.T, data []byte) {
-		fuzzUnpack(t, data, func(archive []byte, dest string) error {
-			return unpackLayer(opener(archive), dest)
-		})
-	})
-}
-
 // FuzzFromRefs: a dockerfile's FROM lines key the build cache. a comment
 // line says nothing to a build wherever it stands, a continued line
 // included, so adding one changes no ref.

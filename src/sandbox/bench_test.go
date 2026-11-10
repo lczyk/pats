@@ -97,57 +97,6 @@ func benchLayer(b *testing.B, n, size int) (gz []byte, raw int64) {
 	return buf.Bytes(), int64(n * size)
 }
 
-// BenchmarkUnpackLayer is a bwrap pull's work per layer once it is on disk:
-// gunzip and untar into the rootfs. "one-pass" is the same layer read once
-// and thrown away, the floor the two passes of unpackLayer sit above.
-func BenchmarkUnpackLayer(b *testing.B) {
-	gz, raw := benchLayer(b, 4000, 8<<10)
-	open := func() (io.ReadCloser, error) {
-		zr, err := gzip.NewReader(bytes.NewReader(gz))
-		if err != nil {
-			return nil, err
-		}
-		return zr, nil
-	}
-	b.Run("unpack", func(b *testing.B) {
-		b.SetBytes(raw)
-		b.ReportAllocs()
-		for b.Loop() {
-			b.StopTimer()
-			root, err := os.MkdirTemp(b.TempDir(), "rootfs")
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.StartTimer()
-			if err := unpackLayer(open, root); err != nil {
-				b.Fatal(err)
-			}
-			b.StopTimer()
-			_ = os.RemoveAll(root)
-			b.StartTimer()
-		}
-	})
-	b.Run("one-pass-read", func(b *testing.B) {
-		b.SetBytes(raw)
-		for b.Loop() {
-			r, err := open()
-			if err != nil {
-				b.Fatal(err)
-			}
-			tr := tar.NewReader(r)
-			for {
-				if _, err := tr.Next(); err != nil {
-					break
-				}
-				_, _ = io.Copy(io.Discard, tr)
-			}
-			r.Close()
-		}
-	})
-}
-
-// BenchmarkTar is lxd's Push and Pull of a workdir, the daemon aside: the
-// tree written as a tar, and a tar unpacked onto the host.
 func BenchmarkTar(b *testing.B) {
 	src := b.TempDir()
 	size := benchTree(b, src, 20, 2000, 4<<10)

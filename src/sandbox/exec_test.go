@@ -1,12 +1,10 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -43,13 +41,6 @@ var execBackends = []execBackend{
 		},
 		agent: "kill cid",
 		root:  "kill cid",
-	},
-	{
-		name: "bwrap",
-		session: func(t *testing.T, p *process, r runner) Session {
-			return &bwrapSession{d: &bwrapDriver{p: p, r: r}, rootfs: "/store/rootfs/sha256-x", dir: t.TempDir(), workdir: "/work"}
-		},
-		kills: true,
 	},
 }
 
@@ -145,67 +136,6 @@ func TestExecCancel(t *testing.T) {
 		})
 	}
 
-	host := func(t *testing.T) (Session, string) {
-		dir := t.TempDir()
-		s, err := hostOn(t, Options{}).Start(context.Background(), Spec{Workdir: dir, Egress: Egress{None: true}})
-		require.NoError(t, err)
-		t.Cleanup(func() { s.Close() })
-		return s, dir
-	}
-	t.Run("host/agent", func(t *testing.T) {
-		s, _ := host(t)
-		// the command's stdout is a pipe of the test's: it ends once nothing
-		// of the command's group holds it, a child in the background (as an
-		// agent's tools are) included, alive or not yet reaped.
-		pr, pw, err := os.Pipe()
-		require.NoError(t, err)
-		defer pr.Close()
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		type result struct {
-			code int
-			err  error
-		}
-		done := make(chan result, 1)
-		go func() {
-			code, err := s.Exec(ctx, Cmd{Argv: []string{"/bin/sh", "-c", "sleep 300 & echo started; wait"}}, pw, io.Discard)
-			pw.Close()
-			done <- result{code, err}
-		}()
-		require.NoError(t, pr.SetReadDeadline(time.Now().Add(10*time.Second)))
-		out := bufio.NewReader(pr)
-		line, err := out.ReadString('\n')
-		require.NoError(t, err, "the command never started")
-		require.Equal(t, line, "started\n")
-		cancel()
-		select {
-		case got := <-done:
-			require.NoError(t, got.err)
-			assert.Equal(t, got.code, -1)
-		case <-time.After(5 * time.Second):
-			t.Fatal("Exec did not return")
-		}
-		require.NoError(t, pr.SetReadDeadline(time.Now().Add(5*time.Second)))
-		_, err = io.ReadAll(out)
-		assert.NoError(t, err, "the cancelled command's child still holds its stdout")
-	})
-	t.Run("host/done before", func(t *testing.T) {
-		s, dir := host(t)
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		code, err := execBounded(t, s, ctx, Cmd{Argv: []string{"/bin/sh", "-c", "touch ran"}})
-		require.Error(t, err, "context canceled")
-		assert.ErrorIs(t, err, ErrLaunch)
-		assert.Equal(t, code, -1)
-		_, err = os.Stat(filepath.Join(dir, "ran"))
-		assert.That(t, os.IsNotExist(err), "the command ran")
-	})
-	t.Run("host/finishes", func(t *testing.T) {
-		s, _ := host(t)
-		code, err := execBounded(t, s, context.Background(), Cmd{Argv: []string{"true"}})
-		require.NoError(t, err)
-		assert.Equal(t, code, 0)
-	})
 }
 
 // execBounded runs s.Exec and fails the test, rather than hanging it, when

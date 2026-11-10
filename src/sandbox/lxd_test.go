@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -904,4 +905,10 @@ func TestLXDOperationNames(t *testing.T) {
 		assert.That(t, op.names("/1.0/instances/a"), "%+v did not name a", op)
 		assert.That(t, !op.names("/1.0/instances/ab"), "%+v named ab", op)
 	}
+}
+
+// refused says whether err is an entry refused for leaving its destination:
+// by its own name, or by the root it was written through.
+func refused(err error) bool {
+	return errors.Is(err, errEscape) || (err != nil && strings.Contains(err.Error(), "path escapes from parent"))
 }

@@ -1,3 +1,5 @@
+//go:build !nohost
+
 package sandbox
 
 import (

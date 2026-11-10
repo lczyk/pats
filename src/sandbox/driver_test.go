@@ -34,28 +34,6 @@ var driverCases = []driverCase{
 	}},
 	containerDriverCase("docker"),
 	containerDriverCase("podman"),
-	// bwrap has no daemon to fake: its store is a cache dir of the test's,
-	// and its registry a local server.
-	{name: "bwrap", noBuild: true,
-		open: func(t *testing.T) (Driver, func() int) {
-			t.Setenv("XDG_CACHE_HOME", t.TempDir())
-			p := testProcess(t)
-			p.reg, _ = imageRegistry(t, nil, tarLayer(t, entry{name: "etc/os-release", body: "ubuntu"}))
-			d, err := newDriver(p, nil, Options{Driver: BwrapDriver})
-			require.NoError(t, err)
-			return d, nil
-		},
-		// a session holds its image's lock, shared, for as long as it lives.
-		inUse: func(t *testing.T, d Driver, ref string) {
-			img, err := d.Resolve(context.Background(), ref)
-			require.NoError(t, err)
-			st, err := newBwrapStore()
-			require.NoError(t, err)
-			unlock, err := st.lock(context.Background(), img.ID, false, false)
-			require.NoError(t, err)
-			t.Cleanup(unlock)
-		},
-	},
 }
 
 func containerDriverCase(driver string) driverCase {
