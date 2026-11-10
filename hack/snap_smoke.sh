@@ -34,7 +34,7 @@ _load_error() {
 # _pair <engine> runs suite <engine> of the fixture, in a copy of it under the
 # home, and checks what its steps left and its score.
 _pair() {
-    local engine="$1" dir pair out
+    local engine="$1" dir pair out want
     dir="$(mktemp -d -p "${HOME}")"
     cp -R "${FIXTURE}/." "${dir}"
     cd "${dir}"
@@ -44,12 +44,18 @@ _pair() {
     pair=".pats/runs/latest/stub/t-${engine}"
     [ -d "${pair}" ] || _fail "${engine}: no pair dir"
     grep -qx 'home=/tmp/pats-step-home' "${pair}/stage.log" || _fail "${engine}: stage.log: $(cat "${pair}/stage.log")"
-    grep -qx "$(id -u)" "${pair}/stage-uid" || _fail "${engine}: stage ran as $(cat "${pair}/stage-uid")"
+    # docker steps run as the host uid, lxd ones as the instance's own
+    # non-root agent user.
+    want="$(id -u)"
+    [ "${engine}" = docker ] || want='[1-9][0-9]*'
+    grep -qx "${want}" "${pair}/stage-uid" || _fail "${engine}: stage ran as $(cat "${pair}/stage-uid")"
     grep -qx helped "${pair}/collected" || _fail "${engine}: collected: $(cat "${pair}/collected")"
     grep -qF '"steps"' "${pair}/metadata.json" || _fail "${engine}: no steps in metadata"
     out="$("${PATS}" score -S "${engine}" 2>&1)" || _fail "${engine}: score: ${out}"
     printf '%s\n' "${out}" | grep -qE "^t-${engine} +1\.00" || _fail "${engine}: score: ${out}"
     out="$("${PATS}" clean -n 2>&1)" || _fail "${engine}: clean: ${out}"
+    # an engine the runner lacks is skipped with a warning, not left behind.
+    out="$(printf '%s\n' "${out}" | grep -v '^WARN [a-z]*: skipped (' || true)"
     [ -z "${out}" ] || _fail "${engine}: left behind: ${out}"
     cd - > /dev/null
     rm -rf "${dir}"
