@@ -1,7 +1,8 @@
 # pats as a snap
 
-status: implemented and smoke-tested in a vm (testing, below). strict confinement, on the build-tag seams (`docs/spec/build-tags.md`) and the step sandbox
-(`docs/spec/step-sandbox.md`). nothing in ci builds the snap, and nothing is published.
+status: implemented and smoke-tested in a vm (testing, below). strict confinement, on the build-tag seams
+(`docs/spec/build-tags.md`) and the step sandbox (`docs/spec/step-sandbox.md`). ci packs it for amd64 and arm64 and
+smoke-tests it on ubuntu 22.04 and 24.04 (`.github/workflows/snap.yml`), and nothing is published.
 
 ## purpose and limits
 
@@ -215,8 +216,8 @@ a smoke test of a built snap, in an ephemeral ubuntu 26.04 lxd vm, through pats 
 - **clean:** `pats clean -n` after the runs had nothing left to take.
 
 the credential preflight of a real harness needs a real key, so the pair's agent was a stub; keyless logins through
-`PATS_*_AUTH_PATH` are covered by unit tests, not by this run. the same test belongs in ci on the snap the build job
-packs, once there is one.
+`PATS_*_AUTH_PATH` are covered by unit tests, not by this run. ci's smoke test (`hack/snap_smoke.sh`) checks only the
+tags and the load errors; the run above belongs there too.
 
 ## to decide later
 
