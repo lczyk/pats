@@ -1,0 +1,62 @@
+# the snap's smoke-test project (hack/snap_smoke.sh): one pair with a stub
+# agent, its steps and scorer in a docker step sandbox (suite docker) or an
+# lxd one behind an egress policy (suite lxd).
+sandbox:
+  kind: sandbox
+  items:
+    agent:
+      driver: docker
+      build: agentimg
+    steps-docker:
+      driver: docker
+      image: docker.io/library/ubuntu:24.04
+    steps-lxd:
+      driver: lxd
+      image: ubuntu:24.04
+      egress:
+        allow:
+          - .ubuntu.com
+
+agents:
+  kind: agent
+  items:
+    stub:
+      harness: opencode-openrouter
+      model: anthropic/claude-haiku-4.5
+      sandbox: agent
+
+tasks:
+  kind: task
+  items:
+    t-docker:
+      prompt: say hi
+      step-sandbox: steps-docker
+      stage: helper > "$PATS_WORKDIR/staged"; id -u > "$PATS_OUTPUT_DIR/stage-uid"; echo "home=$HOME"
+      collect: cp "$PATS_WORKDIR/staged" "$PATS_OUTPUT_DIR/collected"
+    t-lxd:
+      prompt: say hi
+      step-sandbox: steps-lxd
+      stage: helper > "$PATS_WORKDIR/staged"; id -u > "$PATS_OUTPUT_DIR/stage-uid"; echo "home=$HOME"
+      collect: cp "$PATS_WORKDIR/staged" "$PATS_OUTPUT_DIR/collected"
+
+scorers:
+  kind: scorer
+  items:
+    s-docker:
+      step-sandbox: steps-docker
+      score: test -d "$PATS_SCORED_DIR" && echo 1
+    s-lxd:
+      step-sandbox: steps-lxd
+      score: test -d "$PATS_SCORED_DIR" && echo 1
+
+suites:
+  kind: suite
+  items:
+    docker:
+      agents: stub
+      tasks: t-docker
+      scorers: s-docker
+    lxd:
+      agents: stub
+      tasks: t-lxd
+      scorers: s-lxd
