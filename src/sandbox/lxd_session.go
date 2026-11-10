@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
+	"slices"
 	"strings"
 	"sync"
 
@@ -228,11 +230,41 @@ func (s *lxdSession) chownAgent(ctx context.Context, paths ...string) error {
 	return nil
 }
 
+// bindOwners gives each bind its owner, parents first so a bind inside
+// another wins over it: the agent a writable one, root a read-only one. a
+// recursive chown of either reaches into the binds below it.
+func (s *lxdSession) bindOwners(ctx context.Context) error {
+	bs := slices.Clone(s.binds)
+	slices.SortStableFunc(bs, func(a, b bind) int {
+		return strings.Count(path.Clean(a.path), "/") - strings.Count(path.Clean(b.path), "/")
+	})
+	args := []string{"sh", "-c", `while [ $# -gt 1 ]; do [ -e "$2" ] && { chown -R "$1:$1" "$2" || exit 1; }; shift 2; done`, "owners"}
+	for _, b := range bs {
+		owner := s.uid
+		if b.ro {
+			owner = "0"
+		}
+		args = append(args, owner, b.path)
+	}
+	var out bytes.Buffer
+	code, err := s.exec(ctx, Cmd{Argv: args, Root: true, Dir: "/"}, &out, &out)
+	if err == nil && code != 0 {
+		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(out.String()))
+	}
+	if err != nil {
+		return fmt.Errorf("own the binds: %w", err)
+	}
+	return nil
+}
+
 // HandOver gives what root left under paths to the agent user and sets the
 // agent's sudo: a rule in /etc/sudoers.d when the pair allows it, none
 // otherwise. one cached image serves both.
 func (s *lxdSession) HandOver(ctx context.Context, paths ...string) error {
 	if err := s.chownAgent(ctx, paths...); err != nil {
+		return err
+	}
+	if err := s.bindOwners(ctx); err != nil {
 		return err
 	}
 	script := `rm -f /etc/sudoers.d/pats`
@@ -327,3 +359,67 @@ func (s *lxdSession) Close() error {
 	})
 	return nil
 }
+
+// readOnlyHeld refuses a read-only bind the agent user could swap out: a
+// copy sits in ordinary dirs, so whoever may write the dir above it could
+// rename it away and put a writable one in its place. that is a writable
+// bind above it, or a dir above it that the agent user owns, or that its
+// group or anyone may write without the sticky bit. the dirs are the ones
+// the path really goes through once every bind is in: a link an earlier
+// bind brought can lead it under a writable one.
+func (s *lxdSession) readOnlyHeld(ctx context.Context) error {
+	var ro, rw []string
+	for _, b := range s.binds {
+		if b.ro {
+			ro = append(ro, path.Clean(b.path))
+		} else {
+			rw = append(rw, path.Clean(b.path))
+		}
+	}
+	for _, r := range ro {
+		for _, w := range rw {
+			if strings.HasPrefix(r+"/", w+"/") && r != w {
+				return fmt.Errorf("read-only %s lies under writable %s, which the agent could swap it out of", r, w)
+			}
+		}
+	}
+	if len(ro) == 0 {
+		return nil
+	}
+	args := append([]string{"sh", "-c", heldScript, "held", s.uid}, rw...)
+	args = append(append(args, "--"), ro...)
+	var out bytes.Buffer
+	code, err := s.exec(ctx, Cmd{Argv: args, Root: true, Dir: "/"}, &out, &out)
+	if err != nil {
+		return fmt.Errorf("check the read-only binds' dirs: %w", err)
+	}
+	switch code {
+	case 0:
+		return nil
+	case 3:
+		return fmt.Errorf("a read-only bind lies under %s, which the agent user may write", strings.TrimSpace(out.String()))
+	}
+	return fmt.Errorf("check the read-only binds' dirs: exited %d: %s", code, strings.TrimSpace(out.String()))
+}
+
+// heldScript exits 3 naming the first dir above a read-only bind that the
+// agent user could swap it out of (readOnlyHeld): args are the agent uid,
+// the writable binds, --, then the read-only ones.
+const heldScript = `uid=$1; shift; nl='
+'; rw=$nl
+while [ "$1" != -- ]; do rw="$rw$1$nl$(readlink -f "$1")$nl"; shift; done; shift
+check() {
+	case "$rw" in *"$nl$1$nl"*) echo "$1"; exit 3;; esac
+	[ -d "$1" ] || return 0
+	d=$1; set -- $(stat -L -c '%u %g %a' "$1")
+	m=$3; sticky=0
+	[ ${#m} -eq 4 ] && { case ${m%???} in 1|3|5|7) sticky=1;; esac; m=${m#?}; }
+	g=${m#?}; g=${g%?}; o=${m#??}
+	[ "$1" = "$uid" ] && { echo "$d"; exit 3; }
+	[ $sticky = 1 ] && return 0
+	case $o in 2|3|6|7) echo "$d"; exit 3;; esac
+	[ "$2" = "$uid" ] && case $g in 2|3|6|7) echo "$d"; exit 3;; esac
+	return 0
+}
+up() { d=$1; while :; do check "$d"; [ "$d" = / ] && break; d=$(dirname "$d"); done; }
+for p; do up "$(dirname "$p")"; up "$(readlink -f "$(dirname "$p")")"; up "$(dirname "$(readlink -f "$p")")"; done`

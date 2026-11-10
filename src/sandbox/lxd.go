@@ -408,12 +408,17 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		s.binds = append(s.binds, bind{host: mh, path: m.Container, ro: m.ReadOnly, masks: m.Masks})
 	}
 	for _, b := range s.binds {
-		if err := s.Push(ctx, b.host, b.path); err != nil {
+		if err := s.pushBind(ctx, b); err != nil {
 			return fail(err)
 		}
 	}
-	// the agent owns what it was handed; a root step may hand more over.
-	if err := s.chownAgent(ctx, s.paths(false)...); err != nil {
+	// after the pushes: a link a bind brought in counts.
+	if err := s.readOnlyHeld(ctx); err != nil {
+		return fail(err)
+	}
+	// the agent owns what it was handed, a read-only bind excepted, which
+	// stays root's; a root step may hand more over.
+	if err := s.bindOwners(ctx); err != nil {
 		return fail(err)
 	}
 	return s, nil

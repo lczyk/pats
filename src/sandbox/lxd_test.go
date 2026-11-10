@@ -113,7 +113,7 @@ func TestLXDStartOpen(t *testing.T) {
 		}
 	}
 	assert.That(t, q >= 0 && q < st, "expanded config not checked before start")
-	assert.NotNil(t, f.call("exec srv:"+s.name+" --project pats --force-noninteractive --user 0 --group 0 --cwd / -- sh -c mkdir"))
+	assert.NotNil(t, f.call("exec srv:"+s.name+" --project pats --force-noninteractive --user 0 --group 0 --cwd / -- sh -c d="))
 	assert.Equal(t, s.uid, "1001")
 
 	require.NoError(t, sess.Close())
@@ -384,7 +384,7 @@ func TestTarRoundTrip(t *testing.T) {
 	fi, err := os.Stat(src)
 	require.NoError(t, err)
 	var buf bytes.Buffer
-	require.NoError(t, writeTar(&buf, src, fi))
+	require.NoError(t, writeTar(&buf, src, fi, tarOpts{}))
 	dst := t.TempDir()
 	require.NoError(t, readTar(&buf, dst))
 	st, err := os.Stat(filepath.Join(dst, "d", "x.sh"))
@@ -409,7 +409,7 @@ func TestWriteTarSkipsSpecialFiles(t *testing.T) {
 	fi, err := os.Stat(src)
 	require.NoError(t, err)
 	var buf bytes.Buffer
-	require.NoError(t, writeTar(&buf, src, fi))
+	require.NoError(t, writeTar(&buf, src, fi, tarOpts{}))
 	var names []string
 	tr := tar.NewReader(&buf)
 	for {
@@ -454,8 +454,8 @@ func TestLXDSyncFailedPullKeepsHostCopy(t *testing.T) {
 	assert.Len(t, ents, 1)
 }
 
-// a pushed file's name reaches the instance as an argument of the root
-// script, never as its text.
+// a pushed file goes in under the name it lands as, as an argument of the
+// root script: the source's name is never in the script's text.
 func TestLXDPushFileNameIsAnArgument(t *testing.T) {
 	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv"})
 	name := `x"; touch pwned; "$(id)`
@@ -467,7 +467,7 @@ func TestLXDPushFileNameIsAnArgument(t *testing.T) {
 	i := slices.Index(args, "push")
 	require.That(t, i > 0, "no push script in %v", args)
 	assert.That(t, !strings.Contains(args[i-1], "pwned"), "the name is in the script: %s", args[i-1])
-	assert.EqualArrays(t, args[i+1:], []string{"/etc", "/etc/ca.pem", name})
+	assert.EqualArrays(t, args[i+1:], []string{"/etc", "/etc/ca.pem", "ca.pem"})
 }
 
 // when the local tar fails, the instance's tar sees a cut stream and

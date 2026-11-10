@@ -18,14 +18,47 @@ import (
 // Push streams hostPath into path as a tar over exec. a directory's contents
 // land in path; a file lands at path.
 func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
+	return s.push(ctx, hostPath, path, pushOpts{})
+}
+
+// pushOpts are how a bind's copy differs from a plain push.
+type pushOpts struct {
+	// replace empties path first, as a mount hides what the image has
+	// there, and makes the dirs above path traversable for all.
+	replace bool
+	// ro makes the copy root's alone to change (roModes).
+	ro bool
+	// masks are in-box paths under path that arrive as empty dirs.
+	masks []string
+}
+
+// pushBind copies b in as a mount would show it: over an emptied path, the
+// masks empty, read-only ones root's, a symlinked source by what it names.
+func (s *lxdSession) pushBind(ctx context.Context, b bind) error {
+	src, err := filepath.EvalSymlinks(b.host)
+	if err != nil {
+		return err
+	}
+	return s.push(ctx, src, b.path, pushOpts{replace: true, ro: b.ro, masks: b.masks})
+}
+
+func (s *lxdSession) push(ctx context.Context, hostPath, path string, o pushOpts) error {
 	fi, err := os.Stat(hostPath)
 	if err != nil {
 		return err
 	}
+	var skip []string
+	for _, m := range o.masks {
+		if rel, err := filepath.Rel(path, m); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
+			skip = append(skip, filepath.ToSlash(rel))
+		}
+	}
 	pr, pw := io.Pipe()
 	local := make(chan error, 1)
 	go func() {
-		err := writeTar(pw, hostPath, fi)
+		// a file goes under the name it lands as: a symlinked source's own
+		// name could be a sibling the image has.
+		err := writeTar(pw, hostPath, fi, tarOpts{ro: o.ro, skip: skip, name: filepath.Base(path)})
 		pw.CloseWithError(err)
 		local <- err
 	}()
@@ -35,12 +68,29 @@ func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
 	}
 	// the file's name goes in as an argument, never as script text: it is
 	// whatever the host path was called, and the script runs as root.
-	script := `mkdir -p "$1" && tar -x -m -C "$1"`
+	script := ""
+	if o.replace {
+		// a dir above a bind keeps the image's mode: one shut to others
+		// (/home/ubuntu 0750, /root 0700) would keep the agent user out.
+		script = `d="$1"; while [ "$d" != / ] && [ "$d" != . ]; do [ -d "$d" ] && chmod a+x "$d"; d=$(dirname "$d"); done; `
+	}
+	script += `mkdir -p "$1"`
+	if o.replace && fi.IsDir() {
+		script += ` && rm -rf "$1"/* "$1"/.[!.]* "$1"/..?*`
+	}
+	script += ` && tar -x -m -C "$1"`
 	if !fi.IsDir() {
 		script += ` && { [ "$1/$3" = "$2" ] || mv "$1/$3" "$2"; }`
 	}
+	// the tar carries what is under a dir, not the dir: a read-only one is
+	// made root's here, whatever the image had at its path.
+	argv := []string{"sh", "-c", script, "push", dest, path, filepath.Base(path)}
+	if o.ro && fi.IsDir() {
+		argv[2] += ` && chown 0:0 "$1" && chmod "$4" "$1"`
+		argv = append(argv, fmt.Sprintf("%o", roModes(int64(fi.Mode().Perm()), true)))
+	}
 	var out bytes.Buffer
-	code, err := s.execIn(ctx, pr, Cmd{Argv: []string{"sh", "-c", script, "push", dest, path, filepath.Base(hostPath)}, Root: true, Dir: "/"}, &out, &out)
+	code, err := s.execIn(ctx, pr, Cmd{Argv: argv, Root: true, Dir: "/"}, &out, &out)
 	pr.Close()
 	// the local side failing is what made the remote tar complain, so it
 	// leads the error.
@@ -56,23 +106,71 @@ func (s *lxdSession) Push(ctx context.Context, hostPath, path string) error {
 	return nil
 }
 
+// tarOpts shape a pushed tree.
+type tarOpts struct {
+	ro   bool
+	skip []string // slash paths, relative to the root, sent as empty dirs
+	name string   // a file's entry name; "" is its own
+}
+
+// pushOpened runs once a pushed file is open and its size taken (a test
+// changes the file there).
+var pushOpened = func(string) {}
+
+// ErrChanged is a file that shrank while its bytes were being pushed: its
+// header promised bytes that are gone. a caller may push again.
+var ErrChanged = errors.New("changed while it was pushed")
+
+// roModes are a read-only copy's modes: no write for group or other, read
+// for all, execute for all on a dir or where the owner has it, and no
+// setuid or setgid, since the copy is root's.
+func roModes(mode int64, dir bool) int64 {
+	mode &^= 0o022 | 0o4000 | 0o2000
+	mode |= 0o444
+	if dir || mode&0o100 != 0 {
+		mode |= 0o111
+	}
+	return mode
+}
+
 // writeTar writes hostPath (a dir's contents, or one file) as a tar stream.
 // only directories, regular files and symlinks travel: a socket an agent or
 // its tools left in the home (which archive/tar refuses), a fifo or a device
-// node has no meaning on the other side.
-func writeTar(w io.Writer, hostPath string, fi fs.FileInfo) error {
+// node has no meaning on the other side. the tree may change while it goes:
+// an entry gone before it is opened is left out, a file is sent at the size
+// it has once open, so one that grows goes as a clean prefix, and only one
+// that shrinks mid-copy fails, with ErrChanged.
+func writeTar(w io.Writer, hostPath string, fi fs.FileInfo, o tarOpts) error {
 	tw := tar.NewWriter(w)
 	add := func(p, name string) error {
 		info, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() && !info.Mode().IsRegular() && info.Mode()&fs.ModeSymlink == 0 {
 			return nil
 		}
+		var f *os.File
+		if info.Mode().IsRegular() {
+			if f, err = os.Open(p); errors.Is(err, fs.ErrNotExist) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			defer f.Close()
+			if info, err = f.Stat(); err != nil {
+				return err
+			}
+			pushOpened(p)
+		}
 		link := ""
 		if info.Mode()&fs.ModeSymlink != 0 {
-			if link, err = os.Readlink(p); err != nil {
+			if link, err = os.Readlink(p); errors.Is(err, fs.ErrNotExist) {
+				return nil
+			} else if err != nil {
 				return err
 			}
 		}
@@ -82,27 +180,48 @@ func writeTar(w io.Writer, hostPath string, fi fs.FileInfo) error {
 		}
 		h.Name = name
 		h.Uid, h.Gid, h.Uname, h.Gname = 0, 0, "", ""
+		if o.ro && link == "" {
+			h.Mode = roModes(h.Mode, info.IsDir())
+		}
 		if err := tw.WriteHeader(h); err != nil {
 			return err
 		}
-		if info.Mode().IsRegular() {
-			f, err := os.Open(p)
+		if f != nil {
+			n, err := copyFileBytes(tw, io.LimitReader(f, h.Size))
 			if err != nil {
 				return err
 			}
-			_, err = copyFileBytes(tw, f)
-			f.Close()
-			return err
+			if n < h.Size {
+				return fmt.Errorf("%s: %w", p, ErrChanged)
+			}
 		}
 		return nil
 	}
 	if !fi.IsDir() {
-		if err := add(hostPath, filepath.Base(hostPath)); err != nil {
+		name := o.name
+		if name == "" {
+			name = filepath.Base(hostPath)
+		}
+		if err := add(hostPath, name); err != nil {
 			return err
 		}
 		return tw.Close()
 	}
+	masked := func(rel string) (self, under bool) {
+		for _, m := range o.skip {
+			if rel == m {
+				return true, false
+			}
+			if strings.HasPrefix(rel, m+"/") {
+				return false, true
+			}
+		}
+		return false, false
+	}
 	err := filepath.WalkDir(hostPath, func(p string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -111,6 +230,19 @@ func writeTar(w io.Writer, hostPath string, fi fs.FileInfo) error {
 			return nil
 		}
 		name := filepath.ToSlash(rel)
+		if self, under := masked(name); under {
+			return nil
+		} else if self {
+			// a mask arrives as an empty dir, whatever is there.
+			h := &tar.Header{Typeflag: tar.TypeDir, Name: name + "/", Mode: 0o755}
+			if err := tw.WriteHeader(h); err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			name += "/"
 		}

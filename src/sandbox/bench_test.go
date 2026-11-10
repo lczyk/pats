@@ -105,14 +105,14 @@ func BenchmarkTar(b *testing.B) {
 		b.Fatal(err)
 	}
 	var archive bytes.Buffer
-	if err := writeTar(&archive, src, fi); err != nil {
+	if err := writeTar(&archive, src, fi, tarOpts{}); err != nil {
 		b.Fatal(err)
 	}
 	b.Run("write", func(b *testing.B) {
 		b.SetBytes(size)
 		b.ReportAllocs()
 		for b.Loop() {
-			if err := writeTar(io.Discard, src, fi); err != nil {
+			if err := writeTar(io.Discard, src, fi, tarOpts{}); err != nil {
 				b.Fatal(err)
 			}
 		}
