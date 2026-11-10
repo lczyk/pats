@@ -1,6 +1,6 @@
 # steps in a sandbox
 
-status: proposed. it depends on the build-tag seams (a spec of its own, to come) for `nohost`, and `docs/spec/snap.md`
+status: proposed. it depends on the build-tag seams (`docs/spec/build-tags.md`) for `nohost`, and `docs/spec/snap.md`
 moves from classic to strict confinement with it.
 
 ## problem

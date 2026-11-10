@@ -1,9 +1,9 @@
 # pats as a snap
 
-status: proposed. strict confinement. it depends on two specs: the build-tag seams (a spec of its own, to come), which
-let a build leave drivers out, and `docs/spec/step-sandbox.md`, which lets a build with no host run steps. neither is
-in code yet. `snap/snapcraft.yaml` is the target and packs only once the build tags exist. nothing in ci builds it,
-and nothing is published.
+status: proposed. strict confinement. it depends on two specs: the build-tag seams (`docs/spec/build-tags.md`),
+which let a build leave drivers out, and `docs/spec/step-sandbox.md`, which lets a build with no host run steps.
+neither is in code yet. `snap/snapcraft.yaml` is the target and packs only once the build tags exist. nothing in ci
+builds it, and nothing is published.
 
 ## purpose and limits
 
