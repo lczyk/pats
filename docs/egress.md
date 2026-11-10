@@ -46,9 +46,14 @@ sandbox:
 - **url entries** a glob matches the whole path (and the query, when the glob names one). `*` matches within one path
   segment, never `/`, and `**` matches anything, `/` included, as gitignore reads them: `github.com/*/repo**` pins the
   owner segment and takes the repo and all below it, where `github.com/**/repo**` would also catch
-  `github.com/x/docs/repo`. a `*` that should cross segments is a `**`. a regexp is unanchored unless you anchor it. a `..` in the request path does not dodge an entry: every entry
-  is also tried against the `path.Clean`ed path. an `allow` url entry matches the path case-sensitively, a `deny` one
-  case-insensitively, each erring toward closed. a host with `allow` url entries passes only paths one of them admits.
+  `github.com/x/docs/repo`. a `*` that should cross segments is a `**`. a regexp is unanchored unless you anchor it. a
+  `..` in the request path does not dodge an entry: each is tried against the path as sent and as an origin resolves
+  it (dot segments and doubled slashes gone). a `deny` takes the request when either matches, an `allow` admits it only
+  when both do, so `/public/../private` does not pass for `/public/**`. in an `allow` no wildcard takes the `?` before
+  the query: the query is matched only through a `?` the entry spells (`/search?q=*`, `~^/search\?q=`), and a regexp's
+  match has to begin in the path, so a query cannot stand in for it. an `allow` url entry matches the path
+  case-sensitively, a `deny` one case-insensitively, each erring toward closed. a host with `allow` url entries passes
+  only paths one of them admits.
 - **mitm** a url entry is the opt-in to tls termination for its host: the proxy presents a leaf from a per-run CA and
   filters each request. every other host is a tunnel the proxy never decrypts. the run CA's key reaches the proxy
   over env only and never touches disk.
