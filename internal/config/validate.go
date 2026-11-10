@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -122,6 +123,10 @@ func (c *Config) members(kind string) []member {
 	return out
 }
 
+// knownDrivers are every driver pats has, whether or not this build does:
+// one a build leaves out is named as such, not as unknown.
+var knownDrivers = map[string]bool{"docker": true, "podman": true, "lxd": true, "bwrap": true, "host": true}
+
 func (c *Config) validateSandboxes(add func(string, ...any)) {
 	for _, s := range c.Sandboxes {
 		// at most one way to name the image. none is fine: the run resolves
@@ -140,6 +145,10 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 			add("sandbox %q: %s are mutually exclusive", s.Name, strings.Join(ways, " and "))
 		}
 		lxdOnly := map[string]bool{"remote": s.Remote != "", "vm": s.VM, "profiles": len(s.Profiles) > 0, "config": len(s.Config) > 0}
+		built := slices.Contains(sandbox.Drivers(), s.Driver)
+		if !built && knownDrivers[s.Driver] {
+			add("sandbox %q: driver %q is not in this build", s.Name, s.Driver)
+		}
 		switch s.Driver {
 		case "docker", "podman":
 			for _, k := range []string{"remote", "vm", "profiles", "config"} {
@@ -173,7 +182,7 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 		default:
 			add("sandbox %q: unknown driver %q (docker|podman|lxd|bwrap|host)", s.Name, s.Driver)
 		}
-		if s.SandNotBoxed && !sandbox.TraitsOf(s.Driver).Unboxed {
+		if s.SandNotBoxed && built && !sandbox.TraitsOf(s.Driver).Unboxed {
 			add("sandbox %q: sand-not-boxed is the host driver's (driver %q)", s.Name, s.Driver)
 		}
 		if s.MaxParallel < 0 {
