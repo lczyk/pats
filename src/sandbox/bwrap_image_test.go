@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 )
@@ -205,6 +206,51 @@ func TestUnpackThroughLinks(t *testing.T) {
 	fi, err := os.Stat(filepath.Join(outside, "d"))
 	require.NoError(t, err)
 	assert.Equal(t, fi.Mode().Perm(), os.FileMode(0o755))
+}
+
+// a layer is read by its media type: plain, gzip or zstd. a zstd stream that
+// asks for more memory than a layer has a use for is refused.
+func TestLayerReader(t *testing.T) {
+	layer := tarLayer(t, entry{name: "etc/os-release", body: "ubuntu"}, entry{name: "etc/.wh.gone"})
+	var gz, zs bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	_, _ = gw.Write(layer)
+	require.NoError(t, gw.Close())
+	zw, err := zstd.NewWriter(&zs)
+	require.NoError(t, err)
+	_, _ = zw.Write(layer)
+	require.NoError(t, zw.Close())
+	for mediaType, data := range map[string][]byte{
+		"application/vnd.oci.image.layer.v1.tar":                       layer,
+		"application/vnd.oci.image.layer.v1.tar+gzip":                  gz.Bytes(),
+		"application/vnd.docker.image.rootfs.diff.tar.gzip":            gz.Bytes(),
+		"application/vnd.oci.image.layer.v1.tar+zstd":                  zs.Bytes(),
+		"application/vnd.oci.image.layer.nondistributable.v1.tar+zstd": zs.Bytes(),
+	} {
+		file := filepath.Join(t.TempDir(), "layer")
+		require.NoError(t, os.WriteFile(file, data, 0o600))
+		root := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(root, "gone"), nil, 0o644), mediaType)
+		require.NoError(t, unpackLayer(func() (io.ReadCloser, error) { return layerReader(file, mediaType) }, root), mediaType)
+		got, err := os.ReadFile(filepath.Join(root, "etc", "os-release"))
+		require.NoError(t, err, mediaType)
+		assert.Equal(t, string(got), "ubuntu", mediaType)
+	}
+
+	// a frame of one byte that declares a window of a gigabyte.
+	greedy := []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 0xa0, 0x09, 0x00, 0x00, 'x'}
+	file := filepath.Join(t.TempDir(), "layer")
+	require.NoError(t, os.WriteFile(file, greedy, 0o600))
+	r, err := layerReader(file, "application/vnd.oci.image.layer.v1.tar+zstd")
+	require.NoError(t, err)
+	_, err = io.ReadAll(r)
+	assert.ErrorIs(t, err, zstd.ErrWindowSizeExceeded)
+	require.NoError(t, r.Close())
+	// and one that is no zstd at all.
+	require.NoError(t, os.WriteFile(file, layer, 0o600))
+	assert.Error(t, unpackLayer(func() (io.ReadCloser, error) {
+		return layerReader(file, "application/vnd.oci.image.layer.v1.tar+zstd")
+	}, t.TempDir()), assert.AnyError)
 }
 
 // a layer that brings a directory where a lower one left a link to one

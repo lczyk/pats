@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // the bwrap driver's images have no daemon to hold them: pats fetches a
@@ -198,8 +200,12 @@ func layerReader(file, mediaType string) (io.ReadCloser, error) {
 	}
 	switch {
 	case strings.HasSuffix(mediaType, "zstd"):
-		f.Close()
-		return nil, fmt.Errorf("layer type %s: zstd layers are not supported", mediaType)
+		zr, err := zstd.NewReader(f, zstd.WithDecoderMaxWindow(zstdMaxWindow))
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return zstdLayer{zr, f}, nil
 	case strings.HasSuffix(mediaType, "gzip"), strings.HasSuffix(mediaType, ".tar.gzip"), strings.HasSuffix(mediaType, "diff.tar.gzip"):
 		gz, err := gzip.NewReader(f)
 		if err != nil {
@@ -212,6 +218,22 @@ func layerReader(file, mediaType string) (io.ReadCloser, error) {
 		}{gz, f}, nil
 	}
 	return f, nil
+}
+
+// zstdMaxWindow is the most a zstd layer may ask its reader to keep in
+// memory: the format's own ceiling for a stream made without asking for
+// more, and what the zstd cli reads without being told to.
+const zstdMaxWindow = 128 << 20
+
+// zstdLayer is a zstd layer's tar stream and the file it is read from.
+type zstdLayer struct {
+	*zstd.Decoder
+	file *os.File
+}
+
+func (z zstdLayer) Close() error {
+	z.Decoder.Close()
+	return z.file.Close()
 }
 
 // applyWhiteout removes what a whiteout in dir names: the opaque marker

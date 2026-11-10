@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/jessevdk/go-flags v1.6.1
+	github.com/klauspost/compress v1.20.4
 	github.com/lczyk/assert v0.7.2
 	github.com/lczyk/version/go v0.6.0
 	github.com/moby/patternmatcher v0.6.1
