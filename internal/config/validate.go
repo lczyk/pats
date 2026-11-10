@@ -405,7 +405,7 @@ func (c *Config) validateTasks(add func(string, ...any)) {
 			add("task %q: needs one of prompt, prompt-file or prompt-cmd", t.Name)
 		}
 		if t.Timeout != "" {
-			if _, err := time.ParseDuration(t.Timeout); err != nil {
+			if d, err := time.ParseDuration(t.Timeout); err != nil || d < 0 {
 				add("task %q: bad timeout %q (use e.g. 10m, 300s)", t.Name, t.Timeout)
 			}
 		}
@@ -492,7 +492,7 @@ func judgeFields(s Scorer) []string {
 func (c *Config) validateJudge(add func(string, ...any), s Scorer) {
 	what := fmt.Sprintf("scorer %q", s.Name)
 	if s.Timeout != "" {
-		if _, err := time.ParseDuration(s.Timeout); err != nil {
+		if d, err := time.ParseDuration(s.Timeout); err != nil || d < 0 {
 			add("%s: bad timeout %q (use e.g. 5m, 300s)", what, s.Timeout)
 		}
 	}

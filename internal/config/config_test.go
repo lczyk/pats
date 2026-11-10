@@ -242,6 +242,13 @@ func TestParseErrors(t *testing.T) {
 		{"two keys of one slot in defaults", "xxx: {kind: task, defaults: {prompt: a, prompt-cmd: b}, items: {axx: ~}}\n", "prompt, prompt-cmd are mutually exclusive"},
 		{"agent-id is renamed agent", "xxx: {kind: scorer, items: {axx: {agent-id: j}}}\n", "unknown field \"agent-id\""},
 		{"dir on a scorer vector", "xxx: {kind: scorer, dir: scorers}\n", "dir is only supported on task vectors"},
+		{"a mapping as a key, beside a merge", "xxx: {<<, {}}\n", "a key must be a plain value"},
+		{"a list as a key, nested", "xxx: {kind: task, items: {axx: {prompt: p, env: {[a]: b}}}}\n", "a key must be a plain value"},
+		{"an aliased mapping as a key", "xxx: {kind: task, defaults: &d {prompt: p}, items: {*d : ~}}\n", "a key must be a plain value"},
+		{"a null item key", "xxx: {kind: task, defaults: {env: 1}, items: {~: ~}}\n", "an item is keyed by its name, not by a null key"},
+		{"a binary item key", "xxx: {kind: task, defaults: {prompt: q}, items: {!!binary abcd: {prompt: p}}}\n", "an item is keyed by its name, not by a binary key"},
+		{"a merge among items", "xxx: {kind: task, defaults: &d {prompt: p}, items: {axx: ~, <<: *d}}\n", "an item is keyed by its name, not by a merge key"},
+		{"an aliased null as an item key", "xxx: {kind: task, defaults: {prompt: &n ~}, items: {*n : ~}}\n", "an item is keyed by its name, not by a null key"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -309,6 +316,8 @@ func TestValidateErrors(t *testing.T) {
 		{"env in the PATS_ namespace", "xxx: {kind: task, items: {xxx: {prompt: p, env: {PATS_TASK_NAME: v}}}}\n", "PATS_* is reserved"},
 		{"env PATH", "xxx: {kind: task, items: {xxx: {prompt: p, env: {PATH: /x}}}}\n", "PATH is set by pats"},
 		{"bad timeout", "xxx: {kind: task, items: {xxx: {prompt: p, timeout: soon}}}\n", "bad timeout"},
+		{"negative timeout", "xxx: {kind: task, items: {xxx: {prompt: p, timeout: -5m}}}\n", "bad timeout \"-5m\""},
+		{"negative judge timeout", base + "jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}\n" + "sc2: {kind: scorer, items: {sc2: {agent: jxx, prompt: p, timeout: -1s}}}\nsu2: {kind: suite, items: {su2: {agents: axx, tasks: txx, scorers: sc2}}}\n", "bad timeout \"-1s\""},
 		{"egress wildcard host", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny: [\"*/chisel-releases*\"]}}}}\n", "literal hostname"},
 		{"egress bad default", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {default: maybe}}}}\n", "want deny or allow"},
 		{"egress bad deny-response", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-response: 500}}}}\n", "want 403, 404, reset or timeout"},

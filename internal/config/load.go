@@ -30,6 +30,9 @@ func ParseIn(root string, data []byte) (*Config, error) {
 	if len(doc.Content) == 0 {
 		return c, nil // empty file
 	}
+	if err := checkKeys(&doc); err != nil {
+		return nil, err
+	}
 	top := doc.Content[0]
 	if top.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("line %d: top level must be a mapping of vectors", top.Line)
@@ -126,8 +129,22 @@ func (c *Config) loadVector(root, name string, node *yaml.Node) error {
 	if len(items) == 0 {
 		errs.add("line %d: vector %q: items is empty", itemsNode.Line, name)
 	}
-	for _, itemName := range orderedKeys(itemsNode) {
-		if err := c.loadItem(kind, name, itemName, "", items[itemName], defaults); err != nil {
+	// names and nodes both from the file, in its order: a key yaml decodes
+	// to something other than its text (a null, a binary, a merge) would
+	// name one item and hand it another's node, or none.
+	if itemsNode.Kind == yaml.AliasNode {
+		itemsNode = itemsNode.Alias
+	}
+	for i := 0; i+1 < len(itemsNode.Content); i += 2 {
+		k, item := itemsNode.Content[i], itemsNode.Content[i+1]
+		if k.Kind == yaml.AliasNode {
+			k = k.Alias
+		}
+		if tag := k.ShortTag(); k.Kind != yaml.ScalarNode || tag == "!!null" || tag == "!!binary" || tag == "!!merge" {
+			errs.add("line %d: vector %q items: an item is keyed by its name, not by a %s key", k.Line, name, strings.TrimPrefix(tag, "!!"))
+			continue
+		}
+		if err := c.loadItem(kind, name, k.Value, "", item, defaults); err != nil {
 			errs.errs = append(errs.errs, err)
 		}
 	}
@@ -223,6 +240,9 @@ func (c *Config) loadTaskFile(root, vector, taskDir string) error {
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("%s: %w", file, err)
+	}
+	if err := checkKeys(&doc); err != nil {
 		return fmt.Errorf("%s: %w", file, err)
 	}
 	node := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Line: 1} // an empty file is an empty task
@@ -438,17 +458,27 @@ func fieldsOf(node *yaml.Node, known map[string]bool, what string) (map[string]*
 	return m, errs.err()
 }
 
-// orderedKeys lists a mapping node's keys in file order (merge keys and
-// aliases excluded -- items are never shared that way).
-func orderedKeys(node *yaml.Node) []string {
-	if node.Kind == yaml.AliasNode {
-		node = node.Alias
+// checkKeys refuses a mapping keyed by a mapping or a list, anywhere in the
+// document. nothing in a pats file is keyed that way, and yaml.v3 panics
+// decoding one that sits beside a merge key.
+func checkKeys(n *yaml.Node) error {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k := n.Content[i]
+			if k.Kind == yaml.AliasNode {
+				k = k.Alias
+			}
+			if k.Kind != yaml.ScalarNode {
+				return fmt.Errorf("line %d: a key must be a plain value, not a mapping or a list", n.Content[i].Line)
+			}
+		}
 	}
-	keys := make([]string, 0, len(node.Content)/2)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		keys = append(keys, node.Content[i].Value)
+	for _, c := range n.Content {
+		if err := checkKeys(c); err != nil {
+			return err
+		}
 	}
-	return keys
+	return nil
 }
 
 func isNull(n *yaml.Node) bool {
