@@ -184,6 +184,11 @@ type Task struct {
 	Timeout    string            `yaml:"timeout"`            // per-pair wall-clock limit (e.g. "15m"); "" -> 10m default; "0" -> none
 	Env        map[string]string `yaml:"env"`                // exported to the task's host scripts
 	Egress     TaskEgress        `yaml:"egress"`             // unioned over the sandbox's lists for this task's pairs
+	// StepSandbox is the sandbox the host steps (stage, prompt-cmd, collect)
+	// run in; "" runs them on the host. StepEnv names host variables passed
+	// into it. see docs/spec/step-sandbox.md.
+	StepSandbox string  `yaml:"step-sandbox"`
+	StepEnv     StrList `yaml:"step-env"`
 }
 
 // TaskEgress is what a task adds to its sandbox's egress policy: entries for
@@ -259,6 +264,10 @@ type Scorer struct {
 	Timeout string            `yaml:"timeout"` // "" -> 5m; "0" -> none
 	Env     map[string]string `yaml:"env"`
 	Egress  TaskEgress        `yaml:"egress"`
+	// StepSandbox and StepEnv place the scorer's host steps: score, or an
+	// agent scorer's stage, prompt-cmd and collect (as a task's).
+	StepSandbox string  `yaml:"step-sandbox"`
+	StepEnv     StrList `yaml:"step-env"`
 }
 
 // IsAgent reports whether the scorer judges via an agent rather than a script.
@@ -279,6 +288,7 @@ func (s Scorer) Task() Task {
 		Prompt: s.Prompt, PromptFile: s.PromptFile, PromptCmd: s.PromptCmd,
 		Stage: s.Stage, Sudo: s.Sudo, Prepare: s.Prepare, Collect: s.Collect,
 		Timeout: timeout, Env: s.Env, Egress: s.Egress,
+		StepSandbox: s.StepSandbox, StepEnv: s.StepEnv,
 	}
 }
 

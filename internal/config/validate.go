@@ -28,6 +28,7 @@ func (c *Config) Validate() error {
 	c.validateScorers(add)
 	c.validateSuites(add)
 	c.validateTaskEgress(add)
+	c.validateSteps(add)
 
 	// suite expansion doubles as referential validation (dangling refs,
 	// duplicate names after expansion).

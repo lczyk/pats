@@ -20,13 +20,39 @@ import (
 // surfaces later, in runPair, where it can be attributed to that pair.
 func usedSandboxes(cfg *config.Config, pairs []config.TestPair) map[string]bool {
 	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
 	used := map[string]bool{}
 	for _, p := range pairs {
 		if name, err := cfg.ResolveSandbox(agents[p.Agent]); err == nil {
 			used[name] = true
 		}
+		// a task's steps run in its step sandbox, which needs its pin too.
+		if t, ok := tasks[p.Task]; ok && t.StepSandbox != "" {
+			if name, err := cfg.One("sandbox", t.StepSandbox); err == nil {
+				used[name] = true
+			}
+		}
 	}
 	return used
+}
+
+// scorerStepSandboxes are the step sandboxes the selected suites' scorers
+// run their steps in.
+func scorerStepSandboxes(cfg *config.Config, suites []string) (map[string]bool, error) {
+	sps, err := cfg.ExpandScorePairs(suites...)
+	if err != nil {
+		return nil, err
+	}
+	scorers := index(cfg.Scorers, func(s config.Scorer) string { return s.Name })
+	out := map[string]bool{}
+	for _, sp := range sps {
+		if sc := scorers[sp.Scorer]; sc.StepSandbox != "" {
+			if name, err := cfg.One("sandbox", sc.StepSandbox); err == nil {
+				out[name] = true
+			}
+		}
+	}
+	return out, nil
 }
 
 // provisions reports whether a sandbox makes its image from base / provision.

@@ -300,3 +300,28 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx, scorers: jud}}}
 	_, err = initSandboxes(cfg, InitOptions{Sandboxes: []string{"jsb"}})
 	require.NoError(t, err)
 }
+
+// a step sandbox is pinned with the rest: a task's when its pairs are
+// selected, a scorer's when its suite is.
+func TestInitSandboxesCountsStepSandboxes(t *testing.T) {
+	cfg := parseCfg(t, `
+sbs: {kind: sandbox, items: {sxx: {image: s}, tst: {image: t}, sst: {image: c}, jst: {image: j}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tks: {kind: task, items: {txx: {prompt: p, stage: ./s, step-sandbox: tst}, tyy: {prompt: p}}}
+scx: {kind: scorer, items: {scr: {score: ./sc, step-sandbox: sst}, jud: {agent: axx, prompt: g, stage: ./s, step-sandbox: jst}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tks, scorers: scx}}}
+`)
+	names := func(o InitOptions) []string {
+		sbs, err := initSandboxes(cfg, o)
+		require.NoError(t, err)
+		var out []string
+		for _, sb := range sbs {
+			out = append(out, sb.Name)
+		}
+		return out
+	}
+	assert.EqualArrays(t, names(InitOptions{}), []string{"sxx", "tst", "sst", "jst"})
+	// -t narrows the task pairs, not the scorers.
+	assert.EqualArrays(t, names(InitOptions{Tasks: []string{"tyy"}}), []string{"sxx", "sst", "jst"})
+	assert.EqualArrays(t, names(InitOptions{Sandboxes: []string{"tst"}}), []string{"tst"})
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -157,6 +158,11 @@ func initSandboxes(cfg *config.Config, opts InitOptions) ([]config.Sandbox, erro
 		return nil, err
 	}
 	used := usedSandboxes(cfg, append(pairs, judges...))
+	steps, err := scorerStepSandboxes(cfg, opts.Suites)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(used, steps)
 	want := map[string]bool{}
 	for _, name := range opts.Sandboxes {
 		if !used[name] {
