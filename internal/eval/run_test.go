@@ -1065,6 +1065,34 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	}
 }
 
+// a pair given up on before its agent could start -- here its prompt does
+// not resolve -- still ends as an error pair: its metadata says why, the
+// run's totals count it, and a judge reads it as n/a, not as unknown.
+func TestRunPairEarlyFailureMetadata(t *testing.T) {
+	fake := &fakeSandbox{}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-cmd: exit 5}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	var out bytes.Buffer
+	pinAll(t, dir, cfg)
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Verbose: 1})
+	require.NoError(t, err)
+	pm := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, pm.Status, "error")
+	assert.ContainsString(t, pm.Error, "prompt: ")
+	assert.Equal(t, pm.Sandbox, "sxx")
+	assert.That(t, pm.Synced != nil && !*pm.Synced, "a pair that never started synced nothing")
+	assert.ContainsString(t, out.String(), "1 error")
+	assert.Equal(t, judgeRowOf(filepath.Join(runDir, "axx", "txx")), rowNA)
+}
+
 // prepare runs inside the sandbox as root: its material pushed in, the
 // pats root's bin/ first on PATH, in-sandbox PATS_* paths, the task env, and
 // the material removed again before the agent.

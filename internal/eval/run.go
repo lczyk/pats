@@ -299,8 +299,10 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
 				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Harness) != nil)
 			}
-			if err := runPair(ctx, cfg, po, runDir, taskJob(runDir, p, agents[p.Agent], tasks[p.Task]), sandboxes, stat); err != nil {
+			job := taskJob(runDir, p, agents[p.Agent], tasks[p.Task])
+			if err := runPair(ctx, cfg, po, runDir, job, sandboxes, stat); err != nil {
 				logw{po.Out, opts.Color, opts.Verbose}.error("%s/%s %v", p.Agent, p.Task, err)
+				pairFailed(ctx, cfg, job, sandboxes, stat, err)
 			}
 			switch {
 			case bar != nil:
@@ -878,6 +880,34 @@ func runPair(
 	}
 	lg.detail("%s %s", job.label, stats)
 	return nil
+}
+
+// pairFailed ends a pair runPair gave up on before it could say how -- its
+// sandbox did not open, its prompt did not resolve, a log could not be made
+// -- as an error pair: metadata.json names what failed, and the run's totals
+// and its report count the pair instead of losing it.
+func pairFailed(ctx context.Context, cfg *config.Config, job pairJob, sandboxes map[string]config.Sandbox, stat *pairStat, cause error) {
+	a := job.agent
+	synced := false
+	meta := pairMeta{
+		Agent: job.agentName, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: job.task.Name,
+		ExitCode: -1, Status: "error", Error: cause.Error(), Synced: &synced,
+		PatsVersion: version.Info.Version,
+	}
+	if ctx.Err() != nil {
+		meta.Error = "interrupted"
+	}
+	if id, err := cfg.ResolveSandbox(a); err == nil {
+		sb := sandboxes[id]
+		meta.Sandbox, meta.Driver, meta.SandNotBoxed, meta.Image, meta.Components = id, sb.Driver, sb.IsHost(), sb.Image, sb.Components
+	}
+	if job.meta != nil {
+		job.meta(&meta)
+	}
+	stat.status = "error"
+	if os.MkdirAll(job.outDir, 0o755) == nil {
+		_ = writeJSON(filepath.Join(job.outDir, "metadata.json"), meta)
+	}
 }
 
 // lxdProvenance is what a pair's metadata records of the lxd server and
