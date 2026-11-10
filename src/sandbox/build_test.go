@@ -244,6 +244,10 @@ FROM scratch
 	refs, exact = fromRefs([]byte("FROM \\\n  ubuntu:26.04 \\\n  AS x\nFROM x\n"), "")
 	assert.Equal(t, strings.Join(refs, " "), "ubuntu:26.04")
 	assert.Equal(t, exact, true)
+	// a comment is no part of the line it stands in.
+	refs, exact = fromRefs([]byte("# syntax=docker/dockerfile:1\nFROM \\\n  # the base\n  ubuntu:26.04 \\\n# and its name\r\n  AS x\nFROM x\n"), "")
+	assert.Equal(t, strings.Join(refs, " "), "ubuntu:26.04")
+	assert.Equal(t, exact, true)
 }
 
 // a base refreshed locally changes the key; an absent one is pulled first, as

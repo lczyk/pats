@@ -210,8 +210,15 @@ func fromRefs(dfData []byte, base string) (refs []string, exact bool) {
 	args := map[string]string{baseArg: base}
 	stages := map[string]bool{}
 	seenFrom := false
-	// a backslash ends a line that continues on the next.
-	joined := strings.ReplaceAll(strings.ReplaceAll(string(dfData), "\\\r\n", " "), "\\\n", " ")
+	// a comment line says nothing wherever it stands, inside a continued
+	// line too, so it goes before the lines a backslash continues are joined.
+	var lines []string
+	for _, line := range strings.Split(string(dfData), "\n") {
+		if !strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			lines = append(lines, line)
+		}
+	}
+	joined := strings.ReplaceAll(strings.ReplaceAll(strings.Join(lines, "\n"), "\\\r\n", " "), "\\\n", " ")
 	for _, line := range strings.Split(joined, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 2 {
