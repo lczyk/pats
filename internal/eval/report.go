@@ -296,6 +296,16 @@ func readJudges(runDir string, warn io.Writer) []reportJudge {
 		}
 		return out
 	}
+	// a pair's row is asked once per scorer that judged it.
+	rows := map[string]judgeRow{}
+	rowOf := func(pairDir string) judgeRow {
+		r, ok := rows[pairDir]
+		if !ok {
+			r = judgeRowOf(pairDir)
+			rows[pairDir] = r
+		}
+		return r
+	}
 	for _, sc := range subdirs(filepath.Join(runDir, judgeSubdir)) {
 		for _, ag := range subdirs(sc) {
 			for _, jd := range subdirs(ag) {
@@ -304,7 +314,7 @@ func readJudges(runDir string, warn io.Writer) []reportJudge {
 				}
 				// a verdict on a pair no judge would grade is a crash's
 				// leftover, not a judgement.
-				if judgeRowOf(filepath.Join(runDir, filepath.Base(ag), filepath.Base(jd))) != rowJudge {
+				if rowOf(filepath.Join(runDir, filepath.Base(ag), filepath.Base(jd))) != rowJudge {
 					continue
 				}
 				v, err := readVerdict(jd)

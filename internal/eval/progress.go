@@ -102,7 +102,8 @@ func (s *pairStat) cols(showTools bool) string {
 type inflight struct {
 	label     string
 	stat      *pairStat
-	egress    string  // path to egress.log, polled for the net count ("" -> skip)
+	egress    string // path to egress.log, polled for the net count ("" -> skip)
+	tail      auditTail
 	showTools bool    // the harness has a tool parser -> show the tool column
 	spin      float64 // spinner accumulator, advanced by spinRate each tick
 	spinRate  float64 // per-pair speed (jittered) so spinners slowly desync
@@ -203,21 +204,57 @@ func (p *progress) refreshNet() {
 	type item struct {
 		st   *pairStat
 		path string
+		tail *auditTail
 	}
 	p.mu.Lock()
 	var items []item
 	for _, a := range p.active {
 		if a.egress != "" {
-			items = append(items, item{a.stat, a.egress})
+			items = append(items, item{a.stat, a.egress, &a.tail})
 		}
 	}
 	p.mu.Unlock()
 	for _, it := range items {
-		if _, err := os.Stat(it.path); err == nil {
-			atomic.StoreInt64(&it.st.net, int64(readEgressAudit(it.path).Requests))
+		if n, ok := it.tail.count(it.path); ok {
+			atomic.StoreInt64(&it.st.net, int64(n))
 			atomic.StoreInt32(&it.st.netSeen, 1)
 		}
 	}
+}
+
+// auditTail counts the requests in a growing egress.log, reading at each
+// call only what was written since the last. only the ticker calls it.
+type auditTail struct {
+	off int64
+	n   int
+}
+
+// count is the open and req lines so far, false while there is no file.
+func (t *auditTail) count(path string) (int, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || fi.Size() < t.off {
+		t.off, t.n = 0, 0 // not the file it was
+	}
+	if _, err := f.Seek(t.off, io.SeekStart); err != nil {
+		return t.n, true
+	}
+	data, _ := io.ReadAll(f)
+	// a line still being written is left for the next call.
+	data = data[:bytes.LastIndexByte(data, '\n')+1]
+	t.off += int64(len(data))
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		var e struct {
+			Ev string `json:"ev"`
+		}
+		if json.Unmarshal(line, &e) == nil && (e.Ev == "open" || e.Ev == "req") {
+			t.n++
+		}
+	}
+	return t.n, true
 }
 
 // emitLocked prints s above the region, then redraws the region -- in a single
