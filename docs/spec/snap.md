@@ -198,8 +198,14 @@ two installs are two clients, and the lxd server's lease is the one judge both s
   pins the images of its `VERSION` (`src/sandbox/images.go` decides by the version string alone), so the job waits
   until `sandbox:v$VERSION` and `egress-proxy:v$VERSION` are in the registry: a release commit reaches `1.x` before
   its tag, and its images come only with the tag's `publish_images`. a snap never reaches users before its images.
-  a failed publish is re-run from the latest run only: an older run releases an older snap, and queued it replaces
-  the newest waiting run. the readme's install line comes with the first snap the store accepts.
+  one publish job per channel runs at a time, across runs and release tags, and releases both arches in turn. right
+  before it releases it checks it is the newest: for edge, its commit is still the newest on `1.x` that starts a run (one touching only markdown does not); for beta, no other
+  release tag sits on a descendant of its commit (no version ordering needed). otherwise it releases nothing, since
+  github does not start runs in push order and a re-run keeps its run's commit: the newer run releases. a newer run
+  that fails leaves the channel on the older snap until the next push. an arch that fails after the other went out
+  leaves the channel split until the job is re-run. re-run only the latest run: a re-run queues in its group and
+  replaces a newer waiting run, and then, not the newest, releases nothing. the readme's install line comes with the first snap the store
+  accepts.
 
 ## testing
 

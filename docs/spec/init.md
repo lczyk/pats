@@ -140,6 +140,10 @@ dockerfile's context).
 - **who writes it.** `pats init` only. writes take a lock on `.pats/images.lock`, re-read the file, change only
   their own entries, and replace it by rename. each init also drops entries for sandboxes no longer in the config,
   so a removed sandbox's images become candidates for removal (below).
+- **against a run.** init holds `.pats/lock`, as `run` and `score` do, for its whole length: a run reads the pins
+  once and starts each pair from them, so an init beside it could remove an image its next pair needs. init also
+  stops, pinning nothing, when it cannot take the machine lock or register the project (below), since its check
+  that an image is still there and its removal of others' would no longer be atomic with another init's.
 - the file also holds the `superseded` list init retries (removing superseded images, below).
 - `proxy` only for a sandbox with an egress policy. a sandbox with `image:` is pinned too (its id at init), so
   `run` can tell missing from present, and the upstream check covers it.

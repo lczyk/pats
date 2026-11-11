@@ -30,9 +30,16 @@ deadlock_detection: true
 #            running, Close reports ok and the instance stays.
 #   True  -- ask first, then delete: a create that was not running before the
 #            delete cannot finish after it. passes; the code does this now.
+#
+# the ask (GET /1.0/operations) may fail (QUERY_FAILS). the code reads a failed
+# ask as busy and retries (instanceBusy): passes. QUERY_UNKNOWN_IS_BUSY = False
+# reads it as "nothing running" and fails R1: the kill lands mid-create, the ask
+# fails, the delete says not found, Close reports ok, the create finishes.
 
 CHECK_FIRST = True
 K = 2   # retry rounds before giving up (instanceGone)
+QUERY_FAILS = True
+QUERY_UNKNOWN_IS_BUSY = True
 
 action Init:
     op = "idle"         # the server's create: idle | running | done
@@ -67,6 +74,10 @@ fair action Close:
     while not done:
         if CHECK_FIRST:
             busy = (op == "running")
+            if QUERY_FAILS:
+                failed = oneof [False, True]
+                if failed:
+                    busy = QUERY_UNKNOWN_IS_BUSY
             present = False
         else:
             present = False

@@ -38,12 +38,23 @@ options:
 #             both images. a waiting aliases job may be cancelled by a newer one
 #             queueing behind it.
 #
+# READ_ERRORS: an aliases job's `imagetools inspect` may fail for a reason
+# other than a missing tag (network, auth, a 5xx). the job fails on such an
+# error (ERRORS_FAIL, the workflow): a failed job is visible and is re-run, and
+# R2/R3 are claimed only when no aliases job failed. passes. ERRORS_FAIL =
+# False reads any failure as "not published" and moves on to an older version,
+# so it can succeed having pointed :latest back at an older release (R2), with
+# no job failed. not modelled: a failure between the job's two alias writes
+# (proxy, then sandbox); the job fails and its re-run writes both.
+#
 # not modelled: a build failing midway, the queue order beyond one running and
 # one waiting, registry eventual consistency, workflow_dispatch runs.
 
 VERSIONS = [1, 2, 3]
 STABLE = [1, 2]
 DESIGN = "converge"
+READ_ERRORS = True
+ERRORS_FAIL = True
 
 def newest_stable(vs):
     best = 0
@@ -61,6 +72,7 @@ action Init:
     latest_sandbox = 0
     alias_order = []         # converge: versions whose aliases job ran, in order
     cancels = 0              # converge: aliases jobs dropped by the concurrency group
+    failed_jobs = 0          # aliases jobs failed on a registry read error
 
 # the environment: a tag push starts a run.
 atomic action PushTag:
@@ -117,10 +129,21 @@ atomic action Aliases:
     runs[v].aliases_done = True
     alias_order.append(v)
     both = [x for x in proxy_tags if x in sandbox_tags]
-    n = newest_stable(both)
-    if n != 0:
-        latest_proxy = n
-        latest_sandbox = n
+    if READ_ERRORS:
+        # the inspect of the newest published stable version may fail.
+        newest = newest_stable(both)
+        if newest != 0:
+            err = oneof [False, True]
+            if err and ERRORS_FAIL:
+                failed_jobs = failed_jobs + 1
+                both = None
+            elif err:
+                both = [x for x in both if x != newest]
+    if both != None:
+        n = newest_stable(both)
+        if n != 0:
+            latest_proxy = n
+            latest_sandbox = n
 
 # converge only: a concurrency group with cancel-in-progress off keeps one
 # running and one pending job; a newer job queueing cancels the pending one. so
@@ -141,8 +164,8 @@ def run_finished(r, design):
     return done
 
 def quiescent(pushed, runs, design, versions):
-    if len(pushed) != len(versions):
-        return False
+    # every run started has finished, however many tags were pushed: a
+    # one- or two-release history is checked too (sweep revision).
     for v in runs:
         if not run_finished(runs[v], design):
             return False
@@ -156,6 +179,8 @@ always assertion R1_LatestIsStable:
     return latest_proxy in [0] + STABLE and latest_sandbox in [0] + STABLE
 
 always assertion R2_ConvergesToNewest:
+    if failed_jobs > 0:
+        return True
     if not quiescent(pushed, runs, DESIGN, VERSIONS):
         return True
     want = newest_stable([x for x in proxy_tags if x in sandbox_tags])
