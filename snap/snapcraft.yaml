@@ -60,10 +60,6 @@ parts:
     build-packages:
       - binutils
       - git
-    go-buildtags:
-      - nohost
-      - nobwrap
-      - nopodman
     build-environment:
       - CGO_ENABLED: "0"
       # the copied checkout belongs to whoever ran snapcraft, not to the
@@ -92,12 +88,15 @@ parts:
         *-*) craftctl set grade=devel ;;
         *) craftctl set grade=stable ;;
       esac
-    # static, so lxd can push this very binary into its proxy instance.
+    # static, so lxd can push this very binary into its proxy instance. built
+    # by hand: the plugin's own build runs `go mod download all` first, which
+    # adds to go.sum, and the toolchain then stamps a clean commit as modified.
     override-build: |
       set -eu
       vcs="$(cat "$CRAFT_PART_SRC/../buildvcs")"
       export GOFLAGS="-trimpath -buildvcs=$vcs"
-      craftctl default
+      before="$(git status --porcelain)"
+      go install -p "$CRAFT_PARALLEL_BUILD_COUNT" -tags=nohost,nobwrap,nopodman ./...
       bin="$CRAFT_PART_INSTALL/bin/pats"
       if readelf -l "$bin" | grep -q INTERP; then
         echo "pats is not a static binary" >&2
@@ -105,6 +104,10 @@ parts:
       fi
       if [ "$vcs" = true ] && ! go version -m "$bin" | grep -q vcs.revision; then
         echo "a dev build of pats carries no commit" >&2
+        exit 1
+      fi
+      if [ -z "$before" ] && go version -m "$bin" | grep -q vcs.modified=true; then
+        echo "pats is stamped as modified, built from a clean tree" >&2
         exit 1
       fi
 
