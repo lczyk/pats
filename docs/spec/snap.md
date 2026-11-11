@@ -48,11 +48,14 @@ a project that needs any of these runs a native build.
 
 ## the build
 
-- **tags:** `nohost`, `nobwrap`, `nopodman`, through the go plugin's `go-buildtags`. `pats --version` names the tags
+- **tags:** `nohost`, `nobwrap`, `nopodman`, passed by the part's own build. `pats --version` names the tags
   a build was made with.
 - **static**, as before: under lxd, `proxyBinary` (`src/sandbox/lxd_egress.go`) copies `os.Executable()` into the
   proxy instance, and a dynamic binary would fail there. the part fails when `readelf -l` finds an `INTERP` header.
-- **no upx.** the snap builds with the plugin, not `make`.
+- **no upx.** the snap builds with `go install` in the go plugin's environment, not `make`. the plugin's own build
+  is not used: it runs `go mod download all` first, which adds lines to `go.sum`, and the toolchain then stamps a
+  clean commit as modified, so `pats --version` and the pins would say `dirty`. the part fails when a tree that was
+  clean before the build is stamped as modified.
 - **the clients the snap ships**, so pats keeps driving engines through their clis (`cliRunner`,
   `src/sandbox/process.go`) and gains no second way to drive one:
   - `lxc`: built from a pinned `canonical/lxd` tag, `CGO_ENABLED=0 go build ./lxc`. the go plugin builds `./...`,
