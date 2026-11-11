@@ -88,6 +88,21 @@ func TestInitPinsContainers(t *testing.T) {
 	assert.That(t, f.entry("fake:host", "own").Image.Pulled, "a re-init forgot pats pulled the image")
 }
 
+// init takes .pats/lock: a run in the same project reads its pins once, and
+// an init beside it could remove an image the run's next pair needs.
+func TestInitTakesDirLock(t *testing.T) {
+	dir := t.TempDir()
+	cfg := parseCfg(t, initCfg)
+	useHost(t, newFakeHost("my/image:1"))
+	unlock, err := lockConfigDir(dir)
+	require.NoError(t, err)
+	err = Init(cfg, InitOptions{ConfigDir: dir, Out: &bytes.Buffer{}})
+	unlock()
+	require.Error(t, err, ".pats/lock held")
+	_, err = os.Stat(filepath.Join(dir, ".pats", "images.json"))
+	assert.That(t, os.IsNotExist(err), "init pinned under a held lock")
+}
+
 // --sandbox, --driver and run's selectors narrow what init makes; a sandbox
 // no selected pair uses is an error.
 func TestInitSelection(t *testing.T) {

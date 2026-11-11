@@ -50,6 +50,13 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	if err != nil {
 		return err
 	}
+	// a run reads its pins once and starts each pair from them: init in the
+	// same project waits for no run, so it may not remove an image one uses.
+	unlockDir, err := lockConfigDir(opts.ConfigDir)
+	if err != nil {
+		return err
+	}
+	defer unlockDir()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	defer sandbox.Shutdown()
@@ -88,17 +95,16 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	// another project's init may remove an image this one found or made
 	// before it is pinned; under the lock, what is still there is pinned
 	// and what is gone is a failure to rerun.
-	unlock, lerr := machineLock(ctx)
-	if lerr != nil {
-		lg.warn("cannot take %s.lock: %v; removing nothing", projectsFile(), lerr)
-		unlock = func() {}
+	// without the lock the check below races another init's removal, and an
+	// unregistered project's pins are invisible to the next one's.
+	unlock, err := machineLock(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot take %s.lock: %w; nothing pinned", projectsFile(), err)
 	}
 	defer unlock()
-	var projects []string
-	if lerr == nil {
-		if projects, lerr = registerProject(opts.ConfigDir); lerr != nil {
-			lg.warn("cannot register this project in %s: %v; removing nothing", projectsFile(), lerr)
-		}
+	projects, err := registerProject(opts.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("cannot register this project in %s: %w; nothing pinned", projectsFile(), err)
 	}
 	err = updatePins(opts.ConfigDir, func(f *pinFile) error {
 		for _, p := range done {
@@ -124,14 +130,12 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	// disk: a failed write leaves the old pins and their images both there.
 	// a failed write after a removal leaves listed an image that is gone,
 	// which the next init drops.
-	if lerr == nil {
-		err = updatePins(opts.ConfigDir, func(f *pinFile) error {
-			removeSuperseded(ctx, f, opts.ConfigDir, projects, opts.Now, lg)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
+	err = updatePins(opts.ConfigDir, func(f *pinFile) error {
+		removeSuperseded(ctx, f, opts.ConfigDir, projects, opts.Now, lg)
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("init failed for sandbox(es) %s", strings.Join(failed, ", "))
