@@ -359,15 +359,15 @@ func (s *lxdSession) hostileProbe(ctx context.Context) error {
 }
 
 // closeEgress stops the proxy process and container and drops the material.
-func (s *lxdSession) closeEgress() {
+func (s *lxdSession) closeEgress() error {
 	e := s.egress
 	if e == nil {
-		return
+		return nil
 	}
 	// the proxy instance goes first: its exec stream then ends on its own,
 	// and the audit lines still in flight reach the file, as for docker's
 	// follower. killing the lxc client first could drop the denied-host tail.
-	_ = s.l.deleteInstance(e.proxy)
+	err := s.l.deleteInstance(e.proxy)
 	if e.run != nil {
 		e.run.stop(s.l.p.clock, s.l.p.t.followerGrace)
 	}
@@ -377,6 +377,7 @@ func (s *lxdSession) closeEgress() {
 	if e.m != nil {
 		e.m.cleanup()
 	}
+	return err
 }
 
 // proxyImage is the proxy container image on l's server, made once per

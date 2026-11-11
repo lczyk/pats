@@ -272,7 +272,9 @@ func runPair(
 	// is whole before anything reads it or a step box holds the output dir.
 	// Close is idempotent; the deferred one is a no-op after this.
 	if sess != nil {
-		_ = sess.Close()
+		if err := sess.Close(); err != nil {
+			lg.warn("%s sandbox cleanup: %v; pats clean removes what is left", job.label, err)
+		}
 	}
 
 	// collect when the agent ran, left something to gather (it finished, or

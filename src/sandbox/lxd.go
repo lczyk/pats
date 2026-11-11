@@ -446,20 +446,21 @@ func (l *lxd) deleteInstance(name string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("instance %s: a server operation on it outlived %s; pats clean removes it once this run has ended", name, t.instanceGone)
+			return fmt.Errorf("instance %s: a server operation on it, or the query for them, outlived %s; pats clean removes it once this run has ended", name, t.instanceGone)
 		case <-l.p.clock.After(t.deleteRetry):
 		}
 	}
 }
 
 // instanceBusy says whether a running operation on the server names the
-// instance.
+// instance. a failed query is busy: an idle reading would end the delete
+// while a create may still land.
 func (l *lxd) instanceBusy(ctx context.Context, name string) bool {
 	var ops struct {
 		Running []lxdOperation `json:"running"`
 	}
 	if l.query(ctx, "/1.0/operations?project="+lxdProject+"&recursion=1", &ops) != nil {
-		return false
+		return true
 	}
 	for _, op := range ops.Running {
 		if op.names("/1.0/instances/" + name) {

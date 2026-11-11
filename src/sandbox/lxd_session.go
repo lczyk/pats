@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -36,6 +37,7 @@ type lxdSession struct {
 	egress     *lxdEgress
 	uid        string
 	once       sync.Once
+	closeErr   error
 }
 
 func (s *lxdSession) inst() string { return s.l.ref(s.name) }
@@ -332,8 +334,11 @@ func (s *lxdSession) execIn(ctx context.Context, stdin io.Reader, cmd Cmd, stdou
 // instance kept, so Sync can still pull what it wrote. a cancelled root step
 // stops the instance outright: setup failed, nothing is collected.
 func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error) {
+	// bounded: it runs before the client is signalled, so a hung lxc would
+	// hold up a timeout, a budget stop and ctrl+c alike.
 	cancel := func() {
-		bg := context.Background()
+		bg, done := context.WithTimeout(context.Background(), s.l.p.t.cliCleanup)
+		defer done()
 		if cmd.Root {
 			_, _ = s.l.lxc(bg, "stop", s.inst(), "--project", lxdProject, "--force")
 		} else {
@@ -344,20 +349,25 @@ func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 	return exitResult(s.l.p.execCancellable(ctx, s.l.r, in, stdout, stderr, cancel, args...), "lxc exec")
 }
 
-// Close deletes the instance, then its bridge and acl.
+// Close deletes the instance, then its bridge and acl, and says what it
+// could not remove (pats clean takes it later).
 func (s *lxdSession) Close() error {
 	s.once.Do(func() {
-		bg := context.Background()
-		s.closeEgress()
+		errs := []error{s.closeEgress()}
 		if s.created {
-			_ = s.l.deleteInstance(s.name)
+			errs = append(errs, s.l.deleteInstance(s.name))
 		}
 		if s.bridge != "" {
-			_, _ = s.l.lxc(bg, "network", "delete", s.l.ref(s.bridge), "--project", "default")
-			_, _ = s.l.lxc(bg, "network", "acl", "delete", s.l.ref(s.bridge), "--project", "default")
+			bg, done := context.WithTimeout(context.Background(), s.l.p.t.cliCleanup)
+			defer done()
+			_, err := s.l.lxc(bg, "network", "delete", s.l.ref(s.bridge), "--project", "default")
+			errs = append(errs, err)
+			_, err = s.l.lxc(bg, "network", "acl", "delete", s.l.ref(s.bridge), "--project", "default")
+			errs = append(errs, err)
 		}
+		s.closeErr = errors.Join(errs...)
 	})
-	return nil
+	return s.closeErr
 }
 
 // readOnlyHeld refuses a read-only bind the agent user could swap out: a

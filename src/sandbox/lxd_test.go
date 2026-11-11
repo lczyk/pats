@@ -852,6 +852,40 @@ func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
 	assert.That(t, !present, "instance left behind")
 }
 
+// a failed operations query is not "idle": a create that lands after the
+// delete said not found is still taken on the next round.
+func TestLXDDeleteInstanceQueryFails(t *testing.T) {
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv"})
+	queries, present := 0, false
+	inner := f.run
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "query srv:/1.0/operations"):
+			queries++
+			if queries == 1 {
+				io.WriteString(stderr, `Error: connection reset`)
+				return &fakeExit{}
+			}
+			io.WriteString(stdout, `{"running":[]}`)
+			return nil
+		case strings.HasPrefix(joined, "delete srv:pats-x"):
+			if present {
+				present = false
+				return nil
+			}
+			if queries == 1 { // the create lands just after this delete
+				present = true
+			}
+			io.WriteString(stderr, `Error: Instance not found`)
+			return &fakeExit{}
+		}
+		return inner(ctx, stdin, stdout, stderr, args...)
+	})
+	require.NoError(t, l.deleteInstance("pats-x"))
+	assert.That(t, !present, "instance left behind")
+}
+
 // the proxy image build writes its steps to the log it is given, as a
 // sandbox image build does.
 func TestLXDProxyImageProgress(t *testing.T) {
