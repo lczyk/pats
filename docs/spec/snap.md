@@ -1,9 +1,9 @@
 # pats as a snap
 
 status: implemented and smoke-tested in a vm (testing, below). strict confinement, on the build-tag seams
-(`docs/spec/build-tags.md`) and the step sandbox (`docs/spec/step-sandbox.md`). ci packs it for amd64 and arm64, smoke-tests it
-on ubuntu 22.04 and 24.04, and runs a pair through it with docker and with lxd step sandboxes
-(`.github/workflows/snap.yml`). nothing is published.
+(`docs/spec/build-tags.md`) and the step sandbox (`docs/spec/step-sandbox.md`). ci packs it for amd64 and arm64,
+smoke-tests it on ubuntu 22.04 and 24.04, runs a pair through it with docker and with lxd step sandboxes, and releases
+it to the store (`.github/workflows/snap.yml`, distribution below).
 
 ## purpose and limits
 
@@ -187,14 +187,19 @@ two installs are two clients, and the lxd server's lease is the one judge both s
 
 ## distribution
 
-- **name:** `pats`. no published snap of that name exists. whether it is registered is known only when a
-  registration is tried.
-- **channels:** track `latest`. a `1.0.0-beta.N` tag goes to `beta`, and `stable` starts with 1.0. 0.x is not
-  snapped.
+- **name:** `pats`, registered.
+- **channels:** track `latest`. a push to `1.x` goes to `edge` (a dev build, `VERSION+git<sha7>`), a
+  `v1.0.0-beta.N` tag to `beta`. `candidate` and `stable` are released by hand, and `stable` starts with
+  1.0. 0.x is not snapped.
 - **store requests** (plugs, above) are separate from publishing: a strict snap releases without them, with manual
   connects.
-- **publishing** runs on tag push, after the images, with a store credential in the repo's secrets. that job and the
-  readme's install line come after the build tags and the step sandbox land.
+- **publishing:** the `publish` job, once the smoke tests and the pairs pass, with a store credential limited to
+  `pats` on `edge` and `beta` in the repo's `SNAPCRAFT_STORE_CREDENTIALS`. every snap, a dev build on edge too,
+  pins the images of its `VERSION` (`src/sandbox/images.go` decides by the version string alone), so the job waits
+  until `sandbox:v$VERSION` and `egress-proxy:v$VERSION` are in the registry: a release commit reaches `1.x` before
+  its tag, and its images come only with the tag's `publish_images`. a snap never reaches users before its images.
+  a failed publish is re-run from the latest run only: an older run releases an older snap, and queued it replaces
+  the newest waiting run. the readme's install line comes with the first snap the store accepts.
 
 ## testing
 
