@@ -207,11 +207,22 @@ func TestContainerSweepClean(t *testing.T) {
 }
 
 // crashLease ends p's lease renewal as a crash does: the file stays, and
-// goes stale.
+// goes stale. it then names another host, since this test's own pid is
+// alive and a live pid here keeps a run alive.
 func crashLease(p *process) {
 	if p.lease.stop != nil {
 		close(p.lease.stop)
 		<-p.lease.done
 		p.lease.stop = nil
 	}
+	path, err := p.leasePath(p.token)
+	if err != nil {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte("elsewhere 1\n"), 0o644)
+	_ = os.Chtimes(path, info.ModTime(), info.ModTime())
 }

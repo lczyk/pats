@@ -123,6 +123,18 @@ type leaseFile struct {
 	at   time.Time
 }
 
+// local says, for a lease written on this host, whether its process is
+// still there: a live pid keeps the run alive however old its lease (a
+// suspended or just-woken run), at the cost of a reused pid keeping a dead
+// run's leftovers until that process ends.
+func (l leaseFile) local() (live, ok bool) {
+	host, _ := os.Hostname()
+	if l.host != host || l.pid <= 0 {
+		return false, false
+	}
+	return processAlive(l.pid), true
+}
+
 // leaseFound is where a run's lease file is on this host: the cache dir's,
 // else the legacy dir's (an older pats's run), else the cache dir's path.
 func (p *process) leaseFound(token string) (string, error) {

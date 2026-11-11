@@ -37,6 +37,7 @@ func TestJudge(t *testing.T) {
 	lease("aa02", host+" "+itoa(os.Getpid())+"\n", old)
 	lease("aa03", host+" 999999999\n", young) // a pid that is gone
 	lease("aa04", "elsewhere 999999999\n", young)
+	lease("aa05", "elsewhere 999999999\n", old)
 	res := func(at time.Time) []Resource { return []Resource{{Kind: "sandbox", Created: at}} }
 	for _, c := range []struct {
 		name string
@@ -48,7 +49,8 @@ func TestJudge(t *testing.T) {
 		{"held, no marker, young", RunRecord{Token: "x", Held: true, Resources: res(young)}, alive},
 		{"held, no marker, old", RunRecord{Token: "x", Held: true, Resources: res(old)}, dead},
 		{"file, fresh", RunRecord{Token: "aa01", Owner: "other", Resources: res(old)}, alive},
-		{"file, stale", RunRecord{Token: "aa02", Owner: "me", Resources: res(young)}, dead},
+		{"file, stale, its pid here", RunRecord{Token: "aa02", Owner: "me", Resources: res(young)}, alive},
+		{"file, stale, another host's", RunRecord{Token: "aa05", Owner: "me", Resources: res(young)}, dead},
 		{"file, its pid gone here", RunRecord{Token: "aa03", Owner: "me", Resources: res(young)}, dead},
 		{"file, another host's pid", RunRecord{Token: "aa04", Owner: "me", Resources: res(old)}, alive},
 		{"no file, mine, young", RunRecord{Token: "bb01", Owner: "me", Resources: res(young)}, alive},
@@ -140,6 +142,10 @@ func TestCleanTemp(t *testing.T) {
 	orphan := filepath.Join(home, "run-0123456789ab.lease")
 	require.NoError(t, os.WriteFile(orphan, []byte("elsewhere 1\n"), 0o644))
 	require.NoError(t, os.Chtimes(orphan, stale, stale))
+	suspended := filepath.Join(home, "run-0123456789ac.lease")
+	host, _ := os.Hostname()
+	require.NoError(t, os.WriteFile(suspended, []byte(host+" "+itoa(os.Getpid())+"\n"), 0o644))
+	require.NoError(t, os.Chtimes(suspended, stale, stale))
 	listed := filepath.Join(home, "run-ffffffffffff.lease")
 	require.NoError(t, os.WriteFile(listed, []byte("elsewhere 1\n"), 0o644))
 	require.NoError(t, os.Chtimes(listed, stale, stale))
@@ -153,6 +159,8 @@ func TestCleanTemp(t *testing.T) {
 	require.NoError(t, p.cleanTemp(map[string]bool{"ffffffffffff": true}, nil, 24*time.Hour, false, false, TextReport(&out)))
 	_, err = os.Stat(orphan)
 	assert.That(t, os.IsNotExist(err), "an orphan stale lease stayed")
+	_, err = os.Stat(suspended)
+	assert.NoError(t, err) // stale, but its process is alive here
 	_, err = os.Stat(listed)
 	assert.NoError(t, err) // a run a place still holds
 
@@ -168,6 +176,32 @@ func TestCleanTemp(t *testing.T) {
 		_, err = os.Stat(gone)
 		assert.That(t, os.IsNotExist(err), "force left %s", gone)
 	}
+}
+
+// mkTemp makes the dir before its owner file: a clean between the two,
+// --all (olderThan 0) included, keeps a young ownerless dir, and takes it
+// once older than leaseStale.
+func TestCleanTempOwnerless(t *testing.T) {
+	p := testProcess(t)
+	home, _ := p.home()
+	dir := filepath.Join(home, "tmp", "pats-work-1")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	var out bytes.Buffer
+	require.NoError(t, p.cleanTemp(map[string]bool{}, nil, 0, false, false, TextReport(&out)))
+	_, err := os.Stat(dir)
+	assert.NoError(t, err)
+	old := time.Now().Add(-p.t.leaseStale - time.Minute)
+	require.NoError(t, os.Chtimes(dir, old, old))
+	require.NoError(t, p.cleanTemp(map[string]bool{}, nil, 0, false, false, TextReport(&out)))
+	_, err = os.Stat(dir)
+	assert.That(t, os.IsNotExist(err), "an old ownerless dir stayed")
+
+	// an owner file made and not yet written is the same.
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(dir+ownerSuffix, nil, 0o600))
+	require.NoError(t, p.cleanTemp(map[string]bool{}, nil, 0, false, false, TextReport(&out)))
+	_, err = os.Stat(dir)
+	assert.NoError(t, err)
 }
 
 // fakeImageDaemon answers clean's image calls from imgs, and records what

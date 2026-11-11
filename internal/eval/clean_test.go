@@ -50,9 +50,14 @@ func TestCleanAcrossPlaces(t *testing.T) {
 	dir := filepath.Dir(root)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	host, _ := os.Hostname()
+	// a live run's lease names this test's pid; a dead one's a pid long gone.
 	lease := func(token string, at time.Time) string {
 		p := filepath.Join(dir, "run-"+token+".lease")
-		require.NoError(t, os.WriteFile(p, fmt.Appendf(nil, "%s %d\n", host, os.Getpid()), 0o644))
+		pid := os.Getpid()
+		if at.Before(time.Now().Add(-time.Minute)) {
+			pid = 999999999
+		}
+		require.NoError(t, os.WriteFile(p, fmt.Appendf(nil, "%s %d\n", host, pid), 0o644))
 		require.NoError(t, os.Chtimes(p, at, at))
 		return p
 	}

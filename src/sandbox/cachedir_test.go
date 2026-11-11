@@ -91,6 +91,8 @@ func TestLegacyLease(t *testing.T) {
 	v, _ := p.judge(RunRecord{Token: run, Owner: "me", Resources: []Resource{{Kind: "sandbox", Created: old}}}, now)
 	assert.Equal(t, v, alive)
 
+	// a crash: the pid gone here.
+	require.NoError(t, os.WriteFile(lease, []byte(host+" 999999999\n"), 0o644))
 	require.NoError(t, os.Chtimes(lease, old, old))
 	d := &memDriver{runs: []RunRecord{{Token: run, Owner: "me", Resources: []Resource{{Kind: "sandbox", Name: "c", Created: old}}}}}
 	var out bytes.Buffer

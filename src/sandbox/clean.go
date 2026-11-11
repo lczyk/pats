@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -179,8 +180,10 @@ func (p *process) judge(r RunRecord, now time.Time) (verdict, string) {
 	case err != nil:
 		return unknown, err.Error()
 	case ok:
-		host, _ := os.Hostname()
-		if l.host == host && l.pid > 0 && !processAlive(l.pid) {
+		if v, ok := l.local(); ok {
+			if v {
+				return alive, ""
+			}
 			return dead, "its process is gone"
 		}
 		if l.at.Before(stale) {
@@ -216,6 +219,9 @@ func (p *process) clean(ctx context.Context, d Driver, o CleanOptions) (map[stri
 	if o.Force {
 		o.All = true
 	}
+	// before Runs: a lease read during a slow query must not look older
+	// than it was.
+	now := p.clock.Now()
 	runs, err := d.Runs(ctx)
 	if err != nil {
 		return nil, err
@@ -227,7 +233,6 @@ func (p *process) clean(ctx context.Context, d Driver, o CleanOptions) (map[stri
 		}
 		return runs[i].Token < runs[j].Token
 	})
-	now := p.clock.Now()
 	listed := map[string]bool{}
 	gone := map[string]bool{} // "<kind> <name>" this clean removes, or would
 	var errs []error
@@ -560,9 +565,19 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 		if err != nil || !e.IsDir() {
 			continue
 		}
+		// mkTemp makes the dir, then writes its owner file: a dir without
+		// one, or with one not yet written, is given leaseStale, as a run
+		// with no record yet is, --all or not. read before tempAlive, so an
+		// owner file written in between is judged there.
+		age := now.Sub(info.ModTime())
+		b, oerr := os.ReadFile(path + ownerSuffix)
+		unowned := os.IsNotExist(oerr) || (oerr == nil && len(bytes.TrimSpace(b)) == 0)
 		token, alive := p.tempAlive(path, now)
 		held[token] = true
-		if !force && (alive || now.Sub(info.ModTime()) < olderThan) {
+		if unowned && age < p.t.leaseStale {
+			alive = true
+		}
+		if !force && (alive || age < olderThan) {
 			continue
 		}
 		if !dryRun {
@@ -594,7 +609,10 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 			continue
 		}
 		l, ok, err := readLeaseAt(path)
-		if err != nil || !ok || (!force && !l.at.Before(now.Add(-p.t.leaseStale))) {
+		if err != nil || !ok {
+			continue
+		}
+		if live, local := l.local(); !force && (live && local || !l.at.Before(now.Add(-p.t.leaseStale))) {
 			continue
 		}
 		if !dryRun {
@@ -610,7 +628,7 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 }
 
 // tempAlive is the run a temp dir's owner file names, and whether that run
-// is alive: its lease fresh and, on this host, its process there. an owner
+// is alive (judge). an owner
 // file of a pats before leases holds a pid, judged by that alone.
 func (p *process) tempAlive(dir string, now time.Time) (token string, live bool) {
 	b, err := os.ReadFile(dir + ownerSuffix)

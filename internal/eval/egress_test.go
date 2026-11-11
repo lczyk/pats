@@ -266,6 +266,7 @@ func TestCleanTempDirs(t *testing.T) {
 	require.NoError(t, err)
 
 	// once its run is dead, the same dir goes, owner file and all.
+	require.NoError(t, os.WriteFile(lease, fmt.Appendf(nil, "%s 999999999\n", host), 0o644))
 	require.NoError(t, os.Chtimes(lease, past, past))
 	require.NoError(t, Clean(context.Background(), CleanOptions{Drivers: []string{}, OlderThan: 24 * time.Hour, Out: &out}))
 	_, err = os.Stat(live)
