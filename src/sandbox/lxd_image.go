@@ -360,11 +360,27 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	}
 	spec.step(log, "publishing %s", alias)
 	// a publish the client saw fail may still have made the image, so from
-	// here a failed build removes it under the private alias, if it is there.
+	// here a failed build removes it under the private alias, if it is there,
+	// unless a claim that seemed to fail (a cancelled one) made it the
+	// alias's. when that cannot be read, the image stays: pats clean takes a
+	// run-private alias, and its image once nothing else names it.
+	var mine string
 	defer func() {
-		if err != nil {
-			_, _ = l.lxc(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)
+		if err == nil {
+			return
 		}
+		bg := context.Background()
+		if mine != "" {
+			theirs, ferr := l.fingerprint(bg, alias)
+			if ferr != nil && !notFound(ferr) {
+				return
+			}
+			if theirs == mine {
+				_, _ = l.lxc(bg, "image", "alias", "delete", l.ref(private), "--project", lxdProject)
+				return
+			}
+		}
+		_, _ = l.lxc(bg, "image", "delete", l.ref(private), "--project", lxdProject)
 	}()
 	if _, err := l.lxc(ctx, pub...); err != nil {
 		return "", err
@@ -373,24 +389,30 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	if err != nil {
 		return "", err
 	}
+	mine = fp
+	// a claim the client saw fail may have landed: what the alias names
+	// then says whose it is, and an image it names is never deleted.
 	if _, err := l.lxc(ctx, "image", "alias", "create", l.ref(alias), fp, "--project", lxdProject); err != nil {
-		if _, ferr := l.fingerprint(ctx, alias); ferr != nil {
+		theirs, ferr := l.fingerprint(ctx, alias)
+		switch {
+		case ferr != nil:
 			return "", err
-		}
-		if spec.Force {
+		case theirs == fp:
+		case spec.Force:
 			// a forced build replaces what the alias named, in one call: the
 			// alias is never missing. pins elsewhere keep the old image.
 			body, _ := json.Marshal(map[string]string{"target": fp, "description": ""})
 			if _, err := l.lxc(ctx, "query", "-X", "PUT", "-d", string(body),
 				l.o.Remote+":/1.0/images/aliases/"+alias+"?project="+lxdProject); err != nil {
-				return "", err
+				if now, ferr := l.fingerprint(ctx, alias); ferr != nil || now != fp {
+					return "", err
+				}
 			}
-			_, _ = l.lxc(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
-			return fp, nil
+		default:
+			// another run built it first: use theirs.
+			_, _ = l.lxc(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)
+			return theirs, nil
 		}
-		// another run built it first: use theirs.
-		_, _ = l.lxc(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)
-		return l.fingerprint(ctx, alias)
 	}
 	_, _ = l.lxc(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
 	return fp, nil

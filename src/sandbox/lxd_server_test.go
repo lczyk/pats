@@ -349,14 +349,47 @@ func TestLXDCleanCreateInFlight(t *testing.T) {
 	assert.Equal(t, strings.Join(f.leftovers(dead.p.token), "\n"), "")
 }
 
-// every call of an image build: the builder and anything published under
-// the run's private alias are gone; the cached image may stay.
+// every call of an image build, plain and forced: the builder and anything
+// published under the run's private alias are gone; the cached image may
+// stay. a claim that landed though its client saw it fail (alias create, or
+// a forced build's PUT) is the build's: it succeeds, and the alias names an
+// image.
 func TestLXDSweepImage(t *testing.T) {
-	sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
-		l := lxdOn(t, f, Options{})
-		_, _, _, _, _ = l.image(ctx, lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
-		return l.p
-	})
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprintf("force=%v", force), func(t *testing.T) {
+			sweep(t, func(t *testing.T, f *fakeServer, ctx context.Context) *process {
+				spec := lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}
+				var key string
+				if force {
+					plan := f.faults.plan
+					f.faults.off()
+					first := lxdOn(t, f, Options{})
+					var err error
+					key, _, _, _, err = first.image(context.Background(), spec, io.Discard)
+					require.NoError(t, err)
+					first.p.shutdown()
+					f.faults.arm(plan.at, plan.after, plan.cancel)
+					spec.Force = true
+				}
+				plan := f.faults.plan
+				l := lxdOn(t, f, Options{})
+				alias, _, _, _, err := l.image(ctx, spec, io.Discard)
+				_, call := f.faults.reached()
+				landed := plan != nil && plan.after && plan.cancel == nil &&
+					(strings.Contains(call, "alias create") || strings.Contains(call, "-X PUT"))
+				if landed {
+					require.NoError(t, err, "a claim that landed failed the build")
+				}
+				if err == nil {
+					key = alias
+				}
+				if key != "" {
+					assert.That(t, f.lookupImage(key) != "", "the alias names no image (lxc %s)", call)
+				}
+				return l.p
+			})
+		})
+	}
 }
 
 // every call of Close, each mode: what a failed call left, the next clean
