@@ -148,14 +148,14 @@ this is the 1.x line, released as `1.0.0-beta.N` pre-releases from the `1.x` bra
 put it on your PATH with `go install`:
 
 ```sh
-go install github.com/lczyk/pats/cmd/pats@v1.0.0-beta.12    # installs into $(go env GOBIN)
+go install github.com/lczyk/pats/cmd/pats@v1.0.0-beta.13    # installs into $(go env GOBIN)
 ```
 
 or run it without installing at all:
 
 ```sh
-go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.12 run
-go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.12 score
+go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.13 run
+go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.13 score
 ```
 
 from a clone, `make install` builds the binary (upx-compressed if `upx` is on PATH) and symlinks it into `~/.local/bin`:
