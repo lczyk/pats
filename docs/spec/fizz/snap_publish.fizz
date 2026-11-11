@@ -1,0 +1,229 @@
+---
+deadlock_detection: true
+options:
+  max_concurrent_actions: 1
+action_options:
+  RerunPublishImages:
+    max_actions: 1
+  RerunSnap:
+    max_actions: 1
+---
+
+# the snap's release pipeline: snap.yml's publish job against publish_images.yml
+# on the tag (publish.fizz models publish_images itself).
+#
+# run: make fizz   (written, the default, PASSES)
+#      the others FAIL: timeout -k 10 300 fizz --preinit-hook 'DESIGN = "nowait"' snap_publish.fizz
+#      (gate, tagedge likewise; oldreruns is --preinit-hook 'OLD_RERUNS = True')
+#
+# what it models: commits pushed to 1.x in order, each starting a snap run in
+# the 1.x concurrency group (one running, one waiting, a newer run replacing a
+# waiting one); a release tag on the release commit, starting a snap run in its
+# own group and a publish_images run, which may fail and be re-run. a snap run
+# builds, then publishes each arch as its own job, and any job may fail. a
+# finished run may be re-run by hand, on its own commit and artifact, queueing
+# in its group again. images exist per version, and every snap pins the images
+# of its VERSION (src/sandbox/images.go decides by the version string alone, so
+# a dev build pins v<VERSION> too). commits: 1 is the last release's (VERSION
+# 1, its images published), 2 a later change (VERSION 1), 3 the release commit
+# (VERSION 2). a wait for images is modelled as: released once they exist, the
+# job failing if they are still missing (its timeout).
+#
+# requirements:
+# R1: THE PIPELINE SHALL release to beta only a snap whose version's images
+#     are published.
+# R2: THE PIPELINE SHALL release to edge only a snap whose version's images
+#     are published.
+# R3: WHEN a snap is released to edge for an arch, it SHALL NOT be older than
+#     what edge held for that arch.
+# R4: WHEN no run is pending or running, publish_images is not running and no
+#     job is left failed, both arches SHALL hold the same snap on edge, and on
+#     beta.
+# R5: the release SHALL be able to reach beta, and the release commit edge, on
+#     both arches.
+#
+# designs:
+# written  -- the workflow as written: every publish, edge and beta, waits for
+#             its VERSION's images in the registry. passes.
+# nowait   -- an edge publish does not wait. fails R2: the release commit
+#             reaches 1.x before its tag, and edge pins images not yet built.
+# gate     -- an edge publish whose images are missing skips edge. fails R4:
+#             one arch's publish fails, its re-run is replaced in the group by
+#             the release commit's run, which skips, and the arches stay split.
+# tagedge  -- as gate, and the tag's snap goes to edge too. fails R3: the tag's
+#             group is not 1.x's, so a slower 1.x run of an older commit lands
+#             on edge after it.
+# oldreruns-- written, but any finished run may be re-run, not only the latest
+#             (set OLD_RERUNS). fails R4 (and R3 without TIPCHECK): queued, the
+#             old run replaces the tip's waiting run, so the tip never reaches
+#             edge. hence the rule: re-run only the latest run.
+#
+# decisions: one wait, on the registry, for both channels; re-runs of the
+# latest run only, so no tip check (a mutant without TIPCHECK passes under
+# that rule). cancel-in-progress on pushes would not break R1-R4 either (the
+# next run heals a split), but a run is left to finish.
+#
+# not modelled: store review holds and failures after the upload, a tag that
+# is not v$VERSION (the job refuses it), the aliases job and :latest, registry
+# eventual consistency, a tag pushed before its commit reaches 1.x, more than
+# one release in flight.
+
+ARCHES = ["amd", "arm"]
+VERSION_OF = {1: 1, 2: 1, 3: 2}
+DESIGN = "written"
+TIPCHECK = False         # a 1.x publish releases only the tip of 1.x
+OLD_RERUNS = False       # a re-run may be of any finished run, not the latest
+
+action Init:
+    pushed = [1]            # commits on 1.x; 1 is already there
+    tagged = False
+    images = [1]            # versions whose images are published
+    pi = "none"             # publish_images on the tag: none, running, ok, fail
+    runs = []
+    edge = {"amd": 1, "arm": 1}
+    beta = {"amd": 1, "arm": 1}
+    failed_left = 0         # jobs failed and not re-run
+
+# the environment: the next commit is pushed to 1.x.
+atomic action Push:
+    c = len(pushed) + 1
+    require c <= 3
+    pushed.append(c)
+    # a waiting run in the group is replaced by the new one.
+    for i in range(len(runs)):
+        if runs[i].ref == "1.x" and runs[i].status == "pending":
+            runs[i].status = "cancelled"
+    runs.append(record(ref="1.x", commit=c, status="pending", build="todo",
+                       pub={"amd": "todo", "arm": "todo"}))
+
+# the environment: the release commit is tagged.
+atomic action Tag:
+    require 3 in pushed and not tagged
+    tagged = True
+    pi = "running"
+    runs.append(record(ref="tag", commit=3, status="pending", build="todo",
+                       pub={"amd": "todo", "arm": "todo"}))
+
+atomic action PublishImagesDone:
+    require pi == "running"
+    oneof:
+        pi = "ok"
+        pi = "fail"
+    if pi == "ok" and 2 not in images:
+        images.append(2)
+
+atomic action RerunPublishImages:
+    require pi == "fail"
+    pi = "running"
+
+# a group runs one run at a time.
+atomic action Start:
+    i = oneof [j for j in range(len(runs)) if runs[j].status == "pending"]
+    busy = [x for x in runs if x.ref == runs[i].ref and x.status == "running"]
+    require len(busy) == 0
+    runs[i].status = "running"
+
+atomic action Build:
+    i = oneof [j for j in range(len(runs)) if runs[j].status == "running" and runs[j].build == "todo"]
+    oneof:
+        runs[i].build = "ok"
+        runs[i].build = "fail"
+
+atomic action Publish:
+    i = oneof [j for j in range(len(runs)) if runs[j].status == "running" and runs[j].build == "ok"]
+    a = oneof [x for x in ARCHES if runs[i].pub[x] == "todo"]
+    c = runs[i].commit
+    missing = VERSION_OF[c] not in images
+    ok = oneof [True, False]
+    if runs[i].ref == "1.x":
+        if missing and DESIGN != "nowait":
+            # the wait timed out (written), or the publish skipped (gate).
+            ok = ok and DESIGN in ["gate", "tagedge"]
+            skip = True
+        else:
+            skip = False
+        if TIPCHECK and c != pushed[-1]:
+            skip = True
+        if ok and not skip:
+            edge[a] = c
+    else:
+        if missing:
+            ok = False
+        if ok:
+            beta[a] = VERSION_OF[c]
+            if DESIGN == "tagedge":
+                edge[a] = c
+    if ok:
+        runs[i].pub[a] = "ok"
+    else:
+        runs[i].pub[a] = "fail"
+
+atomic action Finish:
+    i = oneof [j for j in range(len(runs)) if runs[j].status == "running"]
+    r = runs[i]
+    done = r.build == "fail" or len([a for a in ARCHES if r.pub[a] == "todo"]) == 0
+    require done
+    runs[i].status = "done"
+    nfail = len([a for a in ARCHES if r.pub[a] == "fail"])
+    if r.build == "fail":
+        nfail = 1
+    failed_left = failed_left + nfail
+
+# by hand: re-run a finished run's failed jobs, or all of them.
+atomic action RerunSnap:
+    i = oneof [j for j in range(len(runs)) if runs[j].status == "done"]
+    r = runs[i]
+    newer = [x for x in runs if x.ref == r.ref and x.commit > r.commit]
+    require OLD_RERUNS or len(newer) == 0
+    nfail = len([a for a in ARCHES if r.pub[a] == "fail"])
+    if r.build == "fail":
+        nfail = 1
+    oneof:
+        # failed jobs only
+        require nfail > 0
+        # every job
+        pass
+    failed_left = failed_left - nfail
+    if r.build == "fail":
+        runs[i].build = "todo"
+    for a in ARCHES:
+        if r.pub[a] != "ok" or nfail == 0:
+            runs[i].pub[a] = "todo"
+    # it queues in its group like a new run, replacing a waiting one.
+    for j in range(len(runs)):
+        if j != i and runs[j].ref == r.ref and runs[j].status == "pending":
+            runs[j].status = "cancelled"
+    runs[i].status = "pending"
+
+atomic action NoOp:
+    pass
+
+always assertion BetaImages:   # R1
+    for a in ARCHES:
+        if beta[a] not in images:
+            return False
+    return True
+
+always assertion EdgeImages:   # R2
+    for a in ARCHES:
+        if VERSION_OF[edge[a]] not in images:
+            return False
+    return True
+
+transition assertion EdgeNeverOlder(before, after):   # R3
+    for a in ARCHES:
+        if after.edge[a] < before.edge[a]:
+            return False
+    return True
+
+always assertion ArchesAgreeAtRest:   # R4
+    live = [x for x in runs if x.status in ["pending", "running"]]
+    if len(live) > 0 or pi == "running" or failed_left > 0:
+        return True
+    return edge["amd"] == edge["arm"] and beta["amd"] == beta["arm"]
+
+exists assertion BetaReleased:   # R5
+    return beta["amd"] == 2 and beta["arm"] == 2
+
+exists assertion EdgeAtRelease:   # R5
+    return edge["amd"] == 3 and edge["arm"] == 3
