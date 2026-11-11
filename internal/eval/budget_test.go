@@ -132,6 +132,20 @@ func TestLedger(t *testing.T) {
 	spent, not := capped.totals()
 	assert.Equal(t, spent, 1.0)
 	assert.Equal(t, not, 1)
+
+	// a spend that reached the cap and later reads under it (a summary
+	// below the live sum, or a float sum regrouped as pairs finish:
+	// 0.01+(0.01+0.06) is 0.07999999999999999) stays reached.
+	latched := newLedger(0.08)
+	a := &pairStat{}
+	require.That(t, latched.admit(a), "admit")
+	latched.add(a, 0.08)
+	a.cost, a.costKnown = 0.07, true
+	latched.finish(a)
+	spent, _ = latched.totals()
+	require.That(t, spent < 0.08, "the spend did not drop: %v", spent)
+	assert.That(t, latched.reached(), "the cap re-opened")
+	assert.That(t, !latched.admit(&pairStat{}), "admitted after the cap re-opened")
 }
 
 // behind the machine's proxy the run names the upstream, redacted, before

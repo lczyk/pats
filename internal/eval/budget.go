@@ -23,10 +23,21 @@ type ledger struct {
 	finished   float64
 	live       map[*pairStat]float64
 	notStarted int
+	// hit latches once the spend reaches the cap: float sums regroup as
+	// pairs finish, so a sum just over the cap can read just under it later.
+	hit bool
 }
 
 func newLedger(limit float64) *ledger {
 	return &ledger{limit: limit, live: map[*pairStat]float64{}}
+}
+
+// reachedLocked says whether the cap is reached, and latches it.
+func (l *ledger) reachedLocked() bool {
+	if l.limit > 0 && !l.hit && l.spentLocked() >= l.limit {
+		l.hit = true
+	}
+	return l.hit
 }
 
 // spentLocked is the spend so far.
@@ -46,7 +57,7 @@ func (l *ledger) admit(s *pairStat) bool {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.limit > 0 && l.spentLocked() >= l.limit {
+	if l.reachedLocked() {
 		l.notStarted++
 		return false
 	}
@@ -62,6 +73,7 @@ func (l *ledger) add(s *pairStat, c float64) float64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.live[s] += c
+	l.reachedLocked()
 	return l.live[s]
 }
 
@@ -80,6 +92,7 @@ func (l *ledger) finish(s *pairStat) {
 	}
 	l.finished += c
 	delete(l.live, s)
+	l.reachedLocked()
 }
 
 // reached says whether the run-wide cap is reached.
@@ -89,7 +102,7 @@ func (l *ledger) reached() bool {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.limit > 0 && l.spentLocked() >= l.limit
+	return l.reachedLocked()
 }
 
 // totals is the spend and the pairs not started so far.
