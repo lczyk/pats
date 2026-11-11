@@ -217,10 +217,12 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             newer=$(git tag --list 'v*' --contains "$GITHUB_SHA" | grep -vxF "$GITHUB_REF_NAME" || true)
           else
-            # the newest commit on 1.x that starts a run: paths-ignore above
-            # leaves out one that only touches markdown.
+            # the newest commit that starts a run, on 1.x and in this run:
+            # paths-ignore above leaves out one that only touches markdown,
+            # and a push that ends in one still runs, at that commit.
             tip=$(git log -1 --format=%H FETCH_HEAD -- . ':(glob,exclude)**/*.md')
-            newer=$([ "$tip" = "$GITHUB_SHA" ] || echo "1.x at $tip")
+            mine=$(git log -1 --format=%H "$GITHUB_SHA" -- . ':(glob,exclude)**/*.md')
+            newer=$([ "$tip" = "$mine" ] || echo "1.x at $tip")
           fi
           if [ -n "$newer" ]; then
             echo "not released, a newer one is out: $newer"
