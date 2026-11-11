@@ -47,7 +47,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -83,7 +83,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -166,7 +166,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.1.0
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
