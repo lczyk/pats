@@ -6,11 +6,16 @@ on:
   pull_request:
     branches: [ "main", "1.x" ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -32,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -58,6 +65,8 @@ jobs:
         lxd: ['5.21/stable', '6/stable']
     steps:
     - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -87,6 +96,8 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -104,6 +115,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Lint workflows
       run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
