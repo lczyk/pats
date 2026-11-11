@@ -1,5 +1,7 @@
-# action updates, one pull request a week. a release must be a week old
-# before it is proposed, so one pulled for being bad never gets here.
+# action and go module updates, one pull request a week each. a release
+# must be a week old before it is proposed, so one pulled for being bad
+# never gets here. the go toolchain itself is not covered: its version is
+# named in the workflows, the snap and the proxy image, and moves by hand.
 # dependabot reads this file from the default branch only.
 version: 2
 updates:
@@ -14,3 +16,15 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: ci
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      modules:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
