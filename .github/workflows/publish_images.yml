@@ -20,8 +20,26 @@ env:
   REGISTRY: ghcr.io/${{ github.repository_owner }}/pats
 
 jobs:
+  # a dispatch from a branch publishes under the branch's name: one named like
+  # a release or a rolling alias would overwrite what pats binaries pin.
+  ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Refuse a reserved tag name
+        if: github.ref_type == 'branch'
+        run: |
+          case "${GITHUB_REF_NAME//\//-}" in
+              latest | 26.04 | v*)
+                  echo "branch $GITHUB_REF_NAME would publish over a release or rolling tag" >&2
+                  exit 1
+                  ;;
+          esac
+
   # the proxy protocol is coupled to the pats version, hence the version tag.
   egress-proxy:
+    needs: ref
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -48,6 +66,7 @@ jobs:
   # floats at build time, so the version tag is what pins a run. each arch
   # builds on its own runner and pushes by digest only; sandbox-tags names them.
   sandbox:
+    needs: ref
     strategy:
       matrix:
         include:
@@ -153,12 +172,24 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
               docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # only "not found" moves on to an older version: any other failure to
+      # read a tag fails the job, or a registry hiccup would point the
+      # aliases back at an older release.
       - name: Point the aliases at the newest published stable version
         run: |
+          published() {
+              if out=$(docker buildx imagetools inspect "$1" 2>&1); then
+                  return 0
+              fi
+              if grep -qiE 'manifest unknown|: not found$' <<<"$out"; then
+                  return 1
+              fi
+              echo "cannot read $1: $out" >&2
+              exit 1
+          }
           newest=""
           for t in $(git tag --list 'v*' | grep -v -e '-' | sort -V -r); do
-              if docker buildx imagetools inspect "$REGISTRY/egress-proxy:$t" >/dev/null 2>&1 &&
-                  docker buildx imagetools inspect "$REGISTRY/sandbox:$t" >/dev/null 2>&1; then
+              if published "$REGISTRY/egress-proxy:$t" && published "$REGISTRY/sandbox:$t"; then
                   newest="$t"
                   break
               fi
