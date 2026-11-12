@@ -55,6 +55,18 @@ clis:
         sha256: ba14f4ce5c8fe567a00bac1c50aafe7eda6e1de7aa37964994c66148a28d529a
         bin: package/bin/opencode
 
+  pi:
+    version: 1.5.2
+    artefacts:
+      https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-x64.tar.gz:
+        arch: [amd64]
+        sha256: 811c6f2c9e7aaee252b5404252e556fb713aa209c1f7f924226aa77d4ef70cb5
+        bin: pi/pi
+      https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-arm64.tar.gz:
+        arch: [arm64]
+        sha256: 42805cd5615952fcbbfc9c56b04f8feb84395134952e169a6cdc8d7676975666
+        bin: pi/pi
+
 harnesses:
   claude-cli-keyless:
     cli: claude
@@ -240,3 +252,44 @@ harnesses:
               )
           elif t == "error":
               out.error()
+
+  pi-openrouter:
+    cli: pi
+    # pats is the outer sandbox, so the workspace's own pi files are trusted.
+    # PI_OFFLINE keeps pi off every host but the provider's.
+    run: >-
+      PI_OFFLINE=1 pi --print --mode json --no-session --approve --provider openrouter
+      --model "$PATS_MODEL" ${PATS_EFFORT:+--thinking "$PATS_EFFORT"}
+      -- "$(cat "$PATS_PROMPT_FILE")"
+    egress:
+      allow:
+        - openrouter.ai   # inference
+    auth-env: [OPENROUTER_API_KEY]
+    models: openrouter
+    # usage and the stop reason come on each assistant message as it ends. pi
+    # exits 0 on a failed reply, so the stop reason is the one sign of it, and
+    # the last message's decides: a retry that worked is no error.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) == "dict":
+          t = ev.get("type")
+          if t == "tool_execution_start":
+              out.tool(ev.get("toolName", ""))
+          elif t == "message_end":
+              m = ev.get("message", {})
+              if m.get("role") == "assistant":
+                  u = m.get("usage", {})
+                  # reasoning is a part of output here, and cached tokens are none of input.
+                  out.usage(
+                      turns = 1,
+                      cost_usd = u.get("cost", {}).get("total", 0),
+                      input = u.get("input", 0),
+                      output = u.get("output", 0),
+                      reasoning = u.get("reasoning", 0),
+                      cache_read = u.get("cacheRead", 0),
+                      cache_write = u.get("cacheWrite", 0),
+                  )
+                  out.error(m.get("stopReason") in ("error", "aborted"))
+                  text = "".join([c.get("text", "") for c in m.get("content", []) if c.get("type") == "text"])
+                  if text.strip():
+                      out.final(text)

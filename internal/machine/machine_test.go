@@ -14,7 +14,7 @@ import (
 // every cli an exact version, which is its pin.
 func TestDefaults(t *testing.T) {
 	d := Defaults()
-	assert.Equal(t, strings.Join(d.Names(), " "), "claude-cli-keyless codex-cli-keyless copilot-cli-keyless opencode-openrouter")
+	assert.Equal(t, strings.Join(d.Names(), " "), "claude-cli-keyless codex-cli-keyless copilot-cli-keyless opencode-openrouter pi-openrouter")
 	for _, name := range d.Names() {
 		h := d.Harness(name)
 		assert.Equal(t, h.Name, name)
@@ -22,7 +22,7 @@ func TestDefaults(t *testing.T) {
 		assert.That(t, h.Parser() != nil, "harness %s has no parse script", name)
 	}
 	exact := regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$`)
-	assert.Equal(t, strings.Join(sortedKeys(d.CLIs), " "), "claude codex copilot opencode")
+	assert.Equal(t, strings.Join(sortedKeys(d.CLIs), " "), "claude codex copilot opencode pi")
 	for name, c := range d.CLIs {
 		assert.Equal(t, c.Name, name)
 		assert.That(t, exact.MatchString(c.Version), "cli %s: %q is not an exact version", name, c.Version)
@@ -46,6 +46,7 @@ func TestDefaultCommands(t *testing.T) {
 		"opencode-openrouter": `opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions --format json --thinking ${PATS_EFFORT:+--variant "$PATS_EFFORT"} "$(cat "$PATS_PROMPT_FILE")"`,
 		"codex-cli-keyless":   `codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model "$PATS_MODEL" ${PATS_EFFORT:+-c model_reasoning_effort="$PATS_EFFORT"} - < "$PATS_PROMPT_FILE"`,
 		"copilot-cli-keyless": `copilot -p "$(cat "$PATS_PROMPT_FILE")" --allow-all --output-format json --no-auto-update --no-remote-export --disable-builtin-mcps --model "$PATS_MODEL" ${PATS_EFFORT:+--effort "$PATS_EFFORT"}`,
+		"pi-openrouter":       `PI_OFFLINE=1 pi --print --mode json --no-session --approve --provider openrouter --model "$PATS_MODEL" ${PATS_EFFORT:+--thinking "$PATS_EFFORT"} -- "$(cat "$PATS_PROMPT_FILE")"`,
 	} {
 		assert.Equal(t, d.Harness(name).Run, want)
 	}

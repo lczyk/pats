@@ -426,6 +426,63 @@ func TestScanCopilot(t *testing.T) {
 	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
 }
 
+// a recorded run, cut down: a thinking turn that writes a file, one that runs
+// a command, and the reply.
+const piLog = `{"type":"session","version":3,"id":"s","timestamp":"2026-11-12T22:46:37.370Z","cwd":"/ws"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"do the thing"}]}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"toolcall_start","contentIndex":1,"id":"c1","toolName":"write"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"write, then cat"},{"type":"toolCall","id":"c1","name":"write","arguments":{"path":"hello.txt","content":"hi"}}],"provider":"openrouter","model":"openai/gpt-5-mini","usage":{"input":987,"output":121,"cacheRead":0,"cacheWrite":0,"reasoning":64,"totalTokens":1108,"cost":{"input":0.00024675,"output":0.000242,"cacheRead":0,"cacheWrite":0,"total":0.00048875,"totalFromProvider":true}},"stopReason":"toolUse","thinkingLevel":"low"}}
+{"type":"tool_execution_start","toolCallId":"c1","toolName":"write","args":{"path":"hello.txt","content":"hi"}}
+{"type":"tool_execution_end","toolCallId":"c1","toolName":"write","result":{"content":[{"type":"text","text":"Successfully wrote to hello.txt"}]},"isError":false,"durationMs":5}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"c1","toolName":"write","content":[{"type":"text","text":"Successfully wrote to hello.txt"}],"isError":false}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"write","arguments":{"path":"hello.txt","content":"hi"}}],"usage":{"input":987,"output":121,"cacheRead":0,"cacheWrite":0,"reasoning":64,"totalTokens":1108,"cost":{"total":0.00048875}},"stopReason":"toolUse"},"toolResults":[]}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"cat hello.txt","timeout":120}}],"provider":"openrouter","model":"openai/gpt-5-mini","usage":{"input":96,"output":26,"cacheRead":1024,"cacheWrite":0,"reasoning":0,"totalTokens":1146,"cost":{"input":2.4e-05,"output":5.2e-05,"cacheRead":2.56e-05,"cacheWrite":0,"total":0.00010672,"totalFromProvider":true}},"stopReason":"toolUse","thinkingLevel":"low"}}
+{"type":"tool_execution_start","toolCallId":"c2","toolName":"bash","args":{"command":"cat hello.txt","timeout":120}}
+{"type":"tool_execution_update","toolCallId":"c2","toolName":"bash","args":{"command":"cat hello.txt","timeout":120},"partialResult":{"content":[]}}
+{"type":"tool_execution_end","toolCallId":"c2","toolName":"bash","result":{"content":[{"type":"text","text":"hi"}]},"isError":false,"durationMs":52}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"it printed hi"}],"provider":"openrouter","model":"openai/gpt-5-mini","usage":{"input":129,"output":5,"cacheRead":1024,"cacheWrite":0,"reasoning":0,"totalTokens":1158,"cost":{"input":3.225e-05,"output":1e-05,"cacheRead":2.56e-05,"cacheWrite":0,"total":7.297e-05,"totalFromProvider":true}},"stopReason":"stop","thinkingLevel":"low"}}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled","aborted":false}
+`
+
+// pi exits 0 on a reply that failed: a refused key reads so.
+const piFailed = `{"type":"message_end","message":{"role":"assistant","content":[],"provider":"openrouter","model":"openai/gpt-5-mini","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"401: {\"message\":\"User not found.\",\"code\":401}","thinkingLevel":"low"}}
+`
+
+func TestPiSummary(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "stdout.log")
+	require.NoError(t, os.WriteFile(p, []byte(piLog), 0o644))
+
+	s := summarize(hd("pi-openrouter"), p)
+	require.NotNil(t, s)
+	assert.Equal(t, s.NumTurns, 3) // one per assistant message: a turn_end restates its message
+	assert.NearlyEqual(t, s.CostUSD, 0.00066844, 1e-12)
+	assert.Equal(t, s.HasCost, true)
+	assert.Equal(t, s.InputTokens, 1212)
+	assert.Equal(t, s.OutputTokens, 152) // reasoning is a part of it
+	assert.Equal(t, s.ReasoningTokens, 64)
+	assert.Equal(t, s.CacheReadTokens, 2048)
+	assert.Equal(t, s.Tools["write"], 1)
+	assert.Equal(t, s.Tools["bash"], 1)
+	assert.Equal(t, s.IsError, false)
+
+	var out bytes.Buffer
+	require.NoError(t, ParseLog(hd("pi-openrouter"), strings.NewReader(piLog), &out))
+	assert.ContainsString(t, out.String(), "reply:\nit printed hi\n")
+
+	failed := filepath.Join(dir, "failed.log")
+	require.NoError(t, os.WriteFile(failed, []byte(piFailed), 0o644))
+	assert.Equal(t, summarize(hd("pi-openrouter"), failed).IsError, true)
+	// a retry that worked is no error.
+	require.NoError(t, os.WriteFile(failed, []byte(piFailed+piLog), 0o644))
+	assert.Equal(t, summarize(hd("pi-openrouter"), failed).IsError, false)
+}
+
 // a format that states its totals at the end reports its cost live then: the
 // tap hears claude's result as it hears a step of opencode's.
 func TestScanCostAtTheEnd(t *testing.T) {

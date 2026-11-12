@@ -67,6 +67,7 @@ type pairStat struct {
 
 	liveCost atomic.Uint64 // float64 bits: spend reported so far, for the bar
 	costSeen atomic.Bool   // the harness reported a cost at all, 0 included
+	failed   atomic.Bool   // the harness's stream says the run is in error, as it stands
 	// spend, when set, hears each step's cost as the harness reports it.
 	spend func(c float64)
 }
@@ -437,6 +438,7 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 		_ = pass.Line(line) // the pass after the pair reports a failed line
 		r := pass.Result()
 		atomic.StoreInt64(&s.tools, int64(r.ToolCalls))
+		s.failed.Store(r.IsError)
 		if r.HasCost {
 			s.costSeen.Store(true)
 		}
