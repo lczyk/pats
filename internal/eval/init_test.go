@@ -547,7 +547,7 @@ func TestInitKeepsTreesBesideAnImage(t *testing.T) {
 	const body = `
 sbx: {kind: sandbox, items: {bw: {driver: bwrap}}}
 agx: {kind: agent, defaults: {model: m}, items: {oc: {harness: opencode-openrouter, sandbox: bw}}}
-txx: {kind: task, items: {txx: {prompt: p}}}
+txx: {kind: task, items: {txx: {prompt: p, step-sandbox: bw, collect: "true"}}}
 sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 `
 	cfg := parseCfg(t, body)
@@ -578,7 +578,8 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 
 	_, err = Run(parseCfg(t, body), Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err, "%s", out.String())
-	require.That(t, len(got) > 1, "the run made %d sandbox(es): no step's, or no agent's", len(got))
+	// preflight's and the agent's are two: the task's step makes the rest.
+	require.That(t, len(got) > 2, "the run made %d sandbox(es): none for the task's step", len(got))
 	for _, o := range got {
 		assert.Equal(t, o.Image, "sha256:pulled-"+pub)
 		assert.EqualArrays(t, o.Trees, []string{tree})

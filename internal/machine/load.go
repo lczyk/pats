@@ -121,6 +121,12 @@ func Overlay(over []byte, path string) (*Tables, error) {
 					}
 					continue
 				}
+				// a pin is a version and its bytes: a version over the shas of
+				// the one before it would fail every fetch.
+				if table.Value == "clis" && mappingValue(entry, "version") != nil && mappingValue(entry, "artefacts") == nil && mappingValue(into, name.Value) != nil {
+					add(name.Line, "%s: version without artefacts: a pin is a version and each artefact's sha256 (pats harness pin %s <version> prints both)", id, name.Value)
+					continue
+				}
 				// a machine's pin is its clis entry: one more on a harness
 				// would be a second place for it.
 				if table.Value == "harnesses" {
@@ -135,10 +141,14 @@ func Overlay(over []byte, path string) (*Tables, error) {
 						continue
 					}
 				}
-				// an entry that sets nothing changes nothing. where a harness
-				// is from is its own entry's: a cli's pin is in its digest.
-				if table.Value == "harnesses" && (len(entry.Content) > 0 || mappingValue(into, name.Value) == nil) {
-					t.from[name.Value] = FromMachine
+				// an entry that sets nothing changes nothing. a cli's entry is
+				// kept under its dotted name, which no harness can have.
+				if len(entry.Content) > 0 || mappingValue(into, name.Value) == nil {
+					if table.Value == "clis" {
+						t.from[id] = FromMachine
+					} else {
+						t.from[name.Value] = FromMachine
+					}
 				}
 				if lay(into, name, entry) {
 					t.Adds = append(t.Adds, id)

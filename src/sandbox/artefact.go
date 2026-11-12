@@ -236,12 +236,15 @@ func BuildTree(a Artefact, file, dir string) error {
 	}
 	// the directories above the two are an image's own (/, /usr, /opt), and
 	// a copy may give them the tree's modes: never this machine's umask.
+	root := filepath.Clean(dir)
 	for _, rel := range []string{HarnessTreeDir, HarnessBinDir} {
-		for p := filepath.Join(dir, filepath.FromSlash(rel)); strings.HasPrefix(p, dir); p = filepath.Dir(p) {
+		// up from the directory to the tree's root, which Join's result
+		// always has above it.
+		for p := filepath.Join(root, filepath.FromSlash(rel)); ; p = filepath.Dir(p) {
 			if err := os.Chmod(p, 0o755); err != nil {
 				return err
 			}
-			if p == dir {
+			if p == root {
 				break
 			}
 		}

@@ -195,7 +195,7 @@ type Tables struct {
 
 	root  *yaml.Node        // the tables as written: what an overlay is laid over
 	lines map[string]int    // the line of each entry of the machine's file
-	from  map[string]string // harness -> the last place that set a key of it
+	from  map[string]string // harness, or clis.<name> -> the last place that set a key of it
 }
 
 // Harness is the entry named name, nil when there is none.
@@ -372,6 +372,10 @@ func (t *Tables) check() error {
 			if h.cli = t.CLIs[h.CLI]; h.cli == nil {
 				add("harnesses.%s: cli %q is not in clis", name, h.CLI)
 			}
+		}
+		// a harness is from the last place that set a key of it or of its cli.
+		if h.From == FromDefault && h.CLI != "" && t.from["clis."+h.CLI] == FromMachine {
+			h.From = FromMachine
 		}
 		if h.Login && (h.cli == nil || h.cli.LoginFile == "") {
 			add("harnesses.%s: login needs a cli with a login-file", name)

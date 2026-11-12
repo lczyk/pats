@@ -119,24 +119,25 @@ harnesses:
 // and nothing of it is applied.
 func TestOverlayErrors(t *testing.T) {
 	for name, tc := range map[string]struct{ in, want string }{
-		"not yaml":        {"harnesses: [", "config.yaml:"},
-		"not a mapping":   {"- a", "config.yaml:1: the top level is a mapping of tables"},
-		"unknown table":   {"harnes: {}", `config.yaml:1: unknown table "harnes"`},
-		"cli unknown key": {"clis:\n  claude:\n    vers: 9.9.9", `config.yaml:3: clis.claude: unknown key "vers"`},
-		"a harness's pin": {"harnesses:\n  claude-cli-keyless:\n    version: 9.9.9", "config.yaml:3: harnesses.claude-cli-keyless: version is a pats.yaml's key: a machine pins a cli in clis"},
-		"entries a list":  {"harnesses: [a]", "config.yaml:1: harnesses is a mapping of entries"},
-		"entry a scalar":  {"harnesses:\n  mine: 5", "config.yaml:2: harnesses.mine is a mapping of keys"},
-		"unknown key":     {"harnesses:\n  claude-cli-keyless:\n    hosts: [x.com]", `config.yaml:3: harnesses.claude-cli-keyless: unknown key "hosts"`},
-		"new, no run":     {"\nharnesses:\n  mine:\n    cli: claude", "config.yaml:3: harnesses.mine: run is required"},
-		"unknown cli":     {"harnesses:\n  claude-cli-keyless:\n    cli: nope", `config.yaml:2: harnesses.claude-cli-keyless: cli "nope" is not in clis`},
-		"bad parse":       {"harnesses:\n  mine:\n    run: a\n    parse: out.tool(nope)", "config.yaml:2: harnesses.mine.parse:1:10: undefined: nope"},
-		"a path in allow": {"harnesses:\n  mine:\n    run: a\n    egress: {allow: [x.com/v1/*]}", "config.yaml:2: harnesses.mine: egress allow"},
-		"wrong type":      {"harnesses:\n  mine:\n    run: a\n    auth-env: 5", "config.yaml:4: harnesses.mine: cannot unmarshal"},
-		"nested key":      {"harnesses:\n  claude-cli-keyless:\n    egress:\n      alow: [x.com]", `config.yaml:4: harnesses.claude-cli-keyless: egress: unknown key "alow"`},
-		"a key twice":     {"harnesses:\n  mine:\n    run: a\n    run: b", `config.yaml:4: harnesses.mine: key "run" is there twice`},
-		"an entry twice":  {"harnesses:\n  mine: {run: a}\n  mine: {run: b}", "config.yaml:3: harnesses.mine is there twice"},
-		"a table twice":   {"harnesses: {}\nharnesses: {}", `config.yaml:2: table "harnesses" is there twice`},
-		"login, no file":  {"harnesses:\n  copilot-cli-keyless:\n    login: true", "config.yaml:2: harnesses.copilot-cli-keyless: login needs a cli with a login-file"},
+		"not yaml":         {"harnesses: [", "config.yaml:"},
+		"not a mapping":    {"- a", "config.yaml:1: the top level is a mapping of tables"},
+		"unknown table":    {"harnes: {}", `config.yaml:1: unknown table "harnes"`},
+		"cli unknown key":  {"clis:\n  claude:\n    vers: 9.9.9", `config.yaml:3: clis.claude: unknown key "vers"`},
+		"cli version only": {"clis:\n  claude:\n    version: 9.9.9", "config.yaml:2: clis.claude: version without artefacts"},
+		"a harness's pin":  {"harnesses:\n  claude-cli-keyless:\n    version: 9.9.9", "config.yaml:3: harnesses.claude-cli-keyless: version is a pats.yaml's key: a machine pins a cli in clis"},
+		"entries a list":   {"harnesses: [a]", "config.yaml:1: harnesses is a mapping of entries"},
+		"entry a scalar":   {"harnesses:\n  mine: 5", "config.yaml:2: harnesses.mine is a mapping of keys"},
+		"unknown key":      {"harnesses:\n  claude-cli-keyless:\n    hosts: [x.com]", `config.yaml:3: harnesses.claude-cli-keyless: unknown key "hosts"`},
+		"new, no run":      {"\nharnesses:\n  mine:\n    cli: claude", "config.yaml:3: harnesses.mine: run is required"},
+		"unknown cli":      {"harnesses:\n  claude-cli-keyless:\n    cli: nope", `config.yaml:2: harnesses.claude-cli-keyless: cli "nope" is not in clis`},
+		"bad parse":        {"harnesses:\n  mine:\n    run: a\n    parse: out.tool(nope)", "config.yaml:2: harnesses.mine.parse:1:10: undefined: nope"},
+		"a path in allow":  {"harnesses:\n  mine:\n    run: a\n    egress: {allow: [x.com/v1/*]}", "config.yaml:2: harnesses.mine: egress allow"},
+		"wrong type":       {"harnesses:\n  mine:\n    run: a\n    auth-env: 5", "config.yaml:4: harnesses.mine: cannot unmarshal"},
+		"nested key":       {"harnesses:\n  claude-cli-keyless:\n    egress:\n      alow: [x.com]", `config.yaml:4: harnesses.claude-cli-keyless: egress: unknown key "alow"`},
+		"a key twice":      {"harnesses:\n  mine:\n    run: a\n    run: b", `config.yaml:4: harnesses.mine: key "run" is there twice`},
+		"an entry twice":   {"harnesses:\n  mine: {run: a}\n  mine: {run: b}", "config.yaml:3: harnesses.mine is there twice"},
+		"a table twice":    {"harnesses: {}\nharnesses: {}", `config.yaml:2: table "harnesses" is there twice`},
+		"login, no file":   {"harnesses:\n  copilot-cli-keyless:\n    login: true", "config.yaml:2: harnesses.copilot-cli-keyless: login needs a cli with a login-file"},
 	} {
 		write(t, tc.in)
 		_, err := Load()
@@ -181,8 +182,8 @@ func TestDigest(t *testing.T) {
 
 // a machine's file sets clis by the rule it sets harnesses by: a pin of a
 // default cli changes it key by key, artefacts whole, and a new cli is one a
-// harness of the file can name. a harness whose cli moved is still from where
-// its own entry is, and its digest says its cli is another.
+// harness of the file can name. a harness whose cli the file moved is from
+// the machine, and its digest says its cli is another.
 func TestOverlayCLIs(t *testing.T) {
 	write(t, `
 clis:
@@ -219,7 +220,8 @@ harnesses:
 	assert.Equal(t, a.Bin, "package/codex")
 
 	h := tb.Harness("codex-cli-keyless")
-	assert.Equal(t, h.From, FromDefault)
+	assert.Equal(t, h.From, FromMachine)
+	assert.Equal(t, tb.Harness("claude-cli-keyless").From, FromDefault) // a cli the file left alone
 	assert.That(t, h.Digest() != Defaults().Harness("codex-cli-keyless").Digest(), "the digest did not move with the machine's pin")
 	assert.Equal(t, tb.Harness("mine-h").Cli().Version, "1.2.3")
 	_, _, ok = tb.CLIs["mine"].ArtefactFor("arm64", "")
