@@ -122,7 +122,7 @@ func TestOverlayErrors(t *testing.T) {
 		"not yaml":        {"harnesses: [", "config.yaml:"},
 		"not a mapping":   {"- a", "config.yaml:1: the top level is a mapping of tables"},
 		"unknown table":   {"harnes: {}", `config.yaml:1: unknown table "harnes"`},
-		"clis":            {"clis: {claude: {version: 9.9.9}}", "config.yaml:1: clis: a machine's file does not set clis yet"},
+		"cli unknown key": {"clis:\n  claude:\n    vers: 9.9.9", `config.yaml:3: clis.claude: unknown key "vers"`},
 		"entries a list":  {"harnesses: [a]", "config.yaml:1: harnesses is a mapping of entries"},
 		"entry a scalar":  {"harnesses:\n  mine: 5", "config.yaml:2: harnesses.mine is a mapping of keys"},
 		"unknown key":     {"harnesses:\n  claude-cli-keyless:\n    hosts: [x.com]", `config.yaml:3: harnesses.claude-cli-keyless: unknown key "hosts"`},
@@ -176,6 +176,53 @@ func TestDigest(t *testing.T) {
 	tb, err := Load()
 	require.NoError(t, err)
 	assert.Equal(t, tb.Harness("copy").Digest(), tb.Harness("other").Digest())
+}
+
+// a machine's file sets clis by the rule it sets harnesses by: a pin of a
+// default cli changes it key by key, artefacts whole, and a new cli is one a
+// harness of the file can name. a harness whose cli moved is still from where
+// its own entry is, and its digest says its cli is another.
+func TestOverlayCLIs(t *testing.T) {
+	write(t, `
+clis:
+  codex:
+    version: 9.9.9
+    artefacts:
+      https://mirror.example/codex-${version}.tgz:
+        arch: [amd64, arm64]
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        bin: package/codex
+  mine:
+    version: 1.2.3
+    artefacts:
+      https://mine.example/mine-${version}:
+        arch: [amd64]
+        sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+harnesses:
+  mine-h:
+    cli: mine
+    run: mine "$PATS_PROMPT"
+`)
+	tb, err := Load()
+	require.NoError(t, err)
+	assert.ContainsString(t, tb.Note(), "changes clis.codex.artefacts, clis.codex.version")
+	assert.ContainsString(t, tb.Note(), "adds clis.mine, harnesses.mine-h")
+
+	codex := tb.CLIs["codex"]
+	assert.Equal(t, codex.Version, "9.9.9")
+	assert.Equal(t, codex.LoginFile, ".codex/auth.json") // a key the file did not name stays
+	assert.Len(t, codex.Artefacts, 1)                    // artefacts are replaced whole
+	url, a, ok := codex.ArtefactFor("arm64", "")
+	require.That(t, ok, "no artefact for arm64")
+	assert.Equal(t, url, "https://mirror.example/codex-9.9.9.tgz")
+	assert.Equal(t, a.Bin, "package/codex")
+
+	h := tb.Harness("codex-cli-keyless")
+	assert.Equal(t, h.From, FromDefault)
+	assert.That(t, h.Digest() != Defaults().Harness("codex-cli-keyless").Digest(), "the digest did not move with the machine's pin")
+	assert.Equal(t, tb.Harness("mine-h").Cli().Version, "1.2.3")
+	_, _, ok = tb.CLIs["mine"].ArtefactFor("arm64", "")
+	assert.That(t, !ok, "an artefact for an arch the entry does not name")
 }
 
 // pats config: the tables under a comment naming the file. with nothing

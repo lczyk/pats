@@ -64,9 +64,8 @@ func Load() (*Tables, error) {
 	return t, nil
 }
 
-// machineTables are the tables a machine's file may hold. clis stay the
-// release's until the images are built from them (docs/proposals/harnesses-1x.md).
-var machineTables = map[string]reflect.Type{"harnesses": tableTypes["harnesses"]}
+// machineTables are the tables a machine's file may hold: all of them.
+var machineTables = tableTypes
 
 // Overlay lays a machine's file over the defaults, entry by entry: an entry
 // named as a default changes it key by key, each key replaced whole and a
@@ -95,11 +94,8 @@ func Overlay(over []byte, path string) (*Tables, error) {
 			table, entries := deref(root.Content[i]), deref(root.Content[i+1])
 			typ, ok := machineTables[table.Value]
 			switch {
-			case table.Value == "clis":
-				add(table.Line, "clis: a machine's file does not set clis yet")
-				continue
 			case !ok:
-				add(table.Line, "unknown table %q (harnesses)", table.Value)
+				add(table.Line, "unknown table %q (clis, harnesses)", table.Value)
 				continue
 			case isNull(entries):
 				continue
@@ -125,8 +121,9 @@ func Overlay(over []byte, path string) (*Tables, error) {
 					}
 					continue
 				}
-				// an entry that sets nothing changes nothing.
-				if len(entry.Content) > 0 || mappingValue(into, name.Value) == nil {
+				// an entry that sets nothing changes nothing. where a harness
+				// is from is its own entry's: a cli's pin is in its digest.
+				if table.Value == "harnesses" && (len(entry.Content) > 0 || mappingValue(into, name.Value) == nil) {
 					t.from[name.Value] = FromMachine
 				}
 				if lay(into, name, entry) {

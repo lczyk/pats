@@ -1,8 +1,9 @@
 .SUFFIXES:
 
 SRCS   := $(shell find ./cmd ./internal ./src ./images -name '*.go') ./version.go
-# go:embed inputs: the version string, and what images/embed.go bakes in
-EMBEDS := ./VERSION ./images/provision-sandbox.sh
+# go:embed inputs: the version string, what images/embed.go bakes in, and
+# the default clis and harnesses
+EMBEDS := ./VERSION ./images/provision-sandbox.sh ./internal/machine/defaults.yaml
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
