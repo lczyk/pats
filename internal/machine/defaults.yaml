@@ -278,6 +278,8 @@ harnesses:
           elif t == "message_end":
               m = ev.get("message", {})
               if m.get("role") == "assistant":
+                  # first, so a usage this cannot read still leaves the error heard.
+                  out.error(m.get("stopReason") in ("error", "aborted"))
                   u = m.get("usage", {})
                   # reasoning is a part of output here, and cached tokens are none of input.
                   out.usage(
@@ -289,7 +291,6 @@ harnesses:
                       cache_read = u.get("cacheRead", 0),
                       cache_write = u.get("cacheWrite", 0),
                   )
-                  out.error(m.get("stopReason") in ("error", "aborted"))
                   text = "".join([c.get("text", "") for c in m.get("content", []) if c.get("type") == "text"])
                   if text.strip():
                       out.final(text)

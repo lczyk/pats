@@ -93,7 +93,7 @@ func checkOpenrouterModels(ctx context.Context, agents []config.Agent, client *h
 			}
 			errs = append(errs, msg)
 		case !slices.Contains(m.SupportedParameters, "tools"):
-			errs = append(errs, fmt.Sprintf("agent %q: model %q does not take tools, which opencode drives the agent with", a.Name, a.Model))
+			errs = append(errs, fmt.Sprintf("agent %q: model %q does not take tools, which its harness drives the agent with", a.Name, a.Model))
 		}
 	}
 	if len(errs) > 0 {

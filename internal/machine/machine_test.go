@@ -71,6 +71,12 @@ func TestDefaultEntries(t *testing.T) {
 	assert.Equal(t, strings.Join(copilot.Egress.Allow, " "), ".github.com .githubcopilot.com")
 	assert.Equal(t, strings.Join(opencode.Egress.Allow, " "), "openrouter.ai models.dev models.opencode.ai registry.npmjs.org")
 
+	pi := d.Harness("pi-openrouter")
+	assert.Equal(t, strings.Join(pi.AuthEnv, " "), "OPENROUTER_API_KEY")
+	assert.Equal(t, pi.LoginFile(), "")
+	assert.Equal(t, pi.Models, "openrouter")
+	assert.Equal(t, strings.Join(pi.Egress.Allow, " "), "openrouter.ai")
+
 	var none *Harness
 	assert.That(t, none.Parser() == nil, "no entry, no parser")
 }
