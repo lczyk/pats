@@ -1,8 +1,8 @@
 # the machine config: what pats knows about its tools, as a file
 
-status: implemented for the `harnesses` table; a machine's `clis` open with placement (`harnesses-1x.md`, step 6), and
-a project's harnesses with step 4. `harness-registry.md` is what a harness is and how a `pats.yaml` names and changes
-one, `harness-parse.md` the `parse` key, and `harness-images.md` how a cli of the `clis` table gets into an image.
+status: implemented for the `harnesses` table; a machine's `clis` open with placement (`harnesses-1x.md`, step 6).
+`harness-registry.md` is what a harness is and how a `pats.yaml` names and changes one, `harness-parse.md` the `parse`
+key, and `harness-images.md` how a cli of the `clis` table gets into an image.
 
 ## problem
 
