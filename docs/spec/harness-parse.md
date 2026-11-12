@@ -183,6 +183,20 @@ for the summary. what each has to keep:
   arrives: the reply is the text of the last step, and a step that ended stays the reply until a later one says
   something.
 
+a fifth came after, with no go reader before it, written against a recorded run:
+
+- **pi.** tools on `tool_execution_start`. each assistant `message_end` is a turn and carries its usage, its cost
+  and its `stopReason`: reasoning is a part of its output, and cached tokens are none of its input. the reply is
+  the text of the last assistant message that has any. `turn_end` and `agent_end` restate messages and are not
+  read. pi exits 0 on a reply that failed, so `error` and `aborted` as the last message's stop reason are the
+  error, and a retry that worked clears it. what a compaction's own call cost is not counted.
+
+### an error with exit 0
+
+preflight fails an agent whose harness exits 0 while its script has the error set at the end, as it fails a
+non-zero exit: pi's json mode exits 0 on a refused key. a pair is as before: its status is its exit, and the
+summary's `is_error` keeps it from a judge.
+
 ## limits
 
 - **cost is as good as the script.** a script that reports none leaves a cap with nothing to check, and says so

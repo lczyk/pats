@@ -1,6 +1,6 @@
 # harnesses: entries in a table, and a kind in the config
 
-status: implemented, but for `pi-openrouter` (`harnesses-1x.md`, step 8). `machine-config.md` is where the table lives, what an entry's keys are and the rule for laying
+status: implemented. `machine-config.md` is where the table lives, what an entry's keys are and the rule for laying
 one table over another. `harness-parse.md` is the `parse` key. `harness-images.md` is how a harness's cli gets into
 an image, and its pin.
 
@@ -143,22 +143,32 @@ pi (`github.com/earendil-works/pi`) is a small coding agent with a json event st
 becomes the fifth harness of the defaults, and the first that is an entry and nothing else:
 
 - a `clis` entry `pi`: `pi-linux-<arch>.tar.gz` of its github release, pinned as the others.
-- `run`: print mode, `--mode json`, `--no-session`, `--provider openrouter`, the model, `--thinking` from the
-  effort, startup fetches off (`PI_OFFLINE`).
+- `run`: print mode, `--mode json`, `--no-session`, `--approve`, `--provider openrouter`, the model, `--thinking`
+  from the effort, startup fetches off (`PI_OFFLINE`), and `--` before the prompt.
 - `auth-env: [OPENROUTER_API_KEY]`, `egress: {allow: [openrouter.ai]}`, `models: openrouter`.
-- `parse`: a script written against a recorded run, as the other four readers were.
+- `parse`: a script written against a recorded run (`harness-parse.md`).
 
-checked against release 1.5.2, with no key: the per-arch files are
-`https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-{x64,arm64}.tar.gz`, each with a
-digest github publishes; the executable is `pi/pi` (`bin: pi/pi`); it starts in the harness-free sandbox image with
-nothing else installed, and `pi --version` prints the bare version; `-p` / `--print`, `--mode json`,
-`--no-session`, `--provider`, `--model`, `--thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`)
-and `--offline` (the same as `PI_OFFLINE=1`) are all flags of it.
+checked against release 1.5.2:
 
-not verified yet, and each needs one run with a real key before the entry lands: that it reads
-`OPENROUTER_API_KEY`, what its json stream holds (the events `parse` is written against, and whether usage and
-cost are among them), how pats's effort levels map onto `--thinking`, and the hosts it reaches at startup (one run
-under `egress: {default: allow}`, then `pats egress suggest`).
+- **the files.** `https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-{x64,arm64}.tar.gz`,
+  each with a digest github publishes, which is the sha256 `pats harness pin` prints. the executable is `pi/pi`
+  (`bin: pi/pi`). it runs from where pats places it, and in a bare ubuntu image with nothing else installed.
+  `pi --version` prints the bare version.
+- **the key.** it reads `OPENROUTER_API_KEY`, and needs no login file.
+- **the stream** is one json object a line, documented in pi's `docs/json.md`. usage and cost come on each
+  assistant message, as openrouter reports them.
+- **failure.** json mode exits 0 on a reply that failed: a refused key and a model openrouter does not have both
+  end with `stopReason: error` and exit 0. so preflight reads the script's error too (`harness-parse.md`).
+- **effort** goes to `--thinking` as it is: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. a level pi
+  does not know is a warning on stderr and its default, `medium`. no effort is `medium` too.
+- **models.** an id outside pi's own catalogue is passed on with a warning, so pats's openrouter catalogue is the
+  check, as for opencode.
+- **trust.** pi loads a folder's own extensions and settings only from one it trusts, and asks. `--approve` trusts
+  the workspace for the run: pats is the outer sandbox, as for the other harnesses' permission flags. context
+  files (`AGENTS.md`) load either way.
+- **hosts.** a run under `egress: {default: allow}` reaches `openrouter.ai` and nothing else, with `PI_OFFLINE`
+  and without it, and `pats egress suggest` has nothing to add. the variable stays: it turns off what
+  pi fetches of its own accord, its model catalogue among it, which an allowlist would deny.
 
 the same entry in a machine's file is pi on a pats that does not ship it yet.
 
