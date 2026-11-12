@@ -69,6 +69,13 @@ func init() {
 				report(CleanEvent{Action: "remove", Kind: "temp", Name: filepath.Join(st.dir, "rootfs", name)})
 			}
 		},
+		purge: func(dryRun bool, report func(CleanEvent)) error {
+			st, err := newBwrapStore()
+			if err != nil {
+				return err
+			}
+			return st.purgeTrees(dryRun, report)
+		},
 	})
 }
 
@@ -250,10 +257,17 @@ func (d *bwrapDriver) forwarderBin() (string, error) {
 	return p, nil
 }
 
-// Stamps are the versions of clis in image id: read from beside it when what
-// is kept there answers for each, or found by stampScript in a throwaway
-// session and kept there.
+// Stamps are the versions of clis in image id alone: read from beside it
+// when what is kept there answers for each, or found by stampScript in a
+// throwaway session and kept there.
 func (d *bwrapDriver) Stamps(ctx context.Context, id string, clis []string) (map[string]string, error) {
+	return d.StampsOver(ctx, id, nil, clis)
+}
+
+// StampsOver is Stamps for a session of image id with trees over it. what is
+// kept beside a rootfs is the bare rootfs's: with trees the session is asked
+// each time, and the caller keeps the answer.
+func (d *bwrapDriver) StampsOver(ctx context.Context, id string, trees, clis []string) (map[string]string, error) {
 	if len(clis) == 0 {
 		return map[string]string{}, nil
 	}
@@ -262,15 +276,17 @@ func (d *bwrapDriver) Stamps(ctx context.Context, id string, clis []string) (map
 		return nil, err
 	}
 	kept := map[string]string{}
-	if b, err := os.ReadFile(st.stampsFile(id)); err == nil && json.Unmarshal(b, &kept) == nil && covers(kept, clis) {
-		return wanted(kept, clis), nil
+	if len(trees) == 0 {
+		if b, err := os.ReadFile(st.stampsFile(id)); err == nil && json.Unmarshal(b, &kept) == nil && covers(kept, clis) {
+			return wanted(kept, clis), nil
+		}
 	}
 	work, err := d.p.mkTemp("pats-stamp-")
 	if err != nil {
 		return nil, err
 	}
 	defer RemoveTemp(work)
-	sess, err := (&bwrapSandbox{d: d, image: id}).Start(ctx, Spec{Workdir: work, Egress: Egress{None: true}})
+	sess, err := (&bwrapSandbox{d: d, image: id, trees: trees}).Start(ctx, Spec{Workdir: work, Egress: Egress{None: true}})
 	if err != nil {
 		return nil, err
 	}
@@ -290,6 +306,9 @@ func (d *bwrapDriver) Stamps(ctx context.Context, id string, clis []string) (map
 	stamps, err := parseStamps(out.String())
 	if err != nil {
 		return nil, err
+	}
+	if len(trees) > 0 {
+		return stamps, nil
 	}
 	// what was kept for other clis stays: another project's set.
 	if kept == nil {
@@ -327,13 +346,73 @@ func (d *bwrapDriver) Sandbox(o SandboxOptions) (Sandbox, error) {
 	if o.Image == "" {
 		return nil, errors.New("sandbox driver bwrap needs an image")
 	}
-	return &bwrapSandbox{d: d, image: o.Image}, nil
+	return &bwrapSandbox{d: d, image: o.Image, trees: o.Trees}, nil
 }
 
-// bwrapSandbox makes sessions of one image.
+// bwrapSandbox makes sessions of one image, with the harness trees it names
+// stacked over it.
 type bwrapSandbox struct {
 	d     *bwrapDriver
-	image string // a store id, or a ref init pulled
+	image string   // a store id, or a ref init pulled
+	trees []string // tree ids, lowest first
+}
+
+// PlaceTrees unpacks each placed cli's tree into the store, once: beside the
+// trees, then renamed into place, so one that is there is whole.
+func (d *bwrapDriver) PlaceTrees(ctx context.Context, placed []Placed) ([]string, error) {
+	st, err := d.store()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, p := range placed {
+		id := p.Artefact.TreeID()
+		ids = append(ids, id)
+		if st.hasTree(id) {
+			continue
+		}
+		unlock, err := lockAt(ctx, st.treeLock(id), true, false)
+		if err != nil {
+			return nil, err
+		}
+		err = func() error {
+			defer unlock()
+			if st.hasTree(id) {
+				return nil // another init made it while this one waited
+			}
+			// under the lock, <id>.new is this unpack's, or one a crash left.
+			tmp := st.harnessTree(id) + ".new"
+			if err := removeTree(tmp); err != nil {
+				return err
+			}
+			defer removeTree(tmp)
+			if err := os.Mkdir(tmp, 0o755); err != nil {
+				return err
+			}
+			if err := BuildTree(p.Artefact, p.File, tmp); err != nil {
+				return err
+			}
+			return os.Rename(tmp, st.harnessTree(id))
+		}()
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %w", p.Artefact.CLI, p.Artefact.Version, err)
+		}
+	}
+	return ids, nil
+}
+
+// MissingTree is the first of ids the store does not hold.
+func (d *bwrapDriver) MissingTree(ids []string) string {
+	st, err := d.store()
+	if err != nil {
+		return ""
+	}
+	for _, id := range ids {
+		if !st.hasTree(id) {
+			return id
+		}
+	}
+	return ""
 }
 
 func (b *bwrapSandbox) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error) {
@@ -398,6 +477,22 @@ func (b *bwrapSandbox) Start(ctx context.Context, spec Spec) (Session, error) {
 		return nil, fmt.Errorf("%w: image %s is not in the store; run pats init", ErrLaunch, short12(id))
 	}
 	s := &bwrapSession{d: d, rootfs: st.rootfs(id), workdir: abs, unlock: unlock}
+	// each tree is held as the rootfs is, and has to be there: a pin that
+	// names one a clean took is an image to make again.
+	for _, tree := range b.trees {
+		tunlock, err := lockAt(ctx, st.treeLock(tree), false, false)
+		if err != nil {
+			s.Close()
+			return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+		}
+		held := s.unlock
+		s.unlock = func() { tunlock(); held() }
+		if !st.hasTree(tree) {
+			s.Close()
+			return nil, fmt.Errorf("%w: harness tree %s is not in the store; run pats init", ErrLaunch, short12(tree))
+		}
+		s.trees = append(s.trees, st.harnessTree(tree))
+	}
 	s.imageEnv, _ = st.imageEnv(id)
 	fail := func(err error) (Session, error) {
 		s.Close()
@@ -442,7 +537,8 @@ func (b *bwrapSandbox) Start(ctx context.Context, spec Spec) (Session, error) {
 type bwrapSession struct {
 	d        *bwrapDriver
 	rootfs   string
-	dir      string // the session's: upper/, work/, egress/, apt.conf
+	trees    []string // harness trees over the rootfs, lowest first
+	dir      string   // the session's: upper/, work/, egress/, apt.conf
 	workdir  string
 	binds    []bind
 	imageEnv []string
@@ -467,8 +563,12 @@ func (s *bwrapSession) argv(c Cmd, extra ...string) []string {
 	if s.net != netOpen {
 		a = append(a, "--unshare-net")
 	}
-	a = append(a, "--die-with-parent", "--new-session",
-		"--overlay-src", s.rootfs, "--overlay", filepath.Join(s.dir, "upper"), filepath.Join(s.dir, "work"), "/",
+	// the layers of the root, lowest first: the image, then each cli's tree.
+	a = append(a, "--die-with-parent", "--new-session", "--overlay-src", s.rootfs)
+	for _, tree := range s.trees {
+		a = append(a, "--overlay-src", tree)
+	}
+	a = append(a, "--overlay", filepath.Join(s.dir, "upper"), filepath.Join(s.dir, "work"), "/",
 		"--proc", "/proc", "--dev", "/dev",
 		"--bind", s.workdir, WorkMount)
 	for _, b := range s.binds {

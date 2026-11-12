@@ -18,7 +18,10 @@ type driverDef struct {
 	reopen func(ctx context.Context, target, rest, daemon string) (d Driver, ok bool)
 	// sweep, when set, takes what a crashed run of the driver left in the
 	// cache, reporting each removal.
-	sweep  func(dryRun bool, report func(CleanEvent))
+	sweep func(dryRun bool, report func(CleanEvent))
+	// purge, when set, takes what the driver keeps of the harness clis in
+	// the cache, reporting each removal and what it left: clean --all's.
+	purge  func(dryRun bool, report func(CleanEvent)) error
 	traits Traits
 }
 

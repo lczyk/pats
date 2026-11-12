@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"archive/tar"
 	"context"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -205,4 +207,104 @@ func (c *endsOnSecondLook) Err() error {
 		return context.Canceled
 	}
 	return nil
+}
+
+// a session's root is its image with each harness tree over it, lowest
+// first, under the session's own writes.
+func TestBwrapArgvStacksTrees(t *testing.T) {
+	f := &fakeBwrap{}
+	s := bwrapSessionOn(f, netNone)
+	s.trees = []string{"/store/harness/aaa", "/store/harness/bbb"}
+	_, err := s.Exec(context.Background(), Cmd{Argv: []string{"agent"}}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	assert.ContainsString(t, argString(f.calls[0].args),
+		"--overlay-src /store/rootfs/sha256-x --overlay-src /store/harness/aaa --overlay-src /store/harness/bbb "+
+			"--overlay /cache/pats-bwrap-1/upper /cache/pats-bwrap-1/work /")
+}
+
+// a cli's tree is unpacked into the store once, under its id, and is there
+// whole or not at all.
+func TestBwrapPlaceTrees(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	d := &bwrapDriver{r: &fakeBwrap{}}
+	file := tarGz(t, tarEntry{name: "package/tool", mode: 0o755, typ: tar.TypeReg, body: "#!/bin/sh\necho 'tool 1.2.3'\n"})
+	a := Artefact{CLI: "tool", Version: "1.2.3", Arch: "amd64", SHA256: "aa", Bin: "package/tool"}
+	st, err := d.store()
+	require.NoError(t, err)
+	assert.Equal(t, d.MissingTree([]string{a.TreeID()}), a.TreeID())
+
+	ids, err := d.PlaceTrees(context.Background(), []Placed{{Artefact: a, File: file}})
+	require.NoError(t, err)
+	assert.EqualArrays(t, ids, []string{a.TreeID()})
+	assert.Equal(t, d.MissingTree(ids), "")
+	target, err := os.Readlink(st.harnessTree(a.TreeID()) + "/usr/local/bin/tool")
+	require.NoError(t, err)
+	assert.Equal(t, target, "/opt/pats/harness/tool/package/tool")
+	left, err := os.ReadDir(st.harnessTree(a.TreeID()) + "/..")
+	require.NoError(t, err)
+	for _, e := range left {
+		assert.That(t, !strings.HasPrefix(e.Name(), ".new-"), "a half-made tree was left: %s", e.Name())
+	}
+
+	// there already: nothing is unpacked, the artefact is not even read.
+	again, err := d.PlaceTrees(context.Background(), []Placed{{Artefact: a, File: "/nonexistent/not-read"}})
+	require.NoError(t, err)
+	assert.EqualArrays(t, again, ids)
+
+	// one that cannot be made leaves no tree under its id.
+	bad := Artefact{CLI: "other", Version: "1", Arch: "amd64", SHA256: "bb", Bin: "package/nope"}
+	_, err = d.PlaceTrees(context.Background(), []Placed{{Artefact: bad, File: file}})
+	assert.Error(t, err, "other 1: ")
+	assert.Equal(t, d.MissingTree([]string{bad.TreeID()}), bad.TreeID())
+}
+
+// clean --all takes the fetched artefacts and the trees unpacked from them: a
+// tree a sandbox holds is kept and said so, a fetch in flight keeps its temp
+// file, and a dry run removes nothing.
+func TestCleanHarness(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	d := &bwrapDriver{r: &fakeBwrap{}}
+	file := tarGz(t, tarEntry{name: "package/tool", mode: 0o755, typ: tar.TypeReg, body: "#!/bin/sh\n"})
+	held := Artefact{CLI: "tool", Version: "1", Arch: "amd64", SHA256: "aa", Bin: "package/tool"}
+	free := Artefact{CLI: "tool", Version: "2", Arch: "amd64", SHA256: "bb", Bin: "package/tool"}
+	_, err := d.PlaceTrees(context.Background(), []Placed{{Artefact: held, File: file}, {Artefact: free, File: file}})
+	require.NoError(t, err)
+	st, err := d.store()
+	require.NoError(t, err)
+	crashed := st.harnessTree(free.TreeID()) + ".new" // what a crashed unpack left
+	require.NoError(t, os.MkdirAll(crashed+"/opt", 0o755))
+	unlock, err := lockAt(context.Background(), st.treeLock(held.TreeID()), false, false)
+	require.NoError(t, err)
+
+	cache, err := artefactCache()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(cache, 0o755))
+	for _, n := range []string{"aa", "fetch-fresh", "fetch-stale"} {
+		require.NoError(t, os.WriteFile(cache+"/"+n, []byte("x"), 0o644))
+	}
+	old := time.Now().Add(-2 * fetchGrace)
+	require.NoError(t, os.Chtimes(cache+"/fetch-stale", old, old))
+
+	var events []string
+	report := func(e CleanEvent) { events = append(events, e.String()) }
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+
+	require.NoError(t, CleanHarness(true, report))
+	assert.That(t, exists(cache+"/aa") && d.MissingTree([]string{free.TreeID()}) == "", "a dry run removed something")
+	assert.ContainsString(t, strings.Join(events, "\n"), "would remove harness artefact "+cache+"/aa")
+
+	events = nil
+	require.NoError(t, CleanHarness(false, report))
+	all := strings.Join(events, "\n")
+	assert.That(t, !exists(cache+"/aa") && !exists(cache+"/fetch-stale"), "an artefact was left")
+	assert.That(t, exists(cache+"/fetch-fresh"), "a fetch in flight lost its file")
+	assert.Equal(t, d.MissingTree([]string{held.TreeID()}), "")
+	assert.Equal(t, d.MissingTree([]string{free.TreeID()}), free.TreeID())
+	assert.That(t, !exists(crashed), "a crashed unpack's dir was left")
+	assert.ContainsString(t, all, "removed harness tree "+st.harnessTree(free.TreeID()))
+	assert.ContainsString(t, all, "host: kept tree "+st.harnessTree(held.TreeID())+" (in use by a running sandbox, or being unpacked)")
+
+	unlock()
+	require.NoError(t, CleanHarness(false, report))
+	assert.Equal(t, d.MissingTree([]string{held.TreeID()}), held.TreeID())
 }

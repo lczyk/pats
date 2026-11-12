@@ -504,3 +504,82 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	assert.Error(t, err, "init failed for sandbox(es) dflt")
 	assert.ContainsString(t, out.String(), "cli opencode "+opencode.Version+" has no artefact for amd64")
 }
+
+// treeHost is a fake host that keeps trees beside its images, as bwrap does.
+type treeHost struct {
+	*fakeHost
+	trees       map[string]bool
+	stampedOver [][]string
+}
+
+func (h *treeHost) PlaceTrees(_ context.Context, placed []sandbox.Placed) ([]string, error) {
+	var ids []string
+	for _, p := range placed {
+		h.trees[p.Artefact.TreeID()] = true
+		ids = append(ids, p.Artefact.TreeID())
+	}
+	return ids, nil
+}
+
+func (h *treeHost) MissingTree(ids []string) string {
+	for _, id := range ids {
+		if !h.trees[id] {
+			return id
+		}
+	}
+	return ""
+}
+
+func (h *treeHost) StampsOver(ctx context.Context, id string, trees, clis []string) (map[string]string, error) {
+	h.stampedOver = append(h.stampedOver, trees)
+	return h.fakeHost.Stamps(ctx, id, clis)
+}
+
+// a place that builds no image keeps each cli's tree beside the one it pulls:
+// init builds nothing, pins the pulled image and what was placed, and stamps
+// a session of the two. a run hands the pinned trees to its sandbox, and one
+// that is gone is a pin to make again.
+func TestInitKeepsTreesBesideAnImage(t *testing.T) {
+	dir := t.TempDir()
+	const body = `
+sbx: {kind: sandbox, items: {bw: {driver: bwrap}}}
+agx: {kind: agent, defaults: {model: m}, items: {oc: {harness: opencode-openrouter, sandbox: bw}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
+`
+	cfg := parseCfg(t, body)
+	h := &treeHost{fakeHost: newFakeHost(), trees: map[string]bool{}}
+	useHost(t, h)
+	var got sandbox.SandboxOptions
+	old := newSandbox
+	newSandbox = func(_ sandbox.Options, o sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		got = o
+		return &fakeSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = old })
+
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	assert.Len(t, h.builds, 0)
+	pub, _ := sandbox.SandboxImage("")
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	e := f.entry("fake:host", "bw")
+	require.NotNil(t, e)
+	assert.Equal(t, e.Image, pinImage{ID: "sha256:pulled-" + pub, Name: pub, Pulled: true})
+	tree := e.Harnesses["opencode"]["tree"]
+	assert.That(t, h.trees[tree], "the pinned tree %q was not placed", tree)
+	require.Len(t, h.stampedOver, 1)
+	assert.EqualArrays(t, h.stampedOver[0], []string{tree})
+	assert.That(t, e.Components["opencode"] != "", "no stamp for opencode: %v", e.Components)
+
+	_, err = Run(parseCfg(t, body), Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, got.Image, "sha256:pulled-"+pub)
+	assert.EqualArrays(t, got.Trees, []string{tree})
+
+	delete(h.trees, tree)
+	_, err = Run(parseCfg(t, body), Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	assert.Error(t, err, "a harness tree it was pinned with")
+	assert.Error(t, err, "run `pats init` first")
+}

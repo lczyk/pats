@@ -155,13 +155,74 @@ func (st bwrapStore) refFile(ref string) string {
 	return filepath.Join(st.dir, "refs", hex.EncodeToString(sum[:]))
 }
 
+// harnessTree is where the tree of id is unpacked, and treeLock its lock.
+func (st bwrapStore) harnessTree(id string) string { return filepath.Join(st.dir, "harness", id) }
+func (st bwrapStore) treeLock(id string) string    { return filepath.Join(st.dir, "harness", id+".lock") }
+
+// hasTree says whether the tree of id is in the store, whole: it is renamed
+// into place once unpacked.
+func (st bwrapStore) hasTree(id string) bool {
+	fi, err := os.Stat(st.harnessTree(id))
+	return err == nil && fi.IsDir()
+}
+
+// purgeTrees removes every harness tree no running sandbox holds, and what a
+// crashed unpack left of one; a tree in use is reported and kept. a tree goes
+// in one step, renamed aside first: it is in the store whole or not at all.
+func (st bwrapStore) purgeTrees(dryRun bool, report func(CleanEvent)) error {
+	es, _ := os.ReadDir(filepath.Join(st.dir, "harness"))
+	var errs []error
+	for _, e := range es {
+		id := strings.TrimSuffix(e.Name(), ".new")
+		if !e.IsDir() {
+			continue // a lock file, which stays: an unpack may wait on it
+		}
+		tree := st.harnessTree(e.Name())
+		if _, err := os.Lstat(tree); err != nil {
+			continue // went with the tree it was beside
+		}
+		unlock, err := lockAt(context.Background(), st.treeLock(id), true, true)
+		if err != nil {
+			if errors.Is(err, syscall.EWOULDBLOCK) {
+				report(CleanEvent{Action: "keep", Kind: "tree", Name: tree, Why: "in use by a running sandbox, or being unpacked"})
+				continue
+			}
+			errs = append(errs, err)
+			continue
+		}
+		if !dryRun {
+			// what a crashed unpack left there goes first, then the tree by
+			// the same name.
+			aside := st.harnessTree(id) + ".new"
+			err = removeTree(aside)
+			if err == nil && tree != aside {
+				if err = os.Rename(tree, aside); err == nil {
+					err = removeTree(aside)
+				}
+			}
+		}
+		unlock()
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		report(CleanEvent{Action: "remove", Kind: "tree", Name: tree})
+	}
+	return errors.Join(errs...)
+}
+
 // lock opens id's lock file and takes it (exclusive or shared), waiting
 // until ctx ends unless nowait; the returned func releases it.
 func (st bwrapStore) lock(ctx context.Context, id string, exclusive, nowait bool) (func(), error) {
-	if err := os.MkdirAll(filepath.Join(st.dir, "rootfs"), 0o700); err != nil {
+	return lockAt(ctx, st.lockFile(id), exclusive, nowait)
+}
+
+// lockAt is lock for the lock file at path.
+func lockAt(ctx context.Context, path string, exclusive, nowait bool) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(st.lockFile(id), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

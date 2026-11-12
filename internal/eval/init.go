@@ -255,7 +255,13 @@ func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, tables *
 		err = initContainer(ctx, sb, clis, tables, ro, opts, h, e)
 	}
 	if err == nil {
-		e.Components, err = h.Stamps(ctx, e.Image.ID, clis)
+		// where the trees sit beside the image, a session of the two is
+		// what an agent runs in, and what is asked.
+		if th, ok := h.(sandbox.TreeHost); ok && len(e.Harnesses) > 0 {
+			e.Components, err = th.StampsOver(ctx, e.Image.ID, treeIDs(e), clis)
+		} else {
+			e.Components, err = h.Stamps(ctx, e.Image.ID, clis)
+		}
 	}
 	if err == nil {
 		// an image: or a build: brings its own clis, and a provision can
@@ -306,6 +312,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 	}
 	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.Name, msg) }
 	var placed []sandbox.Placed
+	var own *pinImage // pats's own sandbox image, once pulled
 	if places(sb) && len(clis) > 0 {
 		ref := sb.Base
 		if ref == "" {
@@ -313,11 +320,23 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 		}
 		// the base has to be there to say its arch. pats's own is pulled
 		// afresh when forced, as it is when it is the sandbox's image.
-		if _, err := ensurePulled(ctx, h, ref, opts.Force && !provisions(sb), lg, log, h.Pull); err != nil {
+		im, err := ensurePulled(ctx, h, ref, opts.Force && !provisions(sb), lg, log, h.Pull)
+		if err != nil {
 			return fail(fmt.Errorf("its base %s: %w", ref, err))
+		}
+		if !provisions(sb) {
+			own = &im
 		}
 		if placed, err = placeIn(ctx, sb, ref, clis, tables, lg, h, e); err != nil {
 			return fail(err)
+		}
+		// a place that builds no image keeps the trees beside the one it
+		// pulls: nothing is built on it.
+		if th, ok := h.(sandbox.TreeHost); ok {
+			if _, err := th.PlaceTrees(ctx, placed); err != nil {
+				return fail(err)
+			}
+			placed = nil
 		}
 	}
 	froms := fromImages(sb, ro.ConfigDir)
@@ -370,6 +389,8 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 			return err
 		}
 		e.Image = im
+	case own != nil:
+		e.Image = *own // its clis sit beside it
 	default:
 		im, err := ensurePulled(ctx, h, base(), opts.Force, lg, log, h.Pull)
 		if err != nil {
@@ -541,6 +562,8 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reason = "pinned against another " + sb.Driver + " daemon"
 		case !present(ctx, h, e.Image.ID):
 			reason = "its pinned image " + short(e.Image.ID) + " is gone"
+		case missingTree(h, e) != "":
+			reason = "a harness tree it was pinned with (" + short(missingTree(h, e)) + ") is gone"
 		case pinsProxy(sb) && e.Proxy == nil:
 			reason = "no egress proxy pinned"
 		case pinsProxy(sb) && !present(ctx, h, e.Proxy.ID):
@@ -577,6 +600,9 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		cfg.Sandboxes[i].Image = e.Image.ID
 		cfg.Sandboxes[i].Components = e.Components
 		cfg.Sandboxes[i].Placed = e.Harnesses
+		if _, ok := h.(sandbox.TreeHost); ok {
+			cfg.Sandboxes[i].Trees = treeIDs(e)
+		}
 		checks = append(checks, upstreamCheck{sb: sb.Name, up: h.Upstream, inputs: e.Inputs})
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
@@ -593,6 +619,15 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 	}
 	return nil, fmt.Errorf("images missing for %d sandbox(es):\n%s\nrun `%s` first", len(missing), strings.Join(reasons, "\n"), cmd)
+}
+
+// missingTree is a tree e records that its host, when it keeps trees beside
+// its images, no longer has; "" otherwise.
+func missingTree(h imageHost, e *pinEntry) string {
+	if th, ok := h.(sandbox.TreeHost); ok {
+		return th.MissingTree(treeIDs(e))
+	}
+	return ""
 }
 
 // missingImage is an image e pins that its host no longer has, "" when

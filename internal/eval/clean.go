@@ -166,6 +166,13 @@ func Clean(ctx context.Context, o CleanOptions) error {
 		if err := sandbox.CleanTemp(listed, planned, olderThan, o.DryRun, o.Force, report); err != nil {
 			errs = append(errs, err)
 		}
+		// the harness clis init fetched and unpacked are every project's:
+		// only a clean of everything takes them.
+		if o.All || o.Force {
+			if err := sandbox.CleanHarness(o.DryRun, report); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 	return errors.Join(errs...)
 }

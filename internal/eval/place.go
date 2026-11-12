@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/lczyk/pats/internal/config"
@@ -25,7 +26,11 @@ func places(sb config.Sandbox) bool {
 	if sb.Image != "" || sb.Build != "" {
 		return false
 	}
-	return sb.Driver == "docker" || sb.Driver == "podman" || sb.Driver == sandbox.LXDDriver
+	switch sb.Driver {
+	case "docker", "podman", sandbox.LXDDriver, "bwrap":
+		return true
+	}
+	return false
 }
 
 // artefactsFor is the artefact of each of clis for arch, in their order, by
@@ -75,6 +80,23 @@ func harnessInputNow(cfg *config.Config, sb config.Sandbox, arch string) string 
 		return "unplaceable: " + err.Error()
 	}
 	return harnessInput(arts)
+}
+
+// treeIDs is the ids of the trees a pin records, in the order of their clis'
+// names: what a place that keeps trees beside its images stacks over one.
+func treeIDs(e *pinEntry) []string {
+	names := make([]string, 0, len(e.Harnesses))
+	for n := range e.Harnesses {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var out []string
+	for _, n := range names {
+		if id := e.Harnesses[n]["tree"]; id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // fetchPlaced fetches each artefact into the cache, checked, and returns

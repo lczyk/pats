@@ -39,7 +39,7 @@ const promptName = "prompt.txt"
 // label prefixes the no-creds warning.
 func newHarness(opts Options, a config.Agent, hd *machine.Harness, sb config.Sandbox, te config.TaskEgress, workDir, runID, auditPath, label string) (*harness, error) {
 	box, err := newSandbox(placeOptions(sb), sandbox.SandboxOptions{
-		Image: sb.Image, Profiles: sb.Profiles, Config: sb.Config, ProxyImage: sb.ProxyImage,
+		Image: sb.Image, Trees: sb.Trees, Profiles: sb.Profiles, Config: sb.Config, ProxyImage: sb.ProxyImage,
 		Limits: sandbox.Limits{CPU: sb.Limits.CPU, Memory: sb.Limits.Memory, Disk: sb.Limits.Disk},
 	})
 	if err != nil {

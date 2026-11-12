@@ -145,9 +145,26 @@ func placeArch(arch string) (string, error) {
 	return "", fmt.Errorf("no harness cli is published for %s (amd64 and arm64 are)", arch)
 }
 
+// TreeHost is a place whose images hold no placed cli: it keeps each cli's
+// tree beside them, and stacks the ones a sandbox names over its image as a
+// session starts (bwrap, which builds no image).
+type TreeHost interface {
+	// PlaceTrees makes each placed cli's tree present, unpacked once, and
+	// returns their ids in order.
+	PlaceTrees(ctx context.Context, placed []Placed) ([]string, error)
+	// MissingTree is the first of ids that is not there, "" when all are.
+	MissingTree(ids []string) string
+	// StampsOver are the versions of clis in a session of image id with
+	// trees over it: what a sandbox of the two would run.
+	StampsOver(ctx context.Context, id string, trees, clis []string) (map[string]string, error)
+}
+
 // SandboxOptions are what one sandbox needs on top of its place.
 type SandboxOptions struct {
-	Image  string // a container image, or an lxd image alias or fingerprint
+	Image string // a container image, or an lxd image alias or fingerprint
+	// Trees are the harness trees stacked over the image, by id, on a place
+	// that keeps them beside its images (TreeHost).
+	Trees  []string
 	Limits Limits
 	// ProxyImage is the egress proxy image a run uses as is (lxd): a
 	// fingerprint or alias in the pats project. "" -> built on demand.

@@ -102,6 +102,10 @@ func (e CleanEvent) String() string {
 			return act + " lease " + name
 		case "owner":
 			return act + " owner file " + name
+		case "artefact":
+			return act + " harness artefact " + name
+		case "tree":
+			return act + " harness tree " + name
 		}
 		why := e.Why
 		if e.Run != "" {
@@ -470,6 +474,48 @@ next:
 		o.report(e)
 	}
 	return nil
+}
+
+// fetchGrace is how long a fetch's temp file is taken to be one in flight.
+const fetchGrace = time.Hour
+
+// CleanHarness removes what init keeps of the harness clis on this machine,
+// which only clean --all takes: the fetched artefacts, and what a driver made
+// of them in the cache (bwrap's trees, save one a running sandbox holds). the
+// next init fetches again. a fetch in flight is left its temp file.
+func CleanHarness(dryRun bool, report func(CleanEvent)) error {
+	o := CleanOptions{Place: "host", DryRun: dryRun, Report: report}
+	var errs []error
+	dir, err := artefactCache()
+	if err != nil {
+		return err
+	}
+	es, _ := os.ReadDir(dir)
+	for _, e := range es {
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), "fetch-") && time.Since(fi.ModTime()) < fetchGrace {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if !dryRun {
+			if err := os.Remove(path); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		o.report(CleanEvent{Action: "remove", Kind: "artefact", Name: path})
+	}
+	for _, name := range Drivers() {
+		if purge := drivers[name].purge; purge != nil {
+			if err := purge(dryRun, o.report); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // CleanTemp removes the temp dirs and lease files runs left on this host:

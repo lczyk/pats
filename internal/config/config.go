@@ -96,6 +96,9 @@ type Sandbox struct {
 	// Placed what init placed of each harness cli there.
 	Components map[string]string            `yaml:"-"`
 	Placed     map[string]map[string]string `yaml:"-"`
+	// Trees are the ids of the placed trees a session stacks over the image,
+	// where the place keeps them beside it (bwrap).
+	Trees []string `yaml:"-"`
 }
 
 // Egress is a sandbox's outbound network policy. absent, the network is
