@@ -20,7 +20,7 @@ an error but an over-broad one is a long, expensive run.
   ```
   INFO haiku/curl  sandbox docker  est $0.04 (median of 6)
   INFO sonnet/curl  sandbox docker  est unknown (no history)
-  INFO codex-mini/curl  sandbox docker  est unknown (no cost reported)
+  INFO codex-mini/curl  sandbox docker  est unknown (no history)
   INFO 3 pair(s), est $0.04 + 2 unknown
   ```
 
@@ -40,8 +40,8 @@ a task with a step sandbox (`docs/spec/step-sandbox.md`) shows it after the sand
   `pairs` counts distinct pairs, `executions` pairs times repeats, `unknown_pairs` distinct pairs without an estimate.
   `fits` is whether `known_usd` is under `--max-cost`, null without one.
 - **the estimate** is the median `summary.cost_usd` of past pairs that match, with `has_cost: true`, whatever their
-  status. `samples` is how many there were. none: `unknown`, with the reason `no history`, or `no cost reported` for
-  a harness that reports none.
+  status. `samples` is how many there were. none: `unknown`, with the reason `no history`. a harness
+  that reports no cost leaves no history, and reads the same.
 - **matching.** a past pair matches when its `metadata.json` has the same agent name, task name, harness, model, effort
   and provider block (`provider-pinning.md`) as the agent and task now. a missing provider block matches only an
   agent with none. metadata from before `model` was recorded matches nothing.
@@ -61,7 +61,7 @@ a task with a step sandbox (`docs/spec/step-sandbox.md`) shows it after the sand
 
 - **no price-list estimate.** turning tokens into dollars from openrouter's prices needs a token estimate per task,
   which pats does not have. past cost of the same pair is the honest number, and unknown is an answer.
-- **no zero for harnesses without cost.** they are `unknown (no cost reported)`, never `$0`.
+- **no zero for harnesses without cost.** they are `unknown (no history)`, never `$0`.
 
 ## tests
 

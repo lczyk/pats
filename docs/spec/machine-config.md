@@ -95,7 +95,7 @@ with a line holding an `x.y.z` version, as the four do. the keys:
   - **`bin`**: the path of the executable inside the file, which is then a gzipped tar. without `bin` the file is
     the executable itself.
 - **`login-file`**: where the cli keeps its login, as a path under the home. the host's copy is that path under the
-  user's home, or the file `PATS_<CLI>_AUTH_PATH` names (the cli's name in capitals).
+  user's home, or the file `PATS_<CLI>_AUTH_PATH` names (the cli's name in capitals, a `-` as `_`).
 - **`home-env`**: variables set to a path under the harness home, for every harness on the cli
   (`CODEX_HOME: .codex`).
 
@@ -146,13 +146,14 @@ harnesses over the result (`harness-registry.md`).
 - an entry that sets `version` sets `artefacts`, and the reverse: a sha is of one version.
 - nothing removes an entry, and there is no other inheritance: no entry names another to start from.
 
-the result, checked as a whole, is what pats runs with: every harness has a `run`; its `cli` and `models`, where
-set, name something that exists; its `parse` compiles; its `egress` entries are hosts the proxy's parser takes;
-`login` has a cli with a `login-file`. every cli has a version and at least one artefact, each with an `arch` and
-a `sha256`. an arch a cli has no artefact for is an error only at an init that needs it. names are lower-case
-letters, digits and `-`; a `bin` stays inside its artefact; a `login-file` and a `home-env` path stay under the
-home. an unknown key, in either table or at the top, is an error. each error names the file, the line and the
-entry, and stops every command that reads the file: a machine config that is wrong is never half applied.
+the result, checked as a whole, is what pats runs with: every harness has a `run`; its `cli` and `models`, where set,
+name something that exists; its `parse` compiles; its `egress` entries are hosts the proxy's parser takes; `login` has a
+cli with a `login-file`. every cli has a version and at least one artefact, each with an `arch` and a `sha256`. an arch
+a cli has no artefact for is an error only at an init that needs it. names are lower-case letters, digits and `-`; a
+variable in `auth-env`, `pass-env` or `home-env` is a variable's name, not `HOME` or a `PATS_` one (pats sets those),
+and named once across the three; a `bin` stays inside its artefact; a `login-file` and a `home-env` path stay under the
+home. an unknown key, in either table or at the top, is an error. each error names the file, the line and the entry, and
+stops every command that reads the file: a machine config that is wrong is never half applied.
 
 it is read by every command that reads a `pats.yaml`, before it, and by the three that need the tables with no
 project: `pats config`, `pats harness pin` and `pats harness parse`. no other command reads it.

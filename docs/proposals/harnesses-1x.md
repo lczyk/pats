@@ -1,6 +1,6 @@
 # proposal: harnesses on 1.x
 
-status: proposed. four specs: `docs/spec/machine-config.md` (the file pats reads its harnesses and clis from),
+status: steps 1 and 2 implemented, the rest proposed. four specs: `docs/spec/machine-config.md` (the file pats reads its harnesses and clis from),
 `docs/spec/harness-registry.md` (what a harness is, and `kind: harness` in a `pats.yaml`),
 `docs/spec/harness-parse.md` (a harness's output read by a script) and `docs/spec/harness-images.md` (how a
 harness's cli gets into an image, and its pin). this is the order they land in and what each step costs.

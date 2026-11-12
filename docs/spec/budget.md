@@ -30,15 +30,17 @@ cost is seen, and one step can cost more than a cap. the task's `timeout` stays 
 
 ## where the cost comes from
 
-- **opencode-openrouter**: every `step_finish` event carries the step's `part.cost`. `scanOpencode` adds it to the
-  pair's live spend as it streams, the same way it counts tool calls now.
-- **claude-cli-keyless**: the cost is in the final `result` event only. it counts towards the run cap when the pair
-  ends, and a per-agent cap cannot stop a claude pair mid-run. (a keyless, subscription-billed run's cost is notional
-  anyway.)
+cost is whatever a harness's parse script reports (`harness-parse.md`), as it reports it:
+
+- **opencode-openrouter**: every `step_finish` event carries the step's `part.cost`, which joins the pair's live
+  spend as it streams.
+- **claude-cli-keyless**: the cost is in the final `result` event only. it joins the spend there, while the agent
+  still runs: a per-agent cap stops a claude pair at its end, with its work done, and marks it `budget`. (a
+  keyless, subscription-billed run's cost is notional anyway.)
 - **codex-cli-keyless, copilot-cli-keyless**: no dollar cost (`has_cost: false`). they count as zero.
-- **validation**: `max-cost` on an agent whose harness reports no live cost (every harness but
-  `opencode-openrouter`) is a load error naming the harness. `--max-cost` with agents whose harness reports no cost
-  warns once at the start, naming them: they run uncapped.
+- **validation**: `max-cost` loads on every agent: pats cannot know what a script will report. an agent whose
+  preflight reported no cost, and that has a `max-cost` or runs under `--max-cost`, is warned about once: `WARN
+  agent X reports no cost: max-cost has nothing to check`. with preflight skipped nothing warns.
 - **the credential preflight** runs each agent once on a trivial prompt (`preflight.go`), before any pair. its spend
   is not counted and not capped. it is one short prompt per agent, and the readme says the cap starts at the first
   pair.
@@ -98,5 +100,6 @@ pair starts in the current repeat, and no further repeat starts: no new run dir 
 - `-j 3` with a fake harness: concurrent completions and admissions never count a pair twice (race detector on).
 - a pair whose metadata write fails keeps its live spend in the ledger.
 - a deadline and a cap passing in either order give `timeout` and `budget` respectively.
-- validation: `max-cost` on a claude agent, `max-cost: 0`, and `--max-cost -1` are errors.
+- validation: `max-cost: 0` and `--max-cost -1` are errors. `max-cost` on a claude agent loads, and its pair is
+  `budget` at its `result`; on a codex agent it loads and warns after preflight.
 - `report` shows a budget-stopped pair with its own mark.

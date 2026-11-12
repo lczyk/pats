@@ -103,7 +103,7 @@ a run never fetches: it starts from the pinned image, as now.
 
 a cli's tree is what goes into the image, the same on every driver:
 
-- `opt/pats/harness/<cli>/`: the unpacked artefact, or the file itself.
+- `opt/pats/harness/<cli>/`: the unpacked artefact, or the file itself as `<cli>` in it, mode 0755.
 - `usr/local/bin/<cli>`: a symlink to the executable in it.
 
 it is unpacked by the rules the bwrap store unpacks a layer with (`bwrap.md`): an entry whose path or link target
@@ -216,10 +216,11 @@ this breaks, and the release notes say so:
 - placement: the generated dockerfile for an empty set, a set of two, and a set under `base:` and `provision:`; the lxd
   layer's key moves with a pin and with the set; bwrap stacks one lower dir per cli; a changed `bin` moves the key and
   the tree's id, and not the cache's file.
-- the run: `placed` in a pair's metadata is the pin entry's `harnesses`, every cli of the set, under bwrap too; a
-  cli missing from `components` stops it with the init command, under a composed and an `image:` sandbox; a moved pin warns once and goes on; an item's own pin is not reported as drift from the machine's; an
-  `image:` sandbox without the cli, and a `provision` that removes one, fail init; a bwrap session mounts the
-  recorded trees after the config's pin moved, and a recorded tree that is gone stops the run.
+- the run: `placed` in a pair's metadata is the pin entry's `harnesses`, every cli of the set, under bwrap too; a cli
+  missing from `components` stops it with the init command, under a composed and an `image:` sandbox; a moved pin warns
+  once and goes on; an item's own pin is not reported as drift from the machine's; an `image:` sandbox without the cli,
+  and a `provision` that removes one, fail init; a bwrap session mounts the recorded trees after the config's pin moved,
+  and a recorded tree that is gone stops the run.
 - arch: an amd64 base on an arm64 daemon gets amd64 trees.
 - e2e, per driver: a one-harness sandbox has that cli on `PATH` at the pinned version and none of the others.
 

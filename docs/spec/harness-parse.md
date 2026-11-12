@@ -1,7 +1,8 @@
 # parse: a harness's output read by a script
 
-status: proposed. it fills the `parse` key of a harness entry (`machine-config.md`, `harness-registry.md`) and
-changes `budget.md` (the load error for `max-cost` becomes a warning).
+status: implemented. it fills the `parse` key of a harness entry (`machine-config.md`, `harness-registry.md`) and
+changes `budget.md` (the load error for `max-cost` becomes a warning), `agent-scorers.md` (a judge's reply is read
+by the script) and `run-dry-run.md` (a harness with no cost reads as no history).
 
 ## problem
 
@@ -35,15 +36,18 @@ opencode-openrouter:
         elif t == "text":
             out.text(part.get("text", ""))
         elif t == "step_finish":
-            tok = part["tokens"]
+            out.clear(next = True)
+            tok = part.get("tokens", {})
+            cache = tok.get("cache", {})
+            reasoning = tok.get("reasoning", 0)
             out.usage(
                 turns = 1,
-                cost_usd = part["cost"],
-                input = tok["input"],
-                output = tok["output"] + tok["reasoning"],
-                reasoning = tok["reasoning"],
-                cache_read = tok["cache"]["read"],
-                cache_write = tok["cache"]["write"],
+                cost_usd = part.get("cost", 0),
+                input = tok.get("input", 0),
+                output = tok.get("output", 0) + reasoning,
+                reasoning = reasoning,
+                cache_read = cache.get("read", 0),
+                cache_write = cache.get("write", 0),
             )
         elif t == "error":
             out.error()
@@ -63,7 +67,7 @@ handed to it by name.
   `re.findall(pattern, s)` a list of them. the syntax and the engine are go's `regexp`: no lookaround and no
   backreferences, and time linear in the line whatever an agent printed into it. a pattern is compiled once.
 - **nothing else.** no file, no network, no environment, no clock. starlark has no unbounded loop and no recursion
-  unless a host allows them, and pats does not. each run has a step budget.
+  unless a host allows them, and pats does not. each run has a budget of a million steps.
 - **no state of its own.** every line is a run of the whole script from its top, so nothing a script sets lasts to
   the next line. what the four formats need across lines is in `out`'s rules below.
 - a script may `def` helpers and call them, and may use `if` and `for` at its top level and set a name twice: pats
@@ -78,7 +82,7 @@ handed to it by name.
 | `out.usage(...)` | adds its keywords to the totals, or with `total = True` replaces those totals |
 | `out.error(v = True)` | sets `is_error` |
 | `out.text(s)` | a piece of the reply |
-| `out.clear()` | drops the pieces so far |
+| `out.clear(next = False)` | drops the pieces so far, or with `next = True` once another arrives |
 | `out.final(s, add = False)` | the reply, whole: it replaces the candidates before it, or joins them |
 
 the rules:
@@ -127,8 +131,10 @@ the script runs in pats, on the host, under every driver. `stdout.log` stays wha
 - **for a judge** a failed line fails the sample: its verdict is an error, whatever reply was read. the line that
   failed may be the one that took a score back or reported the harness's own error, and an earlier candidate is
   not to be trusted over it. a task's pair keeps its partial summary.
-- that is the point of indexing a field a format always has (`part["cost"]`) and using `.get` for one it may leave
-  out: a vendor that renames the first shows up as a warning and a count, not as a zero.
+- that is what indexing a field buys (`part["cost"]`), where `.get` with a default reads a missing one as zero: a
+  vendor that renames the field shows up as a warning and a count. the four defaults index nothing yet. they read
+  what the go readers read, a missing field as zero, until recorded runs say which fields a format always has: a
+  step whose tokens went missing must not lose its cost to an error.
 
 ### trying one
 
@@ -156,10 +162,11 @@ preflight skipped nothing warns, and a harness that reports no cost runs uncappe
 
 ### the four scripts
 
-each is the go reader of today, line for line, and passes the tests that reader has against recorded runs. what
-is left out on purpose is a negative number: a negative cost, which the go readers treat differently live and
-after, and a count the arithmetic takes below zero (codex's cached tokens above its input). each is an error here
-(above), where the go readers record it. what each has to keep:
+each is the go reader it replaces, line for line, and passes the tests that reader had. two things differ on
+purpose. a negative number is an error here (above), where the go readers recorded it: a negative cost, which
+they treated differently live and after, and a count the arithmetic takes below zero (codex's cached tokens above
+its input). and cost reaches the live pass whenever the script reports it, where the go reader of claude kept it
+for the summary. what each has to keep:
 
 - **claude.** tools are the `tool_use` blocks of each `assistant` event's `message.content`. the totals, the
   times and `is_error` come on `result`, and a later `result` replaces an earlier one's: `usage(total = True)`.
@@ -172,9 +179,9 @@ after, and a count the arithmetic takes below zero (codex's cached tokens above 
 - **copilot.** tools on `tool.execution_start`, a turn on `assistant.turn_end`, output tokens and the reply (the
   last non-empty one) on `assistant.message`. `result` carries `premium_requests`, the api time and the exit code,
   which is the error when not 0.
-- **opencode.** above. `step_start` clears the reply's pieces, so the reply is the text of the last step. the go
-  reader also starts afresh on text that follows a `step_finish` with no `step_start` between: the stream never
-  does that, and the script does not keep the case.
+- **opencode.** above. `step_start` clears the reply's pieces, and `step_finish` clears them once more text
+  arrives: the reply is the text of the last step, and a step that ended stays the reply until a later one says
+  something.
 
 ## limits
 
@@ -204,10 +211,11 @@ after, and a count the arithmetic takes below zero (codex's cached tokens above 
 
 ## tests
 
-- each default's script against the recorded runs the go reader is tested with today: the same summary, the same
-  live tool count and cost, the same reply.
+- each default's script against the logs the go reader was tested with: the same summary, the same live tool
+  count, the same reply, and the live cost each format's lines give (claude's at its `result`).
 - `out`: `usage` adds, and `total = True` replaces only what it names; `has_cost` after `cost_usd = 0`; `final`
-  replaces, `add = True` keeps, newest first; `text` and `clear`; no summary with only reply calls.
+  replaces, `add = True` keeps, newest first; `text`, `clear` and `clear(next = True)`; no summary with only reply
+  calls.
 - the two passes give the same totals, over `\n` and over `\r\n` lines; a last line with no newline counts
   after and not live; a line over 8 MiB
   is cut live, and after it there is no summary and a judge's verdict is an error.

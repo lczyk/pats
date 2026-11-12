@@ -200,7 +200,9 @@ then shared.
 
 - **final text, per harness kind** -- `stdout.log` is the harness's event stream, not the reply: it also carries the
   prompt (footer included), tool results (files that may hold a `SCORE:` line) and the reply escaped and in pieces. so
-  the reply is pulled out per kind, beside the per-kind summaries:
+  the reply is pulled out by the harness's parse script (`harness-parse.md`, `out.final` and `out.text`), beside its
+  summary. a harness with no script has its whole stdout for a reply, and a sample whose output has a line its
+  script failed on is a failed sample. what each default's script takes:
   - claude: the `result` field of a `result` event. in 1765 past logs with one, it equalled the last assistant text
     block every time. a run whose background sub-agent finishes after the answer emits a later `result` too (19 of
     1784 past logs had more than one; in the one inspected, the last was a short "verdict stands" note). so the
@@ -211,7 +213,7 @@ then shared.
   - codex: the `text` of the last `item.completed` event whose item is an `agent_message` (present in all 37 past
     logs). `codex exec -o <file>` writes the same thing to a file, an alternative to parsing.
   - copilot: the last non-empty `assistant.message` content; opencode: the `text` parts after the last step
-    boundary. no past logs of either: these readers follow the event shapes the summaries parse (`progress_test.go`)
+    boundary. no past logs of either: these follow the event shapes the summaries parse (`progress_test.go`)
     and no real judge run of either has checked them yet. a reply they miss is a failed sample, never a wrong score.
 - **parse** -- the last non-empty line of the final text must match
   `^\s*SCORE:\s*(na|0|1|0?\.[0-9]+|1\.0+)\s*$` (case-insensitive): `na`, `0`, `1`, a decimal below one
@@ -266,7 +268,7 @@ for each agent score (judged pair x agent scorer) in the selected suites:
   `metadata.json`, not synced, and the second row makes it `na`. (script scorers keep today's rule: a pair dir that exists is scored, metadata or not.)
 - being synced is needed, not enough: a synced pair whose harness reported an error is still `na`, since the
   agent's own run failed whatever came home. that is `summary.is_error` in the pair's `metadata.json`, which every
-  harness's summary already sets from its own stream (`progress.go`): claude's `result` event's `is_error`, codex's
+  harness's parse script already sets from its own stream: claude's `result` event's `is_error`, codex's
   `turn.failed` and `error` events, opencode's `error` event, copilot's non-zero exit code in its final event. a
   stream that says nothing leaves it false. among the rest, what
   decides is whether the pair's files came home, not its status: an `ok` or `nonzero` pair has, a `timeout` pair
@@ -399,8 +401,8 @@ judges spend as task agents do, and the budget works the same way (`budget.md`):
   did not start and exits non-zero.
 - **a judge agent's `max-cost:`** stops one judge job as it stops one task pair: the judge is stopped, its status is
   `budget`, and the sample is a failed one, with its `verdict.json` saying so.
-- the same values, rules and harness limits as for runs: only `opencode-openrouter` reports cost as it goes, so a
-  claude judge's spend counts when it ends and its agent cannot take a `max-cost`.
+- the same values and rules as for runs (`budget.md`): `opencode-openrouter` reports cost as it goes, and a claude
+  judge's spend arrives with its `result`, where its agent's `max-cost` stops it.
 - under `--runs n` the cap spans every run judged, as `pats run -N`'s spans every repeat.
 
 ## reporting
