@@ -191,7 +191,8 @@ pats clean [-n|--dry-run] [--older-than 24h] [-a|--all] [-f|--force] [--run <tok
   pats labels everything it makes `pats.run=<token>` and `pats.owner=<host>/<uid>/<client>`; a run this host cannot
   judge (another user's or machine's on a shared daemon) is counted and left, and `--all` removes it. `--all` also
   takes lxd's shared uplink (unless a run it leaves on the server may use it), every image pats built or pulled (a pin naming one makes the next `pats run` ask for
-  `pats init`), and dead runs' temp dirs of any age. a fresh lease is never removed by `--all`, only by
+  `pats init`), the harness clis init fetched (`harness/` in the cache dir) with the trees bwrap unpacked from them
+  (one a running sandbox holds is kept; the next init fetches again), and dead runs' temp dirs of any age. a fresh lease is never removed by `--all`, only by
   `--run <token>`, though its images may go. `-f` / `--force` is `--all` and also live runs, containers using a
   pats image, and every temp dir and lease file: everything pats left. each thing removed, kept or left is a log
   line; `--json` makes it one json object a line instead (`action`, `dry_run`, `place`, `kind`, `name`, `label`,

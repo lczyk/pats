@@ -1,7 +1,7 @@
 # harnesses are placed in images at init
 
-status: the artefacts, the checked fetch, the cache, the tree and `pats harness pin` are implemented
-(`harnesses-1x.md`, step 5); placement and what follows from it are proposed. it changes `harness-pins.md` (a pin
+status: implemented (`harnesses-1x.md`, steps 5 and 6), but for a project's own pin (step 7), which is proposed;
+"as built" at the end says where the code differs. it changes `harness-pins.md` (a pin
 gains a sha256 per arch, and lives in the machine config's defaults, not in a file a script reads), `init.md` (a
 default sandbox is built, not only pulled; the pin entry gains what init placed) and `bwrap.md` (a harness is a lower
 dir of its own). `machine-config.md` holds the `clis` table this spec fetches from. `harness-registry.md` is what a
@@ -229,6 +229,24 @@ this breaks, and the release notes say so:
   and a recorded tree that is gone stops the run.
 - arch: an amd64 base on an arm64 daemon gets amd64 trees.
 - e2e, per driver: a one-harness sandbox has that cli on `PATH` at the pinned version and none of the others.
+
+## as built
+
+- **lxd.** a tree is not pushed with the material: each is unpacked on this machine, pushed to the builder on its
+  own after the layer's step, copied over the root as root's, and its staging dir removed.
+- **bwrap.** a session stacks its trees in the order of their clis' names. a tree is unpacked beside its place
+  (`<tree>.new`) under its lock and renamed in, so one that is there is whole. `pats clean --all` renames a tree
+  aside before it removes it, and leaves a fetch's temp file younger than an hour to the init that may be writing
+  it.
+- **the stamp.** the script prints every line of a cli's `--version` under its name, and pats takes the first that
+  holds a version: the choice is made by the pattern a stamp is read with.
+- **`--force`.** a forced init pulls the pats sandbox afresh before it builds on it; a `base:` of the project's is
+  pulled only when absent, as before.
+- **upstream.** a default sandbox that is built on has its base tracked upstream, as a provisioned one has.
+- **tested for real.** docker (arm64): init on the harness-free image places all four clis, each stamped at its
+  pin. lxd (amd64): the placement test of `lxd_e2e_test.go`, and an init of all four. bwrap (amd64): the placement
+  test of `bwrap_e2e_test.go`, an init of all four, `pats clean --all`, and the run that then asks for init.
+  podman takes docker's path and was not run.
 
 ## decided, open to change
 

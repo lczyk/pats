@@ -1,7 +1,9 @@
 # harness versions per pats release
 
-status: implemented: the pins file, the provision script and dockerfile reading it, the lxd image key and the hash
-inputs. the per-release bump is a manual step until the "later" items land; the release workflow around it is out of
+status: superseded by `harness-images.md`: the pins are the `clis` of the machine config's defaults
+(`internal/machine/defaults.yaml`), each with a sha256 per arch, and `images/harness-versions`, the script's
+reading of it and the dockerfile's build args are gone. what follows is as it was implemented before that: the pins
+file, the provision script and dockerfile reading it, the lxd image key and the hash inputs. the per-release bump is a manual step until the "later" items land; the release workflow around it is out of
 scope here.
 `init.md` relies on it: its component-version check compares an image's stamped harness versions against what the
 running pats release pins.

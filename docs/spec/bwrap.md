@@ -95,6 +95,10 @@ the pin under the target `bwrap:<hostname>`. there is no daemon to hold it, so p
 - **stamps**: init runs `stampScript` (`stamps.go`) once in a throwaway session of the new rootfs, as docker's
   `Stamps` does in a throwaway container, and stores the harness versions beside it as `<digest>.json`; `Stamps`
   reads that file, so metadata's `components` and the pin drift warnings work as under docker.
+- **harness clis**: bwrap builds no image, so the clis a sandbox's agents run are not in its rootfs. init unpacks
+  each into the store as a tree of its own, `<cache>/bwrap/harness/<tree>/`, and a session stacks the trees its pin
+  records over the rootfs as further lower dirs, held and checked as the rootfs is (`harness-images.md`). init's
+  stamps for such a sandbox are of a session with its trees, and are kept in the pin, not beside the rootfs.
 - **in use**: every session holds a shared `flock` on `<digest>.lock` while it runs; `RemoveImage` takes it
   exclusively without waiting and refuses an image in use, as docker refuses removing a running container's image.
   a lock ends with its process, so a crash never leaves an image stuck.
