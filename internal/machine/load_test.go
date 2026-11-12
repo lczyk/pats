@@ -79,6 +79,7 @@ harnesses:
   opencode-openrouter:
     parse: ~
     models: ~
+  copilot-cli-keyless: {}
   mine:
     run: mine --go
     egress: {allow: [mine.example]}
@@ -107,6 +108,7 @@ harnesses:
 	assert.That(t, mine.Cli() == nil && mine.Parser() != nil, "the added entry")
 	assert.Equal(t, mine.From, FromMachine)
 	assert.Equal(t, tb.Harness("codex-cli-keyless").From, FromDefault)
+	assert.Equal(t, tb.Harness("copilot-cli-keyless").From, FromDefault) // named, with nothing set
 
 	assert.Equal(t, tb.Note(), "machine config "+path+": changes harnesses.claude-cli-keyless.egress, "+
 		"harnesses.claude-cli-keyless.login, harnesses.claude-cli-keyless.pass-env, harnesses.opencode-openrouter.models, "+

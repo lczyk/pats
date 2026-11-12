@@ -125,7 +125,10 @@ func Overlay(over []byte, path string) (*Tables, error) {
 					}
 					continue
 				}
-				t.from[name.Value] = FromMachine
+				// an entry that sets nothing changes nothing.
+				if len(entry.Content) > 0 || mappingValue(into, name.Value) == nil {
+					t.from[name.Value] = FromMachine
+				}
 				if lay(into, name, entry) {
 					t.Adds = append(t.Adds, id)
 					continue
@@ -196,8 +199,9 @@ func (t *Tables) Project(items []Item) error {
 		return errors.New(strings.Join(errs, "\n"))
 	}
 	for _, it := range items {
-		lay(table, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it.Name}, it.Node)
-		t.from[it.Name] = FromProject
+		if lay(table, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it.Name}, it.Node) || len(it.Node.Content) > 0 {
+			t.from[it.Name] = FromProject
+		}
 	}
 	return t.build()
 }

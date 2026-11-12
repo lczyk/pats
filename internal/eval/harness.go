@@ -165,7 +165,8 @@ func harnessHome(opts Options, label string, hd *machine.Harness, env map[string
 		}
 		hasCreds = true
 	}
-	if !hasCreds {
+	// a harness that names no way of logging in needs none.
+	if !hasCreds && hd != nil && (len(hd.AuthEnv) > 0 || hd.LoginFile() != "") {
 		logw{opts.Out, opts.Color, opts.Verbose}.warn("%s no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(hd))
 	}
 	return harnessSetup{

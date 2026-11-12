@@ -500,7 +500,7 @@ func readLog(p *parse.Program, path string) (*parse.Result, error) {
 // one carriage return, for both), and may be as long as the tap holds.
 func logScanner(r io.Reader) *bufio.Scanner {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), statTapMaxBuf+1) // lines carry base64 sigs -- allow big
+	sc.Buffer(make([]byte, 0, 64*1024), statTapMaxBuf+2) // lines carry base64 sigs -- allow big, and their \r\n
 	sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
 			return i + 1, data[:i], nil

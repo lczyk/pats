@@ -230,3 +230,17 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	_, statErr := os.Stat(filepath.Join(dir, runsSubdir))
 	assert.That(t, os.IsNotExist(statErr), "a run dir was made")
 }
+
+// the catalogue's agents are the ones whose harness names it and that have a
+// model to look up.
+func TestCatalogueAgents(t *testing.T) {
+	cfg := &config.Config{}
+	got := catalogueAgents(cfg, []config.Agent{
+		orAgent("with", "openai/gpt-4o-mini"),
+		orAgent("without", ""),
+		{Name: "claude", Harness: "claude-cli-keyless", Model: "m"},
+		{Name: "unknown", Harness: "nope", Model: "m"},
+	}, "openrouter")
+	require.Len(t, got, 1)
+	assert.Equal(t, got[0].Name, "with")
+}

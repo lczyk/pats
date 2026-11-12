@@ -171,11 +171,11 @@ func editDistance(a, b string) int {
 }
 
 // catalogueAgents is the agents whose harness checks its models against
-// catalogue.
+// catalogue. an agent with no model has none to check.
 func catalogueAgents(cfg *config.Config, agents []config.Agent, catalogue string) []config.Agent {
 	var out []config.Agent
 	for _, a := range agents {
-		if hd := cfg.HarnessOf(a); hd != nil && hd.Models == catalogue {
+		if hd := cfg.HarnessOf(a); hd != nil && hd.Models == catalogue && a.Model != "" {
 			out = append(out, a)
 		}
 	}

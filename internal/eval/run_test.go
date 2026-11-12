@@ -1281,6 +1281,9 @@ sux: {kind: suite, items: {sux: {agents: ags, tasks: txx}}}
 	require.NoError(t, err, "%s", out.String())
 	assert.ContainsString(t, out.String(), "INFO machine config "+cfg.Harnesses.Path+": changes harnesses.codex-cli-keyless.pass-env; adds harnesses.mine\n")
 
+	// a harness that names no way of logging in is not warned about one.
+	assert.Equal(t, strings.Contains(out.String(), "mxx/txx no creds forwarded"), false)
+
 	changed, added := readMeta(t, runDir, "axx", "txx"), readMeta(t, runDir, "mxx", "txx")
 	assert.Equal(t, changed.HarnessFrom, "machine")
 	assert.Equal(t, added.HarnessFrom, "machine")
