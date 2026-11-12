@@ -40,7 +40,7 @@ sandbox:
     #   provision: |
     #     apt-get update && apt-get -y install dpkg-dev
 
-# a harness is how an agent is run. pats ships four (`pats config --defaults` prints them, the readme has their creds and
+# a harness is how an agent is run. pats ships five (`pats config --defaults` prints them, the readme has their creds and
 # model ids), a machine can add its own (`~/.config/pats/config.yaml`), and a `kind: harness` vector here adds or changes
 # them for this project. an item named as a harness that exists changes the keys it sets and keeps the rest (`field: ~`
 # unsets one). an item with a new name is a harness of its own: it needs a `run`, a shell script run in the sandbox
@@ -72,7 +72,7 @@ harnesses:
     #     amd64: dca7b06bbb4e4a1ab3681b799cd328057b356d9399e8e47336cf53b7ae658d0d
     #     arm64: 019c374e3eb3af5d2c2cdf1d2d6e1f9eee0bc9f3289e02570e4310d25df0a991
 
-# harness: one of the four, a machine's, or an item above. with one sandbox defined every agent uses it, otherwise set
+# harness: one of the five, a machine's, or an item above. with one sandbox defined every agent uses it, otherwise set
 # `sandbox:`. `effort:` is optional reasoning effort. `model:` is required unless the harness's `run` reads none.
 haiku:
   kind: agent

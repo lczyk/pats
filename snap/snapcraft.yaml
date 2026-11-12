@@ -5,9 +5,9 @@ name: pats
 title: pats
 summary: run ai coding agents on eval tasks in sandboxes, and score them
 description: |
-  pats runs ai coding agents (the claude, codex, copilot and opencode clis) on
-  eval tasks, each in a docker or lxd sandbox behind an egress proxy, and
-  scores what they produce.
+  pats runs ai coding agents (the claude, codex, copilot, opencode and pi
+  clis) on eval tasks, each in a docker or lxd sandbox behind an egress
+  proxy, and scores what they produce.
 
   this snap is the strict build: docker and local lxd only, through the
   docker and lxc clients it ships, and every step in a step sandbox. connect
