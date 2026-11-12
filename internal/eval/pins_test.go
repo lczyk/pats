@@ -174,10 +174,7 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 			in, err := localInputs(sb, dir)
 			require.NoError(t, err)
 			// the image holds what the sandbox's agents run, at the pinned versions.
-			comps := map[string]string{}
-			for _, c := range sandboxCLIs(cfg, sb.Name) {
-				comps[c] = cliPins(cfg)[c]
-			}
+			comps := cliPins(cfg, sb.Name)
 			e := &pinEntry{Daemon: h.daemon, Image: pinImage{ID: id}, Inputs: in, Components: comps,
 				PatsVersion: version.Info.Version, PatsBuild: patsBuild()}
 			// what an init of this config would have placed, for the fake's arch.

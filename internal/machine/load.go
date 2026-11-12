@@ -121,6 +121,20 @@ func Overlay(over []byte, path string) (*Tables, error) {
 					}
 					continue
 				}
+				// a machine's pin is its clis entry: one more on a harness
+				// would be a second place for it.
+				if table.Value == "harnesses" {
+					pinned := false
+					for k := 0; k+1 < len(entry.Content); k += 2 {
+						if key := deref(entry.Content[k]); key.Value == "version" || key.Value == "sha256" {
+							add(key.Line, "%s: %s is a pats.yaml's key: a machine pins a cli in clis", id, key.Value)
+							pinned = true
+						}
+					}
+					if pinned {
+						continue
+					}
+				}
 				// an entry that sets nothing changes nothing. where a harness
 				// is from is its own entry's: a cli's pin is in its digest.
 				if table.Value == "harnesses" && (len(entry.Content) > 0 || mappingValue(into, name.Value) == nil) {

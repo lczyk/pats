@@ -79,7 +79,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 		}
 		clis := sandboxCLIs(cfg, sb.Name)
 		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir, places(sb) && len(clis) > 0))
-		target, e, err := initSandbox(ctx, sb, clis, cfg.Tables(), ro, opts)
+		target, e, err := initSandbox(ctx, sb, clis, sandboxPins(cfg, sb.Name), ro, opts)
 		if err != nil {
 			failed = append(failed, sb.Name)
 			if ctx.Err() != nil {
@@ -232,9 +232,10 @@ func initWhat(sb config.Sandbox, configDir string, placing bool) string {
 }
 
 // initSandbox makes one sandbox's images and returns its pin. clis are the
-// ones its agents run: an image pats composes gets each placed in it, by
-// tables' pins, and every image is asked for each and has to have it.
-func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, tables *machine.Tables, ro Options, opts InitOptions) (string, *pinEntry, error) {
+// ones its agents run and pins what each is pinned at: an image pats
+// composes gets each placed in it, and every image is asked for each and has
+// to have it.
+func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, pins map[string]*machine.CLI, ro Options, opts InitOptions) (string, *pinEntry, error) {
 	h, err := hostFor(sb)
 	if err != nil {
 		return "", nil, err
@@ -255,9 +256,9 @@ func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, tables *
 		Inputs:      inputs,
 	}
 	if sb.Driver == sandbox.LXDDriver {
-		err = initLXD(ctx, sb, clis, tables, ro, opts, h, e)
+		err = initLXD(ctx, sb, clis, pins, ro, opts, h, e)
 	} else {
-		err = initContainer(ctx, sb, clis, tables, ro, opts, h, e)
+		err = initContainer(ctx, sb, clis, pins, ro, opts, h, e)
 	}
 	if err == nil {
 		// where the trees sit beside the image, a session of the two is
@@ -290,7 +291,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, tables *
 // initContainer makes a docker or podman sandbox's image and proxy: built
 // from build: or base / provision, else pulled when absent (always, with
 // --force).
-func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables *machine.Tables, ro Options, opts InitOptions, h builder, e *pinEntry) error {
+func initContainer(ctx context.Context, sb config.Sandbox, clis []string, pins map[string]*machine.CLI, ro Options, opts InitOptions, h builder, e *pinEntry) error {
 	lg := logw{ro.Out, ro.Color, ro.Verbose}
 	logPath := initLogPath(ro.ConfigDir, sb.Name)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
@@ -332,7 +333,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 		if !provisions(sb) {
 			own = &im
 		}
-		if placed, err = placeIn(ctx, sb, ref, clis, tables, lg, h, e); err != nil {
+		if placed, err = placeIn(ctx, sb, ref, clis, pins, lg, h, e); err != nil {
 			return fail(err)
 		}
 		// a place that builds no image keeps the trees beside the one it
@@ -429,12 +430,12 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 // the arch of an image on base, each cli's artefact for it is fetched into
 // the cache, checked, and the pin records the arch, what is placed and the
 // input a run compares.
-func placeIn(ctx context.Context, sb config.Sandbox, base string, clis []string, tables *machine.Tables, lg logw, h builder, e *pinEntry) ([]sandbox.Placed, error) {
+func placeIn(ctx context.Context, sb config.Sandbox, base string, clis []string, pins map[string]*machine.CLI, lg logw, h builder, e *pinEntry) ([]sandbox.Placed, error) {
 	arch, err := h.Arch(ctx, base)
 	if err != nil {
 		return nil, err
 	}
-	arts, err := artefactsFor(tables, clis, arch)
+	arts, err := artefactsFor(pins, clis, arch)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +474,7 @@ func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw
 
 // initLXD makes an lxd sandbox's layers and proxy on its server, logging to
 // .pats/init/<sandbox>.log, and pins them by fingerprint.
-func initLXD(ctx context.Context, sb config.Sandbox, clis []string, tables *machine.Tables, ro Options, opts InitOptions, h builder, e *pinEntry) error {
+func initLXD(ctx context.Context, sb config.Sandbox, clis []string, pins map[string]*machine.CLI, ro Options, opts InitOptions, h builder, e *pinEntry) error {
 	lg := logw{ro.Out, ro.Color, ro.Verbose}
 	switch {
 	case strings.Contains(sb.Image, ":"):
@@ -494,7 +495,7 @@ func initLXD(ctx context.Context, sb config.Sandbox, clis []string, tables *mach
 		var placed []sandbox.Placed
 		if len(clis) > 0 {
 			var err error
-			if placed, err = placeIn(ctx, sb, sb.Base, clis, tables, lg, h, e); err != nil {
+			if placed, err = placeIn(ctx, sb, sb.Base, clis, pins, lg, h, e); err != nil {
 				return err
 			}
 		}
@@ -542,7 +543,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			continue
 		}
 		if sandbox.TraitsOf(sb.Driver).NoImages {
-			comps, err := hostComponents(ctx, sb, sandboxCLIs(cfg, sb.Name), cliPins(cfg), lg)
+			comps, err := hostComponents(ctx, sb, sandboxCLIs(cfg, sb.Name), cliPins(cfg, sb.Name), lg)
 			if err != nil {
 				return nil, err
 			}
@@ -602,7 +603,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reasons = append(reasons, fmt.Sprintf("  %s: its image was made without %s", sb.Name, strings.Join(lacks, ", ")))
 			continue
 		}
-		if drift := staleComponents(e.Components, cliPins(cfg)); len(drift) > 0 {
+		if drift := staleComponents(e.Components, cliPins(cfg, sb.Name)); len(drift) > 0 {
 			lg.warn("sandbox %q: its harnesses differ from what is pinned: %s (pats init --sandbox %s to rebuild)",
 				sb.Name, strings.Join(drift, ", "), sb.Name)
 		}
@@ -689,20 +690,28 @@ func hostComponents(ctx context.Context, sb config.Sandbox, clis []string, pins 
 	return comps, nil
 }
 
-// sandboxCLIs is the clis a sandbox's agents run, sorted: those of every
+// sandboxPins is the clis a sandbox's agents run, by name: those of every
 // agent in the config that resolves to it, a judge among them, whatever a
 // command selects, so an init or a run of part of the matrix sees the same
-// image. a harness with no cli adds none.
-func sandboxCLIs(cfg *config.Config, name string) []string {
-	seen := map[string]bool{}
+// image. each is its entry as the agent's harness resolves it, a project's
+// own pin over the machine's; the config's load holds that two harnesses of
+// one sandbox agree on it. a harness with no cli adds none.
+func sandboxPins(cfg *config.Config, name string) map[string]*machine.CLI {
+	out := map[string]*machine.CLI{}
 	for _, a := range cfg.Agents {
 		id, err := cfg.ResolveSandbox(a)
-		if hd := cfg.HarnessOf(a); err == nil && id == name && hd != nil && hd.CLI != "" {
-			seen[hd.CLI] = true
+		if hd := cfg.HarnessOf(a); err == nil && id == name && hd != nil && hd.CLI != "" && out[hd.CLI] == nil {
+			out[hd.CLI] = hd.Cli()
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for c := range seen {
+	return out
+}
+
+// sandboxCLIs is the names of sandboxPins, sorted.
+func sandboxCLIs(cfg *config.Config, name string) []string {
+	pins := sandboxPins(cfg, name)
+	out := make([]string, 0, len(pins))
+	for c := range pins {
 		out = append(out, c)
 	}
 	sort.Strings(out)
@@ -732,11 +741,14 @@ func missingCLIs(cfg *config.Config, pairs []config.TestPair, name string, compo
 	return out
 }
 
-// cliPins is the version each cli is pinned at, by the config's tables.
-func cliPins(cfg *config.Config) map[string]string {
+// cliPins is the version each cli of a sandbox is pinned at: what its
+// stamps are compared with.
+func cliPins(cfg *config.Config, name string) map[string]string {
 	out := map[string]string{}
-	for name, c := range cfg.Tables().CLIs {
-		out[name] = c.Version
+	for cli, c := range sandboxPins(cfg, name) {
+		if c != nil {
+			out[cli] = c.Version
+		}
 	}
 	return out
 }

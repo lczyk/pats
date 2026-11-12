@@ -123,6 +123,7 @@ func TestOverlayErrors(t *testing.T) {
 		"not a mapping":   {"- a", "config.yaml:1: the top level is a mapping of tables"},
 		"unknown table":   {"harnes: {}", `config.yaml:1: unknown table "harnes"`},
 		"cli unknown key": {"clis:\n  claude:\n    vers: 9.9.9", `config.yaml:3: clis.claude: unknown key "vers"`},
+		"a harness's pin": {"harnesses:\n  claude-cli-keyless:\n    version: 9.9.9", "config.yaml:3: harnesses.claude-cli-keyless: version is a pats.yaml's key: a machine pins a cli in clis"},
 		"entries a list":  {"harnesses: [a]", "config.yaml:1: harnesses is a mapping of entries"},
 		"entry a scalar":  {"harnesses:\n  mine: 5", "config.yaml:2: harnesses.mine is a mapping of keys"},
 		"unknown key":     {"harnesses:\n  claude-cli-keyless:\n    hosts: [x.com]", `config.yaml:3: harnesses.claude-cli-keyless: unknown key "hosts"`},

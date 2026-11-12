@@ -353,6 +353,9 @@ func (c *Config) validateTaskEgress(add func(string, ...any)) {
 }
 
 func (c *Config) validateAgents(add func(string, ...any)) {
+	// the pin of each cli a sandbox's agents run, and the harness it is by.
+	type pin struct{ harness, line string }
+	pins := map[[2]string]pin{}
 	for _, a := range c.Agents {
 		h := c.HarnessOf(a)
 		switch {
@@ -377,6 +380,19 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 			add("%v", err)
 			continue
 		}
+		// one sandbox holds one version of a cli: its image has one place
+		// for it.
+		if h != nil && h.Cli() != nil {
+			cli := h.Cli()
+			key := [2]string{sbID, cli.Name}
+			switch was, ok := pins[key]; {
+			case !ok:
+				pins[key] = pin{h.Name, cli.Pin()}
+			case was.line != cli.Pin():
+				add("sandbox %q: harnesses %q and %q pin cli %s differently (%s, %s): a sandbox holds one version of a cli, so they take a sandbox each",
+					sbID, was.harness, h.Name, cli.Name, pinVersion(was.line), cli.Version)
+			}
+		}
 		// a harness that allows itself a host (its inference api) cannot run
 		// in a sandbox with no network at all.
 		for _, s := range c.Sandboxes {
@@ -385,6 +401,12 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 			}
 		}
 	}
+}
+
+// pinVersion is the version a cli's pin line starts with.
+func pinVersion(line string) string {
+	v, _, _ := strings.Cut(line, " ")
+	return v
 }
 
 // harnessNames lists the harnesses an agent may name, sorted.

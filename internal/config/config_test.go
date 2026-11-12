@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"github.com/lczyk/pats/internal/machine"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -732,6 +734,72 @@ sux: {kind: suite, items: {sux: {agents: agents, tasks: txx}}}
 	assert.That(t, one.Parser() == nil, "a new name does not start from a default of its cli")
 }
 
+// a harness item may pin its cli at another version, for the sandboxes its
+// agents run in: the machine's entry says where the bytes are and how they
+// are placed, the item which bytes. the machine's own entry is untouched, and
+// one sandbox takes one pin of a cli.
+func TestHarnessPin(t *testing.T) {
+	const body = `
+sxx: {kind: sandbox, items: {one: {}, two: {}}}
+hv:
+  kind: harness
+  items:
+    claude-cli-keyless:
+      version: 9.9.9
+      sha256: {amd64: ` + shaA + `, arm64: ` + shaB + `}
+    claude-old:
+      cli: claude
+      run: claude -p x
+      version: 1.1.1
+      sha256: {amd64: ` + shaB + `}
+axx:
+  kind: agent
+  defaults: {model: m}
+  items:
+    new: {harness: claude-cli-keyless, sandbox: one}
+    old: {harness: claude-old, sandbox: %s}
+    cdx: {harness: codex-cli-keyless, sandbox: one}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`
+	c, err := Parse([]byte(fmt.Sprintf(body, "two")))
+	require.NoError(t, err)
+	require.NoError(t, c.Validate())
+	hs := c.Harnesses
+	pinned := hs.Harness("claude-cli-keyless").Cli()
+	assert.Equal(t, pinned.Version, "9.9.9")
+	assert.Equal(t, pinned.PinnedBy(), "claude-cli-keyless")
+	url, a, ok := pinned.ArtefactFor("arm64", "")
+	require.That(t, ok, "no artefact for arm64")
+	assert.ContainsString(t, url, "9.9.9")
+	assert.Equal(t, a.SHA256, shaB)
+	def := machine.Defaults().CLIs["claude"]
+	_, da, _ := def.ArtefactFor("arm64", "")
+	assert.Equal(t, a.Bin, da.Bin)                          // how it is placed stays the machine's
+	assert.Equal(t, pinned.LoginFile, def.LoginFile)        // and what else the cli's entry says
+	assert.Equal(t, hs.CLIs["claude"].Version, def.Version) // the table's own entry is not the item's
+	assert.Equal(t, hs.Harness("codex-cli-keyless").Cli().PinnedBy(), "")
+	assert.That(t, hs.Harness("claude-cli-keyless").Digest() != machine.Defaults().Harness("claude-cli-keyless").Digest(), "the digest did not move with the pin")
+
+	// an arch the pin has no sha for has no artefact: init says so where it
+	// needs one.
+	old := hs.Harness("claude-old").Cli()
+	_, _, ok = old.ArtefactFor("arm64", "")
+	assert.That(t, !ok, "an artefact for an arch the pin does not name")
+	_, _, ok = old.ArtefactFor("amd64", "")
+	assert.That(t, ok, "no artefact for the arch the pin names")
+
+	// two pins of one cli in one sandbox: its image has one place for it.
+	c, err = Parse([]byte(fmt.Sprintf(body, "one")))
+	require.NoError(t, err)
+	assert.Error(t, c.Validate(), `sandbox "one": harnesses "claude-cli-keyless" and "claude-old" pin cli claude differently (9.9.9, 1.1.1)`)
+}
+
+const (
+	shaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	shaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
 func TestHarnessVectorErrors(t *testing.T) {
 	const base = "sxx: {kind: sandbox, items: {sxx: {image: i}}}\ntxx: {kind: task, items: {txx: {prompt: p}}}\n"
 	suite := func(agent string) string {
@@ -741,7 +809,12 @@ func TestHarnessVectorErrors(t *testing.T) {
 		"new, no run":         {base + "hv: {kind: harness, items: {mine: {cli: claude}}}\n", "line 3: harnesses.mine: run is required"},
 		"run in defaults":     {base + "hv: {kind: harness, defaults: {cli: claude}, items: {mine: ~}}\n", "harnesses.mine: run is required"},
 		"unknown field":       {base + "hv: {kind: harness, items: {mine: {run: a, hosts: [x]}}}\n", `harness "mine": unknown field "hosts"`},
-		"a pin, not yet":      {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9}}}\n", `unknown field "version"`},
+		"version, no sha":     {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9}}}\n", "line 3: harnesses.claude-cli-keyless: version and sha256 come together"},
+		"sha, no version":     {base + "hv: {kind: harness, items: {claude-cli-keyless: {sha256: {amd64: " + shaA + "}}}}\n", "harnesses.claude-cli-keyless: version and sha256 come together"},
+		"a pin, no cli":       {base + "hv: {kind: harness, items: {mine: {run: a, version: 1.0.0, sha256: {amd64: " + shaA + "}}}}\n", "harnesses.mine: version and sha256 pin a cli, and the harness has none"},
+		"a pin, an odd arch":  {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, sha256: {riscv64: " + shaA + "}}}}\n", `sha256: arch "riscv64" is not one of amd64, arm64`},
+		"a pin, a short sha":  {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, sha256: {amd64: abc}}}}\n", "sha256 amd64 is 64 lower-case hex digits"},
+		"a pin, sha a scalar": {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, sha256: " + shaA + "}}}\n", "harnesses.claude-cli-keyless"},
 		"unknown cli":         {base + "hv: {kind: harness, items: {mine: {run: a, cli: nope}}}\n", `harnesses.mine: cli "nope" is not in clis`},
 		"login, no file":      {base + "hv: {kind: harness, items: {mine: {run: a, cli: copilot, login: true}}}\n", "harnesses.mine: login needs a cli with a login-file"},
 		"a path in egress":    {base + "hv: {kind: harness, items: {mine: {run: a, egress: {allow: [x.com/v1/*]}}}}\n", "a harness takes hosts only"},

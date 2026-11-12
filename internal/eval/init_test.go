@@ -589,3 +589,63 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	assert.Error(t, err, "a harness tree it was pinned with")
 	assert.Error(t, err, "run `pats init` first")
 }
+
+// a harness item's own pin is what init fetches and places for the sandboxes
+// its agents run in, and what a run compares the image's stamps with: not
+// the machine's pin of the cli. an arch the pin has no sha256 for fails
+// init, naming the harness, the version and the arch.
+func TestInitPlacesAProjectsPin(t *testing.T) {
+	dir := t.TempDir()
+	sha := strings.Repeat("ab", 32)
+	body := `
+sbx: {kind: sandbox, items: {dflt: {}}}
+hxx:
+  kind: harness
+  items:
+    claude-cli-keyless:
+      version: 9.9.9
+      sha256: {arm64: ` + sha + `}
+agx: {kind: agent, defaults: {model: m}, items: {cc: {harness: claude-cli-keyless, sandbox: dflt}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
+`
+	cfg := parseCfg(t, body)
+	h := newFakeHost()
+	h.arch = "arm64"
+	h.stamped = map[string]string{"claude": "9.9.9"}
+	useHost(t, h)
+	useFakeSandbox(t, &fakeSandbox{})
+	var fetched []sandbox.Artefact
+	old := fetchArtefact
+	fetchArtefact = func(_ context.Context, a sandbox.Artefact, _ *http.Client) (string, error) {
+		fetched = append(fetched, a)
+		return "/cache/" + a.SHA256, nil
+	}
+	defer func() { fetchArtefact = old }()
+
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	require.Len(t, fetched, 1)
+	assert.Equal(t, fetched[0].Version, "9.9.9")
+	assert.Equal(t, fetched[0].SHA256, sha)
+	assert.ContainsString(t, fetched[0].URL, "9.9.9")
+	_, def, _ := machine.Defaults().CLIs["claude"].ArtefactFor("arm64", "")
+	assert.Equal(t, fetched[0].Bin, def.Bin) // how it is placed is the machine's
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	e := f.entry("fake:host", "dflt")
+	require.NotNil(t, e)
+	assert.Equal(t, e.Harnesses["claude"]["version"], "9.9.9")
+
+	// the image holds the item's version: that is no drift from a pin.
+	out.Reset()
+	_, err = Run(parseCfg(t, body), Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	assert.That(t, !strings.Contains(out.String(), "pinned"), "the item's own version was reported as drift: %s", out.String())
+
+	h.arch = "amd64"
+	out.Reset()
+	err = Init(parseCfg(t, body), InitOptions{ConfigDir: dir, Out: &out})
+	assert.Error(t, err, "init failed for sandbox(es) dflt")
+	assert.ContainsString(t, out.String(), "harness claude-cli-keyless pins cli claude at 9.9.9 with no sha256 for amd64")
+}

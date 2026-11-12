@@ -34,16 +34,20 @@ func places(sb config.Sandbox) bool {
 }
 
 // artefactsFor is the artefact of each of clis for arch, in their order, by
-// the tables' pins. a cli with none for the arch is an error naming it.
-func artefactsFor(tables *machine.Tables, clis []string, arch string) ([]sandbox.Artefact, error) {
+// the sandbox's pins. a cli with none for the arch is an error naming it,
+// and the harness whose own pin it is at.
+func artefactsFor(pins map[string]*machine.CLI, clis []string, arch string) ([]sandbox.Artefact, error) {
 	var out []sandbox.Artefact
 	for _, name := range clis {
-		c := tables.CLIs[name]
+		c := pins[name]
 		if c == nil {
 			return nil, fmt.Errorf("cli %q is not in the clis table", name)
 		}
 		url, a, ok := c.ArtefactFor(arch, "")
-		if !ok {
+		switch {
+		case !ok && c.PinnedBy() != "":
+			return nil, fmt.Errorf("harness %s pins cli %s at %s with no sha256 for %s", c.PinnedBy(), name, c.Version, arch)
+		case !ok:
 			return nil, fmt.Errorf("cli %s %s has no artefact for %s", name, c.Version, arch)
 		}
 		out = append(out, sandbox.Artefact{CLI: name, Version: c.Version, Arch: arch, URL: url, SHA256: a.SHA256, Bin: a.Bin})
@@ -75,7 +79,7 @@ func harnessInputNow(cfg *config.Config, sb config.Sandbox, arch string) string 
 		return ""
 	}
 	clis := sandboxCLIs(cfg, sb.Name)
-	arts, err := artefactsFor(cfg.Tables(), clis, arch)
+	arts, err := artefactsFor(sandboxPins(cfg, sb.Name), clis, arch)
 	if err != nil {
 		return "unplaceable: " + err.Error()
 	}
