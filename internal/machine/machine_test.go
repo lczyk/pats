@@ -108,6 +108,8 @@ func TestParseErrors(t *testing.T) {
 		"env twice":         {"harnesses: {h: {run: a, auth-env: [K], pass-env: [K]}}", "harnesses.h: pass-env K is also in auth-env"},
 		"env in home-env":   {"harnesses: {h: {run: a, cli: x, auth-env: [X_HOME]}}\nclis: {x: {version: 1.0.0, home-env: {X_HOME: .x}}}", "harnesses.h: auth-env X_HOME is also in its cli's home-env"},
 		"artefact url":      {"clis: {x: {version: 1.0.0, artefacts: {'ftp://x/y': {arch: [amd64], sha256: " + zeros + "}}}}", "is not an http or https url"},
+		"no artefacts":      {"clis: {x: {version: 1.0.0}}", "clis.x: at least one artefact is required"},
+		"url, no version":   {"clis: {x: {version: 1.0.0, artefacts: {'https://x/latest.tgz': {arch: [amd64], sha256: " + zeros + "}}}}", "the url has no ${version}"},
 		"artefact arch":     {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [riscv64], sha256: " + zeros + "}}}}", `arch "riscv64" is not one of amd64, arm64`},
 		"artefact no arch":  {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {sha256: " + zeros + "}}}}", "arch is required"},
 		"artefact sha":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: abc}}}}", "sha256 is 64 lower-case hex digits"},
@@ -130,7 +132,11 @@ func TestParseErrors(t *testing.T) {
 func TestParse(t *testing.T) {
 	tb, err := Parse([]byte(`
 clis:
-  x: {version: 1.0.0, login-file: .x/login}
+  x:
+    version: 1.0.0
+    login-file: .x/login
+    artefacts:
+      https://x.example/x-${version}.tgz: {arch: [amd64, arm64], sha256: "` + strings.Repeat("0", 64) + `"}
 harnesses:
   bare: {run: "true"}
   full:

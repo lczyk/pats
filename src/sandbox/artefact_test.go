@@ -155,6 +155,29 @@ func TestBuildTree(t *testing.T) {
 	plain.Bin = "package/README.md"
 	assert.Error(t, BuildTree(plain, file, t.TempDir()), "is not an executable file")
 
+	// a bin that is a link out of the tree is not the artefact's executable,
+	// though this machine has a file where it points.
+	linked := tarGz(t, tarEntry{name: "package/tool", typ: tar.TypeSymlink, link: "/bin/sh"})
+	out := a
+	out.Bin = "package/tool"
+	assert.Error(t, BuildTree(out, linked, t.TempDir()), "bin package/tool is not in the artefact")
+
+	// a tree is built afresh: what an earlier artefact left is gone, and
+	// the modes are a reader's whatever was unpacked.
+	next := tarGz(t,
+		tarEntry{name: "package/bin/tool", mode: 0o700, typ: tar.TypeReg, body: "#!/bin/sh\n"},
+		tarEntry{name: "package/data", mode: 0o600, typ: tar.TypeReg, body: "d"},
+	)
+	require.NoError(t, BuildTree(a, next, dir))
+	_, err = os.Stat(filepath.Join(dir, "opt", "pats", "harness", "tool", "package", "README.md"))
+	assert.That(t, os.IsNotExist(err), "the earlier artefact's file is still in the tree")
+	for name, want := range map[string]os.FileMode{"package/bin/tool": 0o755, "package/data": 0o644, "package/bin": 0o755, "package": 0o755} {
+		fi, err := os.Stat(filepath.Join(dir, "opt", "pats", "harness", "tool", filepath.FromSlash(name)))
+		require.NoError(t, err)
+		assert.Equal(t, fi.Mode().Perm(), want, name)
+	}
+	assert.Error(t, BuildTree(Artefact{CLI: "../x", Version: "1"}, next, t.TempDir()), "is not a cli's name")
+
 	// an artefact with no bin is the executable itself.
 	raw := filepath.Join(t.TempDir(), "raw")
 	require.NoError(t, os.WriteFile(raw, []byte("\x7fELF"), 0o600))

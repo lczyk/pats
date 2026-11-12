@@ -73,15 +73,13 @@ func FetchArtefact(ctx context.Context, a Artefact, client *http.Client) (string
 		return "", err
 	}
 	file := filepath.Join(dir, a.SHA256)
+	// a cached file that no longer matches is fetched once more, and the
+	// fetch renamed over it: never removed first, which could take away the
+	// file another process just put there.
 	switch sum, err := hashFile(file); {
 	case err == nil && sum == a.SHA256:
 		return file, nil
-	case err == nil:
-		// changed since it was fetched: fetch it once more.
-		if err := os.Remove(file); err != nil {
-			return "", err
-		}
-	case !errors.Is(err, fs.ErrNotExist):
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		return "", err
 	}
 	tmp, got, err := download(ctx, a, client, dir)
@@ -180,7 +178,14 @@ func hashFile(p string) (string, error) {
 // unpacked by the rules a registry's layer is (unpack.go), so no entry leaves
 // the tree, devices are skipped and setuid bits dropped.
 func BuildTree(a Artefact, file, dir string) error {
+	if !cliNameRe.MatchString(a.CLI) {
+		return fmt.Errorf("%q is not a cli's name", a.CLI)
+	}
 	base := filepath.Join(dir, filepath.FromSlash(HarnessTreeDir), a.CLI)
+	// afresh: what an earlier artefact of the cli left is no part of this one.
+	if err := os.RemoveAll(base); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return err
 	}
@@ -194,13 +199,36 @@ func BuildTree(a Artefact, file, dir string) error {
 		if err := unpackTarGz(file, base); err != nil {
 			return fmt.Errorf("%s %s: %w", a.CLI, a.Version, err)
 		}
-		fi, err := os.Stat(filepath.Join(base, filepath.FromSlash(exe)))
+		// looked for through a root of the tree: a link that leads out of
+		// it (to this machine's /bin/sh) is not the artefact's executable.
+		root, err := os.OpenRoot(base)
+		if err != nil {
+			return err
+		}
+		fi, err := root.Stat(filepath.FromSlash(exe))
+		root.Close()
 		switch {
 		case err != nil:
 			return fmt.Errorf("%s %s: bin %s is not in the artefact", a.CLI, a.Version, a.Bin)
 		case !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0:
 			return fmt.Errorf("%s %s: bin %s is not an executable file", a.CLI, a.Version, a.Bin)
 		}
+	}
+	// what this machine's umask took from the modes is given back: the tree
+	// is root's in the image, and its user has to read and run it.
+	top := filepath.Join(dir, filepath.FromSlash(HarnessTreeDir))
+	if err := filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.Type()&fs.ModeSymlink != 0 {
+			return err
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		perm := fi.Mode().Perm()
+		return os.Chmod(p, perm|(perm&0o500)>>3|(perm&0o500)>>6)
+	}); err != nil {
+		return err
 	}
 	bin := filepath.Join(dir, filepath.FromSlash(HarnessBinDir))
 	if err := os.MkdirAll(bin, 0o755); err != nil {

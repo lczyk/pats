@@ -254,11 +254,18 @@ func (t *Tables) check() error {
 		if c.LoginFile != "" && !underHome(c.LoginFile) {
 			add("clis.%s: login-file %q is not a path under the home", name, c.LoginFile)
 		}
+		if len(c.Artefacts) == 0 {
+			add("clis.%s: at least one artefact is required", name)
+		}
 		taken := map[string]string{}
 		for _, u := range sortedKeys(c.Artefacts) {
 			a := c.Artefacts[u]
 			if parsed, err := url.Parse(u); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 				add("clis.%s: artefact %q is not an http or https url", name, u)
+			}
+			// a url with no version in it serves the same bytes for every pin.
+			if !strings.Contains(u, "${version}") {
+				add("clis.%s: artefact %s: the url has no ${version}", name, u)
 			}
 			if len(a.Arch) == 0 {
 				add("clis.%s: artefact %s: arch is required (%s)", name, u, strings.Join(Arches, ", "))
