@@ -3,6 +3,7 @@
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/lczyk/pats)
 ![GitHub Tag](https://img.shields.io/github/v/tag/lczyk/pats?label=release)
 [![lint_and_test](https://github.com/lczyk/pats/actions/workflows/lint_and_test.yml/badge.svg)](https://github.com/lczyk/pats/actions/workflows/lint_and_test.yml)
+[![pats](https://snapcraft.io/pats/badge.svg)](https://snapcraft.io/pats)
 ![GitHub License](https://img.shields.io/github/license/lczyk/pats)
 
 <img src="assets/robot_cat.png" alt="pats logo" width="30">
@@ -156,6 +157,15 @@ or run it without installing at all:
 ```sh
 go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.13 run
 go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.13 score
+```
+
+on linux there is also a snap, which needs no go. it is strictly confined, so it runs agents and steps in docker or local lxd sandboxes only: no host driver, bwrap or podman. connect it to the engine you use:
+
+```sh
+sudo snap install pats --beta
+sudo snap connect pats:docker                          # an apt docker
+sudo snap connect pats:docker docker:docker-daemon     # the docker snap
+sudo snap connect pats:lxd lxd:lxd                     # lxd
 ```
 
 from a clone, `make install` builds the binary (upx-compressed if `upx` is on PATH) and symlinks it into `~/.local/bin`:
