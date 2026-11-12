@@ -42,6 +42,11 @@ type Driver interface {
 	RemoveImage(ctx context.Context, id string) error
 	// Upstream is the id or digest ref's source names now, for staleness.
 	Upstream(ctx context.Context, ref string) (string, error)
+	// Arch is the arch a harness cli is placed for in an image built on base:
+	// the base image's own under a container engine, which may hold one it
+	// emulates, the server's under lxd, this machine's under bwrap. amd64 or
+	// arm64, the two pats places for.
+	Arch(ctx context.Context, base string) (string, error)
 
 	// Sandbox makes sandboxes of one image here.
 	Sandbox(o SandboxOptions) (Sandbox, error)
@@ -104,6 +109,9 @@ type BuildSpec struct {
 	SandboxImage func() string
 	// Stamp is the clis whose versions an lxd build records on its image.
 	Stamp []string
+	// Harness is the clis placed in the image, each from its fetched
+	// artefact, over the base and under the provision step.
+	Harness []Placed
 	// Role (sandbox | project | proxy) and Sandbox are recorded on an lxd
 	// image as pats.role and pats.sandbox, for people listing images.
 	Role, Sandbox string
@@ -114,6 +122,27 @@ type BuildSpec struct {
 	// happen; the log gets them too.
 	Progress func(msg string)
 	Warn     func(msg string)
+}
+
+// Placed is one cli a build places: its artefact, and the fetched file of it
+// in the cache.
+type Placed struct {
+	Artefact Artefact
+	File     string
+}
+
+// placeArch is a go arch pats places harness clis for, or an error naming one
+// it does not.
+func placeArch(arch string) (string, error) {
+	switch arch {
+	case "amd64", "arm64":
+		return arch, nil
+	case "x86_64":
+		return "amd64", nil
+	case "aarch64":
+		return "arm64", nil
+	}
+	return "", fmt.Errorf("no harness cli is published for %s (amd64 and arm64 are)", arch)
 }
 
 // SandboxOptions are what one sandbox needs on top of its place.

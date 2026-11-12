@@ -35,6 +35,8 @@ type fakeHost struct {
 	digests            map[string]string // ref -> registry digest
 	cpus               int
 	upstream           func(ref string) (string, error)
+	builds             []sandbox.BuildSpec // every build asked for
+	arch               string              // the arch its images are of; amd64 when unset
 }
 
 func newFakeHost(refs ...string) *fakeHost {
@@ -119,7 +121,11 @@ func (h *fakeHost) ProxyImage(ctx context.Context, ref string, force bool, log i
 // Build builds every spec into an image named after its base, or its
 // dockerfile.
 func (h *fakeHost) Build(_ context.Context, spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
+	h.builds = append(h.builds, spec)
 	id := "sha256:built-" + spec.Base + spec.Dockerfile
+	for _, p := range spec.Harness {
+		id += "+" + p.Artefact.TreeID()[:8]
+	}
 	h.refs[id] = id
 	return sandbox.Image{ID: id}, "", true, nil
 }
@@ -132,6 +138,13 @@ func (h *fakeHost) Upstream(_ context.Context, ref string) (string, error) {
 }
 
 func (h *fakeHost) CPUs(context.Context) int { return h.cpus }
+
+func (h *fakeHost) Arch(context.Context, string) (string, error) {
+	if h.arch == "" {
+		return "amd64", nil
+	}
+	return h.arch, nil
+}
 
 var errNoImage = errors.New("no such image")
 
@@ -167,6 +180,10 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 			}
 			e := &pinEntry{Daemon: h.daemon, Image: pinImage{ID: id}, Inputs: in, Components: comps,
 				PatsVersion: version.Info.Version, PatsBuild: patsBuild()}
+			// what an init of this config would have placed, for the fake's arch.
+			if hin := harnessInputNow(cfg, sb, "amd64"); hin != "" {
+				e.Arch, in["harnesses"] = "amd64", hin
+			}
 			if sb.Egress.Set {
 				h.refs["proxy-"+sb.Name] = "proxy-" + sb.Name
 				e.Proxy = &pinImage{ID: "proxy-" + sb.Name}

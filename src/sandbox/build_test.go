@@ -215,7 +215,7 @@ func TestBuildImage(t *testing.T) {
 	// nothing labelled with this hash yet.
 	assert.Equal(t, cachedImageID(context.Background(), cliRunner("docker"), hash), "")
 
-	id, err := buildImage(context.Background(), testProcess(t), cliRunner("docker"), "docker", ctxDir, df, hash, "", false, nil)
+	id, err := buildImage(context.Background(), testProcess(t), cliRunner("docker"), "docker", ctxDir, df, hash, "", false, nil, nil)
 	require.NoError(t, err)
 	assert.ContainsString(t, id, "sha256:")
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", id).Run() })

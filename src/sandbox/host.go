@@ -80,6 +80,7 @@ func (h *host) ProxyImage(context.Context, string, bool, io.Writer) (Image, bool
 }
 func (h *host) RemoveImage(context.Context, string) error        { return nil }
 func (h *host) Upstream(context.Context, string) (string, error) { return "", nil }
+func (h *host) Arch(context.Context, string) (string, error)     { return placeArch(runtime.GOARCH) }
 func (h *host) Runs(context.Context) ([]RunRecord, error)        { return nil, nil }
 func (h *host) Remove(context.Context, Resource) error           { return nil }
 func (h *host) Sandbox(SandboxOptions) (Sandbox, error)          { return &hostSandbox{h: h}, nil }

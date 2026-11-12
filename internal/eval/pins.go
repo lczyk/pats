@@ -48,6 +48,12 @@ type pinEntry struct {
 	Built       string            `json:"built"`
 	Inputs      map[string]string `json:"inputs"`
 	Components  map[string]string `json:"components,omitempty"`
+	// Arch is the arch the image's harness clis were placed for, and
+	// Harnesses what init placed of each: its version, its artefact's sha256
+	// and its tree's id. a provision that then swaps a cli shows in
+	// Components, not here.
+	Arch      string                       `json:"arch,omitempty"`
+	Harnesses map[string]map[string]string `json:"harnesses,omitempty"`
 }
 
 // images is every image the entry pins: the image, its layers and the proxy.

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/moby/patternmatcher"
@@ -26,6 +27,10 @@ type containerBuild struct {
 	// Progress, when set, gets a base pull, each build step, and a step
 	// that runs long.
 	Progress func(msg string)
+	// Contexts, when set, makes the named build contexts the dockerfile
+	// copies from, and is asked only when a build runs: an image already
+	// built from the same inputs needs none of them.
+	Contexts func() (named map[string]string, cleanup func(), err error)
 }
 
 // buildContainerImage resolves a build to an image id for a container
@@ -81,7 +86,15 @@ func buildContainerImage(ctx context.Context, p *process, r runner, driver strin
 		}
 		defer steps.start()()
 	}
-	id, err = buildImage(ctx, p, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, log)
+	var named map[string]string
+	if b.Contexts != nil {
+		var cleanup func()
+		if named, cleanup, err = b.Contexts(); err != nil {
+			return "", "", false, err
+		}
+		defer cleanup()
+	}
+	id, err = buildImage(ctx, p, r, driver, b.Dir, b.Dockerfile, hash, baseImg, b.Force, named, log)
 	return id, baseImg, err == nil, err
 }
 
@@ -131,7 +144,7 @@ const baseArg = "PATS_SANDBOX"
 // buildImage builds one resolved context and returns the image id. a non-empty
 // hash is stamped onto the image (see hashLabel) so the next run can find it;
 // a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
-func buildImage(ctx context.Context, p *process, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool, log io.Writer) (string, error) {
+func buildImage(ctx context.Context, p *process, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool, named map[string]string, log io.Writer) (string, error) {
 	iid, err := p.mkTemp("pats-iid-")
 	if err != nil {
 		return "", err
@@ -148,6 +161,14 @@ func buildImage(ctx context.Context, p *process, r runner, driver, ctxDir, docke
 	}
 	if hash != "" {
 		args = append(args, "--label", hashLabel+"="+hash, "--tag", buildTag(hash))
+	}
+	names := make([]string, 0, len(named))
+	for n := range named {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		args = append(args, "--build-context", n+"="+named[n])
 	}
 	if log == nil {
 		log = io.Discard

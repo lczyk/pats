@@ -85,6 +85,9 @@ type pairMeta struct {
 	Summary *runSummary `json:"summary,omitempty"`
 	// the harness versions inside the image, as pats init stamped them.
 	Components map[string]string `json:"components,omitempty"`
+	// what init placed of each harness cli in the image: its version, its
+	// artefact's sha256 and its tree's id.
+	Placed map[string]map[string]string `json:"placed,omitempty"`
 	// a judge's sample: the pair it graded, and which sample it is.
 	Judged *judged `json:"judged,omitempty"`
 	Sample int     `json:"sample,omitempty"`

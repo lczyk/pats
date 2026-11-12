@@ -311,6 +311,9 @@ func (d *bwrapDriver) RemoveImage(_ context.Context, id string) error {
 	return st.remove(id)
 }
 
+// Arch is this machine's: the one its rootfs was fetched for.
+func (d *bwrapDriver) Arch(context.Context, string) (string, error) { return placeArch(d.arch) }
+
 func (d *bwrapDriver) Upstream(ctx context.Context, ref string) (string, error) {
 	return d.p.reg.tagDigest(ctx, ref)
 }

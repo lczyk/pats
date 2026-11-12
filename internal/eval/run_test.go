@@ -704,6 +704,7 @@ axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox
 txx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // nothing to place: the default image is pulled as it is
 	h := newFakeHost()
 	useHost(t, h)
 

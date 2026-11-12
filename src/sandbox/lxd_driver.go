@@ -194,6 +194,15 @@ func (l *lxd) RemoveImage(ctx context.Context, id string) error {
 
 // Upstream is the fingerprint an image remote's alias names now for this
 // server's architecture and instance type.
+// Arch is the server's: an image there runs on it.
+func (l *lxd) Arch(ctx context.Context, _ string) (string, error) {
+	c, err := l.ready(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.serverArch(ctx)
+}
+
 func (l *lxd) Upstream(ctx context.Context, ref string) (string, error) {
 	return l.remoteFingerprint(ctx, ref)
 }

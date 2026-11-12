@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -211,6 +213,71 @@ func TestProvisionDockerfile(t *testing.T) {
 			"RUN rm -rf /pats-provision\n")
 	assert.Equal(t, provisionDockerfile(BuildSpec{}, func() string { return "pats/sandbox:v1" }),
 		"ARG PATS_SANDBOX=pats/sandbox:v1\nFROM ${PATS_SANDBOX}\nUSER root\n")
+	// harness clis go in over the base and under the provision step, each
+	// from a build context of its own. the comment is the tree's identity,
+	// so a pin or a bin that moves changes the dockerfile, and the build.
+	claude := Artefact{CLI: "claude", Version: "2.1.319", Arch: "arm64", URL: "https://a.example/x", SHA256: "aa", Bin: "package/claude"}
+	codex := Artefact{CLI: "codex", Version: "0.167.0", Arch: "arm64", SHA256: "bb", Bin: "package/bin/codex"}
+	df := provisionDockerfile(BuildSpec{Base: "ubuntu:26.04", Material: "/m", Argv: []string{"./x.sh"},
+		Harness: []Placed{{Artefact: claude}, {Artefact: codex}}}, nil)
+	assert.Equal(t, df, "ARG PATS_SANDBOX\nFROM ubuntu:26.04\nUSER root\n"+
+		"# claude 2.1.319 arm64 aa package/claude\nCOPY --chown=0:0 --from=pats-harness-claude / /\n"+
+		"# codex 0.167.0 arm64 bb package/bin/codex\nCOPY --chown=0:0 --from=pats-harness-codex / /\n"+
+		"COPY . /pats-provision\n"+
+		`RUN ["/bin/sh","-c","PATH=\"/pats-provision/bin:$PATH\"; export PATH; exec \"$@\"","provision","./x.sh"]`+"\n"+
+		"RUN rm -rf /pats-provision\n")
+	moved := claude
+	moved.URL = "https://mirror.example/x"
+	assert.Equal(t, provisionDockerfile(BuildSpec{Base: "b", Harness: []Placed{{Artefact: moved}}}, nil),
+		provisionDockerfile(BuildSpec{Base: "b", Harness: []Placed{{Artefact: claude}}}, nil)) // a url is not in the key
+	rebinned := claude
+	rebinned.Bin = "package/bin/claude"
+	assert.That(t, provisionDockerfile(BuildSpec{Base: "b", Harness: []Placed{{Artefact: rebinned}}}, nil) !=
+		provisionDockerfile(BuildSpec{Base: "b", Harness: []Placed{{Artefact: claude}}}, nil), "a bin is in the key")
+}
+
+// a real build: a cli's tree lands in the image over its base, root's, on
+// PATH, and its stamp is what the image says. a second build of the same
+// inputs is the first's image, with no tree unpacked.
+func TestContainerBuildPlacesHarness(t *testing.T) {
+	dockerOrSkip(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	file := tarGz(t,
+		tarEntry{name: "package/", mode: 0o755, typ: tar.TypeDir},
+		tarEntry{name: "package/tool", mode: 0o755, typ: tar.TypeReg, body: "#!/bin/sh\necho 'tool 1.2.3'\n"},
+	)
+	a := Artefact{CLI: "tool", Version: "1.2.3", Arch: "arm64", SHA256: "aa", Bin: "package/tool"}
+	d, err := Open(Options{Driver: "docker"})
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, _, err = d.Pull(ctx, testImage, false, io.Discard)
+	require.NoError(t, err)
+	arch, err := d.Arch(ctx, testImage)
+	require.NoError(t, err)
+	assert.That(t, arch == "amd64" || arch == "arm64", "arch %q", arch)
+
+	spec := BuildSpec{Base: testImage, Harness: []Placed{{Artefact: a, File: file}}}
+	img, _, built, err := d.Build(ctx, spec, io.Discard) // a failed build's error carries its tail
+	require.NoError(t, err)
+	assert.Equal(t, built, true)
+	t.Cleanup(func() { _ = d.RemoveImage(context.Background(), img.ID) })
+
+	stamps, err := d.Stamps(ctx, img.ID, []string{"tool", "absent"})
+	require.NoError(t, err)
+	assert.EqualMaps(t, stamps, map[string]string{"tool": "1.2.3"})
+
+	sb, err := d.Sandbox(SandboxOptions{Image: img.ID})
+	require.NoError(t, err)
+	var out, errb bytes.Buffer
+	code, err := sb.Run(ctx, Spec{Argv: []string{"sh", "-c", "command -v tool; stat -c '%u:%g %a' /opt/pats/harness/tool/package/tool; readlink /usr/local/bin/tool"}, Workdir: t.TempDir()}, &out, &errb)
+	require.NoError(t, err, "%s", errb.String())
+	assert.Equal(t, code, 0, errb.String())
+	assert.Equal(t, out.String(), "/usr/local/bin/tool\n0:0 755\n/opt/pats/harness/tool/package/tool\n")
+
+	again, _, built, err := d.Build(ctx, BuildSpec{Base: testImage, Harness: []Placed{{Artefact: a, File: "/nonexistent/not-read"}}}, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, built, false)
+	assert.Equal(t, again.ID, img.ID)
 }
 
 // podman's overrides reach the cli the driver runs, not only its target.

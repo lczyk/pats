@@ -86,8 +86,9 @@ func staleLocal(e *pinEntry, now map[string]string) []string {
 	names := map[string]string{
 		"provision": "the provision material", "context": "the build context",
 		"base_ref": "the base", "image_ref": "the image",
+		"harnesses": "its harness clis or a pin of one",
 	}
-	for _, k := range []string{"provision", "context", "base_ref", "image_ref"} {
+	for _, k := range []string{"provision", "context", "base_ref", "image_ref", "harnesses"} {
 		if e.Inputs[k] != now[k] {
 			out = append(out, names[k])
 		}

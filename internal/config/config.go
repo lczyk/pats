@@ -86,8 +86,10 @@ type Sandbox struct {
 	// ProxyImage is the egress proxy image a run starts its proxies from: the
 	// pinned one, set by the run from the pins, never by pats.yaml.
 	ProxyImage string `yaml:"-"`
-	// Components are the harness versions stamped into the pinned image.
-	Components map[string]string `yaml:"-"`
+	// Components are the harness versions stamped into the pinned image, and
+	// Placed what init placed of each harness cli there.
+	Components map[string]string            `yaml:"-"`
+	Placed     map[string]map[string]string `yaml:"-"`
 }
 
 // Egress is a sandbox's outbound network policy. absent, the network is

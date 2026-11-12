@@ -132,6 +132,9 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 		if err := os.WriteFile(b.Dockerfile, []byte(provisionDockerfile(spec, sandbox)), 0o644); err != nil {
 			return Image{}, "", false, err
 		}
+		if len(spec.Harness) > 0 {
+			b.Contexts = func() (map[string]string, func(), error) { return c.harnessContexts(spec.Harness) }
+		}
 		b.Dir = spec.Material
 		if b.Dir == "" {
 			// no material: the context is empty, and nothing reads it.
@@ -159,6 +162,12 @@ func provisionDockerfile(spec BuildSpec, sandbox func() string) string {
 	}
 	var df strings.Builder
 	fmt.Fprintf(&df, "ARG %s\nFROM %s\nUSER root\n", arg, from)
+	// each cli's tree, from a build context of its own, as root's. the
+	// comment is the tree's identity: it is what puts a pin in the image's
+	// key, since the dockerfile is hashed and the tree's bytes are not.
+	for _, p := range spec.Harness {
+		fmt.Fprintf(&df, "# %s\nCOPY --chown=0:0 --from=%s / /\n", p.Artefact.Line(), harnessContext(p.Artefact.CLI))
+	}
 	if len(spec.Argv) > 0 {
 		if spec.Material != "" {
 			fmt.Fprintf(&df, "COPY . %s\n", ProvisionMount)
@@ -168,6 +177,35 @@ func provisionDockerfile(spec BuildSpec, sandbox func() string) string {
 		fmt.Fprintf(&df, "RUN rm -rf %s\n", ProvisionMount)
 	}
 	return df.String()
+}
+
+// harnessContext names the build context a cli's tree is copied from.
+func harnessContext(cli string) string { return "pats-harness-" + cli }
+
+// harnessContexts unpacks each placed cli's tree into a temp dir of its own
+// and names it as a build context. the caller removes them once built.
+func (c *container) harnessContexts(placed []Placed) (map[string]string, func(), error) {
+	var dirs []string
+	cleanup := func() {
+		for _, d := range dirs {
+			RemoveTemp(d)
+		}
+	}
+	out := map[string]string{}
+	for _, p := range placed {
+		dir, err := c.p.mkTemp("pats-harness-")
+		if err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		dirs = append(dirs, dir)
+		if err := BuildTree(p.Artefact, p.File, dir); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		out[harnessContext(p.Artefact.CLI)] = dir
+	}
+	return out, cleanup, nil
 }
 
 // provisionArgv runs argv with the material's bin/ first on PATH.
@@ -195,6 +233,16 @@ func (c *container) RemoveImage(ctx context.Context, id string) error {
 // Upstream is the digest ref's tag names in its registry now.
 func (c *container) Upstream(ctx context.Context, ref string) (string, error) {
 	return c.p.reg.tagDigest(ctx, ref)
+}
+
+// Arch is the arch of image base, which the engine holds: not the daemon's,
+// which may run an image of another under emulation.
+func (c *container) Arch(ctx context.Context, base string) (string, error) {
+	out, err := c.dockerOut(ctx, "image", "inspect", "--format", "{{.Architecture}}", base)
+	if err != nil {
+		return "", fmt.Errorf("the arch of %s: %w", base, err)
+	}
+	return placeArch(strings.TrimSpace(string(out)))
 }
 
 // RemapsUIDs says whether the engine maps the uid pats runs a command as to

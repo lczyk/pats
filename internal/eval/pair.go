@@ -323,6 +323,7 @@ func runPair(
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
 		Summary:    summarize(hd, filepath.Join(outDir, "stdout.log")),
 		Components: sb.Components,
+		Placed:     sb.Placed,
 	}
 	if sb.Driver == sandbox.LXDDriver {
 		meta.LXD = lxdProvenanceOf(ctx, sb)
@@ -411,6 +412,7 @@ func pairFailed(ctx context.Context, cfg *config.Config, job pairJob, sandboxes 
 	if id, err := cfg.ResolveSandbox(a); err == nil {
 		sb := sandboxes[id]
 		meta.Sandbox, meta.Driver, meta.SandNotBoxed, meta.Image, meta.Components = id, sb.Driver, sandbox.TraitsOf(sb.Driver).Unboxed, sb.Image, sb.Components
+		meta.Placed = sb.Placed
 	}
 	if job.meta != nil {
 		job.meta(&meta)

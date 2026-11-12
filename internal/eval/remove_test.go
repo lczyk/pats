@@ -326,6 +326,7 @@ func TestSupersedePerDaemon(t *testing.T) {
 func TestPublishedImagePresentIsNotOwned(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, initCfg)
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // nothing to place: the default image is pulled as it is
 	pub, _ := sandbox.SandboxImage("")
 	h := newFakeHost(pub)
 	useHost(t, h)

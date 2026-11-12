@@ -2,7 +2,9 @@ package eval
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +44,7 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}, only-pub: {agents: a-
 func TestInitPinsContainers(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, initCfg)
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // nothing to place: the default image is pulled as it is
 	h := newFakeHost("my/image:1")
 	useHost(t, h)
 	var out bytes.Buffer
@@ -291,7 +294,7 @@ func TestInitWhat(t *testing.T) {
 		{config.Sandbox{Name: "sxx", Driver: "lxd", Image: "my-alias"}, "pinning its image"},
 	}
 	for _, c := range cases {
-		assert.Equal(t, initWhat(c.sb, dir), c.want, c.sb.Driver)
+		assert.Equal(t, initWhat(c.sb, dir, false), c.want, c.sb.Driver)
 	}
 }
 
@@ -383,4 +386,105 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"cc"}})
 	assert.Error(t, err, "own: its image was made without claude")
 	assert.Error(t, err, "run `pats init` first")
+}
+
+// a sandbox pats composes gets the clis its agents run placed in its image:
+// the base is pulled and asked its arch, each cli's artefact for it is
+// fetched, and the image is built on the base with them. the pin records
+// what was placed, a run records it in each pair, and a pin that moves since
+// is a warning naming the init.
+func TestInitPlacesHarnesses(t *testing.T) {
+	dir := t.TempDir()
+	const body = `
+sbx: {kind: sandbox, items: {dflt: {}, user: {image: my/image:1}}}
+agx:
+  kind: agent
+  defaults: {model: m}
+  items:
+    oc: {harness: opencode-openrouter, sandbox: dflt}
+    cc: {harness: claude-cli-keyless, sandbox: dflt}
+    uc: {harness: codex-cli-keyless, sandbox: user}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
+`
+	cfg := parseCfg(t, body)
+	h := newFakeHost("my/image:1")
+	h.arch = "arm64"
+	useHost(t, h)
+	useFakeSandbox(t, &fakeSandbox{})
+	var fetched []string
+	old := fetchArtefact
+	fetchArtefact = func(_ context.Context, a sandbox.Artefact, _ *http.Client) (string, error) {
+		fetched = append(fetched, a.CLI+" "+a.Version+" "+a.Arch)
+		return "/cache/" + a.SHA256, nil
+	}
+	defer func() { fetchArtefact = old }()
+
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Agents: []string{"oc"}}), "%s", out.String())
+	assert.ContainsString(t, out.String(), `sandbox "dflt": building images`)
+
+	// the whole config's agents decide the set, not the selection: claude
+	// is placed for an init of the opencode agent alone. an image: gets none.
+	claude, opencode := cfg.Harnesses.CLIs["claude"], cfg.Harnesses.CLIs["opencode"]
+	assert.EqualArrays(t, fetched, []string{"claude " + claude.Version + " arm64", "opencode " + opencode.Version + " arm64"})
+	pub, _ := sandbox.SandboxImage("")
+	assert.EqualArrays(t, h.pulls, []string{pub})
+	require.Len(t, h.builds, 1)
+	spec := h.builds[0]
+	assert.Equal(t, spec.Base, "") // on the pats sandbox
+	require.Len(t, spec.Harness, 2)
+	_, art, _ := claude.ArtefactFor("arm64", "")
+	assert.Equal(t, spec.Harness[0].Artefact.SHA256, art.SHA256)
+	assert.Equal(t, spec.Harness[0].File, "/cache/"+art.SHA256)
+	assert.Equal(t, spec.Harness[0].Artefact.Bin, "package/claude")
+
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	e := f.entry("fake:host", "dflt")
+	require.NotNil(t, e)
+	assert.Equal(t, e.Arch, "arm64")
+	assert.Equal(t, e.Image.Built, true)
+	assert.EqualMaps(t, e.Harnesses["claude"], map[string]string{"version": claude.Version, "sha256": art.SHA256, "tree": spec.Harness[0].Artefact.TreeID()})
+	assert.That(t, e.Inputs["harnesses"] != "", "the pin has no input for its harnesses")
+
+	// an image: is the user's whole statement of what is inside: nothing is
+	// fetched for it or placed in it.
+	fetched = nil
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"user"}}), "%s", out.String())
+	assert.Len(t, fetched, 0)
+	require.Len(t, h.builds, 1)
+	f, err = readPins(dir)
+	require.NoError(t, err)
+	user := f.entry("fake:host", "user")
+	require.NotNil(t, user)
+	assert.Equal(t, user.Arch, "")
+	assert.Len(t, user.Harnesses, 0)
+
+	// a run records what was placed, and says nothing of a fresh pin. (a
+	// run writes the pinned image into its config: each gets its own.)
+	out.Reset()
+	runDir, err := Run(parseCfg(t, body), Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"oc"}})
+	require.NoError(t, err, "%s", out.String())
+	assert.That(t, !strings.Contains(out.String(), "changed since its pats init"), "%s", out.String())
+	m := readMeta(t, runDir, "oc", "txx")
+	assert.EqualMaps(t, m.Placed["opencode"], e.Harnesses["opencode"])
+	assert.Len(t, m.Placed, 2) // every cli of the image, not only the agent's
+
+	// a pin that moved since init: the run warns and goes on with the image.
+	moved := parseCfg(t, body)
+	moved.Harnesses.CLIs["claude"].Version = "9.9.9"
+	out.Reset()
+	_, err = Run(moved, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"oc"}})
+	require.NoError(t, err, "%s", out.String())
+	assert.ContainsString(t, out.String(), `sandbox "dflt": changed since its pats init: its harness clis or a pin of one; running the pinned image (pats init --sandbox dflt to rebuild)`)
+
+	// an arch a cli has no artefact for fails that sandbox's init, naming it.
+	h.arch = "amd64"
+	half := parseCfg(t, body)
+	delete(half.Harnesses.CLIs["opencode"].Artefacts, "https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-${version}.tgz")
+	out.Reset()
+	err = Init(half, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"dflt"}})
+	assert.Error(t, err, "init failed for sandbox(es) dflt")
+	assert.ContainsString(t, out.String(), "cli opencode "+opencode.Version+" has no artefact for amd64")
 }

@@ -34,6 +34,8 @@ type builder interface {
 	puller
 	Build(ctx context.Context, spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error)
 	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (sandbox.Image, bool, error)
+	// Arch is the arch a harness cli is placed for in an image built on base.
+	Arch(ctx context.Context, base string) (string, error)
 }
 
 // host is all eval asks of a sandbox's driver.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/machine"
 	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox"
 )
@@ -76,8 +77,9 @@ func Init(cfg *config.Config, opts InitOptions) error {
 			lg.info("sandbox %q: host driver, nothing to make: its agents run this machine's own clis", sb.Name)
 			continue
 		}
-		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir))
-		target, e, err := initSandbox(ctx, sb, sandboxCLIs(cfg, sb.Name), ro, opts)
+		clis := sandboxCLIs(cfg, sb.Name)
+		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir, places(sb) && len(clis) > 0))
+		target, e, err := initSandbox(ctx, sb, clis, cfg.Harnesses, ro, opts)
 		if err != nil {
 			failed = append(failed, sb.Name)
 			if ctx.Err() != nil {
@@ -210,8 +212,8 @@ func judgePairsOf(cfg *config.Config, suites []string) ([]config.TestPair, error
 }
 
 // initWhat says what init is about to do for sb, and where a build logs.
-func initWhat(sb config.Sandbox, configDir string) string {
-	build := provisions(sb) || sb.Build != ""
+func initWhat(sb config.Sandbox, configDir string, placing bool) string {
+	build := provisions(sb) || sb.Build != "" || placing
 	if sb.Driver == sandbox.LXDDriver {
 		build = sb.Image == ""
 		if !build && !strings.Contains(sb.Image, ":") {
@@ -225,8 +227,9 @@ func initWhat(sb config.Sandbox, configDir string) string {
 }
 
 // initSandbox makes one sandbox's images and returns its pin. clis are the
-// ones its agents run: the image is asked for each, and has to have it.
-func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, ro Options, opts InitOptions) (string, *pinEntry, error) {
+// ones its agents run: an image pats composes gets each placed in it, by
+// tables' pins, and every image is asked for each and has to have it.
+func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, tables *machine.Tables, ro Options, opts InitOptions) (string, *pinEntry, error) {
 	h, err := hostFor(sb)
 	if err != nil {
 		return "", nil, err
@@ -249,7 +252,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, ro Optio
 	if sb.Driver == sandbox.LXDDriver {
 		err = initLXD(ctx, sb, ro, opts, h, e)
 	} else {
-		err = initContainer(ctx, sb, ro, opts, h, e)
+		err = initContainer(ctx, sb, clis, tables, ro, opts, h, e)
 	}
 	if err == nil {
 		e.Components, err = h.Stamps(ctx, e.Image.ID, clis)
@@ -276,7 +279,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, ro Optio
 // initContainer makes a docker or podman sandbox's image and proxy: built
 // from build: or base / provision, else pulled when absent (always, with
 // --force).
-func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h builder, e *pinEntry) error {
+func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables *machine.Tables, ro Options, opts InitOptions, h builder, e *pinEntry) error {
 	lg := logw{ro.Out, ro.Color, ro.Verbose}
 	logPath := initLogPath(ro.ConfigDir, sb.Name)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
@@ -314,9 +317,21 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		}
 	}()
 	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.Name, msg) }
+	var placed []sandbox.Placed
+	if places(sb) && len(clis) > 0 {
+		ref := sb.Base
+		if ref == "" {
+			ref = base()
+		}
+		if placed, err = placeIn(ctx, sb, ref, clis, tables, lg, log, h, e); err != nil {
+			return fail(err)
+		}
+	}
 	switch {
-	case provisions(sb):
-		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force, Progress: progress}
+	// the default sandbox is built too once it has a cli to place: a pull of
+	// the base and a copy on top.
+	case provisions(sb) || len(placed) > 0:
+		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force, Progress: progress, Harness: placed}
 		if sb.Provision != "" {
 			material, argv, err := stageMaterial(ro.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 			if err != nil {
@@ -373,6 +388,31 @@ func initContainer(ctx context.Context, sb config.Sandbox, ro Options, opts Init
 		e.Proxy = &im
 	}
 	return nil
+}
+
+// placeIn readies what init places in a sandbox's image: the base is made
+// present and asked its arch, each cli's artefact for it is fetched into the
+// cache, checked, and the pin records the arch, what is placed and the input
+// a run compares.
+func placeIn(ctx context.Context, sb config.Sandbox, base string, clis []string, tables *machine.Tables, lg logw, log io.Writer, h builder, e *pinEntry) ([]sandbox.Placed, error) {
+	if _, _, err := h.Pull(ctx, base, false, log); err != nil {
+		return nil, fmt.Errorf("its base %s: %w", base, err)
+	}
+	arch, err := h.Arch(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	arts, err := artefactsFor(tables, clis, arch)
+	if err != nil {
+		return nil, err
+	}
+	placed, rec, err := fetchPlaced(ctx, arts, lg, sb.Name)
+	if err != nil {
+		return nil, err
+	}
+	e.Arch, e.Harnesses = arch, rec
+	e.Inputs["harnesses"] = harnessInput(arts)
+	return placed, nil
 }
 
 // pullFunc is a host's Pull, or its ProxyImage.
@@ -500,7 +540,13 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reasons = append(reasons, fmt.Sprintf("  %s: %s", sb.Name, reason))
 			continue
 		}
-		if now, err := localInputs(sb, opts.ConfigDir); err != nil {
+		now, err := localInputs(sb, opts.ConfigDir)
+		if err == nil {
+			if in := harnessInputNow(cfg, sb, e.Arch); in != "" {
+				now["harnesses"] = in
+			}
+		}
+		if err != nil {
 			lg.warn("sandbox %q: cannot tell whether its image is current: %v", sb.Name, err)
 		} else if changed := staleLocal(e, now); len(changed) > 0 {
 			lg.warn("sandbox %q: changed since its pats init: %s; running the pinned image (pats init --sandbox %s to rebuild)",
@@ -517,6 +563,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 		cfg.Sandboxes[i].Image = e.Image.ID
 		cfg.Sandboxes[i].Components = e.Components
+		cfg.Sandboxes[i].Placed = e.Harnesses
 		checks = append(checks, upstreamCheck{sb: sb.Name, up: h.Upstream, inputs: e.Inputs})
 		if e.Proxy != nil {
 			cfg.Sandboxes[i].ProxyImage = e.Proxy.ID
