@@ -156,6 +156,9 @@ func (t *Tables) check() error {
 			add("clis.%s: login-file %q is not a path under the home", name, c.LoginFile)
 		}
 		for _, k := range sortedKeys(c.HomeEnv) {
+			if why := badEnv(k); why != "" {
+				add("clis.%s: home-env %s %s", name, k, why)
+			}
 			if !underHome(c.HomeEnv[k]) {
 				add("clis.%s: home-env %s: %q is not a path under the home", name, k, c.HomeEnv[k])
 			}
@@ -182,6 +185,27 @@ func (t *Tables) check() error {
 		}
 		if h.Login && (h.cli == nil || h.cli.LoginFile == "") {
 			add("harnesses.%s: login needs a cli with a login-file", name)
+		}
+		// a variable has one source: named twice, which value the sandbox
+		// gets would depend on the order pats happens to set them in.
+		seen := map[string]string{}
+		if h.cli != nil {
+			for k := range h.cli.HomeEnv {
+				seen[k] = "its cli's home-env"
+			}
+		}
+		for _, list := range []struct {
+			key   string
+			names []string
+		}{{"auth-env", h.AuthEnv}, {"pass-env", h.PassEnv}} {
+			for _, k := range list.names {
+				if why := badEnv(k); why != "" {
+					add("harnesses.%s: %s %s %s", name, list.key, k, why)
+				} else if where, dup := seen[k]; dup {
+					add("harnesses.%s: %s %s is also in %s", name, list.key, k, where)
+				}
+				seen[k] = list.key
+			}
 		}
 		if h.Models != "" && !Catalogues[h.Models] {
 			add("harnesses.%s: models %q is not a catalogue pats has (%s)", name, h.Models, strings.Join(sortedKeys(Catalogues), ", "))
@@ -212,6 +236,19 @@ func (t *Tables) check() error {
 		return errors.New(strings.Join(errs, "\n"))
 	}
 	return nil
+}
+
+var envRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// badEnv says why an entry may not name variable k, "" when it may.
+func badEnv(k string) string {
+	switch {
+	case !envRe.MatchString(k):
+		return "is not a variable's name"
+	case k == "HOME" || strings.HasPrefix(k, "PATS_"):
+		return "is pats's own to set"
+	}
+	return ""
 }
 
 // underHome is whether p is a relative path that stays inside its base.
