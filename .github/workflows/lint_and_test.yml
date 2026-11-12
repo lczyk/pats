@@ -137,7 +137,7 @@ jobs:
 
   # every action the workflows use is pinned to a commit in
   # .github/workflows/actions.lock. this fails when the lockfile is out of
-  # step with the workflows (re-run `gh actions-lock`) or a pin no longer
+  # step with the workflows (re-run `make actions-lock`) or a pin no longer
   # verifies upstream.
   lockfile:
     runs-on: ubuntu-latest
@@ -148,8 +148,10 @@ jobs:
       with:
         persist-credentials: false
 
-    - name: Install gh-actions-lock
-      run: gh extension install github/gh-actions-lock --pin v0.4.1
+    - name: Set up Go
+      uses: actions/setup-go@v7.0.0
+      with:
+        go-version: '1.26'
 
     - name: Verify the lockfile
-      run: gh actions-lock --verify
+      run: make actions-lock ARGS=--verify

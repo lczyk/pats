@@ -100,6 +100,11 @@ bench:  ## Run all benchmarks
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test
 
+# needs a logged-in gh, or GH_TOKEN. ci verifies with this same version.
+.PHONY: actions-lock
+actions-lock:  ## Re-pin the workflows' actions in .github/workflows/actions.lock (flags via ARGS=.., e.g. --verify, --relock)
+	go run github.com/github/gh-actions-lock/cmd/gh-actions-lock@v0.4.1 $(ARGS)
+
 .PHONY: clean
 clean:  ## Remove build artifacts
 	rm -f ./bin/pats
