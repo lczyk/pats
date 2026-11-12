@@ -1,8 +1,10 @@
 package sandbox
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,4 +104,49 @@ func TestLXDE2E(t *testing.T) {
 		b, _ := os.ReadFile(audit)
 		assert.ContainsString(t, string(b), `"host":"evil.test"`)
 	})
+}
+
+// placement on a real lxd server (PATS_LXD_E2E=1): a cli's tree is pushed to
+// the builder and copied over its root, the image is stamped with its
+// version, and a sandbox of the image runs it, root's and on PATH.
+func TestLXDE2EPlacesHarness(t *testing.T) {
+	if os.Getenv("PATS_LXD_E2E") == "" {
+		t.Skip("set PATS_LXD_E2E=1 to drive a real lxd server")
+	}
+	ctx := context.Background()
+	defer Shutdown()
+	file := tarGz(t,
+		tarEntry{name: "package/", mode: 0o755, typ: tar.TypeDir},
+		tarEntry{name: "package/tool", mode: 0o755, typ: tar.TypeReg, body: "#!/bin/sh\necho 'tool 1.2.3'\n"},
+	)
+	d, err := Open(Options{Driver: "lxd"}.WithEnv())
+	require.NoError(t, err)
+	arch, err := d.Arch(ctx, "")
+	require.NoError(t, err)
+	a := Artefact{CLI: "tool", Version: "1.2.3", Arch: arch, SHA256: "e2e-" + arch, Bin: "package/tool"}
+
+	var log bytes.Buffer
+	img, _, built, err := d.Build(ctx, BuildSpec{Base: "ubuntu:24.04", Harness: []Placed{{Artefact: a, File: file}}, Stamp: []string{"tool"}, Role: "sandbox"}, &log)
+	require.NoError(t, err, "%v\n%s", err, log.String())
+	t.Logf("built %v: %s (%s)", built, img.Name, img.ID)
+	t.Cleanup(func() { _ = d.RemoveImage(context.Background(), img.ID) })
+
+	stamps, err := d.Stamps(ctx, img.ID, []string{"tool", "absent"})
+	require.NoError(t, err)
+	assert.EqualMaps(t, stamps, map[string]string{"tool": "1.2.3"})
+
+	sb, err := d.Sandbox(SandboxOptions{Image: img.Name})
+	require.NoError(t, err)
+	var out, errb bytes.Buffer
+	code, err := sb.Run(ctx, Spec{Argv: []string{"sh", "-c", "command -v tool && stat -c '%u:%g %a' /opt/pats/harness/tool/package/tool && readlink /usr/local/bin/tool && tool --version && ls / | grep -c pats-harness"},
+		Workdir: t.TempDir(), Egress: Egress{None: true}}, &out, &errb)
+	require.NoError(t, err, "%s", errb.String())
+	t.Logf("exit %d: %s%s", code, out.String(), errb.String())
+	assert.Equal(t, out.String(), "/usr/local/bin/tool\n0:0 755\n/opt/pats/harness/tool/package/tool\ntool 1.2.3\n0\n")
+
+	// the same inputs again are the same image, with nothing built.
+	again, _, built, err := d.Build(ctx, BuildSpec{Base: "ubuntu:24.04", Harness: []Placed{{Artefact: a, File: "/nonexistent/not-read"}}, Stamp: []string{"tool"}, Role: "sandbox"}, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, built, false)
+	assert.Equal(t, again.ID, img.ID)
 }

@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"io"
@@ -110,4 +111,62 @@ func TestBwrapE2E(t *testing.T) {
 		b, _ := os.ReadFile(audit)
 		assert.ContainsString(t, string(b), `"host":"evil.test"`)
 	})
+}
+
+// placement under bwrap on a real machine (PATS_BWRAP_E2E=1): a cli's tree is
+// unpacked into the store once, a session of the image with the tree over it
+// runs the cli from PATH, the stamps of the two say its version, and what a
+// session writes over the tree stays the session's.
+func TestBwrapE2EPlacesHarness(t *testing.T) {
+	if os.Getenv("PATS_BWRAP_E2E") == "" {
+		t.Skip("PATS_BWRAP_E2E=1 runs it, on linux with bwrap 0.10 or later")
+	}
+	ref := os.Getenv("PATS_BWRAP_IMAGE")
+	if ref == "" {
+		ref = "docker.io/library/ubuntu:24.04"
+	}
+	ctx := context.Background()
+	d := newBwrap(defaultProcess, Options{Driver: BwrapDriver})
+	img, _, err := d.Pull(ctx, ref, false, os.Stderr)
+	require.NoError(t, err)
+	arch, err := d.Arch(ctx, "")
+	require.NoError(t, err)
+	const body = "#!/bin/sh\necho 'tool 1.2.3'\n"
+	file := tarGz(t,
+		tarEntry{name: "package/", mode: 0o755, typ: tar.TypeDir},
+		tarEntry{name: "package/tool", mode: 0o755, typ: tar.TypeReg, body: body},
+	)
+	a := Artefact{CLI: "tool", Version: "1.2.3", Arch: arch, SHA256: "e2e-" + strconv.Itoa(os.Getpid()), Bin: "package/tool"}
+	st, err := d.store()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(st.harnessTree(a.TreeID())) })
+
+	ids, err := d.PlaceTrees(ctx, []Placed{{Artefact: a, File: file}})
+	require.NoError(t, err)
+	assert.Equal(t, d.MissingTree(ids), "")
+
+	stamps, err := d.StampsOver(ctx, img.ID, ids, []string{"tool", "absent"})
+	require.NoError(t, err)
+	assert.EqualMaps(t, stamps, map[string]string{"tool": "1.2.3"})
+	// the image alone has no such cli, and was not told it has.
+	bare, err := d.Stamps(ctx, img.ID, []string{"tool"})
+	require.NoError(t, err)
+	assert.Len(t, bare, 0)
+
+	sb, err := d.Sandbox(SandboxOptions{Image: img.ID, Trees: ids})
+	require.NoError(t, err)
+	var out, errb bytes.Buffer
+	script := "command -v tool && readlink /usr/local/bin/tool && tool --version && echo scribble >> /opt/pats/harness/tool/package/tool; echo wrote=$?"
+	_, err = sb.Run(ctx, Spec{Argv: []string{"sh", "-c", script}, Workdir: t.TempDir(), Egress: Egress{None: true}}, &out, &errb)
+	require.NoError(t, err, "%s", errb.String())
+	t.Logf("%s%s", out.String(), errb.String())
+	assert.ContainsString(t, out.String(), "/usr/local/bin/tool\n/opt/pats/harness/tool/package/tool\ntool 1.2.3\n")
+	kept, err := os.ReadFile(filepath.Join(st.harnessTree(ids[0]), "opt/pats/harness/tool/package/tool"))
+	require.NoError(t, err)
+	assert.Equal(t, string(kept), body)
+
+	// a tree a clean took: the session does not start, and says what to run.
+	require.NoError(t, os.RemoveAll(st.harnessTree(ids[0])))
+	_, err = sb.Run(ctx, Spec{Argv: []string{"true"}, Workdir: t.TempDir(), Egress: Egress{None: true}}, io.Discard, io.Discard)
+	assert.Error(t, err, "is not in the store; run pats init")
 }
