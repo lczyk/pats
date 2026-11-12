@@ -64,6 +64,13 @@ harnesses:
     # claude-cli-keyless:
     #   egress:
     #     allow: [.anthropic.com, .claude.com, claude.mirror.example]
+    # a default at another version of its cli, for the sandboxes its agents run in. `pats harness pin opencode 1.19.4`
+    # prints the two keys; they come together, and a sandbox holds one version of a cli.
+    # opencode-openrouter:
+    #   version: 1.19.4
+    #   sha256:
+    #     amd64: dca7b06bbb4e4a1ab3681b799cd328057b356d9399e8e47336cf53b7ae658d0d
+    #     arm64: 019c374e3eb3af5d2c2cdf1d2d6e1f9eee0bc9f3289e02570e4310d25df0a991
 
 # harness: one of the four, a machine's, or an item above. with one sandbox defined every agent uses it, otherwise set
 # `sandbox:`. `effort:` is optional reasoning effort. `model:` is required unless the harness's `run` reads none.

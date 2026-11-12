@@ -1,7 +1,6 @@
 # harnesses: entries in a table, and a kind in the config
 
-status: implemented, but for a project's pin (`version` and `sha256`, `harnesses-1x.md` step 7) and
-`pi-openrouter`. `machine-config.md` is where the table lives, what an entry's keys are and the rule for laying
+status: implemented, but for `pi-openrouter` (`harnesses-1x.md`, step 8). `machine-config.md` is where the table lives, what an entry's keys are and the rule for laying
 one table over another. `harness-parse.md` is the `parse` key. `harness-images.md` is how a harness's cli gets into
 an image, and its pin.
 

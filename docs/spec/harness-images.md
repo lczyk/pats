@@ -1,7 +1,6 @@
 # harnesses are placed in images at init
 
-status: implemented (`harnesses-1x.md`, steps 5 and 6), but for a project's own pin (step 7), which is proposed;
-"as built" at the end says where the code differs. it changes `harness-pins.md` (a pin
+status: implemented (`harnesses-1x.md`, steps 5 to 7); "as built" at the end says where the code differs. it changes `harness-pins.md` (a pin
 gains a sha256 per arch, and lives in the machine config's defaults, not in a file a script reads), `init.md` (a
 default sandbox is built, not only pulled; the pin entry gains what init placed) and `bwrap.md` (a harness is a lower
 dir of its own). `machine-config.md` holds the `clis` table this spec fetches from. `harness-registry.md` is what a
@@ -232,8 +231,14 @@ this breaks, and the release notes say so:
 
 ## as built
 
-- **lxd.** a tree is not pushed with the material: each is unpacked on this machine, pushed to the builder on its
-  own after the layer's step, copied over the root as root's, and its staging dir removed.
+- **lxd.** a tree is not pushed with the material: each is unpacked on this machine and pushed to the builder on
+  its own after the layer's step. only the cli's own directory and link are then copied into place, as root's: the
+  directories above them stay the base's.
+- **a tree's own directories.** those above the cli's (`opt`, `usr/local/bin`, the tree's root) are 0755 whatever
+  the umask of the machine that unpacked it, since a copy may give their modes to an image's.
+- **a project's pin.** a harness with one resolves to a copy of its cli's entry at the item's version and shas; an
+  artefact one file serves two arches from takes one sha, and two for it is a load error. a machine's file refuses
+  the two keys on a harness. the error of a missing arch names the harness, the cli, the version and the arch.
 - **bwrap.** a session stacks its trees in the order of their clis' names. a tree is unpacked beside its place
   (`<tree>.new`) under its lock and renamed in, so one that is there is whole. `pats clean --all` renames a tree
   aside before it removes it, and leaves a fetch's temp file younger than an hour to the init that may be writing
@@ -244,8 +249,9 @@ this breaks, and the release notes say so:
   pulled only when absent, as before.
 - **upstream.** a default sandbox that is built on has its base tracked upstream, as a provisioned one has.
 - **tested for real.** docker (arm64): init on the harness-free image places all four clis, each stamped at its
-  pin. lxd (amd64): the placement test of `lxd_e2e_test.go`, and an init of all four. bwrap (amd64): the placement
-  test of `bwrap_e2e_test.go`, an init of all four, `pats clean --all`, and the run that then asks for init.
+  pin, and an item's pin of an older opencode, fetched with `pats harness pin`, is the version its image holds. lxd (amd64): the placement test of `lxd_e2e_test.go`, and an init of all four. bwrap (amd64): the placement
+  test of `bwrap_e2e_test.go`, an init of all four, `pats clean --all`, the run that then asks for init, and a run
+  whose agent and whose step both find the placed cli.
   podman takes docker's path and was not run.
 
 ## decided, open to change
