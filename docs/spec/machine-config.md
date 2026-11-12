@@ -89,7 +89,8 @@ with a line holding an `x.y.z` version, as the four do. the keys:
 - **`version`**: the version every artefact below is of.
 - **`artefacts`**: the files the cli is published as, each keyed by its url, laid out as a slice's contents are in
   chisel: the thing is the key, and what is true of it sits under it. `${version}` in a url is replaced by the
-  version; nothing else in this file is templated, and a `${...}` in a `run` is the shell's. `http` or `https`.
+  version, and every url holds it: one without serves the same bytes for every pin. nothing else in this file is
+  templated, and a `${...}` in a `run` is the shell's. `http` or `https`.
   under a url:
   - **`arch`**: the arches the file is for, a list of `amd64` and `arm64`. no two artefacts of a cli name one arch.
   - **`sha256`**: the file's. with `version` it is the pin.
