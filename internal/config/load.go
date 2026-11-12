@@ -22,13 +22,19 @@ func Parse(data []byte) (*Config, error) { return ParseIn(".", data) }
 // ParseIn decodes a pats.yaml body into a Config: every vector's items merged
 // with its defaults and checked for templating, `dir` vectors read from under root.
 // structural problems (unknown keys, bad shapes, unknown template variables)
-// are errors here, each with its line; semantic ones are Validate's.
+// are errors here, each with its line; semantic ones are Validate's. its
+// harnesses are the defaults: Load is what reads the machine's file.
 func ParseIn(root string, data []byte) (*Config, error) {
+	return parseIn(root, data, machine.Defaults())
+}
+
+// parseIn is ParseIn over the given harness tables.
+func parseIn(root string, data []byte, tables *machine.Tables) (*Config, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	c := &Config{Harnesses: machine.Defaults()}
+	c := &Config{Harnesses: tables}
 	if len(doc.Content) == 0 {
 		return c, nil // empty file
 	}

@@ -39,6 +39,7 @@ type Options struct {
 	List    ListCommand    `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
 	Egress  EgressCommand  `command:"egress" description:"the egress proxy: check a policy, read an audit, serve it"`
 	Harness HarnessCommand `command:"harness" description:"a harness's own tools: try its parse script on a log"`
+	Machine ConfigCommand  `command:"config" description:"print the harness and cli tables this machine runs with, and where its own file is"`
 	Clean   CleanCommand   `command:"clean" description:"remove what dead runs left behind: containers, instances, networks, temp dirs"`
 }
 
@@ -263,6 +264,7 @@ func flagSet(command, long string) bool {
 // ListCommand groups the per-kind list subcommands.
 type ListCommand struct {
 	Sandboxes ListSandboxesCommand `command:"sandboxes" description:"list configured sandboxes"`
+	Harnesses ListHarnessesCommand `command:"harnesses" description:"list the harnesses an agent may name, and where each is from"`
 	Agents    ListAgentsCommand    `command:"agents" description:"list configured agents"`
 	Tasks     ListTasksCommand     `command:"tasks" description:"list configured tasks"`
 	Scorers   ListScorersCommand   `command:"scorers" description:"list configured scorers"`
@@ -271,6 +273,7 @@ type ListCommand struct {
 }
 
 type ListSandboxesCommand struct{}
+type ListHarnessesCommand struct{}
 type ListAgentsCommand struct{}
 type ListTasksCommand struct{}
 type ListScorersCommand struct{}
@@ -283,6 +286,13 @@ func (c *ListSandboxesCommand) Execute(args []string) error {
 		return err
 	}
 	return eval.ListSandboxes(cfg, os.Stdout)
+}
+func (c *ListHarnessesCommand) Execute(args []string) error {
+	cfg, err := load(opts.Config)
+	if err != nil {
+		return err
+	}
+	return eval.ListHarnesses(cfg, os.Stdout)
 }
 func (c *ListAgentsCommand) Execute(args []string) error {
 	cfg, err := load(opts.Config)

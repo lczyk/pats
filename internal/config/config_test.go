@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -626,4 +627,42 @@ func TestBadName(t *testing.T) {
 	for _, bad := range []string{"", "a", ".judge", "-ab", "ab-", "a--b", "Ab", "a_b", "a/b", "a b", "+ab"} {
 		assert.That(t, badName(bad) != "", "%q passed", bad)
 	}
+}
+
+// Load reads the machine's config before the pats.yaml: an agent may name a
+// harness the machine's file adds, and a file that is wrong stops the load.
+// Parse stays on the defaults.
+func TestLoadReadsMachineConfig(t *testing.T) {
+	xdg, dir := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	const body = `
+sxx: {kind: sandbox, items: {sxx: {image: i}}}
+axx: {kind: agent, items: {axx: {harness: mine, model: m}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`
+	path := filepath.Join(dir, "pats.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+
+	// no machine file: the harness is unknown.
+	c, err := Load(path)
+	require.NoError(t, err)
+	assert.Error(t, c.Validate(), `unknown harness "mine"`)
+
+	machineFile := filepath.Join(xdg, "pats", "config.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(machineFile), 0o755))
+	require.NoError(t, os.WriteFile(machineFile, []byte("harnesses:\n  mine:\n    run: mine --go\n"), 0o644))
+	c, err = Load(path)
+	require.NoError(t, err)
+	require.NoError(t, c.Validate())
+	assert.Equal(t, c.HarnessOf(c.Agents[0]).Run, "mine --go")
+	assert.Equal(t, c.HarnessOf(c.Agents[0]).From, "machine")
+
+	p, err := ParseIn(dir, []byte(body))
+	require.NoError(t, err)
+	assert.Error(t, p.Validate(), `unknown harness "mine"`)
+
+	require.NoError(t, os.WriteFile(machineFile, []byte("harnesses:\n  mine:\n    rum: x\n"), 0o644))
+	_, err = Load(path)
+	assert.Error(t, err, `config.yaml:3: harnesses.mine: unknown key "rum"`)
 }

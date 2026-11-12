@@ -323,13 +323,18 @@ type Suite struct {
 type StrList []string
 
 // Load reads + parses a pats.yaml; `dir` vectors resolve against its
-// directory. it does not Validate.
+// directory. the machine's config is read first: its harnesses are the ones
+// the pats.yaml names (docs/spec/machine-config.md). it does not Validate.
 func Load(path string) (*Config, error) {
+	tables, err := machine.Load()
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return ParseIn(filepath.Dir(path), data)
+	return parseIn(filepath.Dir(path), data, tables)
 }
 
 // Kinds lists the vector kinds, in the order the resolved config holds them.

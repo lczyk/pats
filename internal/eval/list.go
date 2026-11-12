@@ -28,6 +28,31 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 	return w.Flush()
 }
 
+// ListHarnesses prints each harness an agent may name, with its cli, where
+// its definition is from, and what it has of a parse script and a model
+// catalogue.
+func ListHarnesses(cfg *config.Config, out io.Writer) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "HARNESS\tCLI\tFROM\tPARSE\tMODELS")
+	for _, name := range cfg.Harnesses.Names() {
+		h := cfg.Harnesses.Harness(name)
+		parse := "-"
+		if h.Parser() != nil {
+			parse = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, dash(h.CLI), h.From, parse, dash(h.Models))
+	}
+	return w.Flush()
+}
+
+// dash is s, or a dash for none.
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // ListTasks prints vector, name, the directory it was defined in, and where its
 // prompt comes from, per task.
 func ListTasks(cfg *config.Config, out io.Writer) error {

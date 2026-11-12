@@ -31,6 +31,7 @@ apps:
       - bin/docker-plugins
     environment:
       XDG_CACHE_HOME: $SNAP_USER_COMMON/cache
+      XDG_CONFIG_HOME: $SNAP_USER_COMMON/config
       DOCKER_CONFIG: $SNAP_USER_COMMON/docker
       LXD_DIR: /var/snap/lxd/common/lxd
       PATH: $SNAP/bin:$PATH

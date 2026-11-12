@@ -44,6 +44,11 @@ type stepsRecord struct {
 type pairMeta struct {
 	Agent   string `json:"agent"`
 	Harness string `json:"harness,omitempty"`
+	// where the harness's definition is from (default, machine or project),
+	// and a digest of it: the name alone can mean another definition on
+	// another machine or pats release.
+	HarnessFrom   string `json:"harness_from,omitempty"`
+	HarnessSHA256 string `json:"harness_sha256,omitempty"`
 	// the model and effort the agent ran with: the agent id alone can be
 	// pointed at another model between runs (the dry run's estimate matches
 	// on them).

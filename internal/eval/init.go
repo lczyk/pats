@@ -45,6 +45,9 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	}
 	ro := Options{ConfigDir: opts.ConfigDir, Out: opts.Out, Color: useColor(opts.Out), Verbose: opts.Verbose}
 	lg := logw{opts.Out, ro.Color, ro.Verbose}
+	if n := cfg.Harnesses.Note(); n != "" {
+		lg.info("%s", n)
+	}
 
 	sbs, err := initSandboxes(cfg, opts)
 	if err != nil {

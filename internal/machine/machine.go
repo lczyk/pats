@@ -25,16 +25,16 @@ var defaultsYAML []byte
 
 // Egress is a harness's part of a pair's policy, in a task's shape.
 type Egress struct {
-	Allow []string `yaml:"allow"`
-	Deny  []string `yaml:"deny"`
+	Allow []string `yaml:"allow,omitempty"`
+	Deny  []string `yaml:"deny,omitempty"`
 }
 
 // CLI is one entry of the clis table. its name is the executable's on PATH.
 type CLI struct {
 	Name      string            `yaml:"-"`
 	Version   string            `yaml:"version"`
-	LoginFile string            `yaml:"login-file"` // under the home
-	HomeEnv   map[string]string `yaml:"home-env"`   // variable -> a path under the harness home
+	LoginFile string            `yaml:"login-file,omitempty"` // under the home
+	HomeEnv   map[string]string `yaml:"home-env,omitempty"`   // variable -> a path under the harness home
 }
 
 // AuthPathVar names the variable that points at a copy of the cli's login
@@ -46,17 +46,21 @@ func (c *CLI) AuthPathVar() string {
 // Harness is one entry of the harnesses table: one way of running an agent.
 type Harness struct {
 	Name     string   `yaml:"-"`
-	CLI      string   `yaml:"cli"`
+	CLI      string   `yaml:"cli,omitempty"`
 	Run      string   `yaml:"run"`
-	Egress   Egress   `yaml:"egress"`
-	AuthEnv  []string `yaml:"auth-env"` // forwarded when set, each a credential
-	Login    bool     `yaml:"login"`    // copy the cli's login file into the harness home
-	AuthHint string   `yaml:"auth-hint"`
-	PassEnv  []string `yaml:"pass-env"` // forwarded when set, not credentials
-	Models   string   `yaml:"models"`
+	Egress   Egress   `yaml:"egress,omitempty"`
+	AuthEnv  []string `yaml:"auth-env,omitempty"` // forwarded when set, each a credential
+	Login    bool     `yaml:"login,omitempty"`    // copy the cli's login file into the harness home
+	AuthHint string   `yaml:"auth-hint,omitempty"`
+	PassEnv  []string `yaml:"pass-env,omitempty"` // forwarded when set, not credentials
+	Models   string   `yaml:"models,omitempty"`
 	// Parse is the script that reads the command's stdout
 	// (docs/spec/harness-parse.md), "" for none.
-	Parse string `yaml:"parse"`
+	Parse string `yaml:"parse,omitempty"`
+
+	// From is the last place that set a key of the entry: FromDefault,
+	// FromMachine or FromProject.
+	From string `yaml:"-"`
 
 	cli    *CLI
 	parser *parse.Program
@@ -89,6 +93,16 @@ var Catalogues = map[string]bool{"openrouter": true}
 type Tables struct {
 	CLIs      map[string]*CLI     `yaml:"clis"`
 	Harnesses map[string]*Harness `yaml:"harnesses"`
+
+	// Path is where the machine's file is looked for, and Found whether it
+	// is there. Changes and Adds are what it does to the defaults, as dotted
+	// keys (harnesses.<name>.<key>) and entries (harnesses.<name>).
+	Path    string   `yaml:"-"`
+	Found   bool     `yaml:"-"`
+	Changes []string `yaml:"-"`
+	Adds    []string `yaml:"-"`
+
+	lines map[string]int // the line of each entry of the machine's file
 }
 
 // Harness is the entry named name, nil when there is none.
@@ -171,6 +185,9 @@ func (t *Tables) check() error {
 			t.Harnesses[name] = h
 		}
 		h.Name = name
+		if h.From == "" {
+			h.From = FromDefault
+		}
 		if !nameRe.MatchString(name) {
 			add("harnesses.%s: a name is lower-case letters, digits and -", name)
 		}

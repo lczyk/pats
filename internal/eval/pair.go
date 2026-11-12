@@ -315,7 +315,8 @@ func runPair(
 	}
 
 	meta := pairMeta{
-		Agent: job.agentName, Harness: a.Harness, Model: a.Model, Effort: a.Effort, Task: t.Name,
+		Agent: job.agentName, Harness: a.Harness, HarnessFrom: hd.From, HarnessSHA256: hd.Digest(),
+		Model: a.Model, Effort: a.Effort, Task: t.Name,
 		Sandbox: sbID, Driver: sb.Driver, SandNotBoxed: sandbox.TraitsOf(sb.Driver).Unboxed, Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, Synced: &synced,
 		PatsVersion:  version.Info.Version,

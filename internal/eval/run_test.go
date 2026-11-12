@@ -1254,3 +1254,54 @@ func TestHarnessHomeAuthPath(t *testing.T) {
 	_, err = harnessHome(Options{Out: &out}, "claude x", hd("claude-cli-keyless"), map[string]string{}, true, nil)
 	assert.Error(t, err, "PATS_CLAUDE_AUTH_PATH=")
 }
+
+// a machine's file shows where it changes a run: one line as the run starts,
+// and in each pair's record where its harness is from and a digest of it.
+func TestRunRecordsHarnessOrigin(t *testing.T) {
+	fake := &fakeSandbox{}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+ags: {kind: agent, items: {axx: {harness: codex-cli-keyless, model: m, sandbox: sxx}, mxx: {harness: mine, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: ags, tasks: txx}}}
+`, "harnesses:\n  mine:\n    run: mine --go\n  codex-cli-keyless:\n    pass-env: [CODEX_EXTRA]\n")
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	assert.ContainsString(t, out.String(), "INFO machine config "+cfg.Harnesses.Path+": changes harnesses.codex-cli-keyless.pass-env; adds harnesses.mine\n")
+
+	changed, added := readMeta(t, runDir, "axx", "txx"), readMeta(t, runDir, "mxx", "txx")
+	assert.Equal(t, changed.HarnessFrom, "machine")
+	assert.Equal(t, added.HarnessFrom, "machine")
+	assert.Equal(t, changed.HarnessSHA256, cfg.Harnesses.Harness("codex-cli-keyless").Digest())
+	assert.That(t, changed.HarnessSHA256 != hd("codex-cli-keyless").Digest(), "the digest of a changed default is the default's")
+	assert.Equal(t, len(added.HarnessSHA256), 64)
+
+	// with no machine file a default is a default, and nothing is said.
+	plain := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: codex-cli-keyless, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	dir2 := t.TempDir()
+	pinAll(t, dir2, plain)
+	out.Reset()
+	runDir, err = Run(plain, Options{ConfigDir: dir2, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, strings.Contains(out.String(), "machine config"), false)
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.HarnessFrom, "default")
+	assert.Equal(t, m.HarnessSHA256, hd("codex-cli-keyless").Digest())
+
+	var list bytes.Buffer
+	require.NoError(t, ListHarnesses(cfg, &list))
+	assert.ContainsString(t, list.String(), "codex-cli-keyless    codex     machine  yes    -\n")
+	assert.ContainsString(t, list.String(), "mine                 -         machine  -      -\n")
+	assert.ContainsString(t, list.String(), "opencode-openrouter  opencode  default  yes    openrouter\n")
+}

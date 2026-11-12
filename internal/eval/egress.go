@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"text/tabwriter"
 	"unicode"
 
@@ -259,7 +258,7 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		harness, err := harnessRule(pairHarness(filepath.Dir(l)))
+		harness, err := harnessRule(filepath.Dir(l))
 		if err != nil {
 			return err
 		}
@@ -345,32 +344,16 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 	return nil
 }
 
-// harnessRule matches the hosts a harness needs, for leaving them out of a
-// suggestion. an unknown harness (a run from before metadata named it) gets
-// every harness's hosts.
-func harnessRule(harness string) (proxy.Rule, error) {
+// harnessRule matches the hosts a pair's harness had, for leaving them out of
+// a suggestion: the ones its recorded policy lists, which are that run's and
+// not today's. a pair with no recorded policy has none left out.
+func harnessRule(pairDir string) (proxy.Rule, error) {
+	var pm pairMeta
 	var hosts []string
-	if hd := builtins().Harness(harness); hd != nil {
-		hosts = hd.Egress.Allow
-	} else {
-		for _, n := range builtins().Names() {
-			hosts = append(hosts, builtins().Harness(n).Egress.Allow...)
-		}
+	if b, err := os.ReadFile(filepath.Join(pairDir, "metadata.json")); err == nil && json.Unmarshal(b, &pm) == nil && pm.Egress != nil {
+		hosts = pm.Egress.Policy.Harness
 	}
 	return proxy.ParseRule(false, hosts, nil)
-}
-
-// builtins are the harnesses this pats ships, for a command that reads a
-// run's records and no config.
-var builtins = sync.OnceValue(machine.Defaults)
-
-// pairHarness reads the harness a pair ran from its metadata, "" if unknown.
-func pairHarness(pairDir string) string {
-	var pm pairMeta
-	if b, err := os.ReadFile(filepath.Join(pairDir, "metadata.json")); err == nil && json.Unmarshal(b, &pm) == nil {
-		return pm.Harness
-	}
-	return ""
 }
 
 func sortedSet(m map[string]bool) []string {

@@ -47,10 +47,10 @@ func (c *HarnessParseCommand) Execute(args []string) error {
 }
 
 // harnessTables is the harnesses of the config in reach, or with no config
-// there the ones this pats has without one.
+// there the machine's.
 func harnessTables() (*machine.Tables, error) {
 	if _, err := os.Stat(opts.Config); errors.Is(err, fs.ErrNotExist) {
-		return machine.Defaults(), nil
+		return machine.Load()
 	}
 	cfg, err := load(opts.Config)
 	if err != nil {

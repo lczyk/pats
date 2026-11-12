@@ -145,7 +145,9 @@ func writeRun(t *testing.T, audit string) string {
 	run := filepath.Join(dir, runsSubdir, "001-20261106-test-run")
 	require.NoError(t, os.MkdirAll(filepath.Join(run, "axx", "txx"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(run, "axx", "txx", "egress.log"), []byte(audit), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(run, "axx", "txx", "metadata.json"), []byte(`{"agent":"axx","harness":"claude-cli-keyless"}`), 0o644))
+	// the pair's record holds the policy it ran under, its harness's hosts with it.
+	require.NoError(t, os.WriteFile(filepath.Join(run, "axx", "txx", "metadata.json"),
+		[]byte(`{"agent":"axx","harness":"claude-cli-keyless","egress":{"policy":{"harness":[".anthropic.com",".claude.com"]}}}`), 0o644))
 	return dir
 }
 
@@ -198,6 +200,15 @@ func TestSuggestEgress(t *testing.T) {
 		assert.ContainsString(t, s, want)
 	}
 	assert.Equal(t, strings.Contains(s, "github.com/c/answer"), false) // an explicit deny is not suggested
+
+	// the harness's hosts are the ones the run recorded, not today's: a
+	// pair with no recorded policy has none kept out of the suggestion.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "001-20261106-test-run", "axx", "txx", "metadata.json"),
+		[]byte(`{"agent":"axx","harness":"claude-cli-keyless"}`), 0o644))
+	out.Reset()
+	require.NoError(t, SuggestEgress(dir, "", &out))
+	assert.ContainsString(t, out.String(), "    - api.anthropic.com\n")
+	assert.Equal(t, strings.Contains(out.String(), "# harness hosts"), false)
 
 	// tunnels only: methods are unknown, and said to be.
 	dir = writeRun(t, `{"ev":"open","host":"a.test","port":"443","kind":"tunnel","allowed":true,"rule":"default"}

@@ -70,6 +70,10 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 		}
 		defer unlock()
 	}
+	// a file outside the project changes what this run does: say so.
+	if n := cfg.Harnesses.Note(); n != "" {
+		lg.info("%s", n)
+	}
 	suites, err := cfg.RunSuites(opts.Suites)
 	if err != nil {
 		return "", err
