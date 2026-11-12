@@ -250,7 +250,7 @@ func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, tables *
 		Inputs:      inputs,
 	}
 	if sb.Driver == sandbox.LXDDriver {
-		err = initLXD(ctx, sb, ro, opts, h, e)
+		err = initLXD(ctx, sb, clis, tables, ro, opts, h, e)
 	} else {
 		err = initContainer(ctx, sb, clis, tables, ro, opts, h, e)
 	}
@@ -323,7 +323,11 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 		if ref == "" {
 			ref = base()
 		}
-		if placed, err = placeIn(ctx, sb, ref, clis, tables, lg, log, h, e); err != nil {
+		// the base has to be there to say its arch.
+		if _, _, err := h.Pull(ctx, ref, false, log); err != nil {
+			return fail(fmt.Errorf("its base %s: %w", ref, err))
+		}
+		if placed, err = placeIn(ctx, sb, ref, clis, tables, lg, h, e); err != nil {
 			return fail(err)
 		}
 	}
@@ -390,14 +394,11 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 	return nil
 }
 
-// placeIn readies what init places in a sandbox's image: the base is made
-// present and asked its arch, each cli's artefact for it is fetched into the
-// cache, checked, and the pin records the arch, what is placed and the input
-// a run compares.
-func placeIn(ctx context.Context, sb config.Sandbox, base string, clis []string, tables *machine.Tables, lg logw, log io.Writer, h builder, e *pinEntry) ([]sandbox.Placed, error) {
-	if _, _, err := h.Pull(ctx, base, false, log); err != nil {
-		return nil, fmt.Errorf("its base %s: %w", base, err)
-	}
+// placeIn readies what init places in a sandbox's image: the place is asked
+// the arch of an image on base, each cli's artefact for it is fetched into
+// the cache, checked, and the pin records the arch, what is placed and the
+// input a run compares.
+func placeIn(ctx context.Context, sb config.Sandbox, base string, clis []string, tables *machine.Tables, lg logw, h builder, e *pinEntry) ([]sandbox.Placed, error) {
 	arch, err := h.Arch(ctx, base)
 	if err != nil {
 		return nil, err
@@ -441,7 +442,7 @@ func ensurePulled(ctx context.Context, h puller, ref string, force bool, lg logw
 
 // initLXD makes an lxd sandbox's layers and proxy on its server, logging to
 // .pats/init/<sandbox>.log, and pins them by fingerprint.
-func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions, h builder, e *pinEntry) error {
+func initLXD(ctx context.Context, sb config.Sandbox, clis []string, tables *machine.Tables, ro Options, opts InitOptions, h builder, e *pinEntry) error {
 	lg := logw{ro.Out, ro.Color, ro.Verbose}
 	switch {
 	case strings.Contains(sb.Image, ":"):
@@ -459,8 +460,15 @@ func initLXD(ctx context.Context, sb config.Sandbox, ro Options, opts InitOption
 		}
 		e.Image = pinImage{ID: img.ID, Name: sb.Image}
 	default:
+		var placed []sandbox.Placed
+		if len(clis) > 0 {
+			var err error
+			if placed, err = placeIn(ctx, sb, sb.Base, clis, tables, lg, h, e); err != nil {
+				return err
+			}
+		}
 		logPath := initLogPath(ro.ConfigDir, sb.Name)
-		img, layers, _, upstream, err := lxdImage(ctx, h, sb, ro, logPath, opts.Force)
+		img, layers, _, upstream, err := lxdImage(ctx, h, sb, placed, clis, ro, logPath, opts.Force)
 		if err != nil {
 			return err
 		}

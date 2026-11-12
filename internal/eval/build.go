@@ -75,7 +75,7 @@ func (o Options) buildLog(log io.Writer) io.Writer {
 // builds log to logPath. layers are the fingerprints under the image, bottom
 // first. upstream is each base on an image remote, and the fingerprint the
 // build keyed on: what a run later checks upstream.
-func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, logPath string, force bool) (img sandbox.Image, layers []string, built bool, upstream map[string]string, err error) {
+func lxdImage(ctx context.Context, h builder, sb config.Sandbox, placed []sandbox.Placed, clis []string, opts Options, logPath string, force bool) (img sandbox.Image, layers []string, built bool, upstream map[string]string, err error) {
 	upstream = map[string]string{}
 	based := func(ref, fp string) {
 		if strings.Contains(ref, ":") && !strings.HasPrefix(ref, "pats-img-") {
@@ -97,29 +97,35 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, opts Options, l
 	fail := func(err error) error {
 		return fmt.Errorf("%w%s\n(full log: %s)", err, sandbox.LogTail(fileTail(logPath, 64<<10)), relToCwd(logPath))
 	}
+	// the layer under the project's is pats's own: its tools, on the base it
+	// picks itself, and the clis it places, on that base or the sandbox's.
 	base, anyBuilt := sb.Base, false
-	if base == "" {
-		material, argv, err := stageMaterial(opts.ConfigDir, images.ProvisionSandbox, sandbox.ProvisionMount)
-		if err != nil {
-			return img, nil, false, nil, err
+	if base == "" || len(placed) > 0 {
+		own := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "sandbox", Sandbox: sb.Name, Force: force,
+			Harness: placed, Stamp: clis}
+		if base == "" {
+			material, argv, err := stageMaterial(opts.ConfigDir, images.ProvisionSandbox, sandbox.ProvisionMount)
+			if err != nil {
+				return img, nil, false, nil, err
+			}
+			defer sandbox.RemoveTemp(material)
+			// the script reads its pins from beside itself; in the material
+			// they are also in the image key, so a pin bump reprovisions.
+			if err := os.WriteFile(filepath.Join(material, "harness-versions"), []byte(images.HarnessVersions), 0o644); err != nil {
+				return img, nil, false, nil, err
+			}
+			own.Base, own.Material, own.Argv = lxdSandboxBase, material, argv
 		}
-		defer sandbox.RemoveTemp(material)
-		// the script reads its pins from beside itself; in the material they
-		// are also in the image key, so a pin bump reprovisions.
-		if err := os.WriteFile(filepath.Join(material, "harness-versions"), []byte(images.HarnessVersions), 0o644); err != nil {
-			return img, nil, false, nil, err
-		}
-		layer, fp, b, err := h.Build(ctx, sandbox.BuildSpec{Base: lxdSandboxBase, Material: material, Argv: argv, Progress: progress, Warn: warn,
-			Role: "sandbox", Sandbox: sb.Name, Force: force}, log)
+		layer, fp, b, err := h.Build(ctx, own, log)
 		if err != nil {
 			return img, nil, false, nil, fail(err)
 		}
-		based(lxdSandboxBase, fp)
+		based(own.Base, fp)
 		base, anyBuilt = layer.Name, b
 		layers = append(layers, layer.ID)
 		img = layer
 	}
-	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.Name, Force: force}
+	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.Name, Force: force, Stamp: clis}
 	if sb.Provision != "" {
 		material, argv, err := stageMaterial(opts.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 		if err != nil {

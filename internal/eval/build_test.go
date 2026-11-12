@@ -47,11 +47,16 @@ func TestResolveBuildSpec(t *testing.T) {
 // where the whole log is.
 func TestLXDImageBuild(t *testing.T) {
 	type call struct {
-		base string
-		argv []string
-		pins string
+		base   string
+		argv   []string
+		pins   string
+		placed []string
+		stamp  []string
+		role   string
 	}
 	var lastUpstream map[string]string
+	var placed []sandbox.Placed // what the sandbox's agents run, when any
+	var clis []string
 	run := func(t *testing.T, sb config.Sandbox, fail bool) ([]call, []string, string, string, bool, error) {
 		var calls []call
 		h := &buildingHost{fakeHost: newFakeHost(), build: func(spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
@@ -60,7 +65,11 @@ func TestLXDImageBuild(t *testing.T) {
 				b, _ := os.ReadFile(filepath.Join(spec.Material, "harness-versions"))
 				pins = string(b)
 			}
-			calls = append(calls, call{spec.Base, spec.Argv, pins})
+			c := call{base: spec.Base, argv: spec.Argv, pins: pins, stamp: spec.Stamp, role: spec.Role}
+			for _, p := range spec.Harness {
+				c.placed = append(c.placed, p.Artefact.CLI)
+			}
+			calls = append(calls, c)
 			spec.Progress("building " + spec.Base)
 			spec.Warn("low on space")
 			fmt.Fprintf(log, "build output of %s\n", spec.Base)
@@ -74,7 +83,7 @@ func TestLXDImageBuild(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
 		logPath := filepath.Join(t.TempDir(), "init", sb.Name+".log")
-		_, layers, built, upstream, err := lxdImage(context.Background(), h, sb, Options{ConfigDir: dir, Out: &out, Verbose: 1}, logPath, false)
+		_, layers, built, upstream, err := lxdImage(context.Background(), h, sb, placed, clis, Options{ConfigDir: dir, Out: &out, Verbose: 1}, logPath, false)
 		b, _ := os.ReadFile(logPath)
 		lastUpstream = upstream
 		return calls, layers, out.String(), string(b), built, err
@@ -120,6 +129,42 @@ func TestLXDImageBuild(t *testing.T) {
 		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd"}, false)
 		require.NoError(t, err)
 		require.Equal(t, len(calls), 1) // no empty project layer on top
+		assert.Len(t, layers, 0)
+	})
+
+	// the clis a sandbox's agents run go in pats's own layer, under the
+	// project's: with its tools on the base it picks, alone on a base of the
+	// sandbox's. two images as before, and each stamped for the clis.
+	placed = []sandbox.Placed{{Artefact: sandbox.Artefact{CLI: "claude"}}, {Artefact: sandbox.Artefact{CLI: "codex"}}}
+	clis = []string{"claude", "codex"}
+	t.Run("placed with the tools", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Provision: "provision.sh"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 2)
+		assert.EqualArrays(t, calls[0].placed, clis)
+		assert.Equal(t, calls[0].role, "sandbox")
+		assert.Len(t, calls[1].placed, 0) // the project's layer places nothing
+		assert.EqualArrays(t, calls[0].stamp, clis)
+		assert.EqualArrays(t, calls[1].stamp, clis)
+		assert.EqualArrays(t, layers, []string{"fp-1"})
+	})
+	t.Run("placed on a base of its own", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Base: "ubuntu:24.04", Provision: "provision.sh"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 2)
+		assert.Equal(t, calls[0].base, "ubuntu:24.04")
+		assert.Len(t, calls[0].argv, 0) // the trees alone: its tools are the base's own
+		assert.EqualArrays(t, calls[0].placed, clis)
+		assert.Equal(t, calls[1].base, "pats-img-1")
+		assert.Equal(t, calls[1].role, "project")
+		assert.EqualArrays(t, layers, []string{"fp-1"})
+		assert.EqualMaps(t, lastUpstream, map[string]string{"ubuntu:24.04": "fp-ubuntu:24.04"})
+	})
+	t.Run("placed, no provision", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Base: "ubuntu:24.04"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 1) // pats's layer is the image
+		assert.EqualArrays(t, calls[0].placed, clis)
 		assert.Len(t, layers, 0)
 	})
 }

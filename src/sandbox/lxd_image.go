@@ -37,6 +37,9 @@ type lxdImageSpec struct {
 	// no part of the image key: an image that lacks one asked for later is
 	// asked itself (imageStamps).
 	Stamp []string
+	// Harness is the clis placed in the image, after Argv: this layer's own
+	// step is pats's tools, and the project's provision is the layer above.
+	Harness []Placed
 	// Progress and Warn, when set, get each build step and warning as they
 	// happen; the log gets them too.
 	Progress func(msg string)
@@ -211,6 +214,10 @@ func imageKey(fp string, spec lxdImageSpec, vm bool) (string, error) {
 	for _, a := range spec.Argv {
 		fmt.Fprintf(h, "arg=%q\n", a)
 	}
+	// a placed cli by what decides its tree, never the tree's bytes.
+	for _, p := range spec.Harness {
+		fmt.Fprintf(h, "harness=%s\n", p.Artefact.Line())
+	}
 	if spec.Material != "" {
 		err := filepath.WalkDir(spec.Material, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -237,6 +244,39 @@ func imageKey(fp string, spec lxdImageSpec, vm bool) (string, error) {
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))[:24], nil
+}
+
+// placeStage is where a cli's tree is pushed before it is copied into place.
+const placeStage = "/pats-harness"
+
+// place puts one cli's tree in the builder: unpacked on this machine, pushed,
+// and copied over the root as root's.
+func (l *lxd) place(ctx context.Context, s *lxdSession, p Placed, log io.Writer) error {
+	dir, err := l.p.mkTemp("pats-harness-")
+	if err != nil {
+		return err
+	}
+	defer RemoveTemp(dir)
+	if err := BuildTree(p.Artefact, p.File, dir); err != nil {
+		return err
+	}
+	if err := s.Push(ctx, dir, placeStage); err != nil {
+		return err
+	}
+	cli := p.Artefact.CLI // a cli's name: letters, digits and - (BuildTree refuses another)
+	script := `set -e
+cp -a ` + placeStage + `/. /
+chown -R 0:0 /` + HarnessTreeDir + `/` + cli + `
+chown -h 0:0 /` + HarnessBinDir + `/` + cli + `
+rm -rf ` + placeStage
+	code, err := s.exec(ctx, Cmd{Argv: []string{"/bin/sh", "-c", script}, Root: true, Dir: "/"}, log, log)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("copying its tree into place exited %d", code)
+	}
+	return nil
 }
 
 // uplink is the bridge builders and proxies reach the internet through: the
@@ -319,6 +359,12 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 		}
 		if code != 0 {
 			return "", fmt.Errorf("provisioning exited %d", code)
+		}
+	}
+	for _, p := range spec.Harness {
+		spec.step(log, "placing %s %s", p.Artefact.CLI, p.Artefact.Version)
+		if err := l.place(ctx, s, p, log); err != nil {
+			return "", fmt.Errorf("placing %s: %w", p.Artefact.CLI, err)
 		}
 	}
 	// what pats needs of every image: the agent user, and no cloud-init to

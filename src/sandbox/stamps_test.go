@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"archive/tar"
 	"context"
 	"errors"
 	"io"
@@ -192,3 +193,53 @@ func TestLXDStampsOfAForeignImageOnServer(t *testing.T) {
 
 // allCLIs are the clis the stamp tests ask about.
 var allCLIs = []string{"claude", "codex", "copilot", "opencode"}
+
+// an lxd build places each cli after its own step: the tree is pushed to the
+// builder and copied over its root as root's, then the image is stamped. the
+// image's key moves with what decides a tree, and not with its url.
+func TestLXDImagePlacesHarness(t *testing.T) {
+	f := newFakeServer(t)
+	var steps []string
+	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
+		switch {
+		case len(argv) == 3 && strings.Contains(argv[2], "cp -a "+placeStage):
+			steps = append(steps, "place")
+			for _, want := range []string{"chown -R 0:0 /opt/pats/harness/tool", "chown -h 0:0 /usr/local/bin/tool", "rm -rf " + placeStage} {
+				assert.ContainsString(t, argv[2], want)
+			}
+		case len(argv) == 3 && strings.HasPrefix(argv[2], "for c in tool;"):
+			steps = append(steps, "stamp")
+			io.WriteString(stdout, "tool=tool 1.2.3\n")
+		case len(argv) > 0 && argv[len(argv)-1] == "tools-step":
+			steps = append(steps, "argv")
+		}
+		return nil
+	}
+	l := lxdOn(t, f, Options{})
+	file := tarGz(t, tarEntry{name: "package/tool", mode: 0o755, typ: tar.TypeReg, body: "#!/bin/sh\necho 'tool 1.2.3'\n"})
+	a := Artefact{CLI: "tool", Version: "1.2.3", Arch: "amd64", URL: "https://a.example/t", SHA256: "aa", Bin: "package/tool"}
+	spec := lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"tools-step"}, Stamp: []string{"tool"}, Harness: []Placed{{Artefact: a, File: file}}}
+	alias, fp, _, built, err := l.image(context.Background(), spec, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, built, true)
+	assert.EqualArrays(t, steps, []string{"argv", "place", "stamp"})
+	stamps, err := l.imageStamps(context.Background(), fp, []string{"tool"})
+	require.NoError(t, err)
+	assert.EqualMaps(t, stamps, map[string]string{"tool": "1.2.3"})
+
+	key := func(change func(*Artefact)) string {
+		b := a
+		change(&b)
+		k, err := imageKey("base-fp", lxdImageSpec{Argv: []string{"tools-step"}, Harness: []Placed{{Artefact: b}}}, false)
+		require.NoError(t, err)
+		return k
+	}
+	same := key(func(*Artefact) {})
+	assert.Equal(t, key(func(x *Artefact) { x.URL = "https://mirror.example/t" }), same)
+	assert.That(t, key(func(x *Artefact) { x.SHA256 = "bb" }) != same, "the key did not move with the sha")
+	assert.That(t, key(func(x *Artefact) { x.Bin = "package/bin/tool" }) != same, "the key did not move with the bin")
+	none, err := imageKey("base-fp", lxdImageSpec{Argv: []string{"tools-step"}}, false)
+	require.NoError(t, err)
+	assert.That(t, none != same, "the key did not move with a cli placed")
+	assert.That(t, strings.HasPrefix(alias, "pats-img-"), alias)
+}

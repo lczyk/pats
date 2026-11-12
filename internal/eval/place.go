@@ -25,7 +25,7 @@ func places(sb config.Sandbox) bool {
 	if sb.Image != "" || sb.Build != "" {
 		return false
 	}
-	return sb.Driver == "docker" || sb.Driver == "podman"
+	return sb.Driver == "docker" || sb.Driver == "podman" || sb.Driver == sandbox.LXDDriver
 }
 
 // artefactsFor is the artefact of each of clis for arch, in their order, by
