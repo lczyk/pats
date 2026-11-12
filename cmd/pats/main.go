@@ -31,14 +31,15 @@ type Options struct {
 	Config  string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
 	Verbose []bool `long:"verbose" short:"v" description:"init, run and score: more detail (build steps, stats, each score); twice also streams builds, host scripts, the agent's stderr and scorers"`
 
-	Init   InitCommand   `command:"init" description:"make and pin the images the suites' sandboxes need"`
-	Run    RunCommand    `command:"run" description:"run the suites (agents x tasks)"`
-	Score  ScoreCommand  `command:"score" description:"score the most recent run with its script scorers (tasks x scorers)"`
-	Judge  JudgeCommand  `command:"judge" description:"judge the most recent run with its agent scorers, each judge an agent in a sandbox"`
-	Report ReportCommand `command:"report" description:"reprint the score report of a past run"`
-	List   ListCommand   `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
-	Egress EgressCommand `command:"egress" description:"the egress proxy: check a policy, read an audit, serve it"`
-	Clean  CleanCommand  `command:"clean" description:"remove what dead runs left behind: containers, instances, networks, temp dirs"`
+	Init    InitCommand    `command:"init" description:"make and pin the images the suites' sandboxes need"`
+	Run     RunCommand     `command:"run" description:"run the suites (agents x tasks)"`
+	Score   ScoreCommand   `command:"score" description:"score the most recent run with its script scorers (tasks x scorers)"`
+	Judge   JudgeCommand   `command:"judge" description:"judge the most recent run with its agent scorers, each judge an agent in a sandbox"`
+	Report  ReportCommand  `command:"report" description:"reprint the score report of a past run"`
+	List    ListCommand    `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
+	Egress  EgressCommand  `command:"egress" description:"the egress proxy: check a policy, read an audit, serve it"`
+	Harness HarnessCommand `command:"harness" description:"a harness's own tools: try its parse script on a log"`
+	Clean   CleanCommand   `command:"clean" description:"remove what dead runs left behind: containers, instances, networks, temp dirs"`
 }
 
 // CleanCommand sweeps leftovers of crashed runs.

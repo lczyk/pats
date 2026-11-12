@@ -166,17 +166,6 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 
 	// the budget spans every repeat: the invocation's.
 	opts.ledger = newLedger(opts.MaxCost)
-	if opts.MaxCost > 0 {
-		var uncapped []string
-		for _, a := range pairAgents(cfg, pairs) {
-			if !cfg.HarnessOf(a).ReportsCost() {
-				uncapped = append(uncapped, a.Name)
-			}
-		}
-		if len(uncapped) > 0 {
-			lg.warn("--max-cost: %s report no cost, and run uncapped", strings.Join(uncapped, ", "))
-		}
-	}
 
 	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
 	// run dir; what is above happens once for all of them.
@@ -291,7 +280,7 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 			}
 			if bar != nil {
 				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
-				bar.start(label, stat, egressPath, statScanner(cfg.HarnessOf(agents[p.Agent])) != nil)
+				bar.start(label, stat, egressPath, cfg.HarnessOf(agents[p.Agent]).Parser() != nil)
 			}
 			job := taskJob(runDir, p, agents[p.Agent], tasks[p.Task])
 			if err := runPair(ctx, cfg, po, runDir, job, sandboxes, stat); err != nil {

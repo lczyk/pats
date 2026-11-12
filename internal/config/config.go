@@ -172,7 +172,8 @@ type Agent struct {
 	Sandbox string `yaml:"sandbox"` // a sandbox name; omitted -> the only sandbox defined
 	Effort  string `yaml:"effort"`  // optional reasoning effort (claude/copilot --effort; codex model_reasoning_effort; opencode --variant)
 	// MaxCost stops a pair once its reported spend passes it, in us dollars;
-	// nil is no cap. only a harness that reports cost as it runs takes one.
+	// nil is no cap. it has nothing to check under a harness that reports no
+	// cost.
 	MaxCost *float64 `yaml:"max-cost"`
 }
 

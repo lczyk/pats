@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/lczyk/pats/internal/machine"
 	"io"
 	"os"
 	"path/filepath"
@@ -81,13 +82,14 @@ func claudeStream(n int) (stream []byte, tools int) {
 func BenchmarkStatTap(b *testing.B) {
 	stream, tools := claudeStream(2000)
 	lines := int64(bytes.Count(stream, []byte("\n")))
-	for name, scan := range map[string]func([]byte, *pairStat){"claude": scanClaude, "no-parser": nil} {
+	for name, entry := range map[string]*machine.Harness{"claude": hd("claude-cli-keyless"), "no-parser": nil} {
 		b.Run(name, func(b *testing.B) {
 			b.SetBytes(int64(len(stream)))
 			b.ReportAllocs()
 			var gotLines, gotTools int64
 			for b.Loop() {
 				var s pairStat
+				scan := statScanner(entry) // one pass of the script a pair
 				tap := &statTap{stat: &s, scan: scan}
 				for rest := stream; len(rest) > 0; {
 					n := min(len(rest), 4096)
@@ -96,7 +98,7 @@ func BenchmarkStatTap(b *testing.B) {
 				}
 				gotLines, gotTools = s.out, s.tools
 			}
-			if gotLines != lines || (scan != nil && gotTools != int64(tools)) {
+			if gotLines != lines || (entry != nil && gotTools != int64(tools)) {
 				b.Fatalf("counted %d lines and %d tools, the stream has %d and %d", gotLines, gotTools, lines, tools)
 			}
 		})

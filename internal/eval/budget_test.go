@@ -62,6 +62,67 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.ContainsString(t, out.String(), "axx/txx budget")
 }
 
+// a format that reports its cost once, at its end, is stopped there: the
+// line arrives while the agent still runs, and the pair is budget as any
+// other over its cap.
+func TestAgentMaxCostAtTheEnd(t *testing.T) {
+	result := `{"type":"result","total_cost_usd":3,"num_turns":2,"result":"done"}` + "\n"
+	ending := &fakeSandbox{blockUntilDone: true, preRun: result, preflightOut: result}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return ending, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: claude-cli-keyless, model: m, sandbox: sxx, max-cost: 2.5}}}
+txx: {kind: task, items: {txx: {prompt: p, timeout: 1m}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.Status, "budget")
+	assert.Equal(t, m.Error, "cost $3.00 passed max-cost $2.50")
+	// its preflight reported a cost, so nothing warns of a cap with nothing to check.
+	assert.That(t, !strings.Contains(out.String(), "reports no cost"), "%s", out.String())
+}
+
+// a cap has nothing to check under a harness that reports no cost: the
+// config loads, and the agent's preflight says so, for its own max-cost and
+// for the run's.
+func TestMaxCostNoCost(t *testing.T) {
+	silent := &fakeSandbox{preRun: `{"type":"item.completed","item":{"type":"command_execution"}}` + "\n"}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return silent, nil }
+	defer func() { newSandbox = old }()
+	const warn = "WARN agent axx reports no cost: max-cost has nothing to check"
+	for name, c := range map[string]struct {
+		agent string
+		opts  Options
+		warns bool
+	}{
+		"the agent's cap": {"max-cost: 2", Options{}, true},
+		"the run's cap":   {"effort: low", Options{MaxCost: 5}, true},
+		"no cap":          {"effort: low", Options{}, false},
+	} {
+		dir := t.TempDir()
+		cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: codex-cli-keyless, model: m, sandbox: sxx, `+c.agent+`}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+		pinAll(t, dir, cfg)
+		var out bytes.Buffer
+		c.opts.ConfigDir, c.opts.Now, c.opts.Out = dir, time.Now(), &out
+		_, err := Run(cfg, c.opts)
+		require.NoError(t, err, name)
+		assert.Equal(t, strings.Contains(out.String(), warn), c.warns, "%s: %s", name, out.String())
+	}
+}
+
 // with --max-cost no pair starts once the spend reached it: the rest are
 // not started, and the run says so and errors.
 func TestRunMaxCost(t *testing.T) {

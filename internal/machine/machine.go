@@ -16,6 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/lczyk/pats/internal/parse"
 	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
@@ -53,11 +54,20 @@ type Harness struct {
 	AuthHint string   `yaml:"auth-hint"`
 	PassEnv  []string `yaml:"pass-env"` // forwarded when set, not credentials
 	Models   string   `yaml:"models"`
-	// Reader names the go reader of the command's stdout. only the defaults
-	// may set it.
-	Reader string `yaml:"reader"`
+	// Parse is the script that reads the command's stdout
+	// (docs/spec/harness-parse.md), "" for none.
+	Parse string `yaml:"parse"`
 
-	cli *CLI
+	cli    *CLI
+	parser *parse.Program
+}
+
+// Parser is the harness's compiled parse script, nil for a harness with none.
+func (h *Harness) Parser() *parse.Program {
+	if h == nil {
+		return nil
+	}
+	return h.parser
 }
 
 // Cli is the harness's cli entry, nil for a harness with none.
@@ -71,21 +81,6 @@ func (h *Harness) LoginFile() string {
 	}
 	return h.cli.LoginFile
 }
-
-// readers is what each go reader knows of cost: whether its format carries a
-// dollar cost at all, and whether as the pair runs.
-var readers = map[string]struct{ cost, live bool }{
-	"claude":   {cost: true},
-	"codex":    {},
-	"copilot":  {},
-	"opencode": {cost: true, live: true},
-}
-
-// ReportsCost is whether the harness's output carries a dollar cost.
-func (h *Harness) ReportsCost() bool { return h != nil && readers[h.Reader].cost }
-
-// LiveCost is whether it carries the cost as the pair runs.
-func (h *Harness) LiveCost() bool { return h != nil && readers[h.Reader].live }
 
 // Catalogues are the model catalogues an entry's `models` may name.
 var Catalogues = map[string]bool{"openrouter": true}
@@ -191,8 +186,12 @@ func (t *Tables) check() error {
 		if h.Models != "" && !Catalogues[h.Models] {
 			add("harnesses.%s: models %q is not a catalogue pats has (%s)", name, h.Models, strings.Join(sortedKeys(Catalogues), ", "))
 		}
-		if _, ok := readers[h.Reader]; h.Reader != "" && !ok {
-			add("harnesses.%s: reader %q is not a reader pats has", name, h.Reader)
+		h.parser = nil
+		if strings.TrimSpace(h.Parse) != "" {
+			var err error
+			if h.parser, err = parse.Compile("harnesses."+name+".parse", h.Parse); err != nil {
+				add("%v", err)
+			}
 		}
 		for _, list := range []struct {
 			key     string

@@ -10,8 +10,8 @@ import (
 	"github.com/lczyk/pats/images"
 )
 
-// the defaults are complete: every harness has a cli and a reader, and every
-// cli a version, which is the one the images are built with.
+// the defaults are complete: every harness has a cli and a parse script, and
+// every cli a version, which is the one the images are built with.
 func TestDefaults(t *testing.T) {
 	d := Defaults()
 	assert.Equal(t, strings.Join(d.Names(), " "), "claude-cli-keyless codex-cli-keyless copilot-cli-keyless opencode-openrouter")
@@ -19,7 +19,7 @@ func TestDefaults(t *testing.T) {
 		h := d.Harness(name)
 		assert.Equal(t, h.Name, name)
 		require.That(t, h.Cli() != nil, "harness %s has no cli", name)
-		assert.That(t, h.Reader != "", "harness %s has no reader", name)
+		assert.That(t, h.Parser() != nil, "harness %s has no parse script", name)
 	}
 	pins := images.ComponentPins()
 	assert.Equal(t, len(d.CLIs), len(pins))
@@ -43,7 +43,7 @@ func TestDefaultCommands(t *testing.T) {
 	}
 }
 
-// what each default knows of logging in, of its hosts and of cost.
+// what each default knows of logging in and of its hosts.
 func TestDefaultEntries(t *testing.T) {
 	d := Defaults()
 	claude, codex, copilot, opencode := d.Harness("claude-cli-keyless"), d.Harness("codex-cli-keyless"), d.Harness("copilot-cli-keyless"), d.Harness("opencode-openrouter")
@@ -62,13 +62,8 @@ func TestDefaultEntries(t *testing.T) {
 	assert.Equal(t, strings.Join(copilot.Egress.Allow, " "), ".github.com .githubcopilot.com")
 	assert.Equal(t, strings.Join(opencode.Egress.Allow, " "), "openrouter.ai models.dev models.opencode.ai registry.npmjs.org")
 
-	assert.Equal(t, claude.ReportsCost(), true)
-	assert.Equal(t, claude.LiveCost(), false)
-	assert.Equal(t, opencode.LiveCost(), true)
-	assert.Equal(t, codex.ReportsCost(), false)
-	assert.Equal(t, copilot.ReportsCost(), false)
 	var none *Harness
-	assert.Equal(t, none.ReportsCost(), false)
+	assert.That(t, none.Parser() == nil, "no entry, no parser")
 }
 
 // each call of Defaults is the caller's own copy.
@@ -91,7 +86,8 @@ func TestParseErrors(t *testing.T) {
 		"login, no cli":     {"harnesses: {h: {run: a, login: true}}", "harnesses.h: login needs a cli with a login-file"},
 		"login, no file":    {"harnesses: {h: {run: a, cli: x, login: true}}\nclis: {x: {version: 1.0.0}}", "harnesses.h: login needs a cli with a login-file"},
 		"unknown catalogue": {"harnesses: {h: {run: a, models: nope}}", `harnesses.h: models "nope" is not a catalogue`},
-		"unknown reader":    {"harnesses: {h: {run: a, reader: nope}}", `harnesses.h: reader "nope"`},
+		"parse syntax":      {"harnesses: {h: {run: a, parse: 'out.tool('}}", "harnesses.h.parse:"},
+		"parse names":       {"harnesses: {h: {run: a, parse: 'out.tool(nope)'}}", "harnesses.h.parse:1:10: undefined: nope"},
 		"path in allow":     {"harnesses: {h: {run: a, egress: {allow: [x.com/v1/*]}}}", "a harness takes hosts only"},
 		"method in allow":   {"harnesses: {h: {run: a, egress: {allow: ['GET x.com/**']}}}", "a harness takes hosts only"},
 		"regexp in deny":    {"harnesses: {h: {run: a, egress: {deny: ['x.com ~^/v1']}}}", "a harness takes hosts only"},
@@ -123,6 +119,7 @@ harnesses:
 `))
 	require.NoError(t, err)
 	assert.That(t, tb.Harness("bare").Cli() == nil, "a harness with no cli got one")
+	assert.That(t, tb.Harness("bare").Parser() == nil, "a harness with no parse got a parser")
 	assert.Equal(t, tb.Harness("bare").LoginFile(), "")
 	assert.Equal(t, tb.Harness("full").LoginFile(), ".x/login")
 	assert.Equal(t, tb.Harness("full").Cli().AuthPathVar(), "PATS_X_AUTH_PATH")

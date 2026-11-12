@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/lczyk/pats/internal/config"
@@ -111,7 +112,8 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	defer sandbox.RemoveTemp(workDir)
 
 	// same egress policy as real runs (no audit).
-	h, err := newHarness(opts, a, cfg.HarnessOf(a), sb, config.TaskEgress{}, workDir, "", "", a.Name+" x preflight")
+	hd := cfg.HarnessOf(a)
+	h, err := newHarness(opts, a, hd, sb, config.TaskEgress{}, workDir, "", "", a.Name+" x preflight")
 	if err != nil {
 		return err
 	}
@@ -130,15 +132,43 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	if err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
-	var buf bytes.Buffer
-	r := h.exec(ctx, sess, &buf, &buf, preflightTimeout)
+	// stdout and stderr land in one buffer, for the error's tail. stdout is
+	// also read as a pair's is, for what it says of cost, so the two are no
+	// longer one writer and the buffer takes a lock.
+	var buf lockedBuffer
+	stat := &pairStat{}
+	tap := &statTap{stat: stat, scan: statScanner(hd)}
+	r := h.exec(ctx, sess, io.MultiWriter(&buf, tap), &buf, preflightTimeout)
 	if r.err != nil {
 		return fmt.Errorf("%w\n%s", r.err, tail(buf.String(), 600))
 	}
 	if r.code != 0 {
 		return fmt.Errorf("harness exited %d (likely bad/expired creds)\n%s", r.code, tail(buf.String(), 600))
 	}
+	// a cap is checked against the cost a harness reports: one that reported
+	// none here leaves it nothing to check.
+	if (a.MaxCost != nil || opts.MaxCost > 0) && !stat.costSeen.Load() {
+		logw{opts.Out, opts.Color, opts.Verbose}.warn("agent %s reports no cost: max-cost has nothing to check", a.Name)
+	}
 	return nil
+}
+
+// lockedBuffer is a buffer two streams write to at once.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // tail returns the last n bytes of s, prefixed when truncated.

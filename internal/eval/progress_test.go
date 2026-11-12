@@ -3,6 +3,7 @@ package eval
 import (
 	"bytes"
 	"fmt"
+	"github.com/lczyk/pats/internal/machine"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,7 +80,7 @@ func TestProgressFitsTerminal(t *testing.T) {
 
 func TestStatTap(t *testing.T) {
 	var s pairStat
-	tap := &statTap{stat: &s, scan: scanClaude}
+	tap := &statTap{stat: &s, scan: statScanner(hd("claude-cli-keyless"))}
 	// an assistant turn with two tool calls (claude-code stream-json shape).
 	tap.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use"},{"type":"text"},{"type":"tool_use"}]}}` + "\n"))
 	tap.Write([]byte(`{"type":"stream_event","event":{"type":"content_block_delta"}}` + "\n")) // envelope -> not a tool
@@ -94,7 +95,7 @@ func TestStatTap(t *testing.T) {
 // fails against the old unbounded statTap.Write.
 func TestStatTapCapsUnboundedLine(t *testing.T) {
 	var s pairStat
-	tap := &statTap{stat: &s, scan: scanClaude}
+	tap := &statTap{stat: &s, scan: statScanner(hd("claude-cli-keyless"))}
 
 	big := bytes.Repeat([]byte("x"), statTapMaxBuf+1000) // over the cap, no newline yet
 	tap.Write(big)
@@ -140,9 +141,10 @@ func FuzzStatTap(f *testing.F) {
 	f.Add([]byte("0123456789"), uint16(5), uint8(5), true) // the split is where the cap is
 	f.Add([]byte("0123\n456789"), uint16(2), uint8(0), true)
 
-	scans := map[string]func([]byte, *pairStat){"no parser": nil}
+	// a scanner is one pass of a script: each tap gets its own.
+	scans := map[string]*machine.Harness{"no parser": nil}
 	for _, h := range harnessNames() {
-		scans[h] = statScanner(hd(h))
+		scans[h] = hd(h)
 	}
 
 	// a line in progress as long as the cap, one per tap: every input starts
@@ -179,10 +181,11 @@ func FuzzStatTap(f *testing.F) {
 			tail = data[:wantLen-pre]
 		}
 
-		for name, scan := range scans {
+		for name, entry := range scans {
 			var one, two pairStat
+			scan := statScanner(entry)
 			whole := &statTap{stat: &one, scan: scan, buf: start(0)}
-			split := &statTap{stat: &two, scan: scan, buf: start(1)}
+			split := &statTap{stat: &two, scan: statScanner(entry), buf: start(1)}
 
 			n, err := whole.Write(data)
 			assert.That(t, n == len(data) && err == nil, "%s: Write = (%d, %v) for %d bytes", name, n, err, len(data))
@@ -257,7 +260,7 @@ func TestClaudeSummary(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
 
-	s := claudeSummary(p)
+	s := summarize(hd("claude-cli-keyless"), p)
 	require.NotNil(t, s)
 	assert.Equal(t, s.NumTurns, 57)
 	assert.Equal(t, s.OutputTokens, 9213)
@@ -285,7 +288,7 @@ func TestOpencodeSummary(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
 
-	s := opencodeSummary(p)
+	s := summarize(hd("opencode-openrouter"), p)
 	require.NotNil(t, s)
 	assert.Equal(t, s.NumTurns, 2) // one per step_finish
 	assert.NearlyEqual(t, s.CostUSD, 0.03, 1e-9)
@@ -302,19 +305,19 @@ func TestOpencodeSummary(t *testing.T) {
 	// error-only log (e.g. bad model / policy refusal) -> summary with IsError.
 	pe := filepath.Join(dir, "err.log")
 	require.NoError(t, os.WriteFile(pe, []byte(`{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"APIError"}}`+"\n"), 0o644))
-	se := opencodeSummary(pe)
+	se := summarize(hd("opencode-openrouter"), pe)
 	require.NotNil(t, se)
 	assert.Equal(t, se.IsError, true)
 
 	// prose/garbage -> nil.
 	pg := filepath.Join(dir, "garbage.log")
 	require.NoError(t, os.WriteFile(pg, []byte("just some prose\n"), 0o644))
-	assert.Nil(t, opencodeSummary(pg))
+	assert.Nil(t, summarize(hd("opencode-openrouter"), pg))
 }
 
 func TestScanOpencode(t *testing.T) {
 	var s pairStat
-	tap := &statTap{stat: &s, scan: scanOpencode}
+	tap := &statTap{stat: &s, scan: statScanner(hd("opencode-openrouter"))}
 	tap.Write([]byte(`{"type":"tool_use","part":{"type":"tool","tool":"bash"}}` + "\n"))
 	tap.Write([]byte(`{"type":"text","part":{"type":"text","text":"hi"}}` + "\n"))
 	tap.Write([]byte(`{"type":"tool_use","part":{"type":"tool","tool":"read"}}` + "\n"))
@@ -336,7 +339,7 @@ func TestCodexSummary(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
 
-	s := codexSummary(p)
+	s := summarize(hd("codex-cli-keyless"), p)
 	require.NotNil(t, s)
 	assert.Equal(t, s.NumTurns, 0)     // `codex exec` is one turn; not a round-trip count
 	assert.Equal(t, s.InputTokens, 25) // 100 total - 75 cached, matching the other kinds
@@ -351,16 +354,16 @@ func TestCodexSummary(t *testing.T) {
 
 	failed := filepath.Join(dir, "failed.log")
 	require.NoError(t, os.WriteFile(failed, []byte(`{"type":"turn.failed"}`+"\n"), 0o644))
-	assert.Equal(t, codexSummary(failed).IsError, true)
+	assert.Equal(t, summarize(hd("codex-cli-keyless"), failed).IsError, true)
 
 	garbage := filepath.Join(dir, "garbage.log")
 	require.NoError(t, os.WriteFile(garbage, []byte("not json\n"), 0o644))
-	assert.Nil(t, codexSummary(garbage))
+	assert.Nil(t, summarize(hd("codex-cli-keyless"), garbage))
 }
 
 func TestScanCodex(t *testing.T) {
 	var s pairStat
-	tap := &statTap{stat: &s, scan: scanCodex}
+	tap := &statTap{stat: &s, scan: statScanner(hd("codex-cli-keyless"))}
 	tap.Write([]byte(`{"type":"item.started","item":{"type":"command_execution"}}` + "\n"))
 	tap.Write([]byte(`{"type":"item.completed","item":{"type":"command_execution"}}` + "\n"))
 	tap.Write([]byte(`{"type":"item.completed","item":{"type":"agent_message"}}` + "\n"))
@@ -390,7 +393,7 @@ func TestCopilotSummary(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
 
-	s := copilotSummary(p)
+	s := summarize(hd("copilot-cli-keyless"), p)
 	require.NotNil(t, s)
 	assert.Equal(t, s.NumTurns, 2) // turn_end events are real round-trips
 	assert.Equal(t, s.OutputTokens, 77)
@@ -405,22 +408,90 @@ func TestCopilotSummary(t *testing.T) {
 
 	failed := filepath.Join(dir, "failed.log")
 	require.NoError(t, os.WriteFile(failed, []byte(`{"type":"result","exitCode":1,"usage":{"premiumRequests":1}}`+"\n"), 0o644))
-	assert.Equal(t, copilotSummary(failed).IsError, true)
+	assert.Equal(t, summarize(hd("copilot-cli-keyless"), failed).IsError, true)
 
 	garbage := filepath.Join(dir, "garbage.log")
 	require.NoError(t, os.WriteFile(garbage, []byte("not json\n"), 0o644))
-	assert.Nil(t, copilotSummary(garbage))
+	assert.Nil(t, summarize(hd("copilot-cli-keyless"), garbage))
 }
 
 func TestScanCopilot(t *testing.T) {
 	var s pairStat
-	tap := &statTap{stat: &s, scan: scanCopilot}
+	tap := &statTap{stat: &s, scan: statScanner(hd("copilot-cli-keyless"))}
 	tap.Write([]byte(`{"type":"tool.execution_start","data":{"toolCallId":"t1","toolName":"bash"}}` + "\n"))
 	tap.Write([]byte(`{"type":"tool.execution_complete","data":{"toolCallId":"t1","success":true}}` + "\n"))
 	tap.Write([]byte(`{"type":"assistant.message","data":{"content":"done","outputTokens":3}}` + "\n"))
 	tap.Write([]byte(`{"type":"tool.execution_start","data":{"toolCallId":"t2","toolName":"write"}}` + "\n"))
 	assert.Equal(t, atomic.LoadInt64(&s.out), int64(4))
 	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(2))
+}
+
+// a format that states its totals at the end reports its cost live then: the
+// tap hears claude's result as it hears a step of opencode's.
+func TestScanCostAtTheEnd(t *testing.T) {
+	var s pairStat
+	var heard []float64
+	s.spend = func(c float64) { heard = append(heard, c) }
+	tap := &statTap{stat: &s, scan: statScanner(hd("claude-cli-keyless"))}
+	_, _ = tap.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}` + "\n"))
+	assert.Equal(t, s.costSeen.Load(), false)
+	_, _ = tap.Write([]byte(`{"type":"result","total_cost_usd":0.4,"num_turns":1}` + "\n"))
+	_, _ = tap.Write([]byte(`{"type":"result","total_cost_usd":0.5,"num_turns":2}` + "\n")) // a later result restates the total
+	assert.Equal(t, s.spent(), 0.5)
+	assert.Equal(t, len(heard), 2)
+	assert.Equal(t, s.costSeen.Load(), true)
+	assert.Equal(t, atomic.LoadInt64(&s.tools), int64(1))
+}
+
+// the two passes frame lines alike: a carriage return before the newline is
+// no part of a line in either, and a last line with no newline is the pass
+// after's alone.
+func TestPassesFrameLinesAlike(t *testing.T) {
+	steps := `{"type":"tool_use","part":{"tool":"read"}}` + "\r\n" + `{"type":"step_finish","part":{"cost":1.5}}` + "\r\n"
+	var live pairStat
+	tap := &statTap{stat: &live, scan: statScanner(hd("opencode-openrouter"))}
+	_, _ = tap.Write([]byte(steps))
+	sum := summarize(hd("opencode-openrouter"), writeLog(t, steps))
+	require.That(t, sum != nil, "no summary")
+	assert.Equal(t, sum.CostUSD, 1.5)
+	assert.Equal(t, live.spent(), sum.CostUSD)
+	assert.Equal(t, atomic.LoadInt64(&live.tools), int64(sum.Tools["read"]))
+	assert.Equal(t, sum.ParseErrors, 0)
+
+	open := steps + `{"type":"step_finish","part":{"cost":2}}` // no newline yet
+	var cut pairStat
+	tap = &statTap{stat: &cut, scan: statScanner(hd("opencode-openrouter"))}
+	_, _ = tap.Write([]byte(open))
+	assert.Equal(t, cut.spent(), 1.5)
+	assert.Equal(t, summarize(hd("opencode-openrouter"), writeLog(t, open)).CostUSD, 3.5)
+}
+
+// a line a script fails on is counted, named in the summary's warning, and
+// enough for a summary by itself; the lines around it still count.
+func TestSummarizeParseErrors(t *testing.T) {
+	strict := tables(t, `
+harnesses:
+  strict:
+    run: "true"
+    parse: |
+      ev = json.decode(line)
+      out.usage(cost_usd = ev["cost"])
+`).Harness("strict")
+	s := summarize(strict, writeLog(t, `{"cost": 1}`+"\n"+`{"price": 2}`+"\n"+`{"cost": 3}`+"\n"))
+	require.That(t, s != nil, "no summary")
+	assert.Equal(t, s.CostUSD, 4)
+	assert.Equal(t, s.ParseErrors, 1)
+	assert.Equal(t, s.parseError, `line 2: key "cost" not in dict (1 line(s) failed)`)
+
+	only := summarize(strict, writeLog(t, `{"price": 2}`+"\n"))
+	require.That(t, only != nil, "a failed line alone left no summary")
+	assert.Equal(t, only.ParseErrors, 1)
+	assert.Equal(t, only.HasCost, false)
+
+	// a negative cost is an error of its line, not spend taken back.
+	neg := summarize(hd("opencode-openrouter"), writeLog(t, steps(1, 1)+`{"type":"step_finish","part":{"cost":-0.5}}`+"\n"))
+	assert.Equal(t, neg.CostUSD, 1)
+	assert.Equal(t, neg.ParseErrors, 1)
 }
 
 func TestIsProgressTTY(t *testing.T) {
@@ -434,4 +505,23 @@ func TestIsProgressTTY(t *testing.T) {
 	require.NoError(t, err)
 	defer file.Close()
 	assert.Equal(t, isProgressTTY(file), false)
+}
+
+// pats harness parse: each failed line, the summary and the newest reply.
+func TestParseLog(t *testing.T) {
+	var out bytes.Buffer
+	log := `{"type":"result","result":"first","total_cost_usd":1}` + "\n" + `{"type":"result","result":"second","total_cost_usd":-2}` + "\n" + `{"type":"result","result":"third","total_cost_usd":2,"num_turns":3}` + "\n"
+	require.NoError(t, ParseLog(hd("claude-cli-keyless"), strings.NewReader(log), &out))
+	assert.Equal(t, out.String(), `line 2: out.usage: cost_usd: -2 is not a finite number of at least 0
+summary: {"num_turns":3,"cost_usd":2,"has_cost":true,"parse_errors":1}
+reply (the newest of 2 candidates):
+third
+`)
+
+	out.Reset()
+	require.NoError(t, ParseLog(hd("codex-cli-keyless"), strings.NewReader("not codex's\n"), &out))
+	assert.Equal(t, out.String(), "summary: none\nreply: none\n")
+
+	bare := tables(t, `harnesses: {bare: {run: "true"}}`).Harness("bare")
+	assert.Error(t, ParseLog(bare, strings.NewReader(""), &out), "has no parse script")
 }

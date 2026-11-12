@@ -161,17 +161,6 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 	}
 
 	ro.ledger = newLedger(jo.MaxCost)
-	if jo.MaxCost > 0 {
-		var uncapped []string
-		for _, a := range pairAgents(cfg, judgePairs) {
-			if !cfg.HarnessOf(a).ReportsCost() {
-				uncapped = append(uncapped, a.Name)
-			}
-		}
-		if len(uncapped) > 0 {
-			lg.warn("--max-cost: %s report no cost, and judge uncapped", strings.Join(uncapped, ", "))
-		}
-	}
 
 	for _, d := range runDirs {
 		if len(runDirs) > 1 {
@@ -619,6 +608,11 @@ func sampleVerdict(outDir string, hd *machine.Harness, v verdict) verdict {
 		return v
 	case m.Summary != nil && m.Summary.IsError:
 		v.Error = "the judge's harness reported an error"
+		return v
+	case m.Summary != nil && m.Summary.ParseErrors > 0:
+		// the line that failed may be the one that took a score back: an
+		// earlier reply is not trusted over it.
+		v.Error = fmt.Sprintf("the judge's output could not be read: %d line(s) failed to parse", m.Summary.ParseErrors)
 		return v
 	}
 	score, na, err := judgeVerdict(hd, filepath.Join(outDir, "stdout.log"))

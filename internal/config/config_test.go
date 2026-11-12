@@ -275,7 +275,6 @@ func TestValidateErrors(t *testing.T) {
 		{"agent sandbox names a vector of two", base + "boxes: {kind: sandbox, items: {b1x: {image: i}, b2x: {image: i}}}\nbxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: boxes}}}\n", "names 2 items"},
 		{"agent unknown sandbox", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: ghost}}}\n", "unknown sandbox \"ghost\""},
 		{"effort on an unknown harness", base + "bxx: {kind: agent, items: {bxx: {harness: bogus, model: m, effort: high}}}\n", "unknown harness \"bogus\""},
-		{"max-cost on a harness without live cost", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, max-cost: 2}}}\n", "max-cost needs a harness that reports cost as it runs"},
 		{"env a shell will not set", base + "s2x: {kind: sandbox, items: {s2x: {image: img, env: {UID: '1'}}}}\n", "read-only in a shell"},
 		{"max-cost zero", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: 0}}}\n", "is not a cost cap"},
 		{"max-cost negative", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: -1}}}\n", "is not a cost cap"},

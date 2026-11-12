@@ -75,12 +75,9 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 			d.Estimate, d.Total = &m, &t
 			total.KnownUSD += t
 		} else {
+			// a harness that reports no dollar cost leaves no history: its
+			// estimate is unknown, never $0.
 			why := "no history"
-			// a harness that reports no dollar cost has an unknown estimate
-			// for that reason, never $0.
-			if !cfg.HarnessOf(a).ReportsCost() {
-				why = "no cost reported"
-			}
 			d.Unknown = &why
 			total.UnknownPairs++
 		}

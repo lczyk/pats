@@ -263,6 +263,8 @@ type fakeSandbox struct {
 	// preRun is written to the agent's stdout as it starts, before
 	// blockUntilDone waits: a harness streaming events as it goes.
 	preRun string
+	// preflightOut is what the agent prints in its credential preflight.
+	preflightOut string
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -320,6 +322,7 @@ func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr 
 	}
 	f.calls++
 	if s.preflight {
+		io.WriteString(stdout, f.preflightOut)
 		return 0, nil
 	}
 	if f.onRun != nil {

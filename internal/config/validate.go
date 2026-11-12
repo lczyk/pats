@@ -363,8 +363,6 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 		if a.MaxCost != nil {
 			if err := CheckCost(*a.MaxCost); err != nil {
 				add("agent %q: max-cost: %v", a.Name, err)
-			} else if h != nil && !h.LiveCost() {
-				add("agent %q: max-cost needs a harness that reports cost as it runs (%s), not %q", a.Name, strings.Join(c.liveCostNames(), ", "), a.Harness)
 			}
 		}
 		sbID, err := c.ResolveSandbox(a)
@@ -388,17 +386,6 @@ func (c *Config) harnessNames() []string {
 		return builtins().Names()
 	}
 	return c.Harnesses.Names()
-}
-
-// liveCostNames lists the harnesses that report cost as a pair runs.
-func (c *Config) liveCostNames() []string {
-	var out []string
-	for _, n := range c.harnessNames() {
-		if h := c.HarnessOf(Agent{Harness: n}); h != nil && h.LiveCost() {
-			out = append(out, n)
-		}
-	}
-	return out
 }
 
 // ResolveSandbox returns the sandbox name an agent runs in: its `sandbox` (an

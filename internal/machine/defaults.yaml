@@ -38,7 +38,32 @@ harnesses:
     auth-hint: >-
       a claude token env (CLAUDE_CODE_OAUTH_TOKEN) or ~/.claude/.credentials.json
       (or PATS_CLAUDE_AUTH_PATH)
-    reader: claude
+    # tools are the tool_use blocks of each assistant turn. the totals come on
+    # the result event, and a later result restates them.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) == "dict":
+          t = ev.get("type")
+          if t == "assistant":
+              for c in ev.get("message", {}).get("content", []):
+                  if c.get("type") == "tool_use":
+                      out.tool(c.get("name", ""))
+          elif t == "result":
+              u = ev.get("usage", {})
+              out.usage(
+                  total = True,
+                  turns = ev.get("num_turns", 0),
+                  cost_usd = ev.get("total_cost_usd", 0),
+                  input = u.get("input_tokens", 0),
+                  output = u.get("output_tokens", 0),
+                  cache_read = u.get("cache_read_input_tokens", 0),
+                  cache_write = u.get("cache_creation_input_tokens", 0),
+                  ttft_ms = ev.get("ttft_ms", 0),
+                  api_ms = ev.get("duration_api_ms", 0),
+              )
+              out.error(ev.get("is_error", False))
+              # every result is a candidate: a sub-agent's late note follows the answer.
+              out.final(ev.get("result", ""), add = True)
 
   codex-cli-keyless:
     cli: codex
@@ -58,7 +83,36 @@ harnesses:
     # when set, and withholding them is what keeps this harness keyless.
     login: true
     auth-hint: ~/.codex/auth.json (file-based codex login, or PATS_CODEX_AUTH_PATH)
-    reader: codex
+    # no turns: `codex exec` is one turn by construction. no cost_usd: a
+    # chatgpt-account run has no price.
+    parse: |
+      TOOLS = ["command_execution", "file_change", "web_search"]
+
+      ev = json.decode(line, default = None)
+      if type(ev) == "dict":
+          t = ev.get("type")
+          if t == "item.completed":
+              item = ev.get("item", {})
+              kind = item.get("type")
+              if kind in TOOLS:
+                  out.tool(kind)
+              elif kind == "mcp_tool_call":
+                  server, tool = item.get("server", ""), item.get("tool", "")
+                  out.tool("mcp:%s/%s" % (server, tool) if server and tool else kind)
+              elif kind == "agent_message":
+                  out.final(item.get("text", ""))
+          elif t == "turn.completed":
+              u = ev.get("usage", {})
+              # cached tokens are a part of input here. the totals keep them apart.
+              cached = u.get("cached_input_tokens", 0)
+              out.usage(
+                  input = u.get("input_tokens", 0) - cached,
+                  cache_read = cached,
+                  output = u.get("output_tokens", 0),
+                  reasoning = u.get("reasoning_output_tokens", 0),
+              )
+          elif t in ("turn.failed", "error"):
+              out.error()
 
   copilot-cli-keyless:
     cli: copilot
@@ -77,7 +131,31 @@ harnesses:
     auth-env: [COPILOT_GITHUB_TOKEN]
     auth-hint: >-
       COPILOT_GITHUB_TOKEN (macos: security find-generic-password -s copilot-cli -w; or gh auth token)
-    reader: copilot
+    # the stream has no input or cache counts and no price: a run is billed in
+    # premium requests.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) == "dict":
+          t = ev.get("type")
+          data = ev.get("data", {})
+          if t == "tool.execution_start":
+              out.tool(data.get("toolName", ""))
+          elif t == "assistant.turn_end":
+              out.usage(turns = 1)
+          elif t == "assistant.message":
+              out.usage(output = data.get("outputTokens", 0))
+              text = data.get("content", "")
+              if text.strip():
+                  out.final(text)
+          elif t == "result":
+              u = ev.get("usage", {})
+              out.usage(
+                  total = True,
+                  premium_requests = u.get("premiumRequests", 0),
+                  api_ms = u.get("totalApiDurationMs", 0),
+              )
+              code = ev.get("exitCode")
+              out.error(code != None and code != 0)
 
   opencode-openrouter:
     cli: opencode
@@ -95,4 +173,34 @@ harnesses:
         - registry.npmjs.org   # runtime plugin fetch
     auth-env: [OPENROUTER_API_KEY]
     models: openrouter
-    reader: opencode
+    # usage is per step, so the totals add up over step_finish. the reply is
+    # the text of the last step: a step that ended stays the reply until a
+    # later one says something.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) == "dict":
+          t = ev.get("type")
+          part = ev.get("part", {})
+          if t == "tool_use":
+              out.tool(part.get("tool", ""))
+          elif t == "step_start":
+              out.clear()
+          elif t == "text":
+              out.text(part.get("text", ""))
+          elif t == "step_finish":
+              out.clear(next = True)
+              tok = part.get("tokens", {})
+              cache = tok.get("cache", {})
+              # reasoning comes apart from output here. the totals count it in.
+              reasoning = tok.get("reasoning", 0)
+              out.usage(
+                  turns = 1,
+                  cost_usd = part.get("cost", 0),
+                  input = tok.get("input", 0),
+                  output = tok.get("output", 0) + reasoning,
+                  reasoning = reasoning,
+                  cache_read = cache.get("read", 0),
+                  cache_write = cache.get("write", 0),
+              )
+          elif t == "error":
+              out.error()

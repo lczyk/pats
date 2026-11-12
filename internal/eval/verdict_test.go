@@ -229,6 +229,55 @@ func TestJudgeVerdictPerHarness(t *testing.T) {
 	}
 }
 
+// a harness with no parse script has its whole stdout for a reply; no harness
+// at all has none.
+func TestFinalTextsNoParser(t *testing.T) {
+	bare := tables(t, `harnesses: {bare: {run: "true"}}`).Harness("bare")
+	texts, err := finalTexts(bare, writeLog(t, "graded\nSCORE: 0.4\n"))
+	require.NoError(t, err)
+	require.Len(t, texts, 1)
+	score, na, err := judgeVerdict(bare, writeLog(t, "graded\nSCORE: 0.4\n"))
+	require.NoError(t, err)
+	assert.Equal(t, score, 0.4)
+	assert.Equal(t, na, false)
+
+	texts, err = finalTexts(bare, writeLog(t, " \n"))
+	require.NoError(t, err)
+	assert.Len(t, texts, 0)
+
+	_, err = finalTexts(nil, writeLog(t, "SCORE: 1\n"))
+	assert.That(t, err != nil, "a reply with no harness to read it by")
+}
+
+// a judge's sample with a line its parse script failed on has an error for a
+// verdict, whatever reply was read before the line.
+func TestSampleVerdictParseErrors(t *testing.T) {
+	strict := tables(t, `
+harnesses:
+  strict:
+    run: "true"
+    parse: |
+      ev = json.decode(line)
+      out.usage(cost_usd = ev["cost"])
+      out.final(ev["reply"])
+`).Harness("strict")
+	write := func(log string) string {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "stdout.log"), []byte(log), 0o644))
+		m := pairMeta{Status: "ok", Summary: summarize(strict, filepath.Join(dir, "stdout.log"))}
+		require.NoError(t, writeJSON(filepath.Join(dir, "metadata.json"), m))
+		return dir
+	}
+	good := `{"cost": 1, "reply": "SCORE: 0.5"}` + "\n"
+	v := sampleVerdict(write(good), strict, verdict{})
+	assert.Equal(t, v.OK, true)
+
+	// the second line would have taken the score back, and could not be read.
+	v = sampleVerdict(write(good+`{"reply": "no, SCORE: 0"}`+"\n"), strict, verdict{})
+	assert.Equal(t, v.OK, false)
+	assert.ContainsString(t, v.Error, "1 line(s) failed to parse")
+}
+
 // the judge's copy holds what the agent made: no pats logs, no links, nothing
 // from outside the run.
 func TestCopyJudged(t *testing.T) {

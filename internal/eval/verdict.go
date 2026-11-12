@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,88 +145,26 @@ func judgeVerdict(hd *machine.Harness, path string) (score float64, na bool, err
 	return 0, false, errors.New("the judge's final reply does not end in a SCORE: line")
 }
 
-// finalTexts is the judge's final reply out of its stream, newest first:
-// more than one only for claude, whose late result events follow the answer.
+// finalTexts is the judge's final reply out of its output, newest first, as
+// its harness's parse script reads it. a harness with no script has its whole
+// stdout for a reply.
 func finalTexts(hd *machine.Harness, path string) ([]string, error) {
-	reader := ""
-	if hd != nil {
-		reader = hd.Reader
+	if hd == nil {
+		return nil, errors.New("no harness to read the judge's reply by")
 	}
-	f, err := os.Open(path)
+	p := hd.Parser()
+	if p == nil {
+		b, err := os.ReadFile(path)
+		if err != nil || strings.TrimSpace(string(b)) == "" {
+			return nil, err
+		}
+		return []string{string(b)}, nil
+	}
+	r, err := readLog(p, path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	var texts []string
-	var step []string // opencode: the text parts of the step in progress
-	stepDone := false
-	for sc.Scan() {
-		var ev struct {
-			Type   string `json:"type"`
-			Result string `json:"result"` // claude: result
-			Item   struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"item"` // codex: item.completed
-			Data struct {
-				Content string `json:"content"`
-			} `json:"data"` // copilot: assistant.message
-			Part struct {
-				Text string `json:"text"`
-			} `json:"part"` // opencode: text
-		}
-		if json.Unmarshal(sc.Bytes(), &ev) != nil {
-			continue
-		}
-		switch reader {
-		case "claude":
-			if ev.Type == "result" {
-				texts = append(texts, ev.Result)
-			}
-		case "codex":
-			if ev.Type == "item.completed" && ev.Item.Type == "agent_message" {
-				texts = []string{ev.Item.Text}
-			}
-		case "copilot":
-			if ev.Type == "assistant.message" && strings.TrimSpace(ev.Data.Content) != "" {
-				texts = []string{ev.Data.Content}
-			}
-		case "opencode":
-			switch ev.Type {
-			case "step_start":
-				step, stepDone = nil, false
-			case "step_finish":
-				stepDone = true
-			case "text":
-				if stepDone {
-					step, stepDone = nil, false
-				}
-				step = append(step, ev.Part.Text)
-			}
-		default:
-			return nil, fmt.Errorf("no reply reader for harness %q", harnessName(hd))
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	if reader == "opencode" && len(step) > 0 {
-		texts = []string{strings.Join(step, "\n")}
-	}
-	for i, j := 0, len(texts)-1; i < j; i, j = i+1, j-1 {
-		texts[i], texts[j] = texts[j], texts[i]
-	}
-	return texts, nil
-}
-
-// harnessName is the entry's name, "" for none.
-func harnessName(hd *machine.Harness) string {
-	if hd == nil {
-		return ""
-	}
-	return hd.Name
+	return r.Replies(), nil
 }
 
 // judged names the pair a verdict grades.

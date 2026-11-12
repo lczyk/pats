@@ -247,5 +247,5 @@ func TestSummaryScanCutShort(t *testing.T) {
 	big := `{"type":"assistant","message":{"content":[{"type":"text","text":"` + strings.Repeat("x", 9<<20) + `"}]}}`
 	log := `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}` + "\n" + big + "\n"
 	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
-	assert.That(t, claudeSummary(p) == nil, "a scan cut short gives no summary")
+	assert.That(t, summarize(hd("claude-cli-keyless"), p) == nil, "a scan cut short gives no summary")
 }

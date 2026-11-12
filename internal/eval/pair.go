@@ -342,6 +342,9 @@ func runPair(
 	// anything here can fail.
 	if s := meta.Summary; s != nil {
 		stat.tokens, stat.cost, stat.costKnown = s.OutputTokens, s.CostUSD, s.HasCost
+		if s.ParseErrors > 0 {
+			lg.warn("%s parse: %s", job.label, s.parseError)
+		}
 	}
 	// an interrupt during the close or the lookups above still makes the
 	// pair interrupted.
@@ -371,7 +374,7 @@ func runPair(
 		lg.error("%s", statusLine)
 	}
 	stat.status = status
-	stats := stat.cols(statScanner(hd) != nil)
+	stats := stat.cols(hd.Parser() != nil)
 	if s := meta.Summary; s != nil {
 		// cost + turns are omitted for harnesses whose stream doesn't report them.
 		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))

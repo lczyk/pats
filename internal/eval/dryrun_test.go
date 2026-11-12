@@ -63,7 +63,7 @@ sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, DryRun: true, Tasks: []string{"txx"}})
 	require.NoError(t, err)
 	assert.ContainsString(t, out.String(), "INFO orx/txx  sandbox sxx  est $2.00 (median of 3)\n")
-	assert.ContainsString(t, out.String(), "INFO cxx/txx  sandbox sxx  est unknown (no cost reported)\n")
+	assert.ContainsString(t, out.String(), "INFO cxx/txx  sandbox sxx  est unknown (no history)\n")
 	assert.ContainsString(t, out.String(), "INFO 2 pair(s), est $2.00 + 1 unknown\n")
 	assert.ContainsString(t, out.String(), "WARN skipping ")
 	after, _ := os.ReadDir(filepath.Join(dir, runsSubdir))
@@ -75,7 +75,7 @@ sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 	lines := strings.Split(strings.TrimSpace(js.String()), "\n")
 	require.Len(t, lines, 3)
 	assert.ContainsString(t, lines[0], `"agent":"orx","task":"txx","sandbox":"sxx","estimate_usd":2,"samples":3,"unknown":null,"repeat":5,"estimate_total_usd":10`)
-	assert.ContainsString(t, lines[1], `"unknown":"no cost reported"`)
+	assert.ContainsString(t, lines[1], `"unknown":"no history"`)
 	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":10,"known_usd":10,"unknown_pairs":1,"max_cost_usd":20,"fits":true}`)
 	assert.ContainsString(t, log.String(), "WARN skipping ") // warnings go to the log, never into the json
 }
