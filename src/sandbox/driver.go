@@ -152,8 +152,9 @@ type TreeHost interface {
 	// PlaceTrees makes each placed cli's tree present, unpacked once, and
 	// returns their ids in order.
 	PlaceTrees(ctx context.Context, placed []Placed) ([]string, error)
-	// MissingTree is the first of ids that is not there, "" when all are.
-	MissingTree(ids []string) string
+	// MissingTree is the first of ids that is not there, or that is no
+	// tree's id at all; ok is false when all are.
+	MissingTree(ids []string) (id string, ok bool)
 	// StampsOver are the versions of clis in a session of image id with
 	// trees over it: what a sandbox of the two would run.
 	StampsOver(ctx context.Context, id string, trees, clis []string) (map[string]string, error)

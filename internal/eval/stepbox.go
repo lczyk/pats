@@ -248,7 +248,7 @@ func openStepBoxOnce(ctx context.Context, p *stepPlace, mounts []sandbox.Mount, 
 		}
 	}()
 	box, err := newSandbox(placeOptions(p.sb), sandbox.SandboxOptions{
-		Image: p.sb.Image, Profiles: p.sb.Profiles, Config: p.sb.Config, ProxyImage: p.sb.ProxyImage,
+		Image: p.sb.Image, Trees: p.sb.Trees, Profiles: p.sb.Profiles, Config: p.sb.Config, ProxyImage: p.sb.ProxyImage,
 		Limits: sandbox.Limits{CPU: p.sb.Limits.CPU, Memory: p.sb.Limits.Memory, Disk: p.sb.Limits.Disk},
 	})
 	if err != nil {

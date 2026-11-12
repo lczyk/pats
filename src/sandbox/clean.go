@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -490,10 +491,20 @@ func CleanHarness(dryRun bool, report func(CleanEvent)) error {
 	if err != nil {
 		return err
 	}
-	es, _ := os.ReadDir(dir)
+	es, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	for _, e := range es {
 		fi, err := e.Info()
-		if err != nil || !fi.Mode().IsRegular() {
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // a fetch renamed it away
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !fi.Mode().IsRegular() {
 			continue
 		}
 		if strings.HasPrefix(e.Name(), "fetch-") && time.Since(fi.ModTime()) < fetchGrace {

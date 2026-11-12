@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -159,9 +160,16 @@ func (st bwrapStore) refFile(ref string) string {
 func (st bwrapStore) harnessTree(id string) string { return filepath.Join(st.dir, "harness", id) }
 func (st bwrapStore) treeLock(id string) string    { return filepath.Join(st.dir, "harness", id+".lock") }
 
+// treeIDRe is a tree's id (Artefact.TreeID). an id comes from a pin file, and
+// names a directory a session mounts: one that is anything else is no tree.
+var treeIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // hasTree says whether the tree of id is in the store, whole: it is renamed
 // into place once unpacked.
 func (st bwrapStore) hasTree(id string) bool {
+	if !treeIDRe.MatchString(id) {
+		return false
+	}
 	fi, err := os.Stat(st.harnessTree(id))
 	return err == nil && fi.IsDir()
 }
@@ -170,7 +178,10 @@ func (st bwrapStore) hasTree(id string) bool {
 // crashed unpack left of one; a tree in use is reported and kept. a tree goes
 // in one step, renamed aside first: it is in the store whole or not at all.
 func (st bwrapStore) purgeTrees(dryRun bool, report func(CleanEvent)) error {
-	es, _ := os.ReadDir(filepath.Join(st.dir, "harness"))
+	es, err := os.ReadDir(filepath.Join(st.dir, "harness"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	var errs []error
 	for _, e := range es {
 		id := strings.TrimSuffix(e.Name(), ".new")

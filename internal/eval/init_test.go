@@ -524,13 +524,13 @@ func (h *treeHost) PlaceTrees(_ context.Context, placed []sandbox.Placed) ([]str
 	return ids, nil
 }
 
-func (h *treeHost) MissingTree(ids []string) string {
+func (h *treeHost) MissingTree(ids []string) (string, bool) {
 	for _, id := range ids {
 		if !h.trees[id] {
-			return id
+			return id, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 func (h *treeHost) StampsOver(ctx context.Context, id string, trees, clis []string) (map[string]string, error) {
@@ -553,10 +553,10 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	cfg := parseCfg(t, body)
 	h := &treeHost{fakeHost: newFakeHost(), trees: map[string]bool{}}
 	useHost(t, h)
-	var got sandbox.SandboxOptions
+	var got []sandbox.SandboxOptions // the agent's sandbox, and each step's
 	old := newSandbox
 	newSandbox = func(_ sandbox.Options, o sandbox.SandboxOptions) (sandbox.Sandbox, error) {
-		got = o
+		got = append(got, o)
 		return &fakeSandbox{}, nil
 	}
 	t.Cleanup(func() { newSandbox = old })
@@ -578,8 +578,11 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 
 	_, err = Run(parseCfg(t, body), Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err, "%s", out.String())
-	assert.Equal(t, got.Image, "sha256:pulled-"+pub)
-	assert.EqualArrays(t, got.Trees, []string{tree})
+	require.That(t, len(got) > 1, "the run made %d sandbox(es): no step's, or no agent's", len(got))
+	for _, o := range got {
+		assert.Equal(t, o.Image, "sha256:pulled-"+pub)
+		assert.EqualArrays(t, o.Trees, []string{tree})
+	}
 
 	delete(h.trees, tree)
 	_, err = Run(parseCfg(t, body), Options{ConfigDir: dir, Now: time.Now(), Out: &out})

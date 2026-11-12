@@ -5,7 +5,9 @@ package sandbox
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"runtime"
@@ -231,20 +233,19 @@ func TestBwrapPlaceTrees(t *testing.T) {
 	a := Artefact{CLI: "tool", Version: "1.2.3", Arch: "amd64", SHA256: "aa", Bin: "package/tool"}
 	st, err := d.store()
 	require.NoError(t, err)
-	assert.Equal(t, d.MissingTree([]string{a.TreeID()}), a.TreeID())
+	assert.That(t, missing(d, a.TreeID()), "a tree before it was placed")
 
 	ids, err := d.PlaceTrees(context.Background(), []Placed{{Artefact: a, File: file}})
 	require.NoError(t, err)
 	assert.EqualArrays(t, ids, []string{a.TreeID()})
-	assert.Equal(t, d.MissingTree(ids), "")
+	assert.That(t, !missing(d, ids...), "the placed tree is missing")
 	target, err := os.Readlink(st.harnessTree(a.TreeID()) + "/usr/local/bin/tool")
 	require.NoError(t, err)
 	assert.Equal(t, target, "/opt/pats/harness/tool/package/tool")
-	left, err := os.ReadDir(st.harnessTree(a.TreeID()) + "/..")
-	require.NoError(t, err)
-	for _, e := range left {
-		assert.That(t, !strings.HasPrefix(e.Name(), ".new-"), "a half-made tree was left: %s", e.Name())
-	}
+	// an id is a pin file's word, and names a directory: one that is not a
+	// tree's id is no tree, wherever it leads.
+	assert.That(t, missing(d, "../rootfs"), "a path passed for a tree")
+	assert.That(t, missing(d, ""), "the store's own directory passed for a tree")
 
 	// there already: nothing is unpacked, the artefact is not even read.
 	again, err := d.PlaceTrees(context.Background(), []Placed{{Artefact: a, File: "/nonexistent/not-read"}})
@@ -255,7 +256,9 @@ func TestBwrapPlaceTrees(t *testing.T) {
 	bad := Artefact{CLI: "other", Version: "1", Arch: "amd64", SHA256: "bb", Bin: "package/nope"}
 	_, err = d.PlaceTrees(context.Background(), []Placed{{Artefact: bad, File: file}})
 	assert.Error(t, err, "other 1: ")
-	assert.Equal(t, d.MissingTree([]string{bad.TreeID()}), bad.TreeID())
+	assert.That(t, missing(d, bad.TreeID()), "a tree that could not be made is there")
+	_, err = os.Lstat(st.harnessTree(bad.TreeID()) + ".new")
+	assert.That(t, errors.Is(err, fs.ErrNotExist), "a half-made tree was left: %v", err)
 }
 
 // clean --all takes the fetched artefacts and the trees unpacked from them: a
@@ -290,7 +293,7 @@ func TestCleanHarness(t *testing.T) {
 	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 
 	require.NoError(t, CleanHarness(true, report))
-	assert.That(t, exists(cache+"/aa") && d.MissingTree([]string{free.TreeID()}) == "", "a dry run removed something")
+	assert.That(t, exists(cache+"/aa") && !missing(d, free.TreeID()), "a dry run removed something")
 	assert.ContainsString(t, strings.Join(events, "\n"), "would remove harness artefact "+cache+"/aa")
 
 	events = nil
@@ -298,13 +301,19 @@ func TestCleanHarness(t *testing.T) {
 	all := strings.Join(events, "\n")
 	assert.That(t, !exists(cache+"/aa") && !exists(cache+"/fetch-stale"), "an artefact was left")
 	assert.That(t, exists(cache+"/fetch-fresh"), "a fetch in flight lost its file")
-	assert.Equal(t, d.MissingTree([]string{held.TreeID()}), "")
-	assert.Equal(t, d.MissingTree([]string{free.TreeID()}), free.TreeID())
+	assert.That(t, !missing(d, held.TreeID()), "a held tree was removed")
+	assert.That(t, missing(d, free.TreeID()), "a free tree was left")
 	assert.That(t, !exists(crashed), "a crashed unpack's dir was left")
 	assert.ContainsString(t, all, "removed harness tree "+st.harnessTree(free.TreeID()))
 	assert.ContainsString(t, all, "host: kept tree "+st.harnessTree(held.TreeID())+" (in use by a running sandbox, or being unpacked)")
 
 	unlock()
 	require.NoError(t, CleanHarness(false, report))
-	assert.Equal(t, d.MissingTree([]string{held.TreeID()}), held.TreeID())
+	assert.That(t, missing(d, held.TreeID()), "a tree no longer held was left")
+}
+
+// missing says whether the store lacks one of ids.
+func missing(d *bwrapDriver, ids ...string) bool {
+	_, gone := d.MissingTree(ids)
+	return gone
 }

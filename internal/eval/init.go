@@ -123,6 +123,11 @@ func Init(cfg *config.Config, opts InitOptions) error {
 				failed = append(failed, p.sb.Name)
 				continue
 			}
+			if tree, ok := missingTree(h, p.e); err == nil && ok {
+				lg.error("sandbox %q: harness tree %s was removed since this init placed it, by a pats clean; run pats init again", p.sb.Name, short(tree))
+				failed = append(failed, p.sb.Name)
+				continue
+			}
 			f.setPin(p.target, p.sb.Name, p.e, opts.Now)
 		}
 		f.dropMissing(keep, opts.Now)
@@ -554,6 +559,10 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 		}
 		target, daemon := t.Key, t.Daemon
 		e := pins.entry(target, sb.Name)
+		tree, goneTree := "", false
+		if e != nil {
+			tree, goneTree = missingTree(h, e)
+		}
 		reason := ""
 		switch {
 		case e == nil:
@@ -562,8 +571,8 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			reason = "pinned against another " + sb.Driver + " daemon"
 		case !present(ctx, h, e.Image.ID):
 			reason = "its pinned image " + short(e.Image.ID) + " is gone"
-		case missingTree(h, e) != "":
-			reason = "a harness tree it was pinned with (" + short(missingTree(h, e)) + ") is gone"
+		case goneTree:
+			reason = "a harness tree it was pinned with (" + short(tree) + ") is gone"
 		case pinsProxy(sb) && e.Proxy == nil:
 			reason = "no egress proxy pinned"
 		case pinsProxy(sb) && !present(ctx, h, e.Proxy.ID):
@@ -622,12 +631,12 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 }
 
 // missingTree is a tree e records that its host, when it keeps trees beside
-// its images, no longer has; "" otherwise.
-func missingTree(h imageHost, e *pinEntry) string {
-	if th, ok := h.(sandbox.TreeHost); ok {
+// its images, no longer has.
+func missingTree(h imageHost, e *pinEntry) (id string, ok bool) {
+	if th, is := h.(sandbox.TreeHost); is {
 		return th.MissingTree(treeIDs(e))
 	}
-	return ""
+	return "", false
 }
 
 // missingImage is an image e pins that its host no longer has, "" when

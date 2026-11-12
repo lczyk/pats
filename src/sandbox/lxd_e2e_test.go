@@ -138,11 +138,13 @@ func TestLXDE2EPlacesHarness(t *testing.T) {
 	sb, err := d.Sandbox(SandboxOptions{Image: img.Name})
 	require.NoError(t, err)
 	var out, errb bytes.Buffer
-	code, err := sb.Run(ctx, Spec{Argv: []string{"sh", "-c", "command -v tool && stat -c '%u:%g %a' /opt/pats/harness/tool/package/tool && readlink /usr/local/bin/tool && tool --version && ls / | grep -c pats-harness"},
+	// the directories above the cli's own stay the base's: root's, 0755.
+	const above = "/ /usr /usr/local /usr/local/bin /opt /opt/pats /opt/pats/harness"
+	code, err := sb.Run(ctx, Spec{Argv: []string{"sh", "-c", "command -v tool && stat -c '%u:%g %a' /opt/pats/harness/tool/package/tool && readlink /usr/local/bin/tool && tool --version && stat -c '%u:%g %a' " + above + " | sort -u && ls / | grep -c pats-harness"},
 		Workdir: t.TempDir(), Egress: Egress{None: true}}, &out, &errb)
 	require.NoError(t, err, "%s", errb.String())
 	t.Logf("exit %d: %s%s", code, out.String(), errb.String())
-	assert.Equal(t, out.String(), "/usr/local/bin/tool\n0:0 755\n/opt/pats/harness/tool/package/tool\ntool 1.2.3\n0\n")
+	assert.Equal(t, out.String(), "/usr/local/bin/tool\n0:0 755\n/opt/pats/harness/tool/package/tool\ntool 1.2.3\n0:0 755\n0\n")
 
 	// the same inputs again are the same image, with nothing built.
 	again, _, built, err := d.Build(ctx, BuildSpec{Base: "ubuntu:24.04", Harness: []Placed{{Artefact: a, File: "/nonexistent/not-read"}}, Stamp: []string{"tool"}, Role: "sandbox"}, io.Discard)

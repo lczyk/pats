@@ -402,17 +402,17 @@ func (d *bwrapDriver) PlaceTrees(ctx context.Context, placed []Placed) ([]string
 }
 
 // MissingTree is the first of ids the store does not hold.
-func (d *bwrapDriver) MissingTree(ids []string) string {
+func (d *bwrapDriver) MissingTree(ids []string) (string, bool) {
 	st, err := d.store()
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for _, id := range ids {
 		if !st.hasTree(id) {
-			return id
+			return id, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 func (b *bwrapSandbox) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error) {
@@ -480,6 +480,10 @@ func (b *bwrapSandbox) Start(ctx context.Context, spec Spec) (Session, error) {
 	// each tree is held as the rootfs is, and has to be there: a pin that
 	// names one a clean took is an image to make again.
 	for _, tree := range b.trees {
+		if !treeIDRe.MatchString(tree) {
+			s.Close()
+			return nil, fmt.Errorf("%w: %q is not a harness tree's id; run pats init", ErrLaunch, tree)
+		}
 		tunlock, err := lockAt(ctx, st.treeLock(tree), false, false)
 		if err != nil {
 			s.Close()

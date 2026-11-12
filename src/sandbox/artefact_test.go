@@ -135,8 +135,17 @@ func TestBuildTree(t *testing.T) {
 		tarEntry{name: "package/README.md", mode: 0o644, typ: tar.TypeReg, body: "read me"},
 	)
 	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "opt"), 0o700)) // as a tight umask would make it
 	a := Artefact{CLI: "tool", Version: "1.2.3", Arch: "amd64", SHA256: "aa", Bin: "package/bin/tool"}
 	require.NoError(t, BuildTree(a, file, dir))
+
+	// the directories above the cli's own are an image's (/, /opt, /usr):
+	// a copy may give them these modes, so they are never this machine's.
+	for _, rel := range []string{".", "opt", "opt/pats", "opt/pats/harness", "usr", "usr/local", "usr/local/bin"} {
+		fi, err := os.Stat(filepath.Join(dir, rel))
+		require.NoError(t, err)
+		assert.Equal(t, fi.Mode().Perm(), os.FileMode(0o755), rel)
+	}
 
 	exe := filepath.Join(dir, "opt", "pats", "harness", "tool", "package", "bin", "tool")
 	fi, err := os.Stat(exe)

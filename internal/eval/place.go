@@ -90,11 +90,11 @@ func treeIDs(e *pinEntry) []string {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	// an entry with no tree id is kept: no place has a tree of that name,
+	// so the pin reads as one to make again.
 	var out []string
 	for _, n := range names {
-		if id := e.Harnesses[n]["tree"]; id != "" {
-			out = append(out, id)
-		}
+		out = append(out, e.Harnesses[n]["tree"])
 	}
 	return out
 }

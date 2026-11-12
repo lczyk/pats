@@ -250,7 +250,9 @@ func imageKey(fp string, spec lxdImageSpec, vm bool) (string, error) {
 const placeStage = "/pats-harness"
 
 // place puts one cli's tree in the builder: unpacked on this machine, pushed,
-// and copied over the root as root's.
+// and its two parts copied into place as root's. only the cli's own
+// directory and link are copied: the directories above them are the base's,
+// and keep its modes, owners and whatever they are links to.
 func (l *lxd) place(ctx context.Context, s *lxdSession, p Placed, log io.Writer) error {
 	dir, err := l.p.mkTemp("pats-harness-")
 	if err != nil {
@@ -264,10 +266,14 @@ func (l *lxd) place(ctx context.Context, s *lxdSession, p Placed, log io.Writer)
 		return err
 	}
 	cli := p.Artefact.CLI // a cli's name: letters, digits and - (BuildTree refuses another)
+	tree, link := "/"+HarnessTreeDir+"/"+cli, "/"+HarnessBinDir+"/"+cli
 	script := `set -e
-cp -a ` + placeStage + `/. /
-chown -R 0:0 /` + HarnessTreeDir + `/` + cli + `
-chown -h 0:0 /` + HarnessBinDir + `/` + cli + `
+mkdir -p /` + HarnessTreeDir + ` /` + HarnessBinDir + `
+rm -rf ` + tree + ` ` + link + `
+cp -a ` + placeStage + tree + ` ` + tree + `
+cp -a ` + placeStage + link + ` ` + link + `
+chown -R 0:0 ` + tree + `
+chown -h 0:0 ` + link + `
 rm -rf ` + placeStage
 	code, err := s.exec(ctx, Cmd{Argv: []string{"/bin/sh", "-c", script}, Root: true, Dir: "/"}, log, log)
 	if err != nil {

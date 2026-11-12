@@ -143,7 +143,8 @@ func TestBwrapE2EPlacesHarness(t *testing.T) {
 
 	ids, err := d.PlaceTrees(ctx, []Placed{{Artefact: a, File: file}})
 	require.NoError(t, err)
-	assert.Equal(t, d.MissingTree(ids), "")
+	_, gone := d.MissingTree(ids)
+	assert.That(t, !gone, "the placed tree is missing")
 
 	stamps, err := d.StampsOver(ctx, img.ID, ids, []string{"tool", "absent"})
 	require.NoError(t, err)
@@ -164,6 +165,13 @@ func TestBwrapE2EPlacesHarness(t *testing.T) {
 	kept, err := os.ReadFile(filepath.Join(st.harnessTree(ids[0]), "opt/pats/harness/tool/package/tool"))
 	require.NoError(t, err)
 	assert.Equal(t, string(kept), body)
+
+	// an id that is no tree's is refused before anything is mounted.
+	out.Reset()
+	odd, err := d.Sandbox(SandboxOptions{Image: img.ID, Trees: []string{"../rootfs"}})
+	require.NoError(t, err)
+	_, err = odd.Run(ctx, Spec{Argv: []string{"true"}, Workdir: t.TempDir(), Egress: Egress{None: true}}, io.Discard, io.Discard)
+	assert.Error(t, err, "is not a harness tree's id")
 
 	// a tree a clean took: the session does not start, and says what to run.
 	require.NoError(t, os.RemoveAll(st.harnessTree(ids[0])))
