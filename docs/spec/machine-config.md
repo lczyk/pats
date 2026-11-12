@@ -1,7 +1,8 @@
 # the machine config: what pats knows about its tools, as a file
 
-status: proposed. `harness-registry.md` is what a harness is and how a `pats.yaml` names and changes one,
-`harness-parse.md` the `parse` key, and `harness-images.md` how a cli of the `clis` table gets into an image.
+status: implemented for the `harnesses` table; a machine's `clis` open with placement (`harnesses-1x.md`, step 6), and
+a project's harnesses with step 4. `harness-registry.md` is what a harness is and how a `pats.yaml` names and changes
+one, `harness-parse.md` the `parse` key, and `harness-images.md` how a cli of the `clis` table gets into an image.
 
 ## problem
 
@@ -176,7 +177,7 @@ a file outside the repository now changes what a run does, so it shows:
 - **`pats config`** prints the effective tables as yaml, under a comment that names the file and says whether it
   is there. `pats config --defaults` prints the defaults: the text to copy an entry from.
 - **`pats init` and `pats run`** print one line when the file changes or adds anything, naming each:
-  `NOTE machine config ~/.config/pats/config.yaml: changes clis.codex.artefacts,
+  `INFO machine config ~/.config/pats/config.yaml: changes clis.codex.artefacts,
   harnesses.claude-cli-keyless.egress; adds harnesses.pi-openrouter`.
 - **`metadata.json`** of a pair gains `harness_from` (`default`, `machine` or `project`: the last place that set a
   key of the harness or of its cli) and `harness_sha256`, a digest of the resolved harness entry and of its cli's
@@ -184,7 +185,7 @@ a file outside the repository now changes what a run does, so it shows:
   definition the run asked for: two pairs with one digest were asked to run the same thing, whichever machine and
   pats release they ran on. what was in the image is `image`, `components` and `placed` (`harness-images.md`): a
   stale image, or a `provision` that swapped the cli, shows there and not in the digest.
-- **`pats list`** shows each harness with where it is from.
+- **`pats list harnesses`** shows each harness with where it is from.
 
 `pats harness pin <cli> <version>` (`harness-images.md`) prints a `clis` entry's `version` and `artefacts`, for
 this file or the defaults, and the `version` and `sha256` of a project's item.
