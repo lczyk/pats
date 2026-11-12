@@ -1,12 +1,18 @@
 package eval
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1383,4 +1389,73 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	list.Reset()
 	require.NoError(t, ListAgents(cfg, &list))
 	assert.ContainsString(t, list.String(), "axx     axx    mine     -      sxx")
+}
+
+// placement end to end, on real docker: a cli is fetched from its source,
+// checked, placed in the image init builds, stamped there, and run by an
+// agent whose harness names it.
+func TestRunE2EPlacedHarness(t *testing.T) {
+	dockerOrSkip(t)
+	// a cli of one file: a script that says its version.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	script := "#!/bin/sh\necho 'tool 1.2.3'\n"
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "package/tool", Mode: 0o755, Typeflag: tar.TypeReg, Size: int64(len(script))}))
+	_, err := tw.Write([]byte(script))
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+	sum := sha256.Sum256(buf.Bytes())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(buf.Bytes()) }))
+	defer srv.Close()
+
+	old := fetchArtefact
+	fetchArtefact = sandbox.FetchArtefact // the real one, into this test run's cache
+	defer func() { fetchArtefact = old }()
+
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {base: ubuntu:26.04}}}
+hxx: {kind: harness, items: {tool-run: {run: tool --version > said.txt}}}
+axx: {kind: agent, items: {axx: {harness: tool-run, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, collect: "cp $PATS_WORKDIR/said.txt $PATS_OUTPUT_DIR/"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	// the cli is the machine's to define: a table of the test's own.
+	tb := tables(t, `
+clis:
+  tool:
+    version: 1.2.3
+    artefacts:
+      `+srv.URL+`/tool-${version}.tgz:
+        arch: [amd64, arm64]
+        sha256: `+hex.EncodeToString(sum[:])+`
+        bin: package/tool
+harnesses:
+  tool-run: {cli: tool, run: tool --version > said.txt}
+`)
+	cfg.Harnesses = tb
+
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	var e *pinEntry
+	for _, es := range f.Targets {
+		e = es["sxx"]
+	}
+	require.NotNil(t, e)
+	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", e.Image.ID).Run() })
+	assert.EqualMaps(t, e.Components, map[string]string{"tool": "1.2.3"})
+	assert.Equal(t, e.Harnesses["tool"]["sha256"], hex.EncodeToString(sum[:]))
+
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	said, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "said.txt"))
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, string(said), "tool 1.2.3\n")
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.Placed["tool"]["version"], "1.2.3")
+	assert.Equal(t, m.Components["tool"], "1.2.3")
 }
