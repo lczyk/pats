@@ -485,8 +485,7 @@ func readLog(p *parse.Program, path string) (*parse.Result, error) {
 	}
 	defer f.Close()
 	pass := p.NewPass()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), statTapMaxBuf) // lines carry base64 sigs -- allow big
+	sc := logScanner(f)
 	for sc.Scan() {
 		_ = pass.Line(sc.Bytes()) // counted in the result
 	}
@@ -494,6 +493,24 @@ func readLog(p *parse.Program, path string) (*parse.Result, error) {
 		return nil, err
 	}
 	return pass.Result(), nil
+}
+
+// logScanner reads a stdout log line by line as the live tap frames them: a
+// line ends at its newline and keeps whatever is before it (the pass drops
+// one carriage return, for both), and may be as long as the tap holds.
+func logScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), statTapMaxBuf+1) // lines carry base64 sigs -- allow big
+	sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			return i + 1, data[:i], nil
+		}
+		if atEOF && len(data) > 0 {
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	})
+	return sc
 }
 
 // summarize extracts a runSummary from a finished pair's stdout log, by its

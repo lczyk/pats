@@ -286,8 +286,9 @@ func whole(v starlark.Value) (int, error) {
 		}
 		return int(n), nil
 	case starlark.Float:
+		// past 2^53 a float no longer holds every whole number.
 		f := float64(v)
-		if math.IsNaN(f) || f < 0 || f > float64(1<<53) || f != math.Trunc(f) {
+		if math.IsNaN(f) || f < 0 || f > float64(1<<53) || f > math.MaxInt || f != math.Trunc(f) {
 			return 0, fmt.Errorf("%s is not a whole number of at least 0 that fits", v)
 		}
 		return int(f), nil

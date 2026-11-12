@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,8 +17,7 @@ func ParseLog(hd *machine.Harness, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("harness %q has no parse script: no summary, and its whole stdout is its reply", hd.Name)
 	}
 	pass := p.NewPass()
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), statTapMaxBuf)
+	sc := logScanner(in)
 	for n := 1; sc.Scan(); n++ {
 		if err := pass.Line(sc.Bytes()); err != nil {
 			fmt.Fprintf(out, "line %d: %v\n", n, err)

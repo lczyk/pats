@@ -458,6 +458,17 @@ func TestPassesFrameLinesAlike(t *testing.T) {
 	assert.Equal(t, atomic.LoadInt64(&live.tools), int64(sum.Tools["read"]))
 	assert.Equal(t, sum.ParseErrors, 0)
 
+	// one carriage return is the line ending's, a second is the line's own:
+	// both passes hand the script the same line.
+	strict := tables(t, "harnesses: {h: {run: \"true\", parse: \"out.tool(line)\"}}").Harness("h")
+	var cr pairStat
+	tap = &statTap{stat: &cr, scan: statScanner(strict)}
+	_, _ = tap.Write([]byte("a\r\r\nb\n"))
+	after := summarize(strict, writeLog(t, "a\r\r\nb\n"))
+	assert.Equal(t, after.Tools["a\r"], 1)
+	assert.Equal(t, after.Tools["b"], 1)
+	assert.Equal(t, atomic.LoadInt64(&cr.tools), int64(2))
+
 	open := steps + `{"type":"step_finish","part":{"cost":2}}` // no newline yet
 	var cut pairStat
 	tap = &statTap{stat: &cut, scan: statScanner(hd("opencode-openrouter"))}
