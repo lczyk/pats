@@ -148,9 +148,17 @@ becomes the fifth harness of the defaults, and the first that is an entry and no
 - `auth-env: [OPENROUTER_API_KEY]`, `egress: {allow: [openrouter.ai]}`, `models: openrouter`.
 - `parse`: a script written against a recorded run, as the other four readers were.
 
-not verified yet, and each is checked against the pinned release before the entry lands: the flags above (read from
-the readme of an older line), whether the stream carries usage and cost, and the hosts it reaches at startup (one
-run under `egress: {default: allow}`, then `pats egress suggest`).
+checked against release 1.5.2, with no key: the per-arch files are
+`https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-{x64,arm64}.tar.gz`, each with a
+digest github publishes; the executable is `pi/pi` (`bin: pi/pi`); it starts in the harness-free sandbox image with
+nothing else installed, and `pi --version` prints the bare version; `-p` / `--print`, `--mode json`,
+`--no-session`, `--provider`, `--model`, `--thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`)
+and `--offline` (the same as `PI_OFFLINE=1`) are all flags of it.
+
+not verified yet, and each needs one run with a real key before the entry lands: that it reads
+`OPENROUTER_API_KEY`, what its json stream holds (the events `parse` is written against, and whether usage and
+cost are among them), how pats's effort levels map onto `--thinking`, and the hosts it reaches at startup (one run
+under `egress: {default: allow}`, then `pats egress suggest`).
 
 the same entry in a machine's file is pi on a pats that does not ship it yet.
 

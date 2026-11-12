@@ -86,7 +86,8 @@ a `clis` entry is a cli: what pats can fetch, place and stamp (`harness-images.m
 is its own. its name is the executable's name on `PATH`, and the stamp is its `--version`: a cli has to answer that
 with a line holding an `x.y.z` version, as the four do. the keys:
 
-- **`version`**: the version every artefact below is of.
+- **`version`**: the version every artefact below is of. a machine's entry that sets it for a default's cli sets
+  `artefacts` with it, or it is an error: the shas of the version before would fail every fetch.
 - **`artefacts`**: the files the cli is published as, each keyed by its url, laid out as a slice's contents are in
   chisel: the thing is the key, and what is true of it sits under it. `${version}` in a url is replaced by the
   version, and every url holds it: one without serves the same bytes for every pin. nothing else in this file is
