@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/lczyk/pats/internal/machine"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,7 +16,6 @@ import (
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 
-	"github.com/lczyk/pats/images"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
@@ -241,7 +241,10 @@ func TestComponentStamps(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.txt"), []byte("p"), 0o644))
 	cfg := parseCfg(t, initCfg)
 	h := newFakeHost("my/image:1")
-	pins := images.ComponentPins()
+	pins := map[string]string{}
+	for name, c := range machine.Defaults().CLIs {
+		pins[name] = c.Version
+	}
 	h.stamped = map[string]string{"opencode": pins["opencode"]}
 	useHost(t, h)
 	useFakeSandbox(t, &fakeSandbox{})

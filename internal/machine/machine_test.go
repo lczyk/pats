@@ -1,18 +1,17 @@
 package machine
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 	"gopkg.in/yaml.v3"
-
-	"github.com/lczyk/pats/images"
 )
 
 // the defaults are complete: every harness has a cli and a parse script, and
-// every cli a version, which is the one the images are built with.
+// every cli an exact version, which is its pin.
 func TestDefaults(t *testing.T) {
 	d := Defaults()
 	assert.Equal(t, strings.Join(d.Names(), " "), "claude-cli-keyless codex-cli-keyless copilot-cli-keyless opencode-openrouter")
@@ -22,11 +21,11 @@ func TestDefaults(t *testing.T) {
 		require.That(t, h.Cli() != nil, "harness %s has no cli", name)
 		assert.That(t, h.Parser() != nil, "harness %s has no parse script", name)
 	}
-	pins := images.ComponentPins()
-	assert.Equal(t, len(d.CLIs), len(pins))
+	exact := regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$`)
+	assert.Equal(t, strings.Join(sortedKeys(d.CLIs), " "), "claude codex copilot opencode")
 	for name, c := range d.CLIs {
 		assert.Equal(t, c.Name, name)
-		assert.Equal(t, c.Version, pins[name])
+		assert.That(t, exact.MatchString(c.Version), "cli %s: %q is not an exact version", name, c.Version)
 		// an artefact for each arch, at the cli's version.
 		for _, arch := range Arches {
 			url, a, ok := c.ArtefactFor(arch, "")

@@ -2,7 +2,7 @@
 
 SRCS   := $(shell find ./cmd ./internal ./src ./images -name '*.go') ./version.go
 # go:embed inputs: the version string, and what images/embed.go bakes in
-EMBEDS := ./VERSION ./images/provision-sandbox.sh ./images/harness-versions
+EMBEDS := ./VERSION ./images/provision-sandbox.sh
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'

@@ -1,25 +1,15 @@
-# pats sandbox image: ubuntu 26.04 + agent harness clis + the tooling agents
-# habitually reach for (git, curl, python3, ripgrep). usable out of the box as
-# a pats sandbox, and as a base for task-specific images -- e.g. mason's adds
-# chisel + dpkg-dev on top (`ARG PATS_SANDBOX` / `FROM ${PATS_SANDBOX}` gets the
-# version pats passes in). published to ghcr.io/lczyk/pats/sandbox:v<version>
-# on tag push (publish_images workflow), with :latest following the newest
-# stable release.
+# pats sandbox image: ubuntu 26.04 + the tooling agents habitually reach for
+# (git, curl, python3, ripgrep, node), and no harness cli: pats places the
+# ones a sandbox's agents run when it makes the sandbox's image, so a
+# `build:` dockerfile on `FROM ${PATS_SANDBOX}` brings its own. published to
+# ghcr.io/lczyk/pats/sandbox:v<version> on tag push (publish_images
+# workflow), with :latest following the newest stable release.
 #
 # the install steps live in images/provision-sandbox.sh, which the lxd driver
 # runs on a fresh ubuntu instance too, so both sandboxes carry the same tools.
 FROM docker.io/library/ubuntu:26.04
 
-# unset build args take the pins in images/harness-versions; set one to
-# override that harness's pin.
-ARG CLAUDE_CLI_VERSION
-ARG CODEX_CLI_VERSION
-ARG COPILOT_CLI_VERSION
-ARG OPENCODE_VERSION
-COPY images/provision-sandbox.sh images/harness-versions /tmp/provision/
-RUN CLAUDE_CLI_VERSION="$CLAUDE_CLI_VERSION" CODEX_CLI_VERSION="$CODEX_CLI_VERSION" \
-    COPILOT_CLI_VERSION="$COPILOT_CLI_VERSION" \
-    OPENCODE_VERSION="$OPENCODE_VERSION" sh /tmp/provision/provision-sandbox.sh && \
-    rm -r /tmp/provision
+COPY images/provision-sandbox.sh /tmp/provision/
+RUN sh /tmp/provision/provision-sandbox.sh && rm -r /tmp/provision
 
 CMD ["/bin/bash"]

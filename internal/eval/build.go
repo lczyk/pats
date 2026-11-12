@@ -109,11 +109,6 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, placed []sandbo
 				return img, nil, false, nil, err
 			}
 			defer sandbox.RemoveTemp(material)
-			// the script reads its pins from beside itself; in the material
-			// they are also in the image key, so a pin bump reprovisions.
-			if err := os.WriteFile(filepath.Join(material, "harness-versions"), []byte(images.HarnessVersions), 0o644); err != nil {
-				return img, nil, false, nil, err
-			}
 			own.Base, own.Material, own.Argv = lxdSandboxBase, material, argv
 		}
 		layer, fp, b, err := h.Build(ctx, own, log)

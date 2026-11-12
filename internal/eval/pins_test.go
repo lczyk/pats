@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lczyk/pats/images"
+	"github.com/lczyk/pats/internal/machine"
 	"io"
 	"os"
 	"path/filepath"
@@ -70,13 +70,13 @@ func (h *fakeHost) Stamps(_ context.Context, _ string, clis []string) (map[strin
 		return nil, h.stampErr
 	}
 	out := map[string]string{}
-	pins := images.ComponentPins()
+	pins := machine.Defaults().CLIs
 	for _, c := range clis {
 		switch v, ok := h.stamped[c]; {
 		case ok:
 			out[c] = v
-		case h.stamped == nil && pins[c] != "":
-			out[c] = pins[c]
+		case h.stamped == nil && pins[c] != nil:
+			out[c] = pins[c].Version
 		case h.stamped == nil:
 			out[c] = "0.0.0"
 		}
