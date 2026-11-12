@@ -118,6 +118,9 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	defer h.cleanup()
+	// a harness that cannot answer a prompt cheaply (a script, a baseline)
+	// sees this and exits 0.
+	h.spec.Env["PATS_PREFLIGHT"] = "1"
 	if err := os.WriteFile(h.promptPath(), []byte(preflightPrompt), 0o644); err != nil {
 		return err
 	}

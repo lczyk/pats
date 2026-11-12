@@ -13,7 +13,15 @@ var builtHostSteps = hostSteps
 // the nohost rule put the build's own answer back.
 func TestMain(m *testing.M) {
 	AllowHostStepsInTests()
-	os.Exit(m.Run())
+	// Load reads the machine's config: never the developer's own.
+	dir, err := os.MkdirTemp("", "pats-config-test-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("XDG_CONFIG_HOME", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // withBuiltHostSteps runs the rest of a test with this build's own answer.

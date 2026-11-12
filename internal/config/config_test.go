@@ -666,3 +666,105 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	_, err = Load(path)
 	assert.Error(t, err, `config.yaml:3: harnesses.mine: unknown key "rum"`)
 }
+
+// a vector of kind harness: an item named as a default changes it key by
+// key, a new name is a harness of its own, and what several share goes in
+// the vector's defaults.
+func TestHarnessVector(t *testing.T) {
+	c, err := Parse([]byte(`
+sxx: {kind: sandbox, items: {sxx: {image: i}}}
+mine:
+  kind: harness
+  items:
+    claude-cli-keyless:
+      egress: {allow: [.anthropic.com]}
+      pass-env: ~
+    noop:
+      run: "true"
+oc:
+  kind: harness
+  defaults:
+    cli: opencode
+    egress: {allow: [models.dev]}
+    models: openrouter
+    auth-env: [SHARED_KEY]
+  items:
+    oc-one:
+      run: opencode one "$PATS_MODEL"
+      auth-env: [ONE_KEY]
+    oc-two:
+      run: opencode two
+      models: ~
+agents:
+  kind: agent
+  defaults: {sandbox: sxx}
+  items:
+    claude: {harness: claude-cli-keyless, model: m}
+    floor: {harness: noop}
+    one: {harness: oc-one, model: m}
+    two: {harness: oc-two}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: agents, tasks: txx}}}
+`))
+	require.NoError(t, err)
+	require.NoError(t, c.Validate())
+	hs := c.Harnesses
+
+	claude := hs.Harness("claude-cli-keyless")
+	assert.Equal(t, strings.Join(claude.Egress.Allow, " "), ".anthropic.com")
+	assert.Equal(t, len(claude.PassEnv), 0) // the null unset the default's
+	assert.Equal(t, claude.LoginFile(), ".claude/.credentials.json")
+	assert.That(t, claude.Parser() != nil, "a key left out lost the default's value")
+	assert.Equal(t, claude.From, "project")
+	assert.Equal(t, hs.Harness("codex-cli-keyless").From, "default")
+
+	noop := hs.Harness("noop")
+	assert.Equal(t, noop.Run, "true")
+	assert.That(t, noop.Cli() == nil && noop.Parser() == nil, "a harness of its own with a cli or a parser")
+
+	one, two := hs.Harness("oc-one"), hs.Harness("oc-two")
+	assert.Equal(t, one.CLI, "opencode")                          // from the vector's defaults
+	assert.Equal(t, strings.Join(one.AuthEnv, " "), "ONE_KEY")    // its own, whole
+	assert.Equal(t, strings.Join(two.AuthEnv, " "), "SHARED_KEY") // the defaults'
+	assert.Equal(t, strings.Join(two.Egress.Allow, " "), "models.dev")
+	assert.Equal(t, one.Models, "openrouter")
+	assert.Equal(t, two.Models, "") // nulled: the defaults do not fill it again
+	assert.That(t, one.Parser() == nil, "a new name does not start from a default of its cli")
+}
+
+func TestHarnessVectorErrors(t *testing.T) {
+	const base = "sxx: {kind: sandbox, items: {sxx: {image: i}}}\ntxx: {kind: task, items: {txx: {prompt: p}}}\n"
+	suite := func(agent string) string {
+		return "axx: {kind: agent, items: {axx: {sandbox: sxx, " + agent + "}}}\nsux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n"
+	}
+	for name, tc := range map[string]struct{ in, want string }{
+		"new, no run":         {base + "hv: {kind: harness, items: {mine: {cli: claude}}}\n", "line 3: harnesses.mine: run is required"},
+		"run in defaults":     {base + "hv: {kind: harness, defaults: {cli: claude}, items: {mine: ~}}\n", "harnesses.mine: run is required"},
+		"unknown field":       {base + "hv: {kind: harness, items: {mine: {run: a, hosts: [x]}}}\n", `harness "mine": unknown field "hosts"`},
+		"a pin, not yet":      {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9}}}\n", `unknown field "version"`},
+		"unknown cli":         {base + "hv: {kind: harness, items: {mine: {run: a, cli: nope}}}\n", `harnesses.mine: cli "nope" is not in clis`},
+		"login, no file":      {base + "hv: {kind: harness, items: {mine: {run: a, cli: copilot, login: true}}}\n", "harnesses.mine: login needs a cli with a login-file"},
+		"a path in egress":    {base + "hv: {kind: harness, items: {mine: {run: a, egress: {allow: [x.com/v1/*]}}}}\n", "a harness takes hosts only"},
+		"dir":                 {base + "hv: {kind: harness, dir: cases}\n", "dir is only supported on task vectors"},
+		"no items":            {base + "hv: {kind: harness}\n", "items is required"},
+		"two of one name":     {base + "hv: {kind: harness, items: {mine: {run: a}}}\nhw: {kind: harness, items: {mine: {run: b}}}\n" + suite("harness: mine"), "duplicate harness name: mine"},
+		"harness is a vector": {base + "hv: {kind: harness, items: {mine: {run: a}}}\n" + suite("harness: hv"), `unknown harness "hv"`},
+		"model, run reads it": {base + "hv: {kind: harness, items: {mine: {run: 'a \"$PATS_MODEL\"'}}}\n" + suite("harness: mine"), `agent "axx": model is required`},
+		"model, a default":    {base + suite("harness: codex-cli-keyless"), `agent "axx": model is required`},
+		"hosts, no network":   {"sxx: {kind: sandbox, items: {sxx: {image: i, egress: none}}}\ntxx: {kind: task, items: {txx: {prompt: p}}}\nhv: {kind: harness, items: {mine: {run: a, egress: {allow: [x.com]}}}}\n" + suite("harness: mine"), "needs the network"},
+	} {
+		c, err := Parse([]byte(tc.in))
+		if err == nil {
+			err = c.Validate()
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want an error with %q", name, err, tc.want)
+		}
+	}
+
+	// a harness that allows itself no host runs with no network, and one
+	// whose command reads no model needs none.
+	c, err := Parse([]byte("sxx: {kind: sandbox, items: {sxx: {image: i, egress: none}}}\ntxx: {kind: task, items: {txx: {prompt: p}}}\nhv: {kind: harness, items: {mine: {run: a}}}\n" + suite("harness: mine")))
+	require.NoError(t, err)
+	require.NoError(t, c.Validate())
+}

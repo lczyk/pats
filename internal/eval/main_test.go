@@ -17,6 +17,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv("XDG_CACHE_HOME", dir)
+	// nor does a test read the user's machine config.
+	os.Setenv("XDG_CONFIG_HOME", dir)
 	// no test reaches openrouter; the model check's own tests call it.
 	checkModels = func(context.Context, []config.Agent, *http.Client) ([]string, error) { return nil, nil }
 	// the fixtures run their steps on the host, in every build.

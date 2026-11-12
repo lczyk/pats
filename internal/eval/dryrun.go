@@ -177,8 +177,8 @@ func costHistory(base string, want map[historyKey]bool, lg logw) (map[historyKey
 					lg.warn("skipping %s: %v", relToCwd(path), err)
 					continue
 				}
-				if m.Model == "" || m.Summary == nil || !m.Summary.HasCost {
-					continue // from before the model was recorded, or no cost
+				if m.Summary == nil || !m.Summary.HasCost {
+					continue // no cost
 				}
 				k := historyKey{m.Agent, m.Task, m.Harness, m.Model, m.Effort}
 				if want[k] {

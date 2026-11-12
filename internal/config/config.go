@@ -31,9 +31,13 @@ type Config struct {
 	Tasks     []Task
 	Scorers   []Scorer
 	Suites    []Suite
-	// Harnesses are the harness and cli tables the config runs with: this
-	// config's own copy, so nothing done to it reaches another.
-	Harnesses *machine.Tables
+	// Harnesses are the harness and cli tables the config runs with: the
+	// machine's, with HarnessItems laid over them. this config's own copy,
+	// so nothing done to it reaches another.
+	Harnesses    *machine.Tables
+	HarnessItems []HarnessItem
+
+	harnessLayers []harnessLayer
 }
 
 // builtins answers for a Config that was built by hand and carries no tables.
@@ -338,4 +342,4 @@ func Load(path string) (*Config, error) {
 }
 
 // Kinds lists the vector kinds, in the order the resolved config holds them.
-var Kinds = []string{"sandbox", "agent", "task", "scorer", "suite"}
+var Kinds = []string{"sandbox", "harness", "agent", "task", "scorer", "suite"}

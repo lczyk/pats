@@ -263,8 +263,10 @@ type fakeSandbox struct {
 	// preRun is written to the agent's stdout as it starts, before
 	// blockUntilDone waits: a harness streaming events as it goes.
 	preRun string
-	// preflightOut is what the agent prints in its credential preflight.
+	// preflightOut is what the agent prints in its credential preflight,
+	// and preflightEnv the env that exec got.
 	preflightOut string
+	preflightEnv map[string]string
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -322,6 +324,7 @@ func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr 
 	}
 	f.calls++
 	if s.preflight {
+		f.preflightEnv = cmd.Env
 		io.WriteString(stdout, f.preflightOut)
 		return 0, nil
 	}
@@ -1304,4 +1307,70 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.ContainsString(t, list.String(), "codex-cli-keyless    codex     machine  yes    -\n")
 	assert.ContainsString(t, list.String(), "mine                 -         machine  -      -\n")
 	assert.ContainsString(t, list.String(), "opencode-openrouter  opencode  default  yes    openrouter\n")
+}
+
+// a harness a pats.yaml defines, with no cli, no parse script and no model:
+// it passes preflight and runs a pair, its variables and its hosts reach the
+// sandbox, and its record says where it is from and holds no summary.
+func TestRunProjectHarness(t *testing.T) {
+	t.Setenv("MINE_KEY", "secret")
+	t.Setenv("MINE_URL", "http://localhost:1")
+	t.Setenv("MINE_UNSET", "")
+	var spec sandbox.Spec
+	fake := &fakeSandbox{stdout: "did the thing\n", onRun: func(s sandbox.Spec) { spec = s }}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s, egress: {allow: [task.example]}}}}
+hxx:
+  kind: harness
+  items:
+    mine:
+      run: ./solve "$PATS_PROMPT_FILE"
+      egress: {allow: [api.mine.example], deny: [noise.mine.example]}
+      auth-env: [MINE_KEY, MINE_UNSET]
+      pass-env: [MINE_URL]
+axx: {kind: agent, items: {axx: {harness: mine, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+
+	assert.Equal(t, fake.preflights, 1)
+	assert.Equal(t, fake.preflightEnv["PATS_PREFLIGHT"], "1")
+	assert.Equal(t, spec.Argv[len(spec.Argv)-1], `./solve "$PATS_PROMPT_FILE"`)
+	assert.Equal(t, spec.Env["MINE_KEY"], "secret")
+	assert.Equal(t, spec.Env["MINE_URL"], "http://localhost:1")
+	_, set := spec.Env["MINE_UNSET"]
+	assert.Equal(t, set, false)
+	_, set = spec.Env["PATS_PREFLIGHT"]
+	assert.Equal(t, set, false) // the pair's own exec is no preflight
+	assert.Equal(t, spec.Env["PATS_MODEL"], "")
+
+	pol := spec.Egress.Policy
+	assert.Equal(t, strings.Join(pol.Allow, " "), "task.example api.mine.example")
+	assert.Equal(t, strings.Join(pol.Deny, " "), "noise.mine.example")
+	assert.Equal(t, strings.Join(pol.Harness, " "), "api.mine.example")
+
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.Status, "ok")
+	assert.Equal(t, m.Harness, "mine")
+	assert.Equal(t, m.HarnessFrom, "project")
+	assert.Equal(t, m.Model, "")
+	assert.That(t, m.Summary == nil, "a harness with no parse script got a summary")
+	raw, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
+	require.NoError(t, err)
+	assert.Equal(t, strings.Contains(string(raw), `"model"`), false)
+
+	var list bytes.Buffer
+	require.NoError(t, ListHarnesses(cfg, &list))
+	assert.ContainsString(t, list.String(), "mine                 -         project  -      -\n")
+	list.Reset()
+	require.NoError(t, ListAgents(cfg, &list))
+	assert.ContainsString(t, list.String(), "axx     axx    mine     -      sxx")
 }

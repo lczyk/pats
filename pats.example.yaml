@@ -1,4 +1,4 @@
-# pats.yaml is a mapping of vectors. the key is the vector's name. a vector has a `kind` (sandbox | agent | task | scorer | suite),
+# pats.yaml is a mapping of vectors. the key is the vector's name. a vector has a `kind` (sandbox | harness | agent | task | scorer | suite),
 # optional `defaults`, and `items` keyed by name. an item inherits every default it doesn't set, and `field: ~` unsets one.
 # names are unique per kind, and follow chisel's package-name rule (lowercase, digits, dots, pluses, single hyphens).
 # a reference (a suite axis, `sandbox:`, `-a` / `-t` / `-s`) takes a vector name or an item name.
@@ -40,8 +40,33 @@ sandbox:
     #   provision: |
     #     apt-get update && apt-get -y install dpkg-dev
 
-# harness: claude-cli-keyless | codex-cli-keyless | copilot-cli-keyless | opencode-openrouter (creds and model ids per harness: see the readme).
-# with one sandbox defined every agent uses it, otherwise set `sandbox:`. `effort:` is optional reasoning effort.
+# a harness is how an agent is run. pats ships four (`pats config --defaults` prints them, the readme has their creds and
+# model ids), a machine can add its own (`~/.config/pats/config.yaml`), and a `kind: harness` vector here adds or changes
+# them for this project. an item named as a harness that exists changes the keys it sets and keeps the rest (`field: ~`
+# unsets one). an item with a new name is a harness of its own: it needs a `run`, a shell script run in the sandbox
+# with $PATS_MODEL, $PATS_PROMPT_FILE, $PATS_OUTPUT_DIR and $PATS_EFFORT, and whatever it runs comes from the sandbox's
+# `provision`. `egress` is the hosts it needs itself, `auth-env` and `pass-env` the host variables it is handed, `parse`
+# a script that reads its output for cost and tool counts (docs/spec/harness-parse.md).
+harnesses:
+  kind: harness
+  items:
+    # the floor of every scorer: an agent that does nothing. its run reads no model, so its agents need none.
+    noop:
+      run: "true"
+    # hermes, installed by a sandbox's provision. the flags are its own: check them against the release you install.
+    # with no `parse` there is no cost and no tool count, and as a judge its whole stdout is its reply.
+    hermes-openrouter:
+      run: hermes chat --query-file "$PATS_PROMPT_FILE" --oneshot -Q --yolo --model "$PATS_MODEL"
+      egress:
+        allow: [openrouter.ai]
+      auth-env: [OPENROUTER_API_KEY]
+    # a default at another setting: every claude-cli-keyless agent here may also reach a mirror of its api.
+    # claude-cli-keyless:
+    #   egress:
+    #     allow: [.anthropic.com, .claude.com, claude.mirror.example]
+
+# harness: one of the four, a machine's, or an item above. with one sandbox defined every agent uses it, otherwise set
+# `sandbox:`. `effort:` is optional reasoning effort. `model:` is required unless the harness's `run` reads none.
 haiku:
   kind: agent
   items:

@@ -4,12 +4,11 @@
 package machine
 
 import (
-	"bytes"
 	_ "embed"
 	"errors"
 	"fmt"
-	"io"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -102,7 +101,9 @@ type Tables struct {
 	Changes []string `yaml:"-"`
 	Adds    []string `yaml:"-"`
 
-	lines map[string]int // the line of each entry of the machine's file
+	root  *yaml.Node        // the tables as written: what an overlay is laid over
+	lines map[string]int    // the line of each entry of the machine's file
+	from  map[string]string // harness -> the last place that set a key of it
 }
 
 // Harness is the entry named name, nil when there is none.
@@ -132,21 +133,69 @@ func Defaults() *Tables {
 	return t
 }
 
+// tableTypes are the tables a file of this format holds, and an entry's type.
+var tableTypes = map[string]reflect.Type{
+	"clis":      reflect.TypeOf(CLI{}),
+	"harnesses": reflect.TypeOf(Harness{}),
+}
+
+// HarnessKeys are the keys a harness entry takes.
+func HarnessKeys() map[string]bool { return yamlKeys(tableTypes["harnesses"]) }
+
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // Parse reads tables from yaml, refusing unknown keys, and checks them as a
 // whole. every error names its entry.
 func Parse(data []byte) (*Tables, error) {
-	var t Tables
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(&t); err != nil && !errors.Is(err, io.EOF) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	if err := t.check(); err != nil {
+	root := &yaml.Node{Kind: yaml.MappingNode}
+	if len(doc.Content) > 0 {
+		root = doc.Content[0]
+	}
+	if root.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("line %d: the top level is a mapping of tables", root.Line)
+	}
+	var errs []string
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		table, entries := root.Content[i], root.Content[i+1]
+		typ, ok := tableTypes[table.Value]
+		if !ok {
+			errs = append(errs, fmt.Sprintf("line %d: unknown table %q (clis, harnesses)", table.Line, table.Value))
+			continue
+		}
+		if entries.Kind != yaml.MappingNode {
+			continue // decoding says what is wrong with it
+		}
+		known := yamlKeys(typ)
+		for j := 0; j+1 < len(entries.Content); j += 2 {
+			name, entry := entries.Content[j], entries.Content[j+1]
+			for k := 0; entry.Kind == yaml.MappingNode && k+1 < len(entry.Content); k += 2 {
+				if key := entry.Content[k]; !known[key.Value] {
+					errs = append(errs, fmt.Sprintf("line %d: %s.%s: unknown key %q", key.Line, table.Value, name.Value, key.Value))
+				}
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.New(strings.Join(errs, "\n"))
+	}
+	t := &Tables{root: root}
+	if err := t.build(); err != nil {
 		return nil, err
 	}
-	return &t, nil
+	return t, nil
+}
+
+// build decodes the tables from their yaml and checks them as a whole.
+func (t *Tables) build() error {
+	t.CLIs, t.Harnesses = nil, nil
+	if err := t.root.Decode(t); err != nil {
+		return err
+	}
+	return t.check()
 }
 
 // check validates the tables and resolves each harness's cli.
@@ -185,7 +234,7 @@ func (t *Tables) check() error {
 			t.Harnesses[name] = h
 		}
 		h.Name = name
-		if h.From == "" {
+		if h.From = t.from[name]; h.From == "" {
 			h.From = FromDefault
 		}
 		if !nameRe.MatchString(name) {

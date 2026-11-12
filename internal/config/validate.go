@@ -120,6 +120,10 @@ func (c *Config) members(kind string) []member {
 		for _, x := range c.Suites {
 			out = append(out, member{x.Name, x.Vector})
 		}
+	case "harness":
+		for _, x := range c.HarnessItems {
+			out = append(out, member{x.Name, x.Vector})
+		}
 	}
 	return out
 }
@@ -357,7 +361,10 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 		case h == nil:
 			add("agent %q: unknown harness %q", a.Name, a.Harness)
 		}
-		if a.Model == "" {
+		// a harness whose command never reads the model takes an agent
+		// with none: a script, a baseline. one that reads it inside a
+		// script file is not seen here, and guards itself.
+		if a.Model == "" && (h == nil || strings.Contains(h.Run, "PATS_MODEL")) {
 			add("agent %q: model is required", a.Name)
 		}
 		if a.MaxCost != nil {

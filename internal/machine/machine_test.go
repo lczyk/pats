@@ -6,6 +6,7 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/lczyk/pats/images"
 )
@@ -76,8 +77,8 @@ func TestDefaultsAreCopies(t *testing.T) {
 func TestParseErrors(t *testing.T) {
 	const cli = "clis: {x: {version: 1.0.0, login-file: .x/login}}\n"
 	for name, tc := range map[string]struct{ in, want string }{
-		"unknown key":       {"harnesses: {h: {run: a, nope: 1}}", "field nope not found"},
-		"unknown top key":   {"harness: {}", "field harness not found"},
+		"unknown key":       {"harnesses: {h: {run: a, nope: 1}}", `line 1: harnesses.h: unknown key "nope"`},
+		"unknown top key":   {"harness: {}", `line 1: unknown table "harness"`},
 		"no run":            {"harnesses: {h: {cli: x}}\n" + cli, "harnesses.h: run is required"},
 		"bad harness name":  {"harnesses: {H_1: {run: a}}", "harnesses.H_1: a name is"},
 		"bad cli name":      {"clis: {X: {version: 1.0.0}}", "clis.X: a name is"},
@@ -129,4 +130,46 @@ harnesses:
 	assert.Equal(t, tb.Harness("full").LoginFile(), ".x/login")
 	assert.Equal(t, tb.Harness("full").Cli().AuthPathVar(), "PATS_X_AUTH_PATH")
 	assert.That(t, tb.Harness("nope") == nil, "an unknown harness is nil")
+}
+
+// a project's items are laid over the tables as the machine's file is: over
+// the harness of their name key by key, a null removing a key, or as a new
+// harness. the result is checked as a whole.
+func TestProject(t *testing.T) {
+	item := func(name, body string) Item {
+		var doc yaml.Node
+		require.NoError(t, yaml.Unmarshal([]byte(body), &doc))
+		return Item{Name: name, Node: doc.Content[0]}
+	}
+	tb := Defaults()
+	require.NoError(t, tb.Project([]Item{
+		item("claude-cli-keyless", "{pass-env: ~, egress: {allow: [.anthropic.com]}}"),
+		item("noop", `{run: "true", parse: ~}`),
+	}))
+	claude := tb.Harness("claude-cli-keyless")
+	assert.Equal(t, len(claude.PassEnv), 0)
+	assert.Equal(t, strings.Join(claude.Egress.Allow, " "), ".anthropic.com")
+	assert.Equal(t, claude.Run, Defaults().Harness("claude-cli-keyless").Run)
+	assert.Equal(t, claude.LoginFile(), ".claude/.credentials.json") // a key left out keeps the machine's
+	assert.Equal(t, claude.From, FromProject)
+	assert.Equal(t, tb.Harness("noop").Run, "true")
+	assert.Equal(t, tb.Harness("noop").From, FromProject)
+	assert.Equal(t, tb.Harness("codex-cli-keyless").From, FromDefault)
+
+	for name, tc := range map[string]struct {
+		it   Item
+		want string
+	}{
+		"new, no run": {item("mine", "{cli: claude}"), "harnesses.mine: run is required"},
+		"unknown cli": {item("mine", "{run: a, cli: nope}"), `harnesses.mine: cli "nope" is not in clis`},
+		"bad name":    {item("Mine", "{run: a}"), "harnesses.Mine: a name is"},
+		"bad parse":   {item("mine", "{run: a, parse: 'out.tool('}"), "harnesses.mine.parse:"},
+		"wrong type":  {item("mine", "{run: a, auth-env: 5}"), "cannot unmarshal"},
+	} {
+		err := Defaults().Project([]Item{tc.it})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want an error with %q", name, err, tc.want)
+		}
+	}
+	require.NoError(t, Defaults().Project(nil))
 }

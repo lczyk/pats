@@ -52,6 +52,9 @@ func parseIn(root string, data []byte, tables *machine.Tables) (*Config, error) 
 			errs.errs = append(errs.errs, err)
 		}
 	}
+	if err := c.projectHarnesses(); err != nil {
+		errs.errs = append(errs.errs, err)
+	}
 	return c, errs.err()
 }
 
@@ -78,6 +81,12 @@ func (c *Config) loadVector(root, name string, node *yaml.Node) error {
 		return fmt.Errorf("line %d: vector %q: missing kind (%s)", node.Line, name, strings.Join(Kinds, "|"))
 	}
 	kind := kindNode.Value
+	if kind == "harness" {
+		if err := c.loadHarnessVector(name, fields, node); err != nil {
+			errs.errs = append(errs.errs, err)
+		}
+		return errs.err()
+	}
 	proto := prototype(kind)
 	if proto == nil {
 		return fmt.Errorf("line %d: vector %q: unknown kind %q (%s)", kindNode.Line, name, kind, strings.Join(Kinds, "|"))

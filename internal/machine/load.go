@@ -66,21 +66,19 @@ func Load() (*Tables, error) {
 
 // machineTables are the tables a machine's file may hold. clis stay the
 // release's until the images are built from them (docs/proposals/harnesses-1x.md).
-var machineTables = map[string]reflect.Type{"harnesses": reflect.TypeOf(Harness{})}
+var machineTables = map[string]reflect.Type{"harnesses": tableTypes["harnesses"]}
 
 // Overlay lays a machine's file over the defaults, entry by entry: an entry
 // named as a default changes it key by key, each key replaced whole and a
 // null unsetting it, and an entry with a new name is added. the two are laid
 // over as written, before anything is decoded. path names the file in errors.
 func Overlay(over []byte, path string) (*Tables, error) {
-	var base, doc yaml.Node
-	if err := yaml.Unmarshal(defaultsYAML, &base); err != nil {
-		panic("machine: embedded defaults: " + err.Error())
-	}
+	var doc yaml.Node
 	if err := yaml.Unmarshal(over, &doc); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	t := &Tables{Path: path, lines: map[string]int{}}
+	t := Defaults()
+	t.Path, t.lines, t.from = path, map[string]int{}, map[string]string{}
 	var errs []string
 	add := func(line int, format string, a ...any) {
 		errs = append(errs, fmt.Sprintf("%s:%d: %s", path, line, fmt.Sprintf(format, a...)))
@@ -107,7 +105,7 @@ func Overlay(over []byte, path string) (*Tables, error) {
 				continue
 			}
 			known := yamlKeys(typ)
-			into := mappingValue(base.Content[0], table.Value)
+			into := mappingValue(t.root, table.Value)
 			for j := 0; j+1 < len(entries.Content); j += 2 {
 				name, entry := entries.Content[j], entries.Content[j+1]
 				id := table.Value + "." + name.Value
@@ -121,14 +119,12 @@ func Overlay(over []byte, path string) (*Tables, error) {
 						add(key.Line, "%s: unknown key %q", id, key.Value)
 					}
 				}
-				old := mappingValue(into, name.Value)
-				if old == nil {
-					into.Content = append(into.Content, name, withoutNulls(entry))
+				t.from[name.Value] = FromMachine
+				if lay(into, name, entry) {
 					t.Adds = append(t.Adds, id)
 					continue
 				}
 				for k := 0; k+1 < len(entry.Content); k += 2 {
-					setKey(old, entry.Content[k], entry.Content[k+1])
 					t.Changes = append(t.Changes, id+"."+entry.Content[k].Value)
 				}
 			}
@@ -137,21 +133,58 @@ func Overlay(over []byte, path string) (*Tables, error) {
 	if len(errs) > 0 {
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
-	if err := base.Content[0].Decode(t); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if err := t.check(); err != nil {
+	if err := t.build(); err != nil {
 		return nil, t.located(err)
 	}
 	sort.Strings(t.Changes)
 	sort.Strings(t.Adds)
-	for _, id := range append(append([]string(nil), t.Adds...), t.Changes...) {
-		if name, ok := strings.CutPrefix(id, "harnesses."); ok {
-			name, _, _ = strings.Cut(name, ".")
-			t.Harnesses[name].From = FromMachine
-		}
-	}
 	return t, nil
+}
+
+// lay puts one entry over the table it belongs to: over the entry of its
+// name key by key, each key replaced whole and a null removing it, or as a
+// new entry, which it reports.
+func lay(table, name, entry *yaml.Node) (added bool) {
+	old := mappingValue(table, name.Value)
+	if old == nil {
+		table.Content = append(table.Content, name, withoutNulls(entry))
+		return true
+	}
+	for k := 0; k+1 < len(entry.Content); k += 2 {
+		setKey(old, entry.Content[k], entry.Content[k+1])
+	}
+	return false
+}
+
+// Item is one harness a pats.yaml defines: its keys as written, a null for
+// one it unsets.
+type Item struct {
+	Name string
+	Node *yaml.Node // a mapping
+}
+
+// Project lays a pats.yaml's harness items over the tables by the rule the
+// machine's file is laid over the defaults by: an item named as a harness
+// the machine has changes it key by key, and one with a new name is a
+// harness of its own. the tables are checked again as a whole. an error
+// names its entry as harnesses.<name>.
+func (t *Tables) Project(items []Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+	table := mappingValue(t.root, "harnesses")
+	if table == nil {
+		table = &yaml.Node{Kind: yaml.MappingNode}
+		t.root.Content = append(t.root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "harnesses"}, table)
+	}
+	if t.from == nil {
+		t.from = map[string]string{}
+	}
+	for _, it := range items {
+		lay(table, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it.Name}, it.Node)
+		t.from[it.Name] = FromProject
+	}
+	return t.build()
 }
 
 // located puts the file, and the line of the entry when it is the file's,

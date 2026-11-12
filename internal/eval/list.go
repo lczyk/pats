@@ -23,7 +23,7 @@ func ListAgents(cfg *config.Config, out io.Writer) error {
 		if err != nil {
 			sb = "?" // dangling/ambiguous sandbox ref; validate would have caught it
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Vector, a.Name, a.Harness, a.Model, sb, a.Effort)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Vector, a.Name, a.Harness, dash(a.Model), sb, a.Effort)
 	}
 	return w.Flush()
 }
