@@ -1,9 +1,11 @@
 # harnesses are placed in images at init
 
-status: proposed. it changes `harness-pins.md` (a pin gains a sha256 per arch, and lives in the machine config's
-defaults, not in a file a script reads), `init.md` (a default sandbox is built, not only pulled; the pin entry gains
-what init placed) and `bwrap.md` (a harness is a lower dir of its own). `machine-config.md` holds the `clis` table
-this spec fetches from. `harness-registry.md` is what a harness is, and where a config names one.
+status: the artefacts, the checked fetch, the cache, the tree and `pats harness pin` are implemented
+(`harnesses-1x.md`, step 5); placement and what follows from it are proposed. it changes `harness-pins.md` (a pin
+gains a sha256 per arch, and lives in the machine config's defaults, not in a file a script reads), `init.md` (a
+default sandbox is built, not only pulled; the pin entry gains what init placed) and `bwrap.md` (a harness is a lower
+dir of its own). `machine-config.md` holds the `clis` table this spec fetches from. `harness-registry.md` is what a
+harness is, and where a config names one.
 
 ## problem
 
@@ -185,6 +187,10 @@ this breaks, and the release notes say so:
   executables do not start: not supported, and init's stamp fails on the first of them, naming the cli.
 - **two arches.** `amd64` and `arm64`, as the image.
 - **one version of a cli per sandbox.**
+- **copilot unpacks itself.** its per-arch file is a self-extracting executable: on its first run in a home it
+  unpacks 233 MB into `~/.cache/copilot`, which takes a few seconds, and when that is slow it prints a line about it
+  before its version. a pair's home is fresh, so that is once a pair. measured on 1.0.107; the other three run as
+  they are. placement has to settle it: the stamp must not take that first line for the version.
 - **the source can go away.** a vendor that removes a version makes it unfetchable; a machine that has it cached
   keeps working. one that moved it is a url to change in the machine config, with no pats release.
 
