@@ -43,7 +43,7 @@ func TestStampScript(t *testing.T) {
 	write("claude", "echo '2.1.319 (Claude Code)'")
 	write("codex", "echo 'codex-cli 0.167.0'")
 	run := func() (string, error) {
-		cmd := exec.Command(sh, "-c", stampScript)
+		cmd := exec.Command(sh, "-c", stampScript(allCLIs))
 		cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
 		out, err := cmd.Output()
 		return string(out), err
@@ -53,6 +53,24 @@ func TestStampScript(t *testing.T) {
 	got, err := parseStamps(out)
 	require.NoError(t, err)
 	assert.EqualMaps(t, got, map[string]string{"claude": "2.1.319", "codex": "0.167.0"})
+
+	// only the clis asked for are run, and with none nothing is.
+	only := exec.Command(sh, "-c", stampScript([]string{"codex", "not a cli; rm -rf /"}))
+	only.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+	b, err := only.Output()
+	require.NoError(t, err)
+	assert.Equal(t, string(b), "codex=codex-cli 0.167.0\n")
+	assert.Equal(t, stampScript(nil), ":")
+
+	// a cli that says something else first: the line is the first that
+	// holds a version, and the first of all when none does.
+	write("copilot", "echo 'Package extraction took 5417ms'; echo 'GitHub Copilot CLI 1.0.107.'; echo 'Run copilot update to check'")
+	write("opencode", "echo 'no version here'; echo 'nor here'")
+	out, err = run()
+	require.NoError(t, err)
+	assert.ContainsString(t, out, "copilot=GitHub Copilot CLI 1.0.107.\n")
+	assert.ContainsString(t, out, "opencode=no version here\n")
+	require.NoError(t, os.Remove(filepath.Join(dir, "opencode")))
 
 	write("codex", "echo 'cannot load' >&2; exit 1")
 	_, err = run()
@@ -65,20 +83,39 @@ func TestStampScript(t *testing.T) {
 // as properties, which the driver's Stamps reads back.
 func TestLXDImageStampsOnServer(t *testing.T) {
 	f := newFakeServer(t)
+	asked := 0
 	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
-		if len(argv) == 3 && argv[2] == stampScript {
-			io.WriteString(stdout, "claude=2.1.319 (Claude Code)\n")
+		if len(argv) == 3 && strings.HasPrefix(argv[2], "for c in ") {
+			asked++
+			if strings.Contains(argv[2], "claude") {
+				io.WriteString(stdout, "claude=2.1.319 (Claude Code)\n")
+			}
 		}
 		return nil
 	}
 	l := lxdOn(t, f, Options{})
-	alias, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
+	alias, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}, Stamp: []string{"claude"}}, io.Discard)
 	require.NoError(t, err)
 	fp, err := l.fingerprint(context.Background(), alias)
 	require.NoError(t, err)
-	stamps, err := l.imageStamps(context.Background(), fp)
+	assert.Equal(t, asked, 1) // the build asked
+	stamps, err := l.imageStamps(context.Background(), fp, []string{"claude"})
 	require.NoError(t, err)
 	assert.EqualMaps(t, stamps, map[string]string{"claude": "2.1.319"})
+	assert.Equal(t, asked, 1) // the properties answered
+
+	// a cli the properties do not answer for was absent at the build or not
+	// asked about: the image itself is asked.
+	stamps, err = l.imageStamps(context.Background(), fp, []string{"claude", "codex"})
+	require.NoError(t, err)
+	assert.EqualMaps(t, stamps, map[string]string{"claude": "2.1.319"})
+	assert.Equal(t, asked, 2)
+	assert.Len(t, f.insts, 0) // the throwaway instance is gone
+
+	none, err := l.imageStamps(context.Background(), fp, nil)
+	require.NoError(t, err)
+	assert.Len(t, none, 0)
+	assert.Equal(t, asked, 2)
 }
 
 // a stamp container that fails or hangs is removed by name; an image with no
@@ -95,7 +132,7 @@ func TestContainerStampsFailures(t *testing.T) {
 			return nil
 		})
 		c := newContainer(testProcess(t), r, Options{Driver: "docker"})
-		s, err := c.stamps(context.Background(), "img", time.Second)
+		s, err := c.stamps(context.Background(), "img", allCLIs, time.Second)
 		return calls, s, err
 	}
 	t.Run("no shell", func(t *testing.T) {
@@ -121,14 +158,14 @@ func TestContainerStampsFailures(t *testing.T) {
 func TestLXDStampTimeoutOnServer(t *testing.T) {
 	f := newFakeServer(t)
 	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
-		if len(argv) == 3 && argv[2] == stampScript {
+		if len(argv) == 3 && argv[2] == stampScript(allCLIs) {
 			<-ctx.Done()
 		}
 		return nil
 	}
 	l := lxdOn(t, f, Options{})
 	l.p.t.stamp = 200 * time.Millisecond
-	_, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}}, io.Discard)
+	_, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "ubuntu:26.04", Argv: []string{"true"}, Stamp: allCLIs}, io.Discard)
 	assert.Error(t, err, "stamping the harness versions took over")
 	assert.Len(t, f.insts, 0) // the builder went with the failed build
 }
@@ -138,7 +175,7 @@ func TestLXDStampTimeoutOnServer(t *testing.T) {
 func TestLXDStampsOfAForeignImageOnServer(t *testing.T) {
 	f := newFakeServer(t)
 	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
-		if len(argv) == 3 && argv[2] == stampScript {
+		if len(argv) == 3 && argv[2] == stampScript(allCLIs) {
 			io.WriteString(stdout, "codex=codex-cli 0.100.0\n")
 		}
 		return nil
@@ -147,8 +184,11 @@ func TestLXDStampsOfAForeignImageOnServer(t *testing.T) {
 	require.NoError(t, l.prepareServer(context.Background()))
 	fp, _, err := l.copyImage(context.Background(), "ubuntu:26.04", false)
 	require.NoError(t, err)
-	stamps, err := l.imageStamps(context.Background(), fp)
+	stamps, err := l.imageStamps(context.Background(), fp, allCLIs)
 	require.NoError(t, err)
 	assert.EqualMaps(t, stamps, map[string]string{"codex": "0.100.0"})
 	assert.Len(t, f.insts, 0)
 }
+
+// allCLIs are the clis the stamp tests ask about.
+var allCLIs = []string{"claude", "codex", "copilot", "opencode"}

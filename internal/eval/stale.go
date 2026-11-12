@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/lczyk/pats/images"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox"
@@ -117,11 +116,10 @@ func proxyMismatch(e *pinEntry) string {
 }
 
 // staleComponents is each harness in the image whose version is not the
-// one this pats pins, as "claude 2.1.0, pinned 2.1.319". a harness the
-// image lacks is not stale: not every sandbox carries every cli.
-func staleComponents(stamps map[string]string) []string {
+// one pinned for it, as "claude 2.1.0, pinned 2.1.319". a harness the image
+// lacks is not stale: not every sandbox carries every cli.
+func staleComponents(stamps, pins map[string]string) []string {
 	var out []string
-	pins := images.ComponentPins()
 	names := make([]string, 0, len(pins))
 	for name := range pins {
 		names = append(names, name)

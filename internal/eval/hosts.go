@@ -17,8 +17,8 @@ type imageHost interface {
 	Target(ctx context.Context) (sandbox.Target, error)
 	// Resolve is the image a ref names now.
 	Resolve(ctx context.Context, ref string) (sandbox.Image, error)
-	// Stamps are the harness versions inside image id, those it has.
-	Stamps(ctx context.Context, id string) (map[string]string, error)
+	// Stamps are the versions of clis inside image id, for those it has.
+	Stamps(ctx context.Context, id string, clis []string) (map[string]string, error)
 }
 
 // puller is a host init pulls into.

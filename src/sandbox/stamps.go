@@ -13,14 +13,55 @@ import (
 	"time"
 )
 
-// stampScript prints name=<first --version line> for each harness cli the
-// image has, skipping those it lacks, and exits 3 when one it has cannot say
-// its version.
-const stampScript = `for c in claude codex copilot opencode; do
+// stampScript is a shell script that prints name=<version line> for each of
+// clis the image has, skipping those it lacks, and exits 3 when one it has
+// cannot say its version. the line is the first of its --version output that
+// holds an x.y.z: a cli may say something else first (one that unpacks itself
+// on its first run does), and the first line when none does. a name that is
+// not a cli's (letters, digits and -) is left out: it goes into a shell.
+func stampScript(clis []string) string {
+	var names []string
+	for _, c := range clis {
+		if cliNameRe.MatchString(c) {
+			names = append(names, c)
+		}
+	}
+	if len(names) == 0 {
+		return ":"
+	}
+	return "for c in " + strings.Join(names, " ") + `; do
   command -v "$c" >/dev/null 2>&1 || continue
   v=$("$c" --version 2>&1) || { echo "$c --version failed: $v" >&2; exit 3; }
-  printf '%s=%s\n' "$c" "$(printf '%s\n' "$v" | head -n1)"
+  l=$(printf '%s\n' "$v" | while IFS= read -r l; do case "$l" in (*[0-9].[0-9]*.[0-9]*) printf '%s\n' "$l"; break ;; esac; done)
+  [ -n "$l" ] || l=$(printf '%s\n' "$v" | head -n1)
+  printf '%s=%s\n' "$c" "$l"
 done`
+}
+
+var cliNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// wanted is stamps narrowed to clis: what was asked for, and no more.
+func wanted(stamps map[string]string, clis []string) map[string]string {
+	out := map[string]string{}
+	for _, c := range clis {
+		if v, ok := stamps[c]; ok {
+			out[c] = v
+		}
+	}
+	return out
+}
+
+// covers is whether stamps kept from an earlier ask answer for every one of
+// clis. a cli they lack was absent then, or not asked about: the image has
+// to say which.
+func covers(stamps map[string]string, clis []string) bool {
+	for _, c := range clis {
+		if _, ok := stamps[c]; !ok {
+			return false
+		}
+	}
+	return true
+}
 
 // componentProp prefixes the lxd image properties holding the stamps;
 // stampedProp marks an image pats stamped, so one with no harness is not
@@ -54,7 +95,10 @@ func parseStamps(out string) (map[string]string, error) {
 // image with no shell has no stamps; any other failure is an error. the
 // container is named, so one a timeout or a failure leaves behind is
 // removed.
-func (c *container) stamps(ctx context.Context, id string, timeout time.Duration) (map[string]string, error) {
+func (c *container) stamps(ctx context.Context, id string, clis []string, timeout time.Duration) (map[string]string, error) {
+	if len(clis) == 0 {
+		return map[string]string{}, nil
+	}
 	if err := c.p.holdLease(); err != nil {
 		return nil, err
 	}
@@ -66,7 +110,7 @@ func (c *container) stamps(ctx context.Context, id string, timeout time.Duration
 	defer cancel()
 	var out, errb bytes.Buffer
 	args := append([]string{"run", "--rm", "--name", name}, c.p.runLabels()...)
-	args = append(args, "--network", "none", "--entrypoint", "sh", id, "-c", stampScript)
+	args = append(args, "--network", "none", "--entrypoint", "sh", id, "-c", stampScript(clis))
 	err := r.Run(rctx, nil, &out, &errb, args...)
 	if err == nil {
 		return parseStamps(out.String())
@@ -81,19 +125,19 @@ func (c *container) stamps(ctx context.Context, id string, timeout time.Duration
 	return nil, fmt.Errorf("stamping %s: %w%s", id, err, stderrTail(&errb))
 }
 
-// imageStamps is the component stamps of an lxd image in the pats project:
-// the properties a pats build published it with, or, for an image pats did
-// not build, what stampScript says in a throwaway instance of it. l is
+// imageStamps is the component stamps of an lxd image in the pats project,
+// for clis: the properties a pats build published it with when they answer
+// for each, or what stampScript says in a throwaway instance of it. l is
 // ready.
-func (l *lxd) imageStamps(ctx context.Context, fp string) (map[string]string, error) {
+func (l *lxd) imageStamps(ctx context.Context, fp string, clis []string) (map[string]string, error) {
+	if len(clis) == 0 {
+		return map[string]string{}, nil
+	}
 	var im struct {
 		Properties map[string]string `json:"properties"`
 	}
 	if err := l.query(ctx, "/1.0/images/"+fp+"?project="+lxdProject, &im); err != nil {
 		return nil, err
-	}
-	if im.Properties[stampedProp] == "" {
-		return l.runStamp(ctx, fp)
 	}
 	stamps := map[string]string{}
 	for k, v := range im.Properties {
@@ -101,12 +145,15 @@ func (l *lxd) imageStamps(ctx context.Context, fp string) (map[string]string, er
 			stamps[name] = v
 		}
 	}
-	return stamps, nil
+	if im.Properties[stampedProp] == "" || !covers(stamps, clis) {
+		return l.runStamp(ctx, fp, clis)
+	}
+	return wanted(stamps, clis), nil
 }
 
 // runStamp runs stampScript in a throwaway instance of image fp, with no
 // network, and removes the instance.
-func (l *lxd) runStamp(ctx context.Context, fp string) (stamps map[string]string, err error) {
+func (l *lxd) runStamp(ctx context.Context, fp string, clis []string) (stamps map[string]string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, l.p.t.stamp)
 	defer cancel()
 	s := &lxdSession{l: l, name: "pats-stamp-" + l.p.token + "-" + fp[:min(12, len(fp))]}
@@ -130,7 +177,7 @@ func (l *lxd) runStamp(ctx context.Context, fp string) (stamps map[string]string
 		return nil, err
 	}
 	var out, errb bytes.Buffer
-	code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &out, &errb)
+	code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", stampScript(clis)}, Root: true, Dir: "/"}, &out, &errb)
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("stamping %s: %w", fp, err)

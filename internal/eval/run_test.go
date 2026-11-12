@@ -52,6 +52,7 @@ txx: {kind: task, items: {txx: {prompt-file: prompt.txt, collect: ./collect.sh}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	cfg.Harnesses.Harness("opencode-openrouter").Run = `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // a stand-in: the image need not hold opencode
 
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
@@ -1153,6 +1154,7 @@ txx: {kind: task, items: {txx: {prompt: p, prepare: seed, collect: "cp $PATS_WOR
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	cfg.Harnesses.Harness("opencode-openrouter").Run = `echo agent >> prepared.txt && test ! -e /pats-prepare && echo material-gone >> prepared.txt`
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // a stand-in: the image need not hold opencode
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -1177,6 +1179,7 @@ txx: {kind: task, items: {txx: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $P
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	cfg.Harnesses.Harness("opencode-openrouter").Run = `cat /etc/pats-mark > got.txt`
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // a stand-in: the image need not hold opencode
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	// every run after init builds and pulls nothing, here or in the driver.

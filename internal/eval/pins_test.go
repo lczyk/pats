@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lczyk/pats/images"
 	"io"
 	"os"
 	"path/filepath"
@@ -60,13 +61,23 @@ func (h *fakeHost) Resolve(_ context.Context, ref string) (sandbox.Image, error)
 	return sandbox.Image{}, fmt.Errorf("%w: %s", sandbox.ErrNoImage, ref)
 }
 
-func (h *fakeHost) Stamps(context.Context, string) (map[string]string, error) {
+// Stamps answers for the clis asked: with nothing set, an image that holds
+// each at the version pinned for it; else what stamped says it holds.
+func (h *fakeHost) Stamps(_ context.Context, _ string, clis []string) (map[string]string, error) {
 	if h.stampErr != nil {
 		return nil, h.stampErr
 	}
 	out := map[string]string{}
-	for k, v := range h.stamped {
-		out[k] = v
+	pins := images.ComponentPins()
+	for _, c := range clis {
+		switch v, ok := h.stamped[c]; {
+		case ok:
+			out[c] = v
+		case h.stamped == nil && pins[c] != "":
+			out[c] = pins[c]
+		case h.stamped == nil:
+			out[c] = "0.0.0"
+		}
 	}
 	return out, nil
 }
@@ -149,7 +160,12 @@ func pinAll(t *testing.T, dir string, cfg *config.Config) *fakeHost {
 			h.refs[id] = id
 			in, err := localInputs(sb, dir)
 			require.NoError(t, err)
-			e := &pinEntry{Daemon: h.daemon, Image: pinImage{ID: id}, Inputs: in,
+			// the image holds what the sandbox's agents run, at the pinned versions.
+			comps := map[string]string{}
+			for _, c := range sandboxCLIs(cfg, sb.Name) {
+				comps[c] = cliPins(cfg)[c]
+			}
+			e := &pinEntry{Daemon: h.daemon, Image: pinImage{ID: id}, Inputs: in, Components: comps,
 				PatsVersion: version.Info.Version, PatsBuild: patsBuild()}
 			if sb.Egress.Set {
 				h.refs["proxy-"+sb.Name] = "proxy-" + sb.Name

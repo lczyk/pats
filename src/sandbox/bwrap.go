@@ -250,18 +250,20 @@ func (d *bwrapDriver) forwarderBin() (string, error) {
 	return p, nil
 }
 
-// Stamps are the harness versions in image id: read from beside it, or
-// found by stampScript in a throwaway session and kept there.
-func (d *bwrapDriver) Stamps(ctx context.Context, id string) (map[string]string, error) {
+// Stamps are the versions of clis in image id: read from beside it when what
+// is kept there answers for each, or found by stampScript in a throwaway
+// session and kept there.
+func (d *bwrapDriver) Stamps(ctx context.Context, id string, clis []string) (map[string]string, error) {
+	if len(clis) == 0 {
+		return map[string]string{}, nil
+	}
 	st, err := d.store()
 	if err != nil {
 		return nil, err
 	}
-	if b, err := os.ReadFile(st.stampsFile(id)); err == nil {
-		var out map[string]string
-		if json.Unmarshal(b, &out) == nil {
-			return out, nil
-		}
+	kept := map[string]string{}
+	if b, err := os.ReadFile(st.stampsFile(id)); err == nil && json.Unmarshal(b, &kept) == nil && covers(kept, clis) {
+		return wanted(kept, clis), nil
 	}
 	work, err := d.p.mkTemp("pats-stamp-")
 	if err != nil {
@@ -276,7 +278,7 @@ func (d *bwrapDriver) Stamps(ctx context.Context, id string) (map[string]string,
 	rctx, cancel := context.WithTimeout(ctx, d.p.t.stamp)
 	defer cancel()
 	var out, errb bytes.Buffer
-	code, err := sess.Exec(rctx, Cmd{Argv: []string{"/bin/sh", "-c", stampScript}, Root: true, Dir: "/"}, &out, &errb)
+	code, err := sess.Exec(rctx, Cmd{Argv: []string{"/bin/sh", "-c", stampScript(clis)}, Root: true, Dir: "/"}, &out, &errb)
 	switch {
 	case err != nil:
 		return nil, err
@@ -289,7 +291,14 @@ func (d *bwrapDriver) Stamps(ctx context.Context, id string) (map[string]string,
 	if err != nil {
 		return nil, err
 	}
-	b, _ := json.Marshal(stamps)
+	// what was kept for other clis stays: another project's set.
+	if kept == nil {
+		kept = map[string]string{}
+	}
+	for k, v := range stamps {
+		kept[k] = v
+	}
+	b, _ := json.Marshal(kept)
 	_ = os.WriteFile(st.stampsFile(id), b, 0o600)
 	return stamps, nil
 }

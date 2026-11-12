@@ -35,8 +35,8 @@ type Driver interface {
 	// ProxyImage makes the egress proxy image this place's sandboxes use
 	// present: pulled from ref (containers), or built (lxd).
 	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (img Image, fetched bool, err error)
-	// Stamps are the harness versions inside image id, those it has.
-	Stamps(ctx context.Context, id string) (map[string]string, error)
+	// Stamps are the versions of clis inside image id, for those it has.
+	Stamps(ctx context.Context, id string, clis []string) (map[string]string, error)
 	// RemoveImage removes image id; one in use stays and says so, one
 	// already gone is no error.
 	RemoveImage(ctx context.Context, id string) error
@@ -102,6 +102,8 @@ type BuildSpec struct {
 	// SandboxImage is the pats sandbox image, asked for only when the
 	// build uses it (PATS_SANDBOX).
 	SandboxImage func() string
+	// Stamp is the clis whose versions an lxd build records on its image.
+	Stamp []string
 	// Role (sandbox | project | proxy) and Sandbox are recorded on an lxd
 	// image as pats.role and pats.sandbox, for people listing images.
 	Role, Sandbox string

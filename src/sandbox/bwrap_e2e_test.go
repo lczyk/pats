@@ -39,7 +39,7 @@ func TestBwrapE2E(t *testing.T) {
 	d.pats, d.forwarder = bin, bin
 	img, _, err := d.Pull(ctx, ref, false, os.Stderr)
 	require.NoError(t, err)
-	stamps, err := d.Stamps(ctx, img.ID)
+	stamps, err := d.Stamps(ctx, img.ID, allCLIs)
 	require.NoError(t, err)
 	t.Logf("stamps: %v", stamps)
 	sb, err := d.Sandbox(SandboxOptions{Image: img.ID})

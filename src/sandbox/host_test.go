@@ -453,7 +453,7 @@ func TestHostRunSeam(t *testing.T) {
 	// a stamp that hangs ends at the stamp timeout, not the caller's.
 	fail = nil
 	b.h.p.t.stamp = 50 * time.Millisecond
-	_, err = b.h.Stamps(context.Background(), "")
+	_, err = b.h.Stamps(context.Background(), "", allCLIs)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Equal(t, seen[1][0], "/bin/sh")
 }
@@ -487,7 +487,7 @@ func hostSweep(t *testing.T, o Options, entry func(t *testing.T, b *hostSandbox,
 			fs := &faults{}
 			b.h.run = func(ctx context.Context, cmd *exec.Cmd) error {
 				return fs.call(ctx, cmd.Args, io.Discard, func(bool) error {
-					if len(cmd.Args) == 3 && cmd.Args[2] == stampScript {
+					if len(cmd.Args) == 3 && cmd.Args[2] == stampScript(allCLIs) {
 						return nil // the clis of the machine the tests run on are not asked
 					}
 					return RunGroup(ctx, cmd)
@@ -553,7 +553,7 @@ func TestHostSweepSession(t *testing.T) {
 				o.TrustFile = trust
 			}
 			hostSweep(t, o, func(t *testing.T, b *hostSandbox, ctx context.Context) *hostSession {
-				_, _ = b.h.Stamps(ctx, "")
+				_, _ = b.h.Stamps(ctx, "", allCLIs)
 				sess, err := b.Start(ctx, Spec{Workdir: t.TempDir(), Egress: mode.egress})
 				if err != nil {
 					assert.That(t, ctx.Err() != nil, "a start with no fault in it failed: %v", err)

@@ -77,7 +77,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 			continue
 		}
 		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir))
-		target, e, err := initSandbox(ctx, sb, ro, opts)
+		target, e, err := initSandbox(ctx, sb, sandboxCLIs(cfg, sb.Name), ro, opts)
 		if err != nil {
 			failed = append(failed, sb.Name)
 			if ctx.Err() != nil {
@@ -224,8 +224,9 @@ func initWhat(sb config.Sandbox, configDir string) string {
 	return "building images (log: " + relToCwd(initLogPath(configDir, sb.Name)) + ")"
 }
 
-// initSandbox makes one sandbox's images and returns its pin.
-func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOptions) (string, *pinEntry, error) {
+// initSandbox makes one sandbox's images and returns its pin. clis are the
+// ones its agents run: the image is asked for each, and has to have it.
+func initSandbox(ctx context.Context, sb config.Sandbox, clis []string, ro Options, opts InitOptions) (string, *pinEntry, error) {
 	h, err := hostFor(sb)
 	if err != nil {
 		return "", nil, err
@@ -251,7 +252,20 @@ func initSandbox(ctx context.Context, sb config.Sandbox, ro Options, opts InitOp
 		err = initContainer(ctx, sb, ro, opts, h, e)
 	}
 	if err == nil {
-		e.Components, err = h.Stamps(ctx, e.Image.ID)
+		e.Components, err = h.Stamps(ctx, e.Image.ID, clis)
+	}
+	if err == nil {
+		// an image: or a build: brings its own clis, and a provision can
+		// remove one: either way the image is what says.
+		var lacks []string
+		for _, c := range clis {
+			if _, ok := e.Components[c]; !ok {
+				lacks = append(lacks, c)
+			}
+		}
+		if len(lacks) > 0 {
+			err = fmt.Errorf("its image has no %s on its PATH, which its agents run", strings.Join(lacks, ", "))
+		}
 	}
 	if err == nil {
 		upstreamInputs(ctx, sb, ro.ConfigDir, h, e)
@@ -449,7 +463,7 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			continue
 		}
 		if sandbox.TraitsOf(sb.Driver).NoImages {
-			comps, err := hostComponents(ctx, sb, lg)
+			comps, err := hostComponents(ctx, sb, sandboxCLIs(cfg, sb.Name), cliPins(cfg), lg)
 			if err != nil {
 				return nil, err
 			}
@@ -492,8 +506,13 @@ func usePins(ctx context.Context, cfg *config.Config, opts Options, pairs []conf
 			lg.warn("sandbox %q: changed since its pats init: %s; running the pinned image (pats init --sandbox %s to rebuild)",
 				sb.Name, strings.Join(changed, ", "), sb.Name)
 		}
-		if drift := staleComponents(e.Components); len(drift) > 0 {
-			lg.warn("sandbox %q: its harnesses differ from what this pats pins: %s (pats init --sandbox %s to rebuild)",
+		if lacks := missingCLIs(cfg, pairs, sb.Name, e.Components); len(lacks) > 0 {
+			missing = append(missing, sb.Name)
+			reasons = append(reasons, fmt.Sprintf("  %s: its image was made without %s", sb.Name, strings.Join(lacks, ", ")))
+			continue
+		}
+		if drift := staleComponents(e.Components, cliPins(cfg)); len(drift) > 0 {
+			lg.warn("sandbox %q: its harnesses differ from what is pinned: %s (pats init --sandbox %s to rebuild)",
 				sb.Name, strings.Join(drift, ", "), sb.Name)
 		}
 		cfg.Sandboxes[i].Image = e.Image.ID
@@ -551,19 +570,73 @@ func short(id string) string {
 // sandbox's agents find them: what the run saw, not a guarantee of what each
 // pair ran. a version other than this pats pins is a warning, never a
 // refusal: host tools are the caller's.
-func hostComponents(ctx context.Context, sb config.Sandbox, lg logw) (map[string]string, error) {
+func hostComponents(ctx context.Context, sb config.Sandbox, clis []string, pins map[string]string, lg logw) (map[string]string, error) {
 	h, err := hostFor(sb)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 	}
-	comps, err := h.Stamps(ctx, "")
+	comps, err := h.Stamps(ctx, "", clis)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 	}
-	if drift := staleComponents(comps); len(drift) > 0 {
-		lg.warn("sandbox %q: this machine's harnesses differ from what this pats pins: %s", sb.Name, strings.Join(drift, ", "))
+	if drift := staleComponents(comps, pins); len(drift) > 0 {
+		lg.warn("sandbox %q: this machine's harnesses differ from what is pinned: %s", sb.Name, strings.Join(drift, ", "))
 	}
 	return comps, nil
+}
+
+// sandboxCLIs is the clis a sandbox's agents run, sorted: those of every
+// agent in the config that resolves to it, a judge among them, whatever a
+// command selects, so an init or a run of part of the matrix sees the same
+// image. a harness with no cli adds none.
+func sandboxCLIs(cfg *config.Config, name string) []string {
+	seen := map[string]bool{}
+	for _, a := range cfg.Agents {
+		id, err := cfg.ResolveSandbox(a)
+		if hd := cfg.HarnessOf(a); err == nil && id == name && hd != nil && hd.CLI != "" {
+			seen[hd.CLI] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for c := range seen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// missingCLIs is the clis the selected pairs' agents run in sandbox name
+// that its image's stamps lack: an agent added since the image was made,
+// on a harness new to it.
+func missingCLIs(cfg *config.Config, pairs []config.TestPair, name string, components map[string]string) []string {
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range pairs {
+		a := agents[p.Agent]
+		id, err := cfg.ResolveSandbox(a)
+		hd := cfg.HarnessOf(a)
+		if err != nil || id != name || hd == nil || hd.CLI == "" || seen[hd.CLI] {
+			continue
+		}
+		seen[hd.CLI] = true
+		if _, ok := components[hd.CLI]; !ok {
+			out = append(out, hd.CLI)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// cliPins is the version each cli is pinned at, by the config's tables.
+func cliPins(cfg *config.Config) map[string]string {
+	out := map[string]string{}
+	if cfg.Harnesses != nil {
+		for name, c := range cfg.Harnesses.CLIs {
+			out[name] = c.Version
+		}
+	}
+	return out
 }
 
 // pinsProxy says whether a sandbox's egress proxy is an image init pins:

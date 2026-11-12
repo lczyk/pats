@@ -33,6 +33,10 @@ type lxdImageSpec struct {
 	Base     string // an image ref the cli resolves (ubuntu:26.04), or a pats-img- alias
 	Material string
 	Argv     []string
+	// Stamp is the clis whose versions the image's properties record. it is
+	// no part of the image key: an image that lacks one asked for later is
+	// asked itself (imageStamps).
+	Stamp []string
 	// Progress and Warn, when set, get each build step and warning as they
 	// happen; the log gets them too.
 	Progress func(msg string)
@@ -327,7 +331,7 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	// the harness versions inside, as image properties init pins and runs check.
 	var stampOut, stampErr bytes.Buffer
 	sctx, scancel := context.WithTimeout(ctx, l.p.t.stamp)
-	code, err := s.exec(sctx, Cmd{Argv: []string{"sh", "-c", stampScript}, Root: true, Dir: "/"}, &stampOut, &stampErr)
+	code, err := s.exec(sctx, Cmd{Argv: []string{"sh", "-c", stampScript(spec.Stamp)}, Root: true, Dir: "/"}, &stampOut, &stampErr)
 	timedOut := errors.Is(sctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	scancel()
 	if timedOut {

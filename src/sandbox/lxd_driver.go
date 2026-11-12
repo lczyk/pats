@@ -145,7 +145,7 @@ func (l *lxd) Build(ctx context.Context, spec BuildSpec, log io.Writer) (Image, 
 	if log == nil {
 		log = io.Discard
 	}
-	alias, fp, base, built, err := c.image(ctx, lxdImageSpec{Base: spec.Base, Material: spec.Material, Argv: spec.Argv,
+	alias, fp, base, built, err := c.image(ctx, lxdImageSpec{Base: spec.Base, Material: spec.Material, Argv: spec.Argv, Stamp: spec.Stamp,
 		Progress: spec.Progress, Warn: spec.Warn, Role: spec.Role, Sandbox: spec.Sandbox, Force: spec.Force}, log)
 	if err != nil {
 		return Image{}, "", false, err
@@ -172,12 +172,12 @@ func (l *lxd) ProxyImage(ctx context.Context, _ string, force bool, log io.Write
 	return Image{ID: fp, Name: alias}, built, nil
 }
 
-func (l *lxd) Stamps(ctx context.Context, id string) (map[string]string, error) {
+func (l *lxd) Stamps(ctx context.Context, id string, clis []string) (map[string]string, error) {
 	c, err := l.ready(ctx)
 	if err != nil {
 		return nil, err
 	}
-	stamps, err := c.imageStamps(ctx, id)
+	stamps, err := c.imageStamps(ctx, id, clis)
 	return stamps, noImage(err)
 }
 

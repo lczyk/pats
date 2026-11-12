@@ -87,12 +87,16 @@ func (h *host) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (in
 	return run(ctx, &hostSandbox{h: h}, spec, stdout, stderr)
 }
 
-// Stamps are the harness clis on this machine's PATH (the agent's, as
-// hostEnv gives it), by stampScript; id is ignored, there is no image.
-func (h *host) Stamps(ctx context.Context, _ string) (map[string]string, error) {
+// Stamps are those of clis on this machine's PATH (the agent's, as hostEnv
+// gives it), by stampScript; id is ignored, there is no image. a cli no
+// agent here uses is not run.
+func (h *host) Stamps(ctx context.Context, _ string, clis []string) (map[string]string, error) {
+	if len(clis) == 0 {
+		return map[string]string{}, nil
+	}
 	rctx, cancel := context.WithTimeout(ctx, h.p.t.stamp)
 	defer cancel()
-	cmd := exec.Command("/bin/sh", "-c", stampScript)
+	cmd := exec.Command("/bin/sh", "-c", stampScript(clis))
 	cmd.Env = hostEnv(nil)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out, errb strings.Builder

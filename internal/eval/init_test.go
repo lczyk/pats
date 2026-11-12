@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -229,23 +230,23 @@ func TestPinsFile(t *testing.T) {
 	assert.Error(t, err, "run `pats init`")
 }
 
-// init stamps each image's harness versions into its pin; a run warns when
-// they are not what this pats pins, and records them in each pair's
-// metadata.
+// init stamps the versions of the clis a sandbox's agents run into its pin;
+// a run warns when they are not what is pinned, and records them in each
+// pair's metadata.
 func TestComponentStamps(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.txt"), []byte("p"), 0o644))
 	cfg := parseCfg(t, initCfg)
 	h := newFakeHost("my/image:1")
 	pins := images.ComponentPins()
-	h.stamped = map[string]string{"claude": pins["claude"]}
+	h.stamped = map[string]string{"opencode": pins["opencode"]}
 	useHost(t, h)
 	useFakeSandbox(t, &fakeSandbox{})
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}}))
 	f, err := readPins(dir)
 	require.NoError(t, err)
-	assert.EqualMaps(t, f.entry("fake:host", "own").Components, map[string]string{"claude": pins["claude"]})
+	assert.EqualMaps(t, f.entry("fake:host", "own").Components, map[string]string{"opencode": pins["opencode"]})
 
 	out.Reset()
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})
@@ -253,7 +254,7 @@ func TestComponentStamps(t *testing.T) {
 	assert.That(t, !bytes.Contains(out.Bytes(), []byte("harnesses differ")), "pinned versions warned: %s", out.String())
 	meta, err := os.ReadFile(filepath.Join(runDir, "a-own", "txx", "metadata.json"))
 	require.NoError(t, err)
-	assert.ContainsString(t, string(meta), `"claude": "`+pins["claude"]+`"`)
+	assert.ContainsString(t, string(meta), `"opencode": "`+pins["opencode"]+`"`)
 
 	// a stamp that fails fails that sandbox's init and keeps its old pin.
 	h.stampErr = errNoImage
@@ -261,15 +262,15 @@ func TestComponentStamps(t *testing.T) {
 	assert.Error(t, err, "init failed for sandbox(es) own")
 	f, err = readPins(dir)
 	require.NoError(t, err)
-	assert.EqualMaps(t, f.entry("fake:host", "own").Components, map[string]string{"claude": pins["claude"]})
+	assert.EqualMaps(t, f.entry("fake:host", "own").Components, map[string]string{"opencode": pins["opencode"]})
 	h.stampErr = nil
 
-	h.stamped = map[string]string{"claude": "0.0.1"}
+	h.stamped = map[string]string{"opencode": "0.0.1"}
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"own"}, Agents: []string{"a-own"}}))
 	out.Reset()
 	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"a-own"}})
 	require.NoError(t, err)
-	assert.ContainsString(t, out.String(), `sandbox "own": its harnesses differ from what this pats pins: claude 0.0.1, pinned `+pins["claude"])
+	assert.ContainsString(t, out.String(), `sandbox "own": its harnesses differ from what is pinned: opencode 0.0.1, pinned `+pins["opencode"])
 }
 
 // init's opening line for a sandbox says whether it builds (and where that
@@ -339,4 +340,47 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tks, scorers: scx}}}
 	// -t narrows the task pairs, not the scorers.
 	assert.EqualArrays(t, names(InitOptions{Tasks: []string{"tyy"}}), []string{"sxx", "sst", "jst"})
 	assert.EqualArrays(t, names(InitOptions{Sandboxes: []string{"tst"}}), []string{"tst"})
+}
+
+// an image has to hold the clis its sandbox's agents run: init asks it, and
+// fails naming the ones it lacks. a run whose agent's cli the pinned image
+// was made without stops before anything starts, naming the init to run.
+func TestInitAndRunNeedTheSandboxCLIs(t *testing.T) {
+	dir := t.TempDir()
+	const body = `
+sbx: {kind: sandbox, items: {own: {image: my/image:1}}}
+agx:
+  kind: agent
+  defaults: {sandbox: own, model: m}
+  items:
+    oc: {harness: opencode-openrouter}
+    cc: {harness: claude-cli-keyless}
+    floor: {harness: noop, model: ~}
+hxx: {kind: harness, items: {noop: {run: "true"}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
+`
+	cfg := parseCfg(t, body)
+	// the set is every agent's cli, whatever is selected, and a harness with no cli adds none.
+	assert.Equal(t, strings.Join(sandboxCLIs(cfg, "own"), " "), "claude opencode")
+
+	h := newFakeHost("my/image:1")
+	h.stamped = map[string]string{"opencode": "1.19.5"} // no claude in it
+	useHost(t, h)
+	useFakeSandbox(t, &fakeSandbox{})
+	var out bytes.Buffer
+	err := Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Agents: []string{"oc"}})
+	assert.Error(t, err, "init failed for sandbox(es) own")
+	assert.ContainsString(t, out.String(), `sandbox "own": its image has no claude on its PATH, which its agents run`)
+
+	// pinned when the image held only opencode: a run of the opencode
+	// agent goes, one of the claude agent stops.
+	h.stamped = nil
+	one := parseCfg(t, strings.Replace(body, "    cc: {harness: claude-cli-keyless}\n", "", 1))
+	require.NoError(t, Init(one, InitOptions{ConfigDir: dir, Out: &out}))
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"oc", "floor"}})
+	require.NoError(t, err, "%s", out.String())
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Agents: []string{"cc"}})
+	assert.Error(t, err, "own: its image was made without claude")
+	assert.Error(t, err, "run `pats init` first")
 }

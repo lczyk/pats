@@ -46,7 +46,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	require.NoError(t, err)
 	text := out.String()
 	assert.ContainsString(t, text, `sandbox "sxx" runs agents on this machine, unsandboxed (sand-not-boxed); egress is advisory`)
-	assert.ContainsString(t, text, "this machine's harnesses differ from what this pats pins: opencode 0.0.1")
+	assert.ContainsString(t, text, "this machine's harnesses differ from what is pinned: opencode 0.0.1")
 
 	b, err := os.ReadFile(filepath.Join(runDir, "axx", "t1x", "metadata.json"))
 	require.NoError(t, err)
