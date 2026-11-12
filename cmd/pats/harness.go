@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/lczyk/pats/internal/eval"
 	"github.com/lczyk/pats/internal/machine"
@@ -15,6 +18,25 @@ import (
 // HarnessCommand groups the commands about one harness.
 type HarnessCommand struct {
 	Parse HarnessParseCommand `command:"parse" description:"run a harness's parse script over a stdout log: the summary, the reply, each line it failed on"`
+	Pin   HarnessPinCommand   `command:"pin" description:"fetch a cli at a version and print its pin: the sha256 of its artefact for each arch"`
+}
+
+// HarnessPinCommand prints the pin of a cli's version.
+type HarnessPinCommand struct {
+	Args struct {
+		CLI     string `positional-arg-name:"cli"`
+		Version string `positional-arg-name:"version"`
+	} `positional-args:"yes" required:"yes"`
+}
+
+func (c *HarnessPinCommand) Execute(args []string) error {
+	tables, err := harnessTables()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return eval.PinCLI(ctx, tables, c.Args.CLI, c.Args.Version, nil, os.Stdout)
 }
 
 // HarnessParseCommand tries a parse script against a recorded log.

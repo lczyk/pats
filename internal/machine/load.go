@@ -228,6 +228,16 @@ func entryProblems(entry *yaml.Node, typ reflect.Type) []problem {
 				out = append(out, problem{key.Line, fmt.Sprintf("%sunknown key %q", where, key.Value)})
 			case ft.Kind() == reflect.Struct && val.Kind == yaml.MappingNode:
 				walk(val, ft, where+key.Value+": ")
+			case ft.Kind() == reflect.Map && ft.Elem().Kind() == reflect.Struct && val.Kind == yaml.MappingNode:
+				// a mapping of entries of its own: each one's keys.
+				if d := dupKey(val); d != nil {
+					out = append(out, problem{d.Line, fmt.Sprintf("%s%s: %q is there twice", where, key.Value, d.Value)})
+				}
+				for j := 0; j+1 < len(val.Content); j += 2 {
+					if e := deref(val.Content[j+1]); e.Kind == yaml.MappingNode {
+						walk(e, ft.Elem(), where+key.Value+" "+deref(val.Content[j]).Value+": ")
+					}
+				}
 			}
 		}
 	}
@@ -329,10 +339,16 @@ func (h *Harness) Digest() string {
 		Version  string            `json:"version"`
 		LoginAt  string            `json:"login_file"`
 		HomeEnv  map[string]string `json:"home_env"`
+		Files    [][3]string       `json:"artefacts"` // arch, sha256, bin: what a tree holds, not where it is from
 	}{CLI: h.CLI, Run: h.Run, Egress: h.Egress, AuthEnv: h.AuthEnv, Login: h.Login, AuthHint: h.AuthHint,
 		PassEnv: h.PassEnv, Models: h.Models, Parse: h.Parse}
 	if h.cli != nil {
 		d.Version, d.LoginAt, d.HomeEnv = h.cli.Version, h.cli.LoginFile, h.cli.HomeEnv
+		for _, arch := range Arches {
+			if _, a, ok := h.cli.ArtefactFor(arch, ""); ok {
+				d.Files = append(d.Files, [3]string{arch, a.SHA256, a.Bin})
+			}
+		}
 	}
 	b, err := json.Marshal(d) // map keys are sorted
 	if err != nil {

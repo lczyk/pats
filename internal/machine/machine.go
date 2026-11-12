@@ -7,9 +7,11 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,6 +36,40 @@ type CLI struct {
 	Version   string            `yaml:"version"`
 	LoginFile string            `yaml:"login-file,omitempty"` // under the home
 	HomeEnv   map[string]string `yaml:"home-env,omitempty"`   // variable -> a path under the harness home
+	// Artefacts are the files the cli is published as, each keyed by its
+	// url, with ${version} for the version.
+	Artefacts map[string]Artefact `yaml:"artefacts,omitempty"`
+}
+
+// Artefact is one file a cli is published as (docs/spec/harness-images.md).
+type Artefact struct {
+	Arch   []string `yaml:"arch"`          // the arches the file is for
+	SHA256 string   `yaml:"sha256"`        // the file's
+	Bin    string   `yaml:"bin,omitempty"` // the executable inside the file, a gzipped tar; "" when the file is the executable
+}
+
+// Arches are the arches a harness cli is placed for.
+var Arches = []string{"amd64", "arm64"}
+
+// ArtefactKey is the cli's artefact for arch under the url it is written
+// with, ${version} and all. ok is false when it has none for the arch.
+func (c *CLI) ArtefactKey(arch string) (key string, a Artefact, ok bool) {
+	for _, u := range sortedKeys(c.Artefacts) {
+		if a := c.Artefacts[u]; slices.Contains(a.Arch, arch) {
+			return u, a, true
+		}
+	}
+	return "", Artefact{}, false
+}
+
+// ArtefactFor is the cli's artefact for arch, with its url at version (the
+// cli's own when version is "").
+func (c *CLI) ArtefactFor(arch, version string) (url string, a Artefact, ok bool) {
+	if version == "" {
+		version = c.Version
+	}
+	key, a, ok := c.ArtefactKey(arch)
+	return strings.ReplaceAll(key, "${version}", version), a, ok
 }
 
 // AuthPathVar names the variable that points at a copy of the cli's login
@@ -218,6 +254,31 @@ func (t *Tables) check() error {
 		if c.LoginFile != "" && !underHome(c.LoginFile) {
 			add("clis.%s: login-file %q is not a path under the home", name, c.LoginFile)
 		}
+		taken := map[string]string{}
+		for _, u := range sortedKeys(c.Artefacts) {
+			a := c.Artefacts[u]
+			if parsed, err := url.Parse(u); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				add("clis.%s: artefact %q is not an http or https url", name, u)
+			}
+			if len(a.Arch) == 0 {
+				add("clis.%s: artefact %s: arch is required (%s)", name, u, strings.Join(Arches, ", "))
+			}
+			for _, x := range a.Arch {
+				switch {
+				case !slices.Contains(Arches, x):
+					add("clis.%s: artefact %s: arch %q is not one of %s", name, u, x, strings.Join(Arches, ", "))
+				case taken[x] != "":
+					add("clis.%s: two artefacts are for %s: %s and %s", name, x, taken[x], u)
+				}
+				taken[x] = u
+			}
+			if !sha256Re.MatchString(a.SHA256) {
+				add("clis.%s: artefact %s: sha256 is 64 lower-case hex digits", name, u)
+			}
+			if a.Bin != "" && !underHome(a.Bin) {
+				add("clis.%s: artefact %s: bin %q is not a path inside the artefact", name, u, a.Bin)
+			}
+		}
 		for _, k := range sortedKeys(c.HomeEnv) {
 			if why := badEnv(k); why != "" {
 				add("clis.%s: home-env %s %s", name, k, why)
@@ -303,6 +364,8 @@ func (t *Tables) check() error {
 	}
 	return nil
 }
+
+var sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var envRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

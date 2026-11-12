@@ -27,6 +27,14 @@ func TestDefaults(t *testing.T) {
 	for name, c := range d.CLIs {
 		assert.Equal(t, c.Name, name)
 		assert.Equal(t, c.Version, pins[name])
+		// an artefact for each arch, at the cli's version.
+		for _, arch := range Arches {
+			url, a, ok := c.ArtefactFor(arch, "")
+			require.That(t, ok, "cli %s has no artefact for %s", name, arch)
+			assert.ContainsString(t, url, c.Version)
+			assert.That(t, !strings.Contains(url, "${"), "%s: the url still holds a placeholder: %s", name, url)
+			assert.That(t, a.Bin != "", "cli %s: no bin for %s", name, arch)
+		}
 	}
 }
 
@@ -75,6 +83,7 @@ func TestDefaultsAreCopies(t *testing.T) {
 }
 
 func TestParseErrors(t *testing.T) {
+	zeros := strings.Repeat("0", 64)
 	const cli = "clis: {x: {version: 1.0.0, login-file: .x/login}}\n"
 	for name, tc := range map[string]struct{ in, want string }{
 		"unknown key":       {"harnesses: {h: {run: a, nope: 1}}", `line 1: harnesses.h: unknown key "nope"`},
@@ -98,6 +107,13 @@ func TestParseErrors(t *testing.T) {
 		"env is home":       {"clis: {x: {version: 1.0.0, home-env: {HOME: .x}}}", "clis.x: home-env HOME is pats's own to set"},
 		"env twice":         {"harnesses: {h: {run: a, auth-env: [K], pass-env: [K]}}", "harnesses.h: pass-env K is also in auth-env"},
 		"env in home-env":   {"harnesses: {h: {run: a, cli: x, auth-env: [X_HOME]}}\nclis: {x: {version: 1.0.0, home-env: {X_HOME: .x}}}", "harnesses.h: auth-env X_HOME is also in its cli's home-env"},
+		"artefact url":      {"clis: {x: {version: 1.0.0, artefacts: {'ftp://x/y': {arch: [amd64], sha256: " + zeros + "}}}}", "is not an http or https url"},
+		"artefact arch":     {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [riscv64], sha256: " + zeros + "}}}}", `arch "riscv64" is not one of amd64, arm64`},
+		"artefact no arch":  {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {sha256: " + zeros + "}}}}", "arch is required"},
+		"artefact sha":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: abc}}}}", "sha256 is 64 lower-case hex digits"},
+		"artefact bin":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: " + zeros + ", bin: ../x}}}}", "is not a path inside the artefact"},
+		"artefact key":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: " + zeros + ", exe: x}}}}", `artefacts https://x/y: unknown key "exe"`},
+		"two for one arch":  {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: " + zeros + "}, 'https://x/z': {arch: [amd64, arm64], sha256: " + zeros + "}}}}", "two artefacts are for amd64"},
 		"login-file leaves": {"clis: {x: {version: 1.0.0, login-file: ../.ssh/id}}", "clis.x: login-file"},
 		"login-file abs":    {"clis: {x: {version: 1.0.0, login-file: /etc/passwd}}", "clis.x: login-file"},
 		"home-env leaves":   {"clis: {x: {version: 1.0.0, home-env: {X_HOME: ../x}}}", "clis.x: home-env X_HOME"},
@@ -173,4 +189,36 @@ func TestProject(t *testing.T) {
 		}
 	}
 	require.NoError(t, Defaults().Project(nil))
+}
+
+// a cli's artefact for an arch, its url at the cli's version or another, and
+// the digest moving with what a tree holds and not with where it is from.
+func TestArtefacts(t *testing.T) {
+	zeros, ones := strings.Repeat("0", 64), strings.Repeat("1", 64)
+	src := func(host, sha, bin string) string {
+		return "clis:\n  x:\n    version: 1.0.0\n    artefacts:\n      https://" + host + "/x-${version}-x64.tgz:\n        arch: [amd64]\n        sha256: " + sha + "\n        bin: " + bin + "\nharnesses: {h: {run: a, cli: x}}\n"
+	}
+	tb, err := Parse([]byte(src("a.example", zeros, "package/x")))
+	require.NoError(t, err)
+	c := tb.CLIs["x"]
+	url, a, ok := c.ArtefactFor("amd64", "")
+	require.That(t, ok, "no artefact for amd64")
+	assert.Equal(t, url, "https://a.example/x-1.0.0-x64.tgz")
+	assert.Equal(t, a.Bin, "package/x")
+	url, _, _ = c.ArtefactFor("amd64", "2.0.0")
+	assert.Equal(t, url, "https://a.example/x-2.0.0-x64.tgz")
+	key, _, _ := c.ArtefactKey("amd64")
+	assert.Equal(t, key, "https://a.example/x-${version}-x64.tgz")
+	_, _, ok = c.ArtefactFor("arm64", "")
+	assert.Equal(t, ok, false)
+
+	digest := func(host, sha, bin string) string {
+		tb, err := Parse([]byte(src(host, sha, bin)))
+		require.NoError(t, err)
+		return tb.Harness("h").Digest()
+	}
+	base := digest("a.example", zeros, "package/x")
+	assert.Equal(t, digest("mirror.example", zeros, "package/x"), base) // a url is where, not what
+	assert.That(t, digest("a.example", ones, "package/x") != base, "the digest did not move with the sha")
+	assert.That(t, digest("a.example", zeros, "package/bin/x") != base, "the digest did not move with the bin")
 }
