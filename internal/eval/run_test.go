@@ -1091,6 +1091,9 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.ContainsString(t, pm.Error, "prompt: ")
 	assert.Equal(t, pm.Sandbox, "sxx")
 	assert.That(t, pm.Synced != nil && !*pm.Synced, "a pair that never started synced nothing")
+	// its record still says which definition it was asked to run.
+	assert.Equal(t, pm.HarnessFrom, "default")
+	assert.Equal(t, pm.HarnessSHA256, hd("opencode-openrouter").Digest())
 	assert.ContainsString(t, out.String(), "1 error")
 	assert.Equal(t, judgeRowOf(filepath.Join(runDir, "axx", "txx")), rowNA)
 }

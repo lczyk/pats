@@ -128,7 +128,11 @@ func TestOverlayErrors(t *testing.T) {
 		"unknown cli":     {"harnesses:\n  claude-cli-keyless:\n    cli: nope", `config.yaml:2: harnesses.claude-cli-keyless: cli "nope" is not in clis`},
 		"bad parse":       {"harnesses:\n  mine:\n    run: a\n    parse: out.tool(nope)", "config.yaml:2: harnesses.mine.parse:1:10: undefined: nope"},
 		"a path in allow": {"harnesses:\n  mine:\n    run: a\n    egress: {allow: [x.com/v1/*]}", "config.yaml:2: harnesses.mine: egress allow"},
-		"wrong type":      {"harnesses:\n  mine:\n    run: a\n    auth-env: 5", "config.yaml:"},
+		"wrong type":      {"harnesses:\n  mine:\n    run: a\n    auth-env: 5", "config.yaml:4: harnesses.mine: cannot unmarshal"},
+		"nested key":      {"harnesses:\n  claude-cli-keyless:\n    egress:\n      alow: [x.com]", `config.yaml:4: harnesses.claude-cli-keyless: egress: unknown key "alow"`},
+		"a key twice":     {"harnesses:\n  mine:\n    run: a\n    run: b", `config.yaml:4: harnesses.mine: key "run" is there twice`},
+		"an entry twice":  {"harnesses:\n  mine: {run: a}\n  mine: {run: b}", "config.yaml:3: harnesses.mine is there twice"},
+		"a table twice":   {"harnesses: {}\nharnesses: {}", `config.yaml:2: table "harnesses" is there twice`},
 		"login, no file":  {"harnesses:\n  copilot-cli-keyless:\n    login: true", "config.yaml:2: harnesses.copilot-cli-keyless: login needs a cli with a login-file"},
 	} {
 		write(t, tc.in)
@@ -137,6 +141,16 @@ func TestOverlayErrors(t *testing.T) {
 			t.Errorf("%s: got %v, want an error with %q", name, err, tc.want)
 		}
 	}
+}
+
+// an alias stands for what it names: an entry written once and used twice.
+func TestOverlayAlias(t *testing.T) {
+	write(t, "harnesses:\n  one: &base\n    run: base --go\n    egress: {allow: [base.example]}\n  two: *base\n")
+	tb, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, tb.Harness("two").Run, "base --go")
+	assert.Equal(t, tb.Harness("two").Digest(), tb.Harness("one").Digest())
+	assert.Equal(t, tb.Harness("two").From, FromMachine)
 }
 
 // the digest is of the definition: it moves with a key of the entry and

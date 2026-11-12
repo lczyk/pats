@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
@@ -349,8 +350,21 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 // not today's. a pair with no recorded policy has none left out.
 func harnessRule(pairDir string) (proxy.Rule, error) {
 	var pm pairMeta
+	p := filepath.Join(pairDir, "metadata.json")
+	b, err := os.ReadFile(p)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return proxy.ParseRule(false, nil, nil)
+	case err == nil:
+		err = json.Unmarshal(b, &pm)
+	}
+	// a record that cannot be read is not one with no policy: its harness's
+	// hosts would pass for the task's.
+	if err != nil {
+		return proxy.Rule{}, fmt.Errorf("%s: %w", p, err)
+	}
 	var hosts []string
-	if b, err := os.ReadFile(filepath.Join(pairDir, "metadata.json")); err == nil && json.Unmarshal(b, &pm) == nil && pm.Egress != nil {
+	if pm.Egress != nil {
 		hosts = pm.Egress.Policy.Harness
 	}
 	return proxy.ParseRule(false, hosts, nil)

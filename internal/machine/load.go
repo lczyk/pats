@@ -84,12 +84,15 @@ func Overlay(over []byte, path string) (*Tables, error) {
 		errs = append(errs, fmt.Sprintf("%s:%d: %s", path, line, fmt.Sprintf(format, a...)))
 	}
 	if len(doc.Content) > 0 {
-		root := doc.Content[0]
+		root := deref(doc.Content[0])
 		if root.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s:%d: the top level is a mapping of tables", path, root.Line)
 		}
+		if d := dupKey(root); d != nil {
+			add(d.Line, "table %q is there twice", d.Value)
+		}
 		for i := 0; i+1 < len(root.Content); i += 2 {
-			table, entries := root.Content[i], root.Content[i+1]
+			table, entries := deref(root.Content[i]), deref(root.Content[i+1])
 			typ, ok := machineTables[table.Value]
 			switch {
 			case table.Value == "clis":
@@ -104,20 +107,23 @@ func Overlay(over []byte, path string) (*Tables, error) {
 				add(entries.Line, "%s is a mapping of entries", table.Value)
 				continue
 			}
-			known := yamlKeys(typ)
+			if d := dupKey(entries); d != nil {
+				add(d.Line, "%s.%s is there twice", table.Value, d.Value)
+			}
 			into := mappingValue(t.root, table.Value)
 			for j := 0; j+1 < len(entries.Content); j += 2 {
-				name, entry := entries.Content[j], entries.Content[j+1]
+				name, entry := deref(entries.Content[j]), deref(entries.Content[j+1])
 				id := table.Value + "." + name.Value
 				t.lines[id] = name.Line
 				if entry.Kind != yaml.MappingNode {
 					add(entry.Line, "%s is a mapping of keys", id)
 					continue
 				}
-				for k := 0; k+1 < len(entry.Content); k += 2 {
-					if key := entry.Content[k]; !known[key.Value] {
-						add(key.Line, "%s: unknown key %q", id, key.Value)
+				if probs := entryProblems(entry, typ); len(probs) > 0 {
+					for _, p := range probs {
+						add(p.line, "%s: %s", id, p.msg)
 					}
+					continue
 				}
 				t.from[name.Value] = FromMachine
 				if lay(into, name, entry) {
@@ -151,7 +157,7 @@ func lay(table, name, entry *yaml.Node) (added bool) {
 		return true
 	}
 	for k := 0; k+1 < len(entry.Content); k += 2 {
-		setKey(old, entry.Content[k], entry.Content[k+1])
+		setKey(old, deref(entry.Content[k]), entry.Content[k+1])
 	}
 	return false
 }
@@ -180,11 +186,96 @@ func (t *Tables) Project(items []Item) error {
 	if t.from == nil {
 		t.from = map[string]string{}
 	}
+	var errs []string
+	for _, it := range items {
+		for _, p := range entryProblems(it.Node, tableTypes["harnesses"]) {
+			errs = append(errs, fmt.Sprintf("line %d: harnesses.%s: %s", p.line, it.Name, p.msg))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "\n"))
+	}
 	for _, it := range items {
 		lay(table, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it.Name}, it.Node)
 		t.from[it.Name] = FromProject
 	}
 	return t.build()
+}
+
+// problem is one thing wrong with an entry as written, and the line it is on.
+type problem struct {
+	line int
+	msg  string
+}
+
+// entryProblems checks one entry before it is laid over anything: every key
+// is one its type takes, nested ones too, and is there once, and its values
+// decode. laid over first, a wrong key would be ignored and a second one of
+// the same name would win, both without a word.
+func entryProblems(entry *yaml.Node, typ reflect.Type) []problem {
+	var out []problem
+	var walk func(m *yaml.Node, typ reflect.Type, where string)
+	walk = func(m *yaml.Node, typ reflect.Type, where string) {
+		fields := yamlFields(typ)
+		if d := dupKey(m); d != nil {
+			out = append(out, problem{d.Line, fmt.Sprintf("%skey %q is there twice", where, d.Value)})
+		}
+		for i := 0; i+1 < len(m.Content); i += 2 {
+			key, val := deref(m.Content[i]), deref(m.Content[i+1])
+			ft, ok := fields[key.Value]
+			switch {
+			case !ok:
+				out = append(out, problem{key.Line, fmt.Sprintf("%sunknown key %q", where, key.Value)})
+			case ft.Kind() == reflect.Struct && val.Kind == yaml.MappingNode:
+				walk(val, ft, where+key.Value+": ")
+			}
+		}
+	}
+	walk(entry, typ, "")
+	if len(out) > 0 {
+		return out
+	}
+	err := withoutNulls(entry).Decode(reflect.New(typ).Interface())
+	var te *yaml.TypeError
+	switch {
+	case errors.As(err, &te):
+		for _, e := range te.Errors {
+			line := entry.Line
+			if rest, ok := strings.CutPrefix(e, "line "); ok {
+				if n, msg, ok := strings.Cut(rest, ": "); ok {
+					if _, serr := fmt.Sscanf(n, "%d", &line); serr == nil {
+						e = msg
+					}
+				}
+			}
+			out = append(out, problem{line, e})
+		}
+	case err != nil:
+		out = append(out, problem{entry.Line, err.Error()})
+	}
+	return out
+}
+
+// deref is the node an alias stands for, or the node itself.
+func deref(n *yaml.Node) *yaml.Node {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		return n.Alias
+	}
+	return n
+}
+
+// dupKey is the second of two keys of one name in a mapping, nil when each
+// is there once.
+func dupKey(m *yaml.Node) *yaml.Node {
+	seen := map[string]bool{}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		k := deref(m.Content[i])
+		if seen[k.Value] {
+			return k
+		}
+		seen[k.Value] = true
+	}
+	return nil
 }
 
 // located puts the file, and the line of the entry when it is the file's,
@@ -251,13 +342,16 @@ func (h *Harness) Digest() string {
 	return hex.EncodeToString(sum[:])
 }
 
-func isNull(n *yaml.Node) bool { return n.Kind == yaml.ScalarNode && n.Tag == "!!null" }
+func isNull(n *yaml.Node) bool {
+	n = deref(n)
+	return n.Kind == yaml.ScalarNode && n.Tag == "!!null"
+}
 
 // mappingValue is the value of key in a mapping node, nil when it has none.
 func mappingValue(m *yaml.Node, key string) *yaml.Node {
 	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			return m.Content[i+1]
+		if deref(m.Content[i]).Value == key {
+			return deref(m.Content[i+1])
 		}
 	}
 	return nil
@@ -294,14 +388,23 @@ func withoutNulls(m *yaml.Node) *yaml.Node {
 	return &out
 }
 
-// yamlKeys is the keys a struct takes from yaml.
-func yamlKeys(t reflect.Type) map[string]bool {
-	keys := map[string]bool{}
+// yamlFields is the keys a struct takes from yaml, and each one's type.
+func yamlFields(t reflect.Type) map[string]reflect.Type {
+	fields := map[string]reflect.Type{}
 	for i := 0; i < t.NumField(); i++ {
 		name, _, _ := strings.Cut(t.Field(i).Tag.Get("yaml"), ",")
 		if name != "" && name != "-" {
-			keys[name] = true
+			fields[name] = t.Field(i).Type
 		}
+	}
+	return fields
+}
+
+// yamlKeys is the keys a struct takes from yaml.
+func yamlKeys(t reflect.Type) map[string]bool {
+	keys := map[string]bool{}
+	for k := range yamlFields(t) {
+		keys[k] = true
 	}
 	return keys
 }

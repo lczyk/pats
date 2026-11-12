@@ -210,6 +210,10 @@ func TestSuggestEgress(t *testing.T) {
 	assert.ContainsString(t, out.String(), "    - api.anthropic.com\n")
 	assert.Equal(t, strings.Contains(out.String(), "# harness hosts"), false)
 
+	// a record that cannot be read is an error, not a pair with no policy.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "001-20261106-test-run", "axx", "txx", "metadata.json"), []byte(`{"agent":`), 0o644))
+	assert.Error(t, SuggestEgress(dir, "", &out), "metadata.json")
+
 	// tunnels only: methods are unknown, and said to be.
 	dir = writeRun(t, `{"ev":"open","host":"a.test","port":"443","kind":"tunnel","allowed":true,"rule":"default"}
 `)

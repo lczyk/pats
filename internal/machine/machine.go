@@ -169,13 +169,13 @@ func Parse(data []byte) (*Tables, error) {
 		if entries.Kind != yaml.MappingNode {
 			continue // decoding says what is wrong with it
 		}
-		known := yamlKeys(typ)
 		for j := 0; j+1 < len(entries.Content); j += 2 {
-			name, entry := entries.Content[j], entries.Content[j+1]
-			for k := 0; entry.Kind == yaml.MappingNode && k+1 < len(entry.Content); k += 2 {
-				if key := entry.Content[k]; !known[key.Value] {
-					errs = append(errs, fmt.Sprintf("line %d: %s.%s: unknown key %q", key.Line, table.Value, name.Value, key.Value))
-				}
+			name, entry := entries.Content[j], deref(entries.Content[j+1])
+			if entry.Kind != yaml.MappingNode {
+				continue
+			}
+			for _, p := range entryProblems(entry, typ) {
+				errs = append(errs, fmt.Sprintf("line %d: %s.%s: %s", p.line, table.Value, name.Value, p.msg))
 			}
 		}
 	}

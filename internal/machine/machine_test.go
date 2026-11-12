@@ -164,7 +164,8 @@ func TestProject(t *testing.T) {
 		"unknown cli": {item("mine", "{run: a, cli: nope}"), `harnesses.mine: cli "nope" is not in clis`},
 		"bad name":    {item("Mine", "{run: a}"), "harnesses.Mine: a name is"},
 		"bad parse":   {item("mine", "{run: a, parse: 'out.tool('}"), "harnesses.mine.parse:"},
-		"wrong type":  {item("mine", "{run: a, auth-env: 5}"), "cannot unmarshal"},
+		"wrong type":  {item("mine", "{run: a, auth-env: 5}"), "line 1: harnesses.mine: cannot unmarshal"},
+		"nested key":  {item("mine", "{run: a, egress: {alow: [x.com]}}"), `line 1: harnesses.mine: egress: unknown key "alow"`},
 	} {
 		err := Defaults().Project([]Item{tc.it})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

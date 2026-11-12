@@ -402,6 +402,9 @@ func pairFailed(ctx context.Context, cfg *config.Config, job pairJob, sandboxes 
 		ExitCode: -1, Status: "error", Error: cause.Error(), Synced: &synced,
 		PatsVersion: version.Info.Version,
 	}
+	if hd := cfg.HarnessOf(a); hd != nil {
+		meta.HarnessFrom, meta.HarnessSHA256 = hd.From, hd.Digest()
+	}
 	if ctx.Err() != nil {
 		meta.Error = "interrupted"
 	}
