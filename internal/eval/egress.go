@@ -14,11 +14,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"unicode"
 
-	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/machine"
 	"github.com/lczyk/pats/src/sandbox/proxy"
 	"gopkg.in/yaml.v3"
 )
@@ -51,19 +52,19 @@ func EffectivePolicy(cfg *config.Config, sandboxID, taskID, agentID string) (pro
 			return proxy.Policy{}, fmt.Errorf("unknown task %q", taskID)
 		}
 	}
-	harness := ""
+	var hd *machine.Harness
 	if agentID != "" {
 		found := false
 		for _, a := range cfg.Agents {
 			if a.Name == agentID {
-				harness, found = a.Harness, true
+				hd, found = cfg.HarnessOf(a), true
 			}
 		}
 		if !found {
 			return proxy.Policy{}, fmt.Errorf("unknown agent %q", agentID)
 		}
 	}
-	return egressFor(*sb, te, harness, "", false).Policy, nil
+	return egressFor(*sb, te, hd, "", false).Policy, nil
 }
 
 // CheckURL prints the verdict a policy gives target -- a url, or a bare host
@@ -348,14 +349,20 @@ func SuggestEgress(configDir, runArg string, out io.Writer) error {
 // suggestion. an unknown harness (a run from before metadata named it) gets
 // every harness's hosts.
 func harnessRule(harness string) (proxy.Rule, error) {
-	hosts, ok := agent.RequiredHosts[harness]
-	if !ok {
-		for _, hs := range agent.RequiredHosts {
-			hosts = append(hosts, hs...)
+	var hosts []string
+	if hd := builtins().Harness(harness); hd != nil {
+		hosts = hd.Egress.Allow
+	} else {
+		for _, n := range builtins().Names() {
+			hosts = append(hosts, builtins().Harness(n).Egress.Allow...)
 		}
 	}
 	return proxy.ParseRule(false, hosts, nil)
 }
+
+// builtins are the harnesses this pats ships, for a command that reads a
+// run's records and no config.
+var builtins = sync.OnceValue(machine.Defaults)
 
 // pairHarness reads the harness a pair ran from its metadata, "" if unknown.
 func pairHarness(pairDir string) string {

@@ -15,10 +15,6 @@ import (
 // the dry run (docs/spec/run-dry-run.md): the pairs a run would run, each
 // with an estimate from what the same pair cost before.
 
-// noCostHarnesses report no dollar cost (has_cost false): their estimate is
-// unknown for that reason, never $0.
-var noCostHarnesses = map[string]bool{"codex-cli-keyless": true, "copilot-cli-keyless": true}
-
 // dryPair is one line of the dry run.
 type dryPair struct {
 	Agent    string   `json:"agent"`
@@ -80,7 +76,9 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 			total.KnownUSD += t
 		} else {
 			why := "no history"
-			if noCostHarnesses[a.Harness] {
+			// a harness that reports no dollar cost has an unknown estimate
+			// for that reason, never $0.
+			if !cfg.HarnessOf(a).ReportsCost() {
 				why = "no cost reported"
 			}
 			d.Unknown = &why

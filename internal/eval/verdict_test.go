@@ -12,8 +12,6 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
-
-	"github.com/lczyk/pats/internal/config"
 )
 
 func TestParseVerdict(t *testing.T) {
@@ -121,8 +119,8 @@ func FuzzFinalTexts(f *testing.F) {
 		require.NoError(t, os.WriteFile(path, data, 0o644))
 		require.NoError(t, os.WriteFile(noisy, slices.Concat([]byte("not json\n"), data, []byte("\n{\"type\":\n")), 0o644))
 
-		for h := range config.Harnesses {
-			texts, err := finalTexts(h, path)
+		for _, h := range harnessNames() {
+			texts, err := finalTexts(hd(h), path)
 			if err != nil {
 				// only a line past the scanner's cap stops a read.
 				assert.ErrorIs(t, err, bufio.ErrTooLong, h)
@@ -131,7 +129,7 @@ func FuzzFinalTexts(f *testing.F) {
 			if h != "claude-cli-keyless" {
 				assert.That(t, len(texts) <= 1, "%s kept %d replies", h, len(texts))
 			}
-			again, err := finalTexts(h, noisy)
+			again, err := finalTexts(hd(h), noisy)
 			require.NoError(t, err, h)
 			assert.EqualArrays(t, again, texts, h)
 
@@ -143,7 +141,7 @@ func FuzzFinalTexts(f *testing.F) {
 					break
 				}
 			}
-			score, na, err := judgeVerdict(h, path)
+			score, na, err := judgeVerdict(hd(h), path)
 			if len(texts) == 0 {
 				assert.ErrorIs(t, err, errNoReply, h)
 			}
@@ -157,7 +155,7 @@ func FuzzFinalTexts(f *testing.F) {
 		}
 
 		// a harness with no reader never yields a verdict.
-		_, _, err := judgeVerdict("no-such-harness", path)
+		_, _, err := judgeVerdict(hd("no-such-harness"), path)
 		assert.That(t, err != nil, "a verdict for an unknown harness")
 	})
 }
@@ -168,10 +166,10 @@ func FuzzFinalTexts(f *testing.F) {
 func TestFinalTextsLongLine(t *testing.T) {
 	long := `{"type":"result","result":"` + strings.Repeat("x", 8<<20) + `\nSCORE: 1"}`
 	p := writeLog(t, `{"type":"result","result":"SCORE: 1"}`+"\n"+long+"\n")
-	for h := range config.Harnesses {
-		_, err := finalTexts(h, p)
+	for _, h := range harnessNames() {
+		_, err := finalTexts(hd(h), p)
 		assert.ErrorIs(t, err, bufio.ErrTooLong, h)
-		_, _, err = judgeVerdict(h, p)
+		_, _, err = judgeVerdict(hd(h), p)
 		assert.ErrorIs(t, err, bufio.ErrTooLong, h)
 	}
 }
@@ -219,7 +217,7 @@ func TestJudgeVerdictPerHarness(t *testing.T) {
 		{"no score", "claude-cli-keyless", `{"type":"result","result":"I could not decide"}` + "\n", 0, false, "does not end in a SCORE"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			score, na, err := judgeVerdict(c.harness, writeLog(t, c.log))
+			score, na, err := judgeVerdict(hd(c.harness), writeLog(t, c.log))
 			if c.err != "" {
 				assert.Error(t, err, c.err)
 				return

@@ -54,7 +54,7 @@ func TestCheckOpenrouterModels(t *testing.T) {
 	ok := []config.Agent{orAgent("a", "openai/gpt-4o-mini"), orAgent("b", "x/y:free"), orAgent("c", "x/y:nitro:free"),
 		orAgent("d", "x/y:free:floor:nitro"), orAgent("e", "openai/gpt-4o:nitro"),
 		{Name: "claude", Harness: "claude-cli-keyless", Model: "nonsense"}}
-	warns, err := checkOpenrouterModels(context.Background(), ok, http.DefaultClient)
+	warns, err := checkOpenrouterModels(context.Background(), catalogueAgents(&config.Config{}, ok, "openrouter"), http.DefaultClient)
 	require.NoError(t, err)
 	assert.Len(t, warns, 0)
 

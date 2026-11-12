@@ -105,7 +105,8 @@ func runPair(
 
 	// every agent is a harness: give it a writable HOME + wire creds. this
 	// precedes stage so stage can seed harness config into it.
-	h, err := newHarness(opts, a, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), job.label)
+	hd := cfg.HarnessOf(a)
+	h, err := newHarness(opts, a, hd, sb, t.Egress, workDir, filepath.Base(runDir), filepath.Join(outDir, "egress.log"), job.label)
 	if err != nil {
 		return err
 	}
@@ -172,7 +173,7 @@ func runPair(
 	// agent output goes to the log file, always also tapped through statTap for
 	// the in-run counters (out lines + per-harness tool parse) -- the full
 	// stdout.log is still written intact. stat is never nil (see doc comment).
-	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Harness)})
+	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(hd)})
 
 	// setup -- start, the in-sandbox prepare -- has its own budget; the
 	// task's timeout covers the agent only.
@@ -319,7 +320,7 @@ func runPair(
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, Synced: &synced,
 		PatsVersion:  version.Info.Version,
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
-		Summary:    summarize(a.Harness, filepath.Join(outDir, "stdout.log")),
+		Summary:    summarize(hd, filepath.Join(outDir, "stdout.log")),
 		Components: sb.Components,
 	}
 	if sb.Driver == sandbox.LXDDriver {
@@ -370,7 +371,7 @@ func runPair(
 		lg.error("%s", statusLine)
 	}
 	stat.status = status
-	stats := stat.cols(statScanner(a.Harness) != nil)
+	stats := stat.cols(statScanner(hd) != nil)
 	if s := meta.Summary; s != nil {
 		// cost + turns are omitted for harnesses whose stream doesn't report them.
 		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))

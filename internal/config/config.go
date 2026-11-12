@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"time"
 
+	"github.com/lczyk/pats/internal/machine"
 	"github.com/lczyk/pats/src/sandbox"
 	"github.com/lczyk/pats/src/sandbox/proxy"
 	"gopkg.in/yaml.v3"
@@ -29,6 +31,20 @@ type Config struct {
 	Tasks     []Task
 	Scorers   []Scorer
 	Suites    []Suite
+	// Harnesses are the harness and cli tables the config runs with: this
+	// config's own copy, so nothing done to it reaches another.
+	Harnesses *machine.Tables
+}
+
+// builtins answers for a Config that was built by hand and carries no tables.
+var builtins = sync.OnceValue(machine.Defaults)
+
+// HarnessOf is the entry an agent's harness names, nil when there is none.
+func (c *Config) HarnessOf(a Agent) *machine.Harness {
+	if c == nil || c.Harnesses == nil {
+		return builtins().Harness(a.Harness)
+	}
+	return c.Harnesses.Harness(a.Harness)
 }
 
 // Sandbox is an isolation environment a task-running agent executes in.
@@ -146,13 +162,8 @@ type Limits struct {
 	Disk   string `yaml:"disk"`   // e.g. 20GiB
 }
 
-// Agent is a harness (an agent cli) under test, run in a sandbox. four
-// harnesses:
-//
-//	opencode-openrouter -- opencode cli, models via openrouter (OPENROUTER_API_KEY)
-//	claude-cli-keyless  -- claude cli, keyless oauth creds (~/.claude/.credentials.json)
-//	codex-cli-keyless   -- codex cli, keyless chatgpt creds (~/.codex/auth.json)
-//	copilot-cli-keyless -- copilot cli, keyless github token (COPILOT_GITHUB_TOKEN)
+// Agent is a harness (an agent cli) under test, run in a sandbox. Harness
+// names an entry of the config's harness table (Config.Harnesses).
 type Agent struct {
 	Name    string `yaml:"-"`
 	Vector  string `yaml:"-"`
@@ -322,17 +333,3 @@ func Load(path string) (*Config, error) {
 
 // Kinds lists the vector kinds, in the order the resolved config holds them.
 var Kinds = []string{"sandbox", "agent", "task", "scorer", "suite"}
-
-// Harnesses is the set of supported agent harnesses. the harness->command
-// mapping lives in agent.HarnessCmds; config can't import it (would cycle), so
-// the names are repeated here -- a test in the agent package keeps the two in
-// sync.
-var Harnesses = map[string]bool{
-	"opencode-openrouter": true,
-	"claude-cli-keyless":  true,
-	"codex-cli-keyless":   true,
-	"copilot-cli-keyless": true,
-}
-
-// harnessList names the harnesses in error messages.
-const harnessList = "opencode-openrouter|claude-cli-keyless|codex-cli-keyless|copilot-cli-keyless"

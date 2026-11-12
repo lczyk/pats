@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
@@ -93,9 +92,9 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	sb := sandboxes[sbID]
 	if sandbox.TraitsOf(sb.Driver).HostCLIs {
 		// no image carries the cli: the machine's PATH must.
-		if cli, ok := agent.HarnessCLIs[a.Harness]; ok {
-			if _, err := sandbox.HostLookPath(cli); err != nil {
-				return fmt.Errorf("its harness cli %s is not on this machine's PATH; install it", cli)
+		if hd := cfg.HarnessOf(a); hd != nil && hd.CLI != "" {
+			if _, err := sandbox.HostLookPath(hd.CLI); err != nil {
+				return fmt.Errorf("its harness cli %s is not on this machine's PATH; install it", hd.CLI)
 			}
 		}
 	}
@@ -112,7 +111,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	defer sandbox.RemoveTemp(workDir)
 
 	// same egress policy as real runs (no audit).
-	h, err := newHarness(opts, a, sb, config.TaskEgress{}, workDir, "", "", a.Name+" x preflight")
+	h, err := newHarness(opts, a, cfg.HarnessOf(a), sb, config.TaskEgress{}, workDir, "", "", a.Name+" x preflight")
 	if err != nil {
 		return err
 	}

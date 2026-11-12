@@ -1,0 +1,98 @@
+# what this pats knows about the harnesses it ships: docs/spec/machine-config.md.
+
+clis:
+  claude:
+    version: 2.1.319
+    login-file: .claude/.credentials.json
+
+  codex:
+    version: 0.167.0
+    login-file: .codex/auth.json
+    # codex takes its state dir from CODEX_HOME, not from HOME.
+    home-env: {CODEX_HOME: .codex}
+
+  copilot:
+    version: 1.0.107
+    # no login-file: the default login is in the os keychain, and the
+    # plaintext fallback hides in a config file that exists tokenless too.
+
+  opencode:
+    version: 1.19.5
+
+harnesses:
+  claude-cli-keyless:
+    cli: claude
+    # stream-json with partial messages gives events as they happen. plain
+    # --print buffers to exit.
+    run: >-
+      claude --print --output-format stream-json --verbose --include-partial-messages
+      ${PATS_EFFORT:+--effort "$PATS_EFFORT"} --model "$PATS_MODEL"
+      --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"
+    egress:
+      allow:
+        - .anthropic.com   # inference
+        - .claude.com      # oauth token refresh, a 401 mid-run without it
+    auth-env: [ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN]
+    login: true
+    pass-env: [ANTHROPIC_BASE_URL]
+    auth-hint: >-
+      a claude token env (CLAUDE_CODE_OAUTH_TOKEN) or ~/.claude/.credentials.json
+      (or PATS_CLAUDE_AUTH_PATH)
+    reader: claude
+
+  codex-cli-keyless:
+    cli: codex
+    # pats is the outer sandbox, so codex's own approvals and sandbox are off.
+    # the prompt comes on stdin, so shell quoting never changes it.
+    run: >-
+      codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check
+      --dangerously-bypass-approvals-and-sandbox --model "$PATS_MODEL"
+      ${PATS_EFFORT:+-c model_reasoning_effort="$PATS_EFFORT"} - < "$PATS_PROMPT_FILE"
+    # api.github.com and raw.githubusercontent.com are left out on purpose:
+    # an update probe and a banner, and the run works without them.
+    egress:
+      allow:
+        - .openai.com    # oauth token refresh and api endpoints
+        - .chatgpt.com   # chatgpt-account inference
+    # no auth-env on purpose. codex reads CODEX_API_KEY and OPENAI_API_KEY
+    # when set, and withholding them is what keeps this harness keyless.
+    login: true
+    auth-hint: ~/.codex/auth.json (file-based codex login, or PATS_CODEX_AUTH_PATH)
+    reader: codex
+
+  copilot-cli-keyless:
+    cli: copilot
+    # --disable-builtin-mcps drops the github mcp server, which would hand the
+    # task github api access through the forwarded token.
+    run: >-
+      copilot -p "$(cat "$PATS_PROMPT_FILE")" --allow-all --output-format json
+      --no-auto-update --no-remote-export --disable-builtin-mcps --model "$PATS_MODEL"
+      ${PATS_EFFORT:+--effort "$PATS_EFFORT"}
+    egress:
+      allow:
+        - .github.com          # auth and the copilot token exchange
+        - .githubcopilot.com   # inference
+    # only the copilot variable. GH_TOKEN and GITHUB_TOKEN are ambient in many
+    # shells and usually lack the copilot permission.
+    auth-env: [COPILOT_GITHUB_TOKEN]
+    auth-hint: >-
+      COPILOT_GITHUB_TOKEN (macos: security find-generic-password -s copilot-cli -w; or gh auth token)
+    reader: copilot
+
+  opencode-openrouter:
+    cli: opencode
+    # the openrouter/ prefix is added here, so a config's model stays
+    # e.g. openai/gpt-4o-mini.
+    run: >-
+      opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions
+      --format json --thinking ${PATS_EFFORT:+--variant "$PATS_EFFORT"}
+      "$(cat "$PATS_PROMPT_FILE")"
+    egress:
+      allow:
+        - openrouter.ai        # inference
+        - models.dev           # model catalogue
+        - models.opencode.ai   # model catalogue, newer releases
+        - registry.npmjs.org   # runtime plugin fetch
+    auth-env: [OPENROUTER_API_KEY]
+    models: openrouter
+    reader: opencode

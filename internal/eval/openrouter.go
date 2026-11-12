@@ -14,10 +14,10 @@ import (
 	"github.com/lczyk/pats/internal/config"
 )
 
-// the model check (docs/spec/model-preflight.md): an opencode-openrouter
-// agent's model is looked up in openrouter's public catalogue before any
-// sandbox starts, so a typo'd, retired or tool-less model is a load error
-// rather than a sandbox per pair.
+// the model check (docs/spec/model-preflight.md): the model of an agent whose
+// harness names the openrouter catalogue is looked up in openrouter's public
+// catalogue before any sandbox starts, so a typo'd, retired or tool-less model
+// is a load error rather than a sandbox per pair.
 
 // checkModels is the check Run makes; a var so tests that are not about it
 // skip the network.
@@ -58,17 +58,13 @@ type openrouterModel struct {
 	SupportedParameters []string `json:"supported_parameters"`
 }
 
-// checkOpenrouterModels checks each opencode-openrouter agent's model
-// against the catalogue: it exists, and takes tools. a model that fails is
+// checkOpenrouterModels checks each agent's model against the catalogue: it
+// exists, and takes tools. the caller passes the agents whose harness names
+// the catalogue (catalogueAgents). a model that fails is
 // the error; a catalogue that cannot be read is a warning, and the run goes
 // on. a cancelled ctx (ctrl-c) is never swallowed.
 func checkOpenrouterModels(ctx context.Context, agents []config.Agent, client *http.Client) (warnings []string, err error) {
-	var check []config.Agent
-	for _, a := range agents {
-		if a.Harness == "opencode-openrouter" {
-			check = append(check, a)
-		}
-	}
+	check := agents
 	if len(check) == 0 {
 		return nil, nil
 	}
@@ -172,6 +168,18 @@ func editDistance(a, b string) int {
 		prev, cur = cur, prev
 	}
 	return prev[len(b)]
+}
+
+// catalogueAgents is the agents whose harness checks its models against
+// catalogue.
+func catalogueAgents(cfg *config.Config, agents []config.Agent, catalogue string) []config.Agent {
+	var out []config.Agent
+	for _, a := range agents {
+		if hd := cfg.HarnessOf(a); hd != nil && hd.Models == catalogue {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // pairAgents is the distinct agents pairs run, in config order.

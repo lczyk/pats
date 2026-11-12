@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/term"
+
+	"github.com/lczyk/pats/internal/machine"
 )
 
 // progress is a sticky multi-line terminal display for a parallel run: a total
@@ -424,15 +426,18 @@ func (t *statTap) Write(b []byte) (int, error) {
 //
 // NOTE: this is the one harness-coupled spot -- a stream-format change breaks
 // here, not the run. add a case per new harness.
-func statScanner(harness string) func([]byte, *pairStat) {
-	switch harness {
-	case "claude-cli-keyless":
+func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
+	if hd == nil {
+		return nil
+	}
+	switch hd.Reader {
+	case "claude":
 		return scanClaude
-	case "codex-cli-keyless":
+	case "codex":
 		return scanCodex
-	case "copilot-cli-keyless":
+	case "copilot":
 		return scanCopilot
-	case "opencode-openrouter":
+	case "opencode":
 		return scanOpencode
 	}
 	return nil
@@ -626,15 +631,18 @@ type runSummary struct {
 // harness. nil for harnesses whose log format pats can't read.
 //
 // NOTE: harness-coupled, like statScanner -- a stream-format change breaks here.
-func summarize(harness, stdoutPath string) *runSummary {
-	switch harness {
-	case "claude-cli-keyless":
+func summarize(hd *machine.Harness, stdoutPath string) *runSummary {
+	if hd == nil {
+		return nil
+	}
+	switch hd.Reader {
+	case "claude":
 		return claudeSummary(stdoutPath)
-	case "codex-cli-keyless":
+	case "codex":
 		return codexSummary(stdoutPath)
-	case "copilot-cli-keyless":
+	case "copilot":
 		return copilotSummary(stdoutPath)
-	case "opencode-openrouter":
+	case "opencode":
 		return opencodeSummary(stdoutPath)
 	}
 	return nil

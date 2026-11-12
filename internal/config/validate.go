@@ -350,23 +350,21 @@ func (c *Config) validateTaskEgress(add func(string, ...any)) {
 
 func (c *Config) validateAgents(add func(string, ...any)) {
 	for _, a := range c.Agents {
+		h := c.HarnessOf(a)
 		switch {
 		case a.Harness == "":
-			add("agent %q: missing harness (%s)", a.Name, harnessList)
-		case !Harnesses[a.Harness]:
+			add("agent %q: missing harness (%s)", a.Name, strings.Join(c.harnessNames(), "|"))
+		case h == nil:
 			add("agent %q: unknown harness %q", a.Name, a.Harness)
 		}
 		if a.Model == "" {
 			add("agent %q: model is required", a.Name)
 		}
-		if a.Effort != "" && !effortHarnesses[a.Harness] {
-			add("agent %q: effort is not supported by harness %q", a.Name, a.Harness)
-		}
 		if a.MaxCost != nil {
 			if err := CheckCost(*a.MaxCost); err != nil {
 				add("agent %q: max-cost: %v", a.Name, err)
-			} else if !LiveCostHarnesses[a.Harness] {
-				add("agent %q: max-cost needs a harness that reports cost as it runs (opencode-openrouter), not %q", a.Name, a.Harness)
+			} else if h != nil && !h.LiveCost() {
+				add("agent %q: max-cost needs a harness that reports cost as it runs (%s), not %q", a.Name, strings.Join(c.liveCostNames(), ", "), a.Harness)
 			}
 		}
 		sbID, err := c.ResolveSandbox(a)
@@ -374,24 +372,33 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 			add("%v", err)
 			continue
 		}
-		// every harness reaches an inference api (agent.RequiredHosts), so a
-		// sandbox with no network at all cannot run one.
+		// a harness that allows itself a host (its inference api) cannot run
+		// in a sandbox with no network at all.
 		for _, s := range c.Sandboxes {
-			if s.Name == sbID && s.Egress.None {
+			if s.Name == sbID && s.Egress.None && h != nil && len(h.Egress.Allow) > 0 {
 				add("agent %q: harness %q needs the network, but sandbox %q has egress: none", a.Name, a.Harness, s.Name)
 			}
 		}
 	}
 }
 
-// effortHarnesses is the set of harnesses whose cli takes a reasoning-effort
-// flag (claude: --effort; codex: model_reasoning_effort; copilot: --effort;
-// opencode: --variant).
-var effortHarnesses = map[string]bool{
-	"claude-cli-keyless":  true,
-	"codex-cli-keyless":   true,
-	"copilot-cli-keyless": true,
-	"opencode-openrouter": true,
+// harnessNames lists the harnesses an agent may name, sorted.
+func (c *Config) harnessNames() []string {
+	if c.Harnesses == nil {
+		return builtins().Names()
+	}
+	return c.Harnesses.Names()
+}
+
+// liveCostNames lists the harnesses that report cost as a pair runs.
+func (c *Config) liveCostNames() []string {
+	var out []string
+	for _, n := range c.harnessNames() {
+		if h := c.HarnessOf(Agent{Harness: n}); h != nil && h.LiveCost() {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // ResolveSandbox returns the sandbox name an agent runs in: its `sandbox` (an
@@ -613,10 +620,6 @@ func mark(m map[string]bool, xs StrList, sets map[string][]string) {
 		}
 	}
 }
-
-// LiveCostHarnesses report a pair's cost as it runs, so a per-agent
-// max-cost can stop one mid-run.
-var LiveCostHarnesses = map[string]bool{"opencode-openrouter": true}
 
 // CheckCost says whether a cap in us dollars is one: finite, above zero, at
 // most a million.

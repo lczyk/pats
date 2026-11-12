@@ -129,7 +129,7 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	// a model openrouter does not have, or one without tools, fails here,
 	// before the run dir and any sandbox.
 	if !opts.Offline {
-		warns, err := checkModels(ctx, pairAgents(cfg, pairs), http.DefaultClient)
+		warns, err := checkModels(ctx, catalogueAgents(cfg, pairAgents(cfg, pairs), "openrouter"), http.DefaultClient)
 		if err != nil {
 			return "", err
 		}
@@ -169,7 +169,7 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	if opts.MaxCost > 0 {
 		var uncapped []string
 		for _, a := range pairAgents(cfg, pairs) {
-			if noCostHarnesses[a.Harness] {
+			if !cfg.HarnessOf(a).ReportsCost() {
 				uncapped = append(uncapped, a.Name)
 			}
 		}
@@ -291,7 +291,7 @@ func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, run
 			}
 			if bar != nil {
 				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
-				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Harness) != nil)
+				bar.start(label, stat, egressPath, statScanner(cfg.HarnessOf(agents[p.Agent])) != nil)
 			}
 			job := taskJob(runDir, p, agents[p.Agent], tasks[p.Task])
 			if err := runPair(ctx, cfg, po, runDir, job, sandboxes, stat); err != nil {

@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/lczyk/pats/internal/machine"
 )
 
 // judgeSubdir is where a run keeps its judgements: .judge/<scorer>/<agent>/<task>/.
@@ -121,8 +123,8 @@ var errNoReply = errors.New("no final reply in the judge's output")
 // judgeVerdict reads the judge's score from its stream at path. the reply
 // is pulled out per harness: the stream also carries the prompt, tool
 // results and the reply in pieces, any of which may hold a SCORE: line.
-func judgeVerdict(harness, path string) (score float64, na bool, err error) {
-	texts, err := finalTexts(harness, path)
+func judgeVerdict(hd *machine.Harness, path string) (score float64, na bool, err error) {
+	texts, err := finalTexts(hd, path)
 	if err != nil {
 		return 0, false, err
 	}
@@ -146,7 +148,11 @@ func judgeVerdict(harness, path string) (score float64, na bool, err error) {
 
 // finalTexts is the judge's final reply out of its stream, newest first:
 // more than one only for claude, whose late result events follow the answer.
-func finalTexts(harness, path string) ([]string, error) {
+func finalTexts(hd *machine.Harness, path string) ([]string, error) {
+	reader := ""
+	if hd != nil {
+		reader = hd.Reader
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -175,20 +181,20 @@ func finalTexts(harness, path string) ([]string, error) {
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
 			continue
 		}
-		switch harness {
-		case "claude-cli-keyless":
+		switch reader {
+		case "claude":
 			if ev.Type == "result" {
 				texts = append(texts, ev.Result)
 			}
-		case "codex-cli-keyless":
+		case "codex":
 			if ev.Type == "item.completed" && ev.Item.Type == "agent_message" {
 				texts = []string{ev.Item.Text}
 			}
-		case "copilot-cli-keyless":
+		case "copilot":
 			if ev.Type == "assistant.message" && strings.TrimSpace(ev.Data.Content) != "" {
 				texts = []string{ev.Data.Content}
 			}
-		case "opencode-openrouter":
+		case "opencode":
 			switch ev.Type {
 			case "step_start":
 				step, stepDone = nil, false
@@ -201,19 +207,27 @@ func finalTexts(harness, path string) ([]string, error) {
 				step = append(step, ev.Part.Text)
 			}
 		default:
-			return nil, fmt.Errorf("no reply reader for harness %q", harness)
+			return nil, fmt.Errorf("no reply reader for harness %q", harnessName(hd))
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if harness == "opencode-openrouter" && len(step) > 0 {
+	if reader == "opencode" && len(step) > 0 {
 		texts = []string{strings.Join(step, "\n")}
 	}
 	for i, j := 0, len(texts)-1; i < j; i, j = i+1, j-1 {
 		texts[i], texts[j] = texts[j], texts[i]
 	}
 	return texts, nil
+}
+
+// harnessName is the entry's name, "" for none.
+func harnessName(hd *machine.Harness) string {
+	if hd == nil {
+		return ""
+	}
+	return hd.Name
 }
 
 // judged names the pair a verdict grades.

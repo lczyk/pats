@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/lczyk/pats/internal/machine"
 )
 
 // Parse decodes a pats.yaml body whose `dir` vectors resolve against the
@@ -26,7 +28,7 @@ func ParseIn(root string, data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	c := &Config{}
+	c := &Config{Harnesses: machine.Defaults()}
 	if len(doc.Content) == 0 {
 		return c, nil // empty file
 	}

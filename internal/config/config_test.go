@@ -274,7 +274,7 @@ func TestValidateErrors(t *testing.T) {
 		{"agent missing sandbox, many defined", base + "s2x: {kind: sandbox, items: {s2x: {image: img}}}\nbxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m}}}\n", "no sandbox set"},
 		{"agent sandbox names a vector of two", base + "boxes: {kind: sandbox, items: {b1x: {image: i}, b2x: {image: i}}}\nbxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: boxes}}}\n", "names 2 items"},
 		{"agent unknown sandbox", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: ghost}}}\n", "unknown sandbox \"ghost\""},
-		{"effort on an unknown harness", base + "bxx: {kind: agent, items: {bxx: {harness: bogus, model: m, effort: high}}}\n", "effort is not supported"},
+		{"effort on an unknown harness", base + "bxx: {kind: agent, items: {bxx: {harness: bogus, model: m, effort: high}}}\n", "unknown harness \"bogus\""},
 		{"max-cost on a harness without live cost", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, max-cost: 2}}}\n", "max-cost needs a harness that reports cost as it runs"},
 		{"env a shell will not set", base + "s2x: {kind: sandbox, items: {s2x: {image: img, env: {UID: '1'}}}}\n", "read-only in a shell"},
 		{"max-cost zero", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: 0}}}\n", "is not a cost cap"},
@@ -479,14 +479,6 @@ func TestEgressShapes(t *testing.T) {
 	assert.Equal(t, modes["off"], "none")
 	assert.Equal(t, modes["pxx"], "proxy")
 	assert.Equal(t, modes["nulled"], "open")
-}
-
-// effortHarnesses is a subset view over Harnesses; pin it so a typo'd or
-// removed harness can't linger there.
-func TestEffortHarnessesAreHarnesses(t *testing.T) {
-	for k := range effortHarnesses {
-		assert.That(t, Harnesses[k], "effortHarnesses entry %q is not a harness", k)
-	}
 }
 
 // FuzzParse: Parse never panics on arbitrary yaml, and what it loads Validate

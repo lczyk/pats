@@ -11,6 +11,7 @@ import (
 
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/machine"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -31,12 +32,12 @@ type harness struct {
 // stray prompt.txt next to the fixture gets noticed and commented on.
 const promptName = "prompt.txt"
 
-// newHarness resolves agent a into sandbox sb, with te (the task's egress
-// additions; zero for preflight) folded into the policy. the caller writes the prompt to
+// newHarness resolves agent a, on harness entry hd, into sandbox sb, with te
+// (the task's egress additions; zero for preflight) folded into the policy. the caller writes the prompt to
 // promptPath() before run; runID "" (preflight) leaves PATS_RUN_NAME unset and
 // turns on the egress self-test; auditPath "" turns the egress audit log off;
 // label prefixes the no-creds warning.
-func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskEgress, workDir, runID, auditPath, label string) (*harness, error) {
+func newHarness(opts Options, a config.Agent, hd *machine.Harness, sb config.Sandbox, te config.TaskEgress, workDir, runID, auditPath, label string) (*harness, error) {
 	box, err := newSandbox(placeOptions(sb), sandbox.SandboxOptions{
 		Image: sb.Image, Profiles: sb.Profiles, Config: sb.Config, ProxyImage: sb.ProxyImage,
 		Limits: sandbox.Limits{CPU: sb.Limits.CPU, Memory: sb.Limits.Memory, Disk: sb.Limits.Disk},
@@ -48,11 +49,11 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskE
 	if env == nil {
 		env = map[string]string{}
 	}
-	cenv, hasToken := agent.CredEnv(a.Harness)
+	cenv, hasToken := agent.CredEnv(hd)
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
 
 	var paths sandbox.Paths
-	hs, err := harnessHome(opts, label, a.Harness, env, hasToken, func(dir string) string {
+	hs, err := harnessHome(opts, label, hd, env, hasToken, func(dir string) string {
 		paths = sandbox.PathsOf(box, workDir, dir)
 		return paths.Home
 	})
@@ -60,13 +61,13 @@ func newHarness(opts Options, a config.Agent, sb config.Sandbox, te config.TaskE
 		return nil, err
 	}
 	maps.Copy(env, agent.Env(a, paths.Home+"/"+promptName, paths.Work, runID))
-	spec, err := agent.Spec(a, workDir, env)
+	spec, err := agent.Spec(hd, a, workDir, env)
 	if err != nil {
 		hs.cleanup()
 		return nil, err
 	}
 	spec.Mounts = hs.mounts
-	spec.Egress = egressFor(sb, te, a.Harness, auditPath, runID == "")
+	spec.Egress = egressFor(sb, te, hd, auditPath, runID == "")
 	spec.Sudo = sb.Sudo
 	return &harness{box: box, spec: spec, homeDir: hs.dir, paths: paths, cleanup: hs.cleanup}, nil
 }
@@ -132,7 +133,7 @@ type harnessSetup struct {
 //
 // inBox names the home as the agent is told it, given its host dir; nil is
 // homeMount.
-func harnessHome(opts Options, label, harness string, env map[string]string, hasToken bool, inBox func(string) string) (harnessSetup, error) {
+func harnessHome(opts Options, label string, hd *machine.Harness, env map[string]string, hasToken bool, inBox func(string) string) (harnessSetup, error) {
 	homeDir, err := sandbox.MkTemp("pats-home-")
 	if err != nil {
 		return harnessSetup{}, err
@@ -142,13 +143,13 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 		home = inBox(homeDir)
 	}
 	env["HOME"] = home
-	maps.Copy(env, agent.HomeEnv(harness, home))
+	maps.Copy(env, agent.HomeEnv(hd, home))
 
 	hasCreds := hasToken
 	// a token in the env is a way in of its own: a default login file this
 	// process may not read (a strict snap) is then no error.
-	cf, rel, err := agent.HostCredsFile(harness)
-	if err != nil && !(hasToken && os.Getenv(agent.AuthPathVar[harness]) == "") {
+	cf, rel, err := agent.HostCredsFile(hd)
+	if err != nil && !(hasToken && os.Getenv(agent.AuthPathVar(hd)) == "") {
 		sandbox.RemoveTemp(homeDir)
 		return harnessSetup{}, err
 	}
@@ -165,7 +166,7 @@ func harnessHome(opts Options, label, harness string, env map[string]string, has
 		hasCreds = true
 	}
 	if !hasCreds {
-		logw{opts.Out, opts.Color, opts.Verbose}.warn("%s no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(harness))
+		logw{opts.Out, opts.Color, opts.Verbose}.warn("%s no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(hd))
 	}
 	return harnessSetup{
 		dir:     homeDir,
@@ -185,9 +186,10 @@ func copyFile(src, dst string) error {
 // egressFor renders the egress policy one agent run gets: the sandbox's, with
 // the task's lists unioned in (the sandbox keeps every scalar), and under an
 // allowlisting proxy the harness's own hosts (inference, token refresh), so
-// pats.yaml only lists what the task needs. selfTest asks the driver to prove
-// the sandbox has no route out first (preflight does).
-func egressFor(sb config.Sandbox, te config.TaskEgress, harness, auditPath string, selfTest bool) sandbox.Egress {
+// pats.yaml only lists what the task needs. hd is nil for a sandbox no agent
+// runs in. selfTest asks the driver to prove the sandbox has no route out
+// first (preflight does).
+func egressFor(sb config.Sandbox, te config.TaskEgress, hd *machine.Harness, auditPath string, selfTest bool) sandbox.Egress {
 	eg := sandbox.Egress{
 		None:      sb.Egress.None,
 		Set:       sb.Egress.Set,
@@ -201,12 +203,16 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, harness, auditPath strin
 	}
 	eg.Policy.Allow = mergeHosts(eg.Policy.Allow, te.Allow)
 	eg.Policy.Deny = mergeHosts(eg.Policy.Deny, te.Deny)
+	if hd == nil {
+		return eg
+	}
+	eg.Policy.Deny = mergeHosts(eg.Policy.Deny, hd.Egress.Deny)
 	if eg.Policy.Default != "allow" {
-		eg.Policy.Allow = mergeHosts(eg.Policy.Allow, agent.RequiredHosts[harness])
+		eg.Policy.Allow = mergeHosts(eg.Policy.Allow, hd.Egress.Allow)
 	}
 	// the harness's hosts are exempt from the methods posture either way: its
 	// inference traffic is not the task's to inspect.
-	eg.Policy.Harness = mergeHosts(nil, agent.RequiredHosts[harness])
+	eg.Policy.Harness = mergeHosts(nil, hd.Egress.Allow)
 	return eg
 }
 

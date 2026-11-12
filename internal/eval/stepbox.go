@@ -256,7 +256,7 @@ func openStepBoxOnce(ctx context.Context, p *stepPlace, mounts []sandbox.Mount, 
 	}
 	spec := sandbox.Spec{
 		Workdir: work, Mounts: mounts, Sudo: p.sb.Sudo,
-		Egress: egressFor(p.sb, config.TaskEgress{}, "", filepath.Join(staging, audit), false),
+		Egress: egressFor(p.sb, config.TaskEgress{}, nil, filepath.Join(staging, audit), false),
 	}
 	bindMounts := p.sb.Driver != sandbox.LXDDriver
 	var sentinels []string

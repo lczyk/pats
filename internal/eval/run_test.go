@@ -19,7 +19,6 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
-	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 	"github.com/lczyk/pats/src/sandbox/proxy"
@@ -46,16 +45,13 @@ func TestRunE2E(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ncp \"$PATS_WORKDIR/result.txt\" \"$PATS_OUTPUT_DIR/\"\n"), 0o755))
 
-	old := agent.HarnessCmds["opencode-openrouter"]
-	agent.HarnessCmds["opencode-openrouter"] = `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`
-	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
-
 	cfg := parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
 axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
 txx: {kind: task, items: {txx: {prompt-file: prompt.txt, collect: ./collect.sh}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
+	cfg.Harnesses.Harness("opencode-openrouter").Run = `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`
 
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
@@ -936,7 +932,7 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 
 	var out bytes.Buffer
 	env := map[string]string{}
-	hs, err := harnessHome(Options{Out: &out}, "codex x txx", "codex-cli-keyless", env, false, nil)
+	hs, err := harnessHome(Options{Out: &out}, "codex x txx", hd("codex-cli-keyless"), env, false, nil)
 	require.NoError(t, err)
 	defer hs.cleanup()
 	require.Equal(t, len(hs.mounts), 1)
@@ -957,7 +953,7 @@ func TestEgressForIncludesCodexHosts(t *testing.T) {
 		Set:    true,
 		Policy: proxy.Policy{Default: "deny", Allow: []string{"task.example.com"}},
 	}}
-	eg := egressFor(sb, config.TaskEgress{}, "codex-cli-keyless", "/tmp/audit", true)
+	eg := egressFor(sb, config.TaskEgress{}, hd("codex-cli-keyless"), "/tmp/audit", true)
 	assert.Equal(t, eg.AuditPath, "/tmp/audit")
 	assert.Equal(t, eg.SelfTest, true)
 	assert.EqualArrays(t, eg.Policy.Harness, []string{".openai.com", ".chatgpt.com"})
@@ -978,7 +974,7 @@ func TestNewHarnessSandboxEnv(t *testing.T) {
 	sb := config.Sandbox{Name: "sxx", Driver: "docker", Image: "img", Env: map[string]string{"DENO_CERT": "/sbx-ca/bundle.pem", "PATS_PROMPT_FILE": "mine"}}
 	a := config.Agent{Name: "axx", Harness: "opencode-openrouter", Model: "m"}
 	var out bytes.Buffer
-	h, err := newHarness(Options{Out: &out}, a, sb, config.TaskEgress{}, t.TempDir(), "r", "", "axx x txx")
+	h, err := newHarness(Options{Out: &out}, a, hd(a.Harness), sb, config.TaskEgress{}, t.TempDir(), "r", "", "axx x txx")
 	require.NoError(t, err)
 	defer h.cleanup()
 	assert.Equal(t, h.spec.Env["DENO_CERT"], "/sbx-ca/bundle.pem")
@@ -994,7 +990,7 @@ func TestEgressForTaskUnion(t *testing.T) {
 		Policy: proxy.Policy{Default: "deny", DenyResponse: "404", Allow: []string{"a.test"}, Deny: []string{"a.test/x*"}},
 	}}
 	te := config.TaskEgress{Set: true, Allow: []string{"pypi.org", "a.test"}, Deny: []string{"github.com/*/answer*"}}
-	eg := egressFor(sb, te, "opencode-openrouter", "", false)
+	eg := egressFor(sb, te, hd("opencode-openrouter"), "", false)
 	assert.EqualArrays(t, eg.Policy.Deny, []string{"a.test/x*", "github.com/*/answer*"})
 	assert.Equal(t, eg.Policy.Allow[0], "a.test")
 	assert.Equal(t, eg.Policy.Allow[1], "pypi.org")
@@ -1003,7 +999,7 @@ func TestEgressForTaskUnion(t *testing.T) {
 	assert.Equal(t, len(sb.Egress.Policy.Deny), 1)
 
 	// a sandbox without the proxy ignores task lists (validation refuses the pairing).
-	open := egressFor(config.Sandbox{}, te, "opencode-openrouter", "", false)
+	open := egressFor(config.Sandbox{}, te, hd("opencode-openrouter"), "", false)
 	assert.Equal(t, open.Set, false)
 	assert.Equal(t, len(open.Policy.Allow), 0)
 }
@@ -1141,16 +1137,13 @@ func TestRunE2EPrepare(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "seed"), []byte("#!/bin/sh\necho \"seeded by $(id -u) for $PATS_TASK_NAME\" > \"$PATS_WORKDIR/prepared.txt\"\n"), 0o755))
 
-	old := agent.HarnessCmds["opencode-openrouter"]
-	agent.HarnessCmds["opencode-openrouter"] = `echo agent >> prepared.txt && test ! -e /pats-prepare && echo material-gone >> prepared.txt`
-	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
-
 	cfg := parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
 axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
 txx: {kind: task, items: {txx: {prompt: p, prepare: seed, collect: "cp $PATS_WORKDIR/prepared.txt $PATS_OUTPUT_DIR/"}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
+	cfg.Harnesses.Harness("opencode-openrouter").Run = `echo agent >> prepared.txt && test ! -e /pats-prepare && echo material-gone >> prepared.txt`
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
@@ -1168,16 +1161,13 @@ func TestRunE2EProvision(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "mark"), []byte("#!/bin/sh\necho \"provisioned $1\" > /etc/pats-mark\n"), 0o755))
 
-	old := agent.HarnessCmds["opencode-openrouter"]
-	agent.HarnessCmds["opencode-openrouter"] = `cat /etc/pats-mark > got.txt`
-	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
-
 	cfg := parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {base: ubuntu:26.04, provision: "mark once"}}}
 axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
 txx: {kind: task, items: {txx: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $PATS_OUTPUT_DIR/"}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
+	cfg.Harnesses.Harness("opencode-openrouter").Run = `cat /etc/pats-mark > got.txt`
 	var out bytes.Buffer
 	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
 	// every run after init builds and pulls nothing, here or in the driver.
@@ -1251,13 +1241,13 @@ func TestHarnessHomeAuthPath(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte("{}"), 0o000))
 	var out bytes.Buffer
-	hs, err := harnessHome(Options{Out: &out}, "claude x", "claude-cli-keyless", map[string]string{}, true, nil)
+	hs, err := harnessHome(Options{Out: &out}, "claude x", hd("claude-cli-keyless"), map[string]string{}, true, nil)
 	require.NoError(t, err)
 	hs.cleanup()
-	_, err = harnessHome(Options{Out: &out}, "claude x", "claude-cli-keyless", map[string]string{}, false, nil)
+	_, err = harnessHome(Options{Out: &out}, "claude x", hd("claude-cli-keyless"), map[string]string{}, false, nil)
 	assert.Error(t, err, "set PATS_CLAUDE_AUTH_PATH")
 
 	t.Setenv("PATS_CLAUDE_AUTH_PATH", t.TempDir())
-	_, err = harnessHome(Options{Out: &out}, "claude x", "claude-cli-keyless", map[string]string{}, true, nil)
+	_, err = harnessHome(Options{Out: &out}, "claude x", hd("claude-cli-keyless"), map[string]string{}, true, nil)
 	assert.Error(t, err, "PATS_CLAUDE_AUTH_PATH=")
 }

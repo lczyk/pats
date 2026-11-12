@@ -81,7 +81,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 `)
 	work := t.TempDir()
 	var out bytes.Buffer
-	h, err := newHarness(Options{Out: &out}, cfg.Agents[0], cfg.Sandboxes[0], config.TaskEgress{}, work, "r", "", "axx x t1x")
+	h, err := newHarness(Options{Out: &out}, cfg.Agents[0], cfg.HarnessOf(cfg.Agents[0]), cfg.Sandboxes[0], config.TaskEgress{}, work, "r", "", "axx x t1x")
 	require.NoError(t, err)
 	defer h.cleanup()
 	assert.Equal(t, h.paths.Work, work)

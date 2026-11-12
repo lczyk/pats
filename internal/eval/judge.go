@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/machine"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -163,7 +164,7 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 	if jo.MaxCost > 0 {
 		var uncapped []string
 		for _, a := range pairAgents(cfg, judgePairs) {
-			if noCostHarnesses[a.Harness] {
+			if !cfg.HarnessOf(a).ReportsCost() {
 				uncapped = append(uncapped, a.Name)
 			}
 		}
@@ -272,7 +273,7 @@ func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs 
 	if ro.Offline {
 		upstream <- nil
 	} else {
-		warns, err := checkModels(ctx, pairAgents(cfg, judgePairs), http.DefaultClient)
+		warns, err := checkModels(ctx, catalogueAgents(cfg, pairAgents(cfg, judgePairs), "openrouter"), http.DefaultClient)
 		if err != nil {
 			return err
 		}
@@ -580,7 +581,7 @@ func judgeSample(ctx context.Context, cfg *config.Config, ro Options, j *judgeme
 		v.Error = err.Error()
 		lg.error("%s %v", label, err)
 	default:
-		v = sampleVerdict(job.outDir, a.Harness, v)
+		v = sampleVerdict(job.outDir, cfg.HarnessOf(a), v)
 	}
 	switch {
 	case !v.OK:
@@ -600,7 +601,7 @@ func judgeSample(ctx context.Context, cfg *config.Config, ro Options, j *judgeme
 
 // sampleVerdict reads a finished judge's metadata and reply: the judge must
 // have ended ok, with no harness error, and its reply must parse.
-func sampleVerdict(outDir, harness string, v verdict) verdict {
+func sampleVerdict(outDir string, hd *machine.Harness, v verdict) verdict {
 	b, err := os.ReadFile(filepath.Join(outDir, "metadata.json"))
 	var m pairMeta
 	if err == nil {
@@ -620,7 +621,7 @@ func sampleVerdict(outDir, harness string, v verdict) verdict {
 		v.Error = "the judge's harness reported an error"
 		return v
 	}
-	score, na, err := judgeVerdict(harness, filepath.Join(outDir, "stdout.log"))
+	score, na, err := judgeVerdict(hd, filepath.Join(outDir, "stdout.log"))
 	if err != nil {
 		v.Error = err.Error()
 		return v

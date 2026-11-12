@@ -11,8 +11,6 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
-
-	"github.com/lczyk/pats/internal/config"
 )
 
 // drive the progress display against a buffer (the bar is normally tty-gated).
@@ -143,8 +141,8 @@ func FuzzStatTap(f *testing.F) {
 	f.Add([]byte("0123\n456789"), uint16(2), uint8(0), true)
 
 	scans := map[string]func([]byte, *pairStat){"no parser": nil}
-	for h := range config.Harnesses {
-		scans[h] = statScanner(h)
+	for _, h := range harnessNames() {
+		scans[h] = statScanner(hd(h))
 	}
 
 	// a line in progress as long as the cap, one per tap: every input starts
@@ -225,13 +223,13 @@ func FuzzSummarize(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		require.NoError(t, os.WriteFile(p, data, 0o644))
 
-		for h := range config.Harnesses {
+		for _, h := range harnessNames() {
 			var live pairStat
-			tap := &statTap{stat: &live, scan: statScanner(h)}
+			tap := &statTap{stat: &live, scan: statScanner(hd(h))}
 			tap.Write(data)
 			tap.Write([]byte("\n")) // the tap counts a line at its newline, the digest at eof too
 
-			sum := summarize(h, p)
+			sum := summarize(hd(h), p)
 			total := 0
 			if sum != nil {
 				for name, n := range sum.Tools {
@@ -245,7 +243,7 @@ func FuzzSummarize(f *testing.F) {
 			assert.Equal(t, int64(total), live.tools, "%s: the digest and the live counter disagree", h)
 			assert.That(t, live.spent() >= 0, "%s: live spend %v", h, live.spent())
 		}
-		assert.Nil(t, summarize("no-such-harness", p))
+		assert.Nil(t, summarize(hd("no-such-harness"), p))
 	})
 }
 
@@ -269,7 +267,7 @@ func TestClaudeSummary(t *testing.T) {
 	assert.Equal(t, s.Tools["Bash"], 2) // per-tool-name counts
 	assert.Equal(t, s.Tools["Read"], 1)
 
-	assert.Nil(t, summarize("codex-cli", p)) // no parser for the kind -> nil
+	assert.Nil(t, summarize(hd("codex-cli"), p)) // no parser for the kind -> nil
 }
 
 func TestOpencodeSummary(t *testing.T) {
