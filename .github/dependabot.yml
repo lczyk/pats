@@ -1,0 +1,31 @@
+# action and go module updates for 1.x, one pull request a week each. a
+# release must be a week old before it is proposed, so one pulled for being
+# bad never gets here. dependabot reads this file from the default branch
+# only, so it lives here and names 1.x as the target.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: 1.x
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: gomod
+    directory: /
+    target-branch: 1.x
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      modules:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
