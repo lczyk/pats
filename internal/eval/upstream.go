@@ -98,9 +98,9 @@ func stableBases(before, after map[string]string) (held map[string]string, moved
 // pulling an absent one as the build would: so the baseline is the base the
 // build used, and one buildkit would not keep locally is still recorded.
 // a base that cannot be pulled or has no registry digest is left out.
-func baseDigests(ctx context.Context, sb config.Sandbox, configDir string, h puller, log io.Writer) map[string]string {
+func baseDigests(ctx context.Context, froms []string, h puller, log io.Writer) map[string]string {
 	out := map[string]string{}
-	for _, ref := range fromImages(sb, configDir) {
+	for _, ref := range froms {
 		if img, _, err := h.Pull(ctx, ref, false, log); err == nil && img.Digest != "" {
 			out[ref] = img.Digest
 		}

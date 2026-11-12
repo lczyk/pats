@@ -13,12 +13,11 @@ import (
 	"time"
 )
 
-// stampScript is a shell script that prints name=<version line> for each of
-// clis the image has, skipping those it lacks, and exits 3 when one it has
-// cannot say its version. the line is the first of its --version output that
-// holds an x.y.z: a cli may say something else first (one that unpacks itself
-// on its first run does), and the first line when none does. a name that is
-// not a cli's (letters, digits and -) is left out: it goes into a shell.
+// stampScript is a shell script that prints name=<line> for each line of the
+// --version output of each of clis the image has, skipping those it lacks,
+// and exits 3 when one it has cannot say its version. parseStamps picks the
+// line. a name that is not a cli's (letters, digits and -) is left out: it
+// goes into a shell.
 func stampScript(clis []string) string {
 	var names []string
 	for _, c := range clis {
@@ -32,9 +31,7 @@ func stampScript(clis []string) string {
 	return "for c in " + strings.Join(names, " ") + `; do
   command -v "$c" >/dev/null 2>&1 || continue
   v=$("$c" --version 2>&1) || { echo "$c --version failed: $v" >&2; exit 3; }
-  l=$(printf '%s\n' "$v" | while IFS= read -r l; do case "$l" in (*[0-9].[0-9]*.[0-9]*) printf '%s\n' "$l"; break ;; esac; done)
-  [ -n "$l" ] || l=$(printf '%s\n' "$v" | head -n1)
-  printf '%s=%s\n' "$c" "$l"
+  printf '%s\n' "$v" | while IFS= read -r l; do printf '%s=%s\n' "$c" "$l"; done
 done`
 }
 
@@ -73,20 +70,31 @@ const (
 
 var versionRe = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]*[0-9A-Za-z])?`)
 
-// parseStamps reads stampScript's output into name -> version; a cli
-// whose version line holds no version is an error.
+// parseStamps reads stampScript's output into name -> version: the version
+// in a cli's first line that holds one, since a cli may say something else
+// first (one that unpacks itself on its first run does). a cli none of whose
+// lines holds a version is an error, quoting its first.
 func parseStamps(out string) (map[string]string, error) {
 	stamps := map[string]string{}
+	said := map[string]string{} // a cli's first line, until one holds a version
+	var order []string
 	for _, line := range strings.Split(out, "\n") {
 		name, rest, ok := strings.Cut(strings.TrimSpace(line), "=")
-		if !ok || name == "" {
+		if !ok || name == "" || stamps[name] != "" {
 			continue
 		}
-		v := versionRe.FindString(rest)
-		if v == "" {
+		if v := versionRe.FindString(rest); v != "" {
+			stamps[name] = v
+			delete(said, name)
+		} else if _, ok := said[name]; !ok {
+			said[name] = rest
+			order = append(order, name)
+		}
+	}
+	for _, name := range order {
+		if rest, ok := said[name]; ok {
 			return nil, fmt.Errorf("%s --version said %q, no version in it", name, rest)
 		}
-		stamps[name] = v
 	}
 	return stamps, nil
 }

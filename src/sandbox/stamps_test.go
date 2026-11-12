@@ -28,6 +28,12 @@ func TestParseStamps(t *testing.T) {
 	assert.EqualMaps(t, got, map[string]string{"x": "1.0.0-beta.4"})
 	_, err = parseStamps("codex=error while loading shared libraries\n")
 	assert.Error(t, err, "codex --version said")
+	// the line is the first that holds a version, whatever came before it.
+	got, err = parseStamps("x=took 1.2s in /tmp/x.3\nx=tool 4.5.6\nx=see 7.8.9\ny=y 1.0.0\n")
+	require.NoError(t, err)
+	assert.EqualMaps(t, got, map[string]string{"x": "4.5.6", "y": "1.0.0"})
+	_, err = parseStamps("x=no version here\nx=nor here\n")
+	assert.Error(t, err, `x --version said "no version here"`)
 }
 
 // the script itself: a cli the image lacks has no line, one that cannot say
@@ -63,15 +69,15 @@ func TestStampScript(t *testing.T) {
 	assert.Equal(t, string(b), "codex=codex-cli 0.167.0\n")
 	assert.Equal(t, stampScript(nil), ":")
 
-	// a cli that says something else first: the line is the first that
-	// holds a version, and the first of all when none does.
+	// a cli that says something else first: every line comes out under its
+	// name, and the first that holds a version is its stamp.
 	write("copilot", "echo 'Package extraction took 5417ms'; echo 'GitHub Copilot CLI 1.0.107.'; echo 'Run copilot update to check'")
-	write("opencode", "echo 'no version here'; echo 'nor here'")
 	out, err = run()
 	require.NoError(t, err)
-	assert.ContainsString(t, out, "copilot=GitHub Copilot CLI 1.0.107.\n")
-	assert.ContainsString(t, out, "opencode=no version here\n")
-	require.NoError(t, os.Remove(filepath.Join(dir, "opencode")))
+	assert.ContainsString(t, out, "copilot=Package extraction took 5417ms\ncopilot=GitHub Copilot CLI 1.0.107.\n")
+	got, err = parseStamps(out)
+	require.NoError(t, err)
+	assert.Equal(t, got["copilot"], "1.0.107")
 
 	write("codex", "echo 'cannot load' >&2; exit 1")
 	_, err = run()

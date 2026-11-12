@@ -70,7 +70,7 @@ func harnessInputNow(cfg *config.Config, sb config.Sandbox, arch string) string 
 		return ""
 	}
 	clis := sandboxCLIs(cfg, sb.Name)
-	arts, err := artefactsFor(cfg.Harnesses, clis, arch)
+	arts, err := artefactsFor(cfg.Tables(), clis, arch)
 	if err != nil {
 		return "unplaceable: " + err.Error()
 	}

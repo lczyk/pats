@@ -479,6 +479,22 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	require.NoError(t, err, "%s", out.String())
 	assert.ContainsString(t, out.String(), `sandbox "dflt": changed since its pats init: its harness clis or a pin of one; running the pinned image (pats init --sandbox dflt to rebuild)`)
 
+	// a forced init pulls the pats sandbox afresh before it builds on it, as
+	// it does when that image is the sandbox's own.
+	out.Reset()
+	require.NoError(t, Init(parseCfg(t, body), InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"dflt"}, Force: true}), "%s", out.String())
+	assert.EqualArrays(t, h.pulls, []string{pub, pub})
+	assert.Equal(t, h.builds[len(h.builds)-1].Force, true)
+
+	// a config built by hand has no tables of its own: the builtin ones
+	// decide its harnesses, and its pins too.
+	bare := parseCfg(t, body)
+	bare.Harnesses = nil
+	fetched = nil
+	out.Reset()
+	require.NoError(t, Init(bare, InitOptions{ConfigDir: dir, Out: &out, Sandboxes: []string{"dflt"}}), "%s", out.String())
+	assert.Len(t, fetched, 2)
+
 	// an arch a cli has no artefact for fails that sandbox's init, naming it.
 	h.arch = "amd64"
 	half := parseCfg(t, body)

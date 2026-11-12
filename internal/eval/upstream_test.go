@@ -71,10 +71,10 @@ suites: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	ctx := context.Background()
 	var log bytes.Buffer
 	// a build's bases, before it runs: present, or pulled first.
-	assert.EqualMaps(t, baseDigests(ctx, cfg.Sandboxes[0], dir, h, &log), map[string]string{"python:3": "sha256:pydigest"})
+	assert.EqualMaps(t, baseDigests(ctx, fromImages(cfg.Sandboxes[0], dir), h, &log), map[string]string{"python:3": "sha256:pydigest"})
 	delete(h.refs, "python:3")
 	h.digests["python:3"] = "sha256:pulled"
-	assert.EqualMaps(t, baseDigests(ctx, cfg.Sandboxes[0], dir, h, &log), map[string]string{"python:3": "sha256:pulled"})
+	assert.EqualMaps(t, baseDigests(ctx, fromImages(cfg.Sandboxes[0], dir), h, &log), map[string]string{"python:3": "sha256:pulled"})
 	published, _ := sandbox.SandboxImage("")
 	assert.EqualArraysUnordered(t, h.pulls, []string{published, "python:3"}) // FROM ${PATS_SANDBOX} too
 	e := &pinEntry{Inputs: map[string]string{}}

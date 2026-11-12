@@ -79,7 +79,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 		}
 		clis := sandboxCLIs(cfg, sb.Name)
 		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir, places(sb) && len(clis) > 0))
-		target, e, err := initSandbox(ctx, sb, clis, cfg.Harnesses, ro, opts)
+		target, e, err := initSandbox(ctx, sb, clis, cfg.Tables(), ro, opts)
 		if err != nil {
 			failed = append(failed, sb.Name)
 			if ctx.Err() != nil {
@@ -304,18 +304,6 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 		}
 		return img
 	}
-	// the build resolves its FROM tags itself, somewhere between these two
-	// reads: a base the same on both is the one it used.
-	before := baseDigests(ctx, sb, ro.ConfigDir, h, logF)
-	defer func() {
-		held, moved := stableBases(before, baseDigests(ctx, sb, ro.ConfigDir, h, logF))
-		for ref, digest := range held {
-			e.Inputs[upstreamPrefix+ref] = digest
-		}
-		for _, ref := range moved {
-			lg.warn("sandbox %q: its base %s moved while init built on it; its upstream is not tracked until the next pats init", sb.Name, ref)
-		}
-	}()
 	progress := func(msg string) { lg.detail("sandbox %q: %s", sb.Name, msg) }
 	var placed []sandbox.Placed
 	if places(sb) && len(clis) > 0 {
@@ -323,14 +311,31 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, tables
 		if ref == "" {
 			ref = base()
 		}
-		// the base has to be there to say its arch.
-		if _, _, err := h.Pull(ctx, ref, false, log); err != nil {
+		// the base has to be there to say its arch. pats's own is pulled
+		// afresh when forced, as it is when it is the sandbox's image.
+		if _, err := ensurePulled(ctx, h, ref, opts.Force && !provisions(sb), lg, log, h.Pull); err != nil {
 			return fail(fmt.Errorf("its base %s: %w", ref, err))
 		}
 		if placed, err = placeIn(ctx, sb, ref, clis, tables, lg, h, e); err != nil {
 			return fail(err)
 		}
 	}
+	froms := fromImages(sb, ro.ConfigDir)
+	if len(placed) > 0 && !provisions(sb) {
+		froms = []string{base()} // the pats sandbox, built on once it has a cli to place
+	}
+	// the build resolves its FROM tags itself, somewhere between these two
+	// reads: a base the same on both is the one it used.
+	before := baseDigests(ctx, froms, h, logF)
+	defer func() {
+		held, moved := stableBases(before, baseDigests(ctx, froms, h, logF))
+		for ref, digest := range held {
+			e.Inputs[upstreamPrefix+ref] = digest
+		}
+		for _, ref := range moved {
+			lg.warn("sandbox %q: its base %s moved while init built on it; its upstream is not tracked until the next pats init", sb.Name, ref)
+		}
+	}()
 	switch {
 	// the default sandbox is built too once it has a cli to place: a pull of
 	// the base and a copy on top.
@@ -686,10 +691,8 @@ func missingCLIs(cfg *config.Config, pairs []config.TestPair, name string, compo
 // cliPins is the version each cli is pinned at, by the config's tables.
 func cliPins(cfg *config.Config) map[string]string {
 	out := map[string]string{}
-	if cfg.Harnesses != nil {
-		for name, c := range cfg.Harnesses.CLIs {
-			out[name] = c.Version
-		}
+	for name, c := range cfg.Tables().CLIs {
+		out[name] = c.Version
 	}
 	return out
 }

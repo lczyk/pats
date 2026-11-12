@@ -43,12 +43,18 @@ type Config struct {
 // builtins answers for a Config that was built by hand and carries no tables.
 var builtins = sync.OnceValue(machine.Defaults)
 
+// Tables are the config's tables: the builtin ones for a config built by
+// hand, which has none of its own.
+func (c *Config) Tables() *machine.Tables {
+	if c == nil || c.Harnesses == nil {
+		return builtins()
+	}
+	return c.Harnesses
+}
+
 // HarnessOf is the entry an agent's harness names, nil when there is none.
 func (c *Config) HarnessOf(a Agent) *machine.Harness {
-	if c == nil || c.Harnesses == nil {
-		return builtins().Harness(a.Harness)
-	}
-	return c.Harnesses.Harness(a.Harness)
+	return c.Tables().Harness(a.Harness)
 }
 
 // Sandbox is an isolation environment a task-running agent executes in.
