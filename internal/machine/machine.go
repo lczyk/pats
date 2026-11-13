@@ -95,7 +95,7 @@ func (c *CLI) pinned(harness, version string, hashes map[string]string) (*CLI, e
 // Artefact is one file a cli is published as (docs/spec/harness-images.md).
 type Artefact struct {
 	Arch []string `yaml:"arch"`          // the arches the file is for
-	Hash string   `yaml:"hash"`          // the file's, as sha256:<hex>: the one kind there is
+	Hash string   `yaml:"hash"`          // the file's, as sha256:<hex>: the one kind there is. "" is not pinned yet
 	Bin  string   `yaml:"bin,omitempty"` // the executable inside the file, a gzipped tar; "" when the file is the executable
 }
 
@@ -338,7 +338,9 @@ func (t *Tables) check() error {
 				}
 				taken[x] = u
 			}
-			if !hashRe.MatchString(a.Hash) {
+			// an artefact with no hash yet loads, for pats harness pin to
+			// print it: nothing places it until then.
+			if a.Hash != "" && !hashRe.MatchString(a.Hash) {
 				add("clis.%s: artefact %s: hash is %s and 64 lower-case hex digits", name, u, HashKind)
 			}
 			if a.Bin != "" && !underHome(a.Bin) {

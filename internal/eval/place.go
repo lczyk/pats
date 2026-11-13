@@ -49,6 +49,8 @@ func artefactsFor(pins map[string]*machine.CLI, clis []string, arch string) ([]s
 			return nil, fmt.Errorf("harness %s pins cli %s at %s with no hash for %s", c.PinnedBy(), name, c.Version, arch)
 		case !ok:
 			return nil, fmt.Errorf("cli %s %s has no artefact for %s", name, c.Version, arch)
+		case a.Hash == "":
+			return nil, fmt.Errorf("cli %s %s has no hash for %s yet: pats harness pin %s %s prints it", name, c.Version, arch, name, c.Version)
 		}
 		out = append(out, sandbox.Artefact{CLI: name, Version: c.Version, Arch: arch, URL: url, SHA256: a.SHA256(), Bin: a.Bin})
 	}

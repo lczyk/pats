@@ -33,6 +33,7 @@ func TestDefaults(t *testing.T) {
 			assert.ContainsString(t, url, c.Version)
 			assert.That(t, !strings.Contains(url, "${"), "%s: the url still holds a placeholder: %s", name, url)
 			assert.That(t, a.Bin != "", "cli %s: no bin for %s", name, arch)
+			assert.That(t, hashRe.MatchString(a.Hash), "cli %s: no hash for %s", name, arch)
 		}
 	}
 }

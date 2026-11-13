@@ -58,6 +58,11 @@ clis:
       `+srv.URL+`/half-${version}:
         arch: [amd64]
         hash: sha256:`+zero+`
+  fresh:
+    version: 1.0.0
+    artefacts:
+      `+srv.URL+`/fresh-${version}:
+        arch: [amd64, arm64]
 `)
 	var out bytes.Buffer
 	require.NoError(t, PinCLI(context.Background(), tb, "tool", "2.5.0", nil, &out))
@@ -91,6 +96,14 @@ clis:
 	assert.ContainsString(t, out.String(), "        arch: [amd64, arm64]\n        hash: sha256:"+one+"\n\n")
 	assert.ContainsString(t, out.String(), "      amd64: sha256:"+one+"\n      arm64: sha256:"+one+"\n")
 
+	// an entry written without its hashes gets them here, and until then
+	// nothing places it.
+	out.Reset()
+	require.NoError(t, PinCLI(context.Background(), tb, "fresh", "1.0.0", nil, &out))
+	assert.ContainsString(t, out.String(), "        hash: sha256:"+sha("/fresh-1.0.0")+"\n")
+	_, err := artefactsFor(tb.CLIs, []string{"fresh"}, "amd64")
+	assert.Error(t, err, "cli fresh 1.0.0 has no hash for amd64 yet: pats harness pin fresh 1.0.0 prints it")
+
 	assert.Error(t, PinCLI(context.Background(), tb, "half", "1.0.0", nil, &out), `cli "half" has no artefact for arm64`)
-	assert.Error(t, PinCLI(context.Background(), tb, "nope", "1.0.0", nil, &out), `unknown cli "nope" (both, half, tool)`)
+	assert.Error(t, PinCLI(context.Background(), tb, "nope", "1.0.0", nil, &out), `unknown cli "nope" (both, fresh, half, tool)`)
 }
