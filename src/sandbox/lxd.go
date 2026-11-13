@@ -379,7 +379,7 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 	}
 	// an open sandbox waits for its dhcp route; a proxied one has none.
 	if err := s.waitReady(ctx, !spec.Egress.None && !spec.Egress.Set); err != nil {
-		return fail(err)
+		return fail(noRouteHint(err, s.bridge))
 	}
 	if spec.Egress.SelfTest && !spec.Egress.None && !spec.Egress.Set {
 		if err := s.reachesInternet(ctx); err != nil {

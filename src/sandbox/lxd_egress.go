@@ -151,7 +151,7 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 		return err
 	}
 	if err := p.waitReady(ctx, true); err != nil {
-		return fmt.Errorf("egress proxy: %w", err)
+		return fmt.Errorf("egress proxy: %w", noRouteHint(err, uplink))
 	}
 	if err := s.setAddress(ctx, e.proxy, netip.PrefixFrom(e.ip, e.prefix)); err != nil {
 		return err

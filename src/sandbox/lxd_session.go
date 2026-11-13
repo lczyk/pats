@@ -124,18 +124,44 @@ func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
 	for c.Now().Before(deadline) {
 		var out bytes.Buffer
 		code, err := s.exec(ctx, Cmd{Argv: p.argv(), Root: true, Dir: "/"}, &out, &out)
-		if err == nil && code == 0 {
+		switch {
+		case err == nil && code == 0:
 			return nil
+		case err != nil:
+			last = fmt.Errorf("%w %s", err, strings.TrimSpace(out.String()))
+		case network:
+			last = errNoRoute
+		default:
+			last = fmt.Errorf("exit %d %s", code, strings.TrimSpace(out.String()))
 		}
-		last = fmt.Errorf("%v %s", err, strings.TrimSpace(out.String()))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-c.After(t.readyPoll):
 		}
 	}
-	return fmt.Errorf("lxd: %s not ready after %s: %v", s.name, t.ready, last)
+	return fmt.Errorf("lxd: %s not ready after %s: %w", s.name, t.ready, last)
 }
+
+// errNoRoute is a networked instance that execs but never got a default
+// route: its bridge's dhcp did not answer.
+var errNoRoute = errors.New("no default route")
+
+// noRouteHint adds what to check to a waitReady error that is errNoRoute.
+func noRouteHint(err error, bridge string) error {
+	if !errors.Is(err, errNoRoute) {
+		return err
+	}
+	return fmt.Errorf("%w (no address from bridge %s. %s)", err, bridge, ufwBridgeHint)
+}
+
+// ufwBridgeHint is what an admin does once on a host whose ufw drops dhcp and
+// dns on bridges it was not told about. ufw passes the + on to iptables.
+var ufwBridgeHint = "on a host running ufw, its default INPUT and FORWARD drop stop dhcp, dns and forwarding on bridges it was not told about. an admin lets pats's bridges through once with\n" +
+	"  ufw allow in on patsbr+\n" +
+	"  ufw route allow in on patsbr+\n" +
+	"  ufw route allow out on patsbr+\n" +
+	"  (and the same three for " + lxdUplink + ")"
 
 // reachesInternet is the open sandbox's self-test: its bridge must forward.
 // a server that also runs docker drops bridged traffic from bridges docker was

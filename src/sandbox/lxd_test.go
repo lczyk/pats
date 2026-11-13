@@ -122,6 +122,26 @@ func TestLXDStartOpen(t *testing.T) {
 	assert.NotNil(t, f.call("network acl delete srv:"+s.bridge))
 }
 
+// an open sandbox whose bridge never hands it an address times out saying so,
+// with the firewall rules that let pats's bridges through.
+func TestLXDStartNoRoute(t *testing.T) {
+	l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "pats-img-x"})
+	l.p.t.ready = 20 * time.Millisecond
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		if strings.Contains(strings.Join(args, " "), "ip -4 route show default") {
+			f.record(args)
+			return exitStatus(1)
+		}
+		return f.run(ctx, stdin, stdout, stderr, args...)
+	})
+	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir()})
+	require.Error(t, err, "not ready after 20ms: no default route")
+	assert.ErrorIs(t, err, errNoRoute)
+	assert.ContainsString(t, err.Error(), "ufw allow in on patsbr+")
+	assert.ContainsString(t, err.Error(), "ufw route allow out on patsbr+")
+	assert.That(t, !strings.Contains(err.Error(), "<nil>"), "a nil error printed: %v", err)
+}
+
 // a nic a profile adds is refused, and so is raw config, before anything
 // starts; under egress none the instance gets no nic at all.
 func TestLXDStartRefusesForeignNic(t *testing.T) {

@@ -344,6 +344,9 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 		return "", err
 	}
 	if err := s.waitReady(ctx, true); err != nil {
+		if errors.Is(err, errNoRoute) {
+			return "", fmt.Errorf("%w. or set %s to a bridge that works", noRouteHint(err, net), LXDUplinkEnv)
+		}
 		return "", fmt.Errorf("%w (does the uplink bridge %s reach the internet? on a host running docker, a new bridge needs an admin rule; or set %s to a bridge that works)", err, net, LXDUplinkEnv)
 	}
 	if !s.online(ctx) {
