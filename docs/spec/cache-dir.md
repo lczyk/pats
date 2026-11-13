@@ -21,7 +21,9 @@ so on a mac half of pats's state is in `~/Library/Caches/pats` and half in `~/.c
   else `~/.cache/pats`. a relative `XDG_CACHE_HOME` is ignored, as the xdg spec says. `TempRoot`, `cacheDir` and
   `projectsFile` all derive from it, and `os.UserCacheDir` is no longer used.
 - it stays under `$HOME`, which the bind mounts need: docker desktop and podman machine share `$HOME` with their vm,
-  and the docker snap sees `$HOME` only. the `XDG_CACHE_HOME`-outside-`$HOME` caveat in `tmp.go` stays.
+  and the docker snap's daemon sees `$HOME` only. the `XDG_CACHE_HOME`-outside-`$HOME` caveat in `tmp.go` stays.
+  the docker snap's cli sees less, no hidden dir at the home's top and so not the cache: what it opens itself is
+  kept elsewhere (`docker-snap-paths.md`).
 - **the legacy root** is what `os.UserCacheDir()/pats` resolves to. it exists only when that call succeeds (on linux
   it fails for a relative `XDG_CACHE_HOME`: no legacy root then) and it is a different directory from the new root,
   compared after resolving symlinks: on linux the two are one, and so are they on a mac with

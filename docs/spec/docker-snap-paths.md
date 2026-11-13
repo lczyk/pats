@@ -1,6 +1,6 @@
 # docker snap paths
 
-status: proposed.
+status: implemented (`src/sandbox/cliroot.go`).
 
 ## problem
 
@@ -119,9 +119,16 @@ context and `--iidfile`, `docker cp` of a file in and out, a cidfile and a bind 
 failed a forced `pats init` on the iidfile there too. an init that finds its image built already (by the pats snap,
 here) builds nothing, and the first failure is then the cidfile at the run.
 
-not checked: the detection, which is not written, and a pats run with the proposed dir on arm64. the amd64 pats run
-had its bind sources under the same dir, where the proposal leaves them in the cache: the first test (above) had
-both under the home, and binds from `~/.cache` are what works today.
+as implemented, on the arm64 box: the detection finds the docker snap, and a clone's `bin/pats` with the default
+cache runs the smoke project's docker suite (a forced init of a `build:` sandbox and of one with a placed cli, the
+pair, its steps in a step sandbox, the scorer, `pats clean -n` with nothing left), its bind sources in the cache.
+`make test` passes there with `TMPDIR` under the home.
+
+two things the implementation adds. the client's dir goes once its last temp dir does, so a run leaves an empty
+`pats-tmp` and no more, and the link in the temp root dangles until the next run. and `hack/snap_smoke.sh` takes
+`PAIR_ONLY=1`, the entry that skips its checks of a reduced build.
+
+not checked: the ci job, which has not run yet.
 
 ## alternatives
 

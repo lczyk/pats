@@ -176,12 +176,7 @@ sudo snap connect pats:lxd lxd:lxd                     # lxd
 
 ### setting up the engines
 
-**docker.** you must be able to use the socket without sudo (`sudo usermod -aG docker $USER`, then log in again). with the snap, connect the `docker` plug as above, and keep projects under your home, not in a hidden directory there (`~/.work/...`) and not under `/tmp`: a strictly confined snap sees neither. a pats that is not the snap (`go install`, a clone) cannot yet drive the docker snap -- its cli can open no file under `/tmp` or a hidden dir, and pats keeps its temp files in both ([docs/spec/docker-snap-paths.md](./docs/spec/docker-snap-paths.md)). until that lands, point both at a plain dir in the home:
-
-```sh
-mkdir -p ~/pats-cache/tmp
-env TMPDIR=~/pats-cache/tmp XDG_CACHE_HOME=~/pats-cache pats run
-```
+**docker.** you must be able to use the socket without sudo (`sudo usermod -aG docker $USER`, then log in again). with the snap, connect the `docker` plug as above, and keep projects under your home, not in a hidden directory there (`~/.work/...`) and not under `/tmp`: a strictly confined snap sees neither. a pats that is not the snap (`go install`, a clone) run with the docker snap keeps what the docker snap's cli opens itself -- a container's id file, a generated dockerfile, a step's script -- in `~/snap/docker/common/pats-tmp`, since that cli sees no file under `/tmp` or a hidden directory of the home; `pats clean` sweeps it, and `~/.cache/pats/tmp/docker-snap` links to it. a `build:` context has to be where that cli can read it too: under the home and not in a hidden directory at its top, which `pats init` says when it is not ([docs/spec/docker-snap-paths.md](./docs/spec/docker-snap-paths.md)).
 
 **lxd.** you must be in the `lxd` group, and `lxd init` must have run (a storage pool and the default profile's root disk). with the snap, connect the `lxd` plug as above. pats makes a bridge per sandbox (`patsbr<hash>`) and one shared uplink (`patsup`), and a host firewall that drops traffic on bridges it was not told about stops them. an instance that never gets an address times out with `no default route`; one that gets an address but cannot get out fails the egress self-test. both errors print the fix. an admin applies it once, for whichever firewall the host runs:
 
