@@ -247,7 +247,7 @@ harnesses:
 	assert.That(t, !ok, "an artefact for an arch the entry does not name")
 }
 
-// pats config: the tables under a comment naming the file. with nothing
+// pats machine: the tables under a comment naming the file. with nothing
 // changed they are the defaults as written, comments and all.
 func TestPrint(t *testing.T) {
 	dir := t.TempDir()

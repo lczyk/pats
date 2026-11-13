@@ -40,7 +40,7 @@ type Options struct {
 	List    ListCommand    `command:"list" description:"list configured sandboxes, agents, tasks, scorers, or suites"`
 	Egress  EgressCommand  `command:"egress" description:"the egress proxy: check a policy, read an audit, serve it"`
 	Harness HarnessCommand `command:"harness" description:"a harness's own tools: try its parse script on a log"`
-	Machine ConfigCommand  `command:"config" description:"print the harness and cli tables this machine runs with, and where its own file is"`
+	Machine MachineCommand `command:"machine" description:"print the harness and cli tables this machine runs with, and where its own file is"`
 	Clean   CleanCommand   `command:"clean" description:"remove what dead runs left behind: containers, instances, networks, temp dirs"`
 }
 
