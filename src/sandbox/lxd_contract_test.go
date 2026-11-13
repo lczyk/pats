@@ -49,6 +49,44 @@ func (c *contractEnv) later(t *testing.T, args ...string) {
 	t.Cleanup(func() { _, _ = c.lxc(args...) })
 }
 
+// running is the operations running in the pats project, as the driver
+// asks for them. lxc query prints nothing at all for a server with no
+// operation to list, running or just ended.
+func (c *contractEnv) running() ([]lxdOperation, error) {
+	out, err := c.lxc("query", c.remote+":/1.0/operations?project="+lxdProject+"&recursion=1")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil, err
+	}
+	var ops struct {
+		Running []lxdOperation `json:"running"`
+	}
+	if err := json.Unmarshal([]byte(out), &ops); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, out)
+	}
+	return ops.Running, nil
+}
+
+// laterGone removes inst when the test ends, once no operation names it: a
+// delete while its create runs does nothing, and the create outlives the
+// client that asked for it, so a delete alone would leave the instance.
+func (c *contractEnv) laterGone(t *testing.T, inst string) {
+	t.Cleanup(func() {
+		deadline := time.Now().Add(2 * time.Minute)
+		for time.Now().Before(deadline) {
+			ops, err := c.running()
+			busy := err != nil
+			for _, op := range ops {
+				busy = busy || op.names("/1.0/instances/"+inst)
+			}
+			if !busy {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		_, _ = c.lxc("delete", c.ref(inst), "--project", lxdProject, "--force")
+	})
+}
+
 func (c *contractEnv) ref(name string) string { return c.remote + ":" + name }
 
 var lxdContracts = []struct {
@@ -150,7 +188,7 @@ func contractCreateRace(t *testing.T, c *contractEnv, inst string) bool {
 	var out bytes.Buffer
 	x, err := c.r.Start(nil, &out, &out, "init", c.image, c.ref(inst), "--project", lxdProject, "--storage", c.pool)
 	require.NoError(t, err)
-	c.later(t, "delete", c.ref(inst), "--project", lxdProject, "--force")
+	c.laterGone(t, inst)
 	defer func() {
 		_ = x.Signal(syscall.SIGKILL)
 		_ = x.Wait()
@@ -160,11 +198,9 @@ func contractCreateRace(t *testing.T, c *contractEnv, inst string) bool {
 	want := "/1.0/instances/" + inst
 	deadline := time.Now().Add(2 * time.Minute) // a first pull of the image
 	for time.Now().Before(deadline) {
-		var ops struct {
-			Running []lxdOperation `json:"running"`
-		}
-		require.NoError(t, json.Unmarshal([]byte(c.must(t, "query", c.remote+":/1.0/operations?project="+lxdProject+"&recursion=1")), &ops))
-		for _, op := range ops.Running {
+		running, err := c.running()
+		require.NoError(t, err)
+		for _, op := range running {
 			if !op.names(want) {
 				continue
 			}
