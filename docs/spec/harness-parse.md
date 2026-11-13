@@ -26,31 +26,33 @@ the defaults, and no go code reads a format.
 opencode-openrouter:
   parse: |
     ev = json.decode(line, default = None)
-    if type(ev) == "dict":
-        t = ev.get("type")
-        part = ev.get("part", {})
-        if t == "tool_use":
-            out.tool(part.get("tool", ""))
-        elif t == "step_start":
-            out.clear()
-        elif t == "text":
-            out.text(part.get("text", ""))
-        elif t == "step_finish":
-            out.clear(next = True)
-            tok = part.get("tokens", {})
-            cache = tok.get("cache", {})
-            reasoning = tok.get("reasoning", 0)
-            out.usage(
-                turns = 1,
-                cost_usd = part.get("cost", 0),
-                input = tok.get("input", 0),
-                output = tok.get("output", 0) + reasoning,
-                reasoning = reasoning,
-                cache_read = cache.get("read", 0),
-                cache_write = cache.get("write", 0),
-            )
-        elif t == "error":
-            out.error()
+    if type(ev) != "dict":
+        ev = {}
+    t = ev.get("type")
+    part = ev.get("part", {})
+    if t == "tool_use":
+        out.tool(part.get("tool", ""))
+    elif t == "step_start":
+        out.clear()
+    elif t == "text":
+        out.text(part.get("text", ""))
+    elif t == "step_finish":
+        out.clear(next = True)
+        tok = part.get("tokens", {})
+        cache = tok.get("cache", {})
+        reasoning = tok.get("reasoning", 0)
+        out.usage(
+            turns = 1,
+            cost_usd = part.get("cost", 0),
+            input_tokens = tok.get("input", 0),
+            output_tokens = tok.get("output", 0) + reasoning,
+            reasoning_tokens = reasoning,
+            cache_read_tokens = cache.get("read", 0),
+            cache_write_tokens = cache.get("write", 0),
+        )
+    elif t == "error":
+        err = ev.get("error", {})
+        out.error(msg = err.get("data", {}).get("message") or err.get("name") or "")
 ```
 
 the script is the body, as a slice's `mutate` is in chisel: it defines nothing pats then calls. what it needs is
@@ -80,22 +82,24 @@ handed to it by name.
 |---|---|
 | `out.tool(name)` | one tool call: the live count, and `tools[name]` in the summary |
 | `out.usage(...)` | adds its keywords to the totals, or with `total = True` replaces those totals |
-| `out.error(v = True)` | sets `is_error` |
+| `out.error(v = True, msg = "")` | sets `is_error`, and `error`: what the harness said of it |
 | `out.text(s)` | a piece of the reply |
 | `out.clear(next = False)` | drops the pieces so far, or with `next = True` once another arrives |
 | `out.final(s, add = False)` | the reply, whole: it replaces the candidates before it, or joins them |
 
 the rules:
 
-- **`usage`** takes `turns`, `cost_usd`, `input`, `output`, `reasoning`, `cache_read`, `cache_write`,
-  `premium_requests`, `ttft_ms` and `api_ms`, each optional. `total = True` replaces the totals of the keywords
-  given and leaves the others: for a format that restates its totals, and for the two times, which are stated
-  once.
+- **`usage`** takes `turns`, `cost_usd`, `input_tokens`, `output_tokens`, `reasoning_tokens`, `cache_read_tokens`,
+  `cache_write_tokens`, `premium_requests`, `ttft_ms` and `api_duration_ms`, each optional: the names the summary
+  in `metadata.json` has. `total = True` replaces the totals of the keywords given and leaves the others: for a
+  format that restates its totals, and for the two times, which are stated once.
+- **`error`** is the last call's: `out.error(False)` takes an error back, and its message with it. the message is
+  optional, and is what a failed preflight and a judge's error show in place of the end of the output.
 - **a number** is finite and not negative, and all but `cost_usd` are whole. a call with one that is not, or whose
   total would no longer be finite or fit the summary's field, is an error and changes nothing: a negative cost
   would take spend back, and a `nan` or an infinity cannot be written to `metadata.json`.
-- **the totals mean what `runSummary` says they mean**, for every harness: `input` leaves out cache reads, `output`
-  includes `reasoning`, `turns` are model round trips. the script does the arithmetic its format needs.
+- **the totals mean what `runSummary` says they mean**, for every harness: `input_tokens` leaves out
+  cache reads, `output_tokens` includes `reasoning_tokens`, `turns` are model round trips. the script does the arithmetic its format needs.
 - **`has_cost`** is true once `cost_usd` was passed at all, 0 included: a real zero, not an unreported one.
 - **the reply** a judge is read from (`agent-scorers.md`) is the `final` candidates, newest first, when there are
   any, and else the pieces of `text` joined by newlines. with neither there is no reply.
@@ -189,13 +193,18 @@ a fifth came after, with no go reader before it, written against a recorded run:
   and its `stopReason`: reasoning is a part of its output, and cached tokens are none of its input. the reply is
   the text of the last assistant message that has any. `turn_end` and `agent_end` restate messages and are not
   read. pi exits 0 on a reply that failed, so `error` and `aborted` as the last message's stop reason are the
-  error, and a retry that worked clears it. what a compaction's own call cost is not counted.
+  error, with the message's `errorMessage` as what it says, and a retry that worked clears it. what a compaction's
+  own call cost is not counted.
 
 ### an error with exit 0
 
 preflight fails an agent whose harness exits 0 while its script has the error set at the end, as it fails a
-non-zero exit: pi's json mode exits 0 on a refused key. a pair is as before: its status is its exit, and the
-summary's `is_error` keeps it from a judge.
+non-zero exit: pi's json mode exits 0 on a refused key. the error names what the script passed as the message,
+and without one shows the end of the output. a pair is as before: its status is its exit, and the summary's
+`is_error` keeps it from a judge.
+
+of the five, pi's, claude's and opencode's scripts pass a message: pi's `errorMessage`, the text of claude's
+failed `result`, and the message or the name of opencode's `error`. codex's and copilot's pass none.
 
 ## limits
 

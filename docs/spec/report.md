@@ -39,7 +39,7 @@ small nor quite parsable:
   "pairs": [
     {"agent": "claude-opus", "task": "slicer-libc6", "mean": 0.75,
      "status": "ok", "error": null, "duration_s": 312.4,
-     "turns": 41, "input_tokens": 1203, "cache_read_tokens": 118520, "cache_creation_tokens": 9310,
+     "turns": 41, "input_tokens": 1203, "cache_read_tokens": 118520, "cache_write_tokens": 9310,
      "output_tokens": 8812, "reasoning_tokens": null, "cost_usd": 0.41, "premium_requests": null,
      "denied_egress": [], "blocked_egress": []}
   ],
@@ -69,7 +69,7 @@ small nor quite parsable:
 - **tokens** -- one meaning across harnesses, whatever each log calls them:
   - `input_tokens`: input not served from the prompt cache, cache writes excluded (claude's `input_tokens`; codex's
     input minus its cached part, as `codexSummary` computes).
-  - `cache_read_tokens`, `cache_creation_tokens`: the cache's reads and writes, where the harness reports them.
+  - `cache_read_tokens`, `cache_write_tokens`: the cache's reads and writes, where the harness reports them.
   - `output_tokens`: everything the model generated, reasoning included. claude and codex already count it so;
     opencode reports reasoning apart, so its summary parser adds it in.
   - `reasoning_tokens`: the reasoning part of `output_tokens`, where the harness reports it.
