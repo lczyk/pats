@@ -199,12 +199,14 @@ a fifth came after, with no go reader before it, written against a recorded run:
 ### an error with exit 0
 
 preflight fails an agent whose harness exits 0 while its script has the error set at the end, as it fails a
-non-zero exit: pi's json mode exits 0 on a refused key. the error names what the script passed as the message,
-and without one shows the end of the output. a pair is as before: its status is its exit, and the summary's
-`is_error` keeps it from a judge.
+non-zero exit: pi's json mode exits 0 on a refused key. either failure names what the script passed as the
+message, and without one shows the end of the output. a pair is as before: its status is its exit, and the
+summary's `is_error` keeps it from a judge.
 
-of the five, pi's, claude's and opencode's scripts pass a message: pi's `errorMessage`, the text of claude's
-failed `result`, and the message or the name of opencode's `error`. codex's and copilot's pass none.
+of the five, four scripts pass a message, each checked against a run with a refused credential: pi's
+`errorMessage`, the text of claude's failed `result`, the message of opencode's `error` (its name when it has
+none), and the message of codex's `turn.failed` or `error`. copilot refuses a bad token on stderr before it
+prints an event, so its script passes none and the end of the output is what shows.
 
 ## limits
 
