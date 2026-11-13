@@ -74,6 +74,10 @@ main() {
     local version engine
     version="$("${PATS}" --version)"
     printf 'using %s (%s)\n' "$(command -v "${PATS}")" "${version}"
+    # the pairs alone, with none named, would check nothing and pass.
+    if [ -n "${PAIR_ONLY:-}" ] && [ "$#" -eq 0 ]; then
+        _fail "PAIR_ONLY needs an engine: docker, lxd"
+    fi
     if [ -z "${PAIR_ONLY:-}" ]; then
         printf '%s\n' "${version}" | grep -qF "(tags: ${TAGS})" || _fail "tags: ${version}"
         printf 'ok    tags\n'
