@@ -24,7 +24,7 @@ sizes: S is under a day, M a few days, L a week or more.
    harness parse`, and the four readers as scripts in the defaults, each behind the recorded-run tests of the go
    reader it replaces. the go readers and the step-1 key go. `budget` loads on every agent, with its
    warning. one new dependency.
-3. **the machine's file** (S-M). where it is, the overlay and its errors, `pats config`, the note, `harness_from`
+3. **the machine's file** (S-M). where it is, the overlay and its errors, `pats machine`, the note, `harness_from`
    and `harness_hash`, the snap's `XDG_CONFIG_HOME`. the `harnesses` table only: a `clis` table in a machine's
    file is an error until step 6, since a pin there would name a version the images do not yet build from. a
    machine can now correct a default's command, hosts or script, and add a harness whose files a `provision`

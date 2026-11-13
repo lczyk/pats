@@ -165,7 +165,7 @@ home. an unknown key, in either table or at the top, is an error. each error nam
 stops every command that reads the file: a machine file that is wrong is never half applied.
 
 it is read by every command that reads a `pats.yaml`, before it, and by the three that need the tables with no
-project: `pats config`, `pats harness pin` and `pats harness parse`. no other command reads it.
+project: `pats machine`, `pats harness pin` and `pats harness parse`. no other command reads it.
 
 ### what a project may not say
 
@@ -182,8 +182,8 @@ one machine's file runs only on machines that have it.
 
 a file outside the repository now changes what a run does, so it shows:
 
-- **`pats config`** prints the effective tables as yaml, under a comment that names the file and says whether it
-  is there. `pats config --defaults` prints the defaults: the text to copy an entry from.
+- **`pats machine`** prints the effective tables as yaml, under a comment that names the file and says whether it
+  is there. `pats machine --defaults` prints the defaults: the text to copy an entry from.
 - **`pats init` and `pats run`** print one line when the file changes or adds anything, naming each:
   `INFO machine file ~/.config/pats/machine.yaml: changes clis.codex.artefacts,
   harnesses.claude-cli-keyless.egress; adds harnesses.pi-openrouter`.
@@ -228,7 +228,7 @@ this file or the defaults, and the `version` and `hash` of a project's item.
   root's, and flat keys for what are nested tables here: a second way to write one file.
 - **layers below the machine** (a system-wide `/etc` file, a per-project machine file). one optional file.
 - **inheritance by name** (an entry that says which other it is like). pats has none elsewhere. an entry changes
-  the one of its name, or is written whole from a copy `pats config` prints.
+  the one of its name, or is written whole from a copy `pats machine` prints.
 - **environment variables for single keys.** `PATS_OPENROUTER_URL` stays what it is, a seam for tests.
 
 ## tests
@@ -243,12 +243,12 @@ this file or the defaults, and the `version` and `hash` of a project's item.
   `login-file`; a harness with no `cli`, allowed; an unknown key; a bad name; a `bin` that leaves its artefact and
   a `login-file` that leaves the home. each error names file, line and entry.
 - an agent on a harness found nowhere, with the three places in the message.
-- seeing it: `pats config` with and without a file; the note names a changed key and an added entry, and is absent
+- seeing it: `pats machine` with and without a file; the note names a changed key and an added entry, and is absent
   with no file and with an empty one; `harness_from` for each of the three; `harness_hash` moves with `run` and
   with the cli's sha, and not with an artefact's url.
 - a machine entry end to end, on the fake engine: a harness with a new cli is fetched from a local server, placed,
   stamped and run, and its `parse` fills the summary.
-- the snap: `pats config` names `~/snap/pats/common/config/pats/machine.yaml`, and the shipped `lxc` and docker
+- the snap: `pats machine` names `~/snap/pats/common/config/pats/machine.yaml`, and the shipped `lxc` and docker
   clients find their own config as before with `XDG_CONFIG_HOME` set.
 
 ## decided, open to change
@@ -259,7 +259,7 @@ this file or the defaults, and the `version` and `hash` of a project's item.
   on the cli a project never names a path under the home.
 - **a pin on the cli in the machine's file, on the harness in a project.** the machine has the `clis` table; a
   project has none, and pins through the harness its agent names.
-- **the name is `machine.yaml`, printed by `pats config`.** the docs call it the machine file, and a `pats.yaml`
+- **the name is `machine.yaml`, printed by `pats machine`.** the docs call it the machine file, and a `pats.yaml`
   the project's, so the two are not mistaken for each other.
 - **`effort` and `cost` are not keys.** all four harnesses take an effort, and a harness that does not ignores a
   variable. cost is what `parse` reports.

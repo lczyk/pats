@@ -40,7 +40,7 @@ sandbox:
     #   provision: |
     #     apt-get update && apt-get -y install dpkg-dev
 
-# a harness is how an agent is run. pats ships five (`pats config --defaults` prints them, the readme has their creds and
+# a harness is how an agent is run. pats ships five (`pats machine --defaults` prints them, the readme has their creds and
 # model ids), a machine can add its own (`~/.config/pats/machine.yaml`), and a `kind: harness` vector here adds or changes
 # them for this project. an item named as a harness that exists changes the keys it sets and keeps the rest (`field: ~`
 # unsets one). an item with a new name is a harness of its own: it needs a `run`, a shell script run in the sandbox

@@ -91,7 +91,7 @@ the rules:
 - absent means keep and a null means unset, through both steps: a key an item nulls is filled neither by its
   vector's `defaults` nor by the machine's harness. the two are laid over as written, before anything is decoded,
   so a key that is absent, one that is null and `login: false` stay three things.
-- there is no other inheritance. a variant under a new name is a copy: `pats config` prints every entry, and what
+- there is no other inheritance. a variant under a new name is a copy: `pats machine` prints every entry, and what
   several variants share goes in their vector's `defaults`.
 - a copy is the project's from then on. a release that corrects the default it was copied from (a host, a line of
   `parse`) does not reach it.
