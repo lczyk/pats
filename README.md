@@ -150,19 +150,19 @@ a sandbox can also declare an `egress` policy. absent, the network is open, and 
 
 pats is a single go binary. you need go 1.26+ to build it, and docker to run the sandboxes.
 
-releases are tags on `main`, and a `1.0.0-beta.N` tag is a pre-release of 1.0. `@latest` resolves to 0.x until 1.0 ships, so name the version explicitly. 1.x reads a different `pats.yaml` shape from 0.x (see [`pats.example.yaml`](./pats.example.yaml)).
+releases are tags on `main`, and a `-beta.N` tag is a pre-release. 1.x reads a different `pats.yaml` shape from 0.x (see [`pats.example.yaml`](./pats.example.yaml)).
 
 put it on your PATH with `go install`:
 
 ```sh
-go install github.com/lczyk/pats/cmd/pats@v1.0.0-beta.15    # installs into $(go env GOBIN)
+go install github.com/lczyk/pats/cmd/pats@v1.0.0    # installs into $(go env GOBIN)
 ```
 
 or run it without installing at all:
 
 ```sh
-go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.15 run
-go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.15 score
+go run github.com/lczyk/pats/cmd/pats@v1.0.0 run
+go run github.com/lczyk/pats/cmd/pats@v1.0.0 score
 ```
 
 on linux there is also a snap, which needs no go. it is strictly confined, so it runs agents and steps in docker or local lxd sandboxes only: no host driver, bwrap or podman. connect it to the engine you use:
