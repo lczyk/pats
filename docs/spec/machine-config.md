@@ -58,11 +58,11 @@ clis:
     artefacts:
       https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${version}.tgz:
         arch: [amd64]
-        sha256: <64 hex>
+        hash: sha256:<64 hex>
         bin: package/claude
       https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-${version}.tgz:
         arch: [arm64]
-        sha256: <64 hex>
+        hash: sha256:<64 hex>
         bin: package/claude
 
 harnesses:
@@ -94,7 +94,8 @@ with a line holding an `x.y.z` version, as the four do. the keys:
   templated, and a `${...}` in a `run` is the shell's. `http` or `https`.
   under a url:
   - **`arch`**: the arches the file is for, a list of `amd64` and `arm64`. no two artefacts of a cli name one arch.
-  - **`sha256`**: the file's. with `version` it is the pin.
+  - **`hash`**: the file's, as `sha256:<64 hex>`. the part before the colon is what the bytes are hashed with, and
+    `sha256` is the one kind there is: any other is a load error. with `version` it is the pin.
   - **`bin`**: the path of the executable inside the file, which is then a gzipped tar. without `bin` the file is
     the executable itself.
 - **`login-file`**: where the cli keeps its login, as a path under the home. the host's copy is that path under the
@@ -151,7 +152,7 @@ harnesses over the result (`harness-registry.md`).
 
 the result, checked as a whole, is what pats runs with: every harness has a `run`; its `cli` and `models`, where set,
 name something that exists; its `parse` compiles; its `egress` entries are hosts the proxy's parser takes; `login` has a
-cli with a `login-file`. every cli has a version and at least one artefact, each with an `arch` and a `sha256`. an arch
+cli with a `login-file`. every cli has a version and at least one artefact, each with an `arch` and a `hash`. an arch
 a cli has no artefact for is an error only at an init that needs it. names are lower-case letters, digits and `-`; a
 variable in `auth-env`, `pass-env` or `home-env` is a variable's name, not `HOME` or a `PATS_` one (pats sets those),
 and named once across the three; a `bin` stays inside its artefact; a `login-file` and a `home-env` path stay under the
@@ -165,7 +166,7 @@ project: `pats config`, `pats harness pin` and `pats harness parse`. no other co
 
 a `pats.yaml` lays its `kind: harness` items over the machine's harnesses by the rule above
 (`harness-registry.md`). it has no `clis`: a cli, its `artefacts`, its `login-file` and its `home-env` are the
-machine's. so a project can pin a cli (`version` and `sha256`, on a harness item) and can ask for a cli's login
+machine's. so a project can pin a cli (`version` and `hash`, on a harness item) and can ask for a cli's login
 (`login: true`), and cannot say where bytes come from or which file leaves the user's home.
 
 an agent whose `harness` is found in neither file is a load error that says where it looked: not a default of this
@@ -182,15 +183,15 @@ a file outside the repository now changes what a run does, so it shows:
   `INFO machine config ~/.config/pats/config.yaml: changes clis.codex.artefacts,
   harnesses.claude-cli-keyless.egress; adds harnesses.pi-openrouter`.
 - **`metadata.json`** of a pair gains `harness_from` (`default`, `machine` or `project`: the last place that set a
-  key of the harness or of its cli) and `harness_sha256`, a digest of the resolved harness entry and of its cli's
-  version, `login-file`, `home-env`, and each artefact's `arch`, `sha256` and `bin`, but not its url. it is the
+  key of the harness or of its cli) and `harness_hash`, a digest (`sha256:<hex>`) of the resolved harness entry and of its cli's
+  version, `login-file`, `home-env`, and each artefact's `arch`, `hash` and `bin`, but not its url. it is the
   definition the run asked for: two pairs with one digest were asked to run the same thing, whichever machine and
   pats release they ran on. what was in the image is `image`, `components` and `placed` (`harness-images.md`): a
   stale image, or a `provision` that swapped the cli, shows there and not in the digest.
 - **`pats list harnesses`** shows each harness with where it is from.
 
 `pats harness pin <cli> <version>` (`harness-images.md`) prints a `clis` entry's `version` and `artefacts`, for
-this file or the defaults, and the `version` and `sha256` of a project's item.
+this file or the defaults, and the `version` and `hash` of a project's item.
 
 ## limits
 
@@ -237,7 +238,7 @@ this file or the defaults, and the `version` and `sha256` of a project's item.
   a `login-file` that leaves the home. each error names file, line and entry.
 - an agent on a harness found nowhere, with the three places in the message.
 - seeing it: `pats config` with and without a file; the note names a changed key and an added entry, and is absent
-  with no file and with an empty one; `harness_from` for each of the three; `harness_sha256` moves with `run` and
+  with no file and with an empty one; `harness_from` for each of the three; `harness_hash` moves with `run` and
   with the cli's sha, and not with an artefact's url.
 - a machine entry end to end, on the fake engine: a harness with a new cli is fetched from a local server, placed,
   stamped and run, and its `parse` fills the summary.

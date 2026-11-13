@@ -35,9 +35,10 @@ sandbox image holds no harness. which clis an image gets follows from the config
 both are keys of a cli's entry in the `clis` table (`machine-config.md`), whose defaults pats embeds:
 
 - **an artefact** is one file, an entry of the cli's `artefacts` keyed by its url (the vendor's own per-arch
-  package, with `${version}` for the version). under the url: the `arch` it is for, its `sha256`, and how it is
+  package, with `${version}` for the version). under the url: the `arch` it is for, its `hash`, and how it is
   placed: with `bin` a gzipped tar and the path of the executable in it, without it the file itself.
-- **a pin** is the cli's `version` and, per arch, the `sha256` of that arch's artefact.
+- **a pin** is the cli's `version` and, per arch, the `hash` of that arch's artefact: `sha256:<64 hex>`, the one
+  kind there is.
   `images/harness-versions` goes, and the defaults hold the pins. a test holds that every cli of the defaults has
   one version and an artefact for `amd64` and for `arm64`. the per-release bump of `harness-pins.md` stays, on the
   defaults.
@@ -46,7 +47,7 @@ both are keys of a cli's entry in the `clis` table (`machine-config.md`), whose 
   under docker and podman the base image's own (`image inspect --format {{.Architecture}}`, once it is pulled),
   under lxd the server's (`serverArch`), under bwrap the one its rootfs was fetched for (`GOARCH`). each maps to
   `amd64` or `arm64`; any other is an init error naming it.
-- **a project may pin another version** of a cli, on a harness item (`harness-registry.md`): `version` and `sha256`, the
+- **a project may pin another version** of a cli, on a harness item (`harness-registry.md`): `version` and `hash`, the
   latter a mapping from arch to sha. the two come together or not at all; a `version` with no sha is a load error, since
   a pin is always bytes. the url and the `bin` are still those of the machine's artefact for the arch, with the item's
   version in the url: a project says which bytes, the machine where from. the sha for the target's arch must be there at
@@ -54,7 +55,7 @@ both are keys of a cli's entry in the `clis` table (`machine-config.md`), whose 
   sandbox holds one version of a cli: two harnesses of its agents that pin one cli differently are a load error naming
   both, and take a sandbox each.
 - **`pats harness pin <cli> <version>`** fetches the artefact for both arches and prints the pin as the `version` and
-  `artefacts` of a `clis` entry and as the `version` and `sha256` of a project's item. it is how a release bumps the
+  `artefacts` of a `clis` entry and as the `version` and `hash` of a project's item. it is how a release bumps the
   defaults and how a user gets shas for a version. what it prints is what the source served at that moment: trust on
   first use, and it says so, naming where the vendor's own checksum is when there is one (npm's `dist.integrity`, a
   github release's digests).
@@ -141,12 +142,12 @@ context or the material. over a slow link that is the cost of one mechanism; a f
 
   ```json
   "arch": "amd64",
-  "harnesses": {"claude": {"version": "2.1.319", "sha256": "<64 hex>", "tree": "<64 hex>"}}
+  "harnesses": {"claude": {"version": "2.1.319", "hash": "sha256:<64 hex>", "tree": "<64 hex>"}}
   ```
 
   `components` stays what the finished image itself says (`stampScript`), and the stamp asks the clis of the
   sandbox's set, not a fixed list of four: under the host driver too, where a cli no agent uses is no longer run.
-  the sha is of what pats placed: a `provision` that then swaps a cli shows in `components`, not in `harnesses`.
+  the hash is of what pats placed: a `provision` that then swaps a cli shows in `components`, not in `harnesses`.
   a pair's `metadata.json` copies the pin entry's `harnesses` whole as `placed`, beside `components`, a judge's
   sample included, on every driver that pins an image: under bwrap the trees are not part of the image id, and an
   agent can run any cli its sandbox holds, so this is the one record of what a pair ran over. the host driver pins
@@ -215,7 +216,7 @@ this breaks, and the release notes say so:
 - the tree, on crafted artefacts: the executable is linked; an entry leaving the tree is refused; setuid is dropped.
 - the set: agents of two harnesses on one sandbox, a judge's harness, a step sandbox's empty set, a harness with no
   cli; a `-a` selection does not change it.
-- a project's pin: `version` without `sha256` and the reverse; the url is the machine's artefact's with the item's
+- a project's pin: `version` without `hash` and the reverse; the url is the machine's artefact's with the item's
   version; a sha that is not 64 hex; an arch that is not one of the two;
   two pins of one cli in one sandbox.
 - placement: the generated dockerfile for an empty set, a set of two, and a set under `base:` and `provision:`; the lxd

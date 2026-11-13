@@ -25,7 +25,7 @@ sizes: S is under a day, M a few days, L a week or more.
    reader it replaces. the go readers and the step-1 key go. `max-cost` loads on every agent, with its
    warning. one new dependency.
 3. **the machine's file** (S-M). where it is, the overlay and its errors, `pats config`, the note, `harness_from`
-   and `harness_sha256`, the snap's `XDG_CONFIG_HOME`. the `harnesses` table only: a `clis` table in a machine's
+   and `harness_hash`, the snap's `XDG_CONFIG_HOME`. the `harnesses` table only: a `clis` table in a machine's
    file is an error until step 6, since a pin there would name a version the images do not yet build from. a
    machine can now correct a default's command, hosts or script, and add a harness whose files a `provision`
    brings.
@@ -37,12 +37,12 @@ sizes: S is under a day, M a few days, L a week or more.
    today's pins) before anything depends on it. the machine's `clis` stay closed for the same reason.
 6. **placement** (L). the set from the config; the generated dockerfile's `COPY` layers; the lxd layer; bwrap's
    lower dirs; `arch` and `harnesses` in the pin entry; the run's missing and stale checks; the machine's `clis`,
-   and the cli's pin in `harness_sha256`; the harness-free published image and provision script;
+   and the cli's pin in `harness_hash`; the harness-free published image and provision script;
    `images/harness-versions` goes, and with it its two other readers: the makefile's embed prerequisites take the
    defaults file, and `hack/hash_inputs.sh` drops the pins from the inputs of an image that no longer holds a
    harness. this is the break, in one release: an image made by an older init is stale in every project, and
    `pats init` remakes it.
-7. **pins in a project** (S). `version` and `sha256` on an item, on top of 5 and 6.
+7. **pins in a project** (S). `version` and `hash` on an item, on top of 5 and 6.
 8. **`pi-openrouter`** (S, plus a recorded run for its script). the first default that is an entry and nothing
    else.
 

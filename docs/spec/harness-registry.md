@@ -44,7 +44,7 @@ changes no behaviour.
 ### `kind: harness`
 
 a `pats.yaml` may have harnesses of its own, in a vector like any other (`vectors.md`): `defaults` and `items`,
-each item with the keys of a `harnesses` entry and the pin of its cli, `version` and `sha256`
+each item with the keys of a `harnesses` entry and the pin of its cli, `version` and `hash`
 (`harness-images.md`). an agent's `harness:` names a harness of the machine or an item, never a vector.
 
 ```yaml
@@ -53,9 +53,9 @@ harnesses:
   items:
     claude-cli-keyless:             # a default, at another version of its cli
       version: 2.2.0
-      sha256:
-        amd64: <64 hex>
-        arm64: <64 hex>
+      hash:
+        amd64: sha256:<64 hex>
+        arm64: sha256:<64 hex>
     noop:                           # no llm at all
       run: "true"
 
@@ -96,7 +96,7 @@ the rules:
 - a copy is the project's from then on. a release that corrects the default it was copied from (a host, a line of
   `parse`) does not reach it.
 - a project has no `clis` (`machine-config.md`): an item's `cli` names one the machine has, `login: true` asks for
-  that cli's login file, and `version` and `sha256` pin that cli for the sandboxes its agents run in. the pin needs
+  that cli's login file, and `version` and `hash` pin that cli for the sandboxes its agents run in. the pin needs
   a `cli`, and its two keys come together.
 - `parse` is a promise about what `run` prints, and pats checks it only as it runs (`harness-parse.md`): a
   replaced `run`, and a pinned `version`, must still print what the item's `parse` reads, or bring their own.
@@ -105,7 +105,7 @@ the rules:
 - two items of one name, in one vector or two, are a load error, as for any kind.
 
 `metadata.json` says where the harness a pair ran is from and carries a digest of it (`machine-config.md`,
-`harness_from`, `harness_sha256`), so a default's name that means something else in one project shows in that
+`harness_from`, `harness_hash`), so a default's name that means something else in one project shows in that
 project's records.
 
 what follows from an entry's keys, wherever the entry is from:
@@ -151,7 +151,7 @@ becomes the fifth harness of the defaults, and the first that is an entry and no
 checked against release 1.5.2:
 
 - **the files.** `https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-{x64,arm64}.tar.gz`,
-  each with a digest github publishes, which is the sha256 `pats harness pin` prints. the executable is `pi/pi`
+  each with a digest github publishes, which is the hash `pats harness pin` prints. the executable is `pi/pi`
   (`bin: pi/pi`). it runs from where pats places it, and in a bare ubuntu image with nothing else installed.
   `pi --version` prints the bare version.
 - **the key.** it reads `OPENROUTER_API_KEY`, and needs no login file.
@@ -201,7 +201,7 @@ provider.
 - load: a new-named item with no `run`, in its own fields or its vector's `defaults`; `harness:` naming a vector;
   two items of one name; a harness with no `allow` under `egress: none`, and one with an `allow` refused there; a
   path, a method and a regexp in a harness's `egress`; `version`
-  without a `cli`, and without `sha256`; `login` on a cli with no `login-file`; a `clis` key in a `pats.yaml`;
+  without a `cli`, and without `hash`; `login` on a cli with no `login-file`; a `clis` key in a `pats.yaml`;
   `model` missing where `run` names `PATS_MODEL`, allowed where it does not.
 - the overlay: an item named as a default changes one key and keeps the rest; a null unsets a key the machine's
   harness has, and one the vector's `defaults` have; `login: false` over a default's `true`; `defaults` fill an
