@@ -2,7 +2,8 @@
 # check an installed pats snap: the build tags it was packed with, and the
 # load errors a reduced build gives a config it cannot run. with an engine
 # named (docker, lxd) it also runs and scores a pair of the project in
-# hack/snap-smoke, its steps in a step sandbox of that engine: that takes the
+# hack/snap-smoke, its steps in a step sandbox of that engine, and makes an
+# image of that engine with a harness cli placed in it: that takes the
 # engine's plug connected.
 #
 #   hack/snap_smoke.sh [docker] [lxd]
@@ -40,6 +41,10 @@ _pair() {
     cd "${dir}"
     git init -q .
     "${PATS}" init --sandbox agent --sandbox "steps-${engine}" || _fail "${engine}: init"
+    # a cli fetched into the snap's cache and placed in an image pats
+    # composes: its stamp in the pin is the cli run inside that image.
+    "${PATS}" init --sandbox "placed-${engine}" || _fail "${engine}: init of a placed cli"
+    grep -qE '"pi": "[0-9]+\.[0-9]+' .pats/images.json || _fail "${engine}: the placed cli has no stamp"
     OPENROUTER_API_KEY=fake-key-for-smoke "${PATS}" run -S "${engine}" -v --offline || _fail "${engine}: run"
     pair=".pats/runs/latest/stub/t-${engine}"
     [ -d "${pair}" ] || _fail "${engine}: no pair dir"

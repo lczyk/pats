@@ -1,6 +1,7 @@
 # the snap's smoke-test project (hack/snap_smoke.sh): one pair with a stub
 # agent, its steps and scorer in a docker step sandbox (suite docker) or an
-# lxd one behind an egress policy (suite lxd).
+# lxd one behind an egress policy (suite lxd). the placed sandboxes are only
+# made, never run: each takes a harness cli pats fetches and places.
 sandbox:
   kind: sandbox
   items:
@@ -16,6 +17,12 @@ sandbox:
       egress:
         allow:
           - .ubuntu.com
+    placed-docker:
+      driver: docker
+      base: docker.io/library/ubuntu:24.04
+    placed-lxd:
+      driver: lxd
+      base: ubuntu:24.04
 
 agents:
   kind: agent
@@ -24,6 +31,14 @@ agents:
       harness: opencode-openrouter
       model: anthropic/claude-haiku-4.5
       sandbox: agent
+    placed-docker:
+      harness: pi-openrouter
+      model: anthropic/claude-haiku-4.5
+      sandbox: placed-docker
+    placed-lxd:
+      harness: pi-openrouter
+      model: anthropic/claude-haiku-4.5
+      sandbox: placed-lxd
 
 tasks:
   kind: task
@@ -60,3 +75,8 @@ suites:
       agents: stub
       tasks: t-lxd
       scorers: s-lxd
+    # never run: its agents are here so their sandboxes can be made.
+    placed:
+      agents: [placed-docker, placed-lxd]
+      tasks: t-docker
+      manual: true
