@@ -67,13 +67,15 @@ docker from the deb and no job runs a non-snap pats against the docker snap.
   two caches in one dir (a run under another `XDG_CACHE_HOME`, the test suite) would each take the other's live
   dirs.
 - **detecting the docker snap.** the `docker` on `PATH` that pats runs is a link to `/usr/bin/snap`, or sits in
-  `/snap/bin`. the link is read one step, not resolved: on ubuntu 26.04 `/usr/bin/snap` is itself a link to
-  `/usr/lib/snapd/snapd`. detected once per process.
+  `/snap/bin`, itself or through links to one that does (a `/usr/local/bin/docker` pointing at the snap's). the walk
+  ends at `/usr/bin/snap` and does not resolve it: on ubuntu 26.04 that is itself a link to `/usr/lib/snapd/snapd`.
+  detected once per process.
 - **it is about the cli, not the daemon.** the probe that leaves `no-new-privileges` off (`confined`,
   `src/sandbox/engines.go`) asks the daemon, and the two answers differ: the pats snap's client with the docker
   snap's daemon, or the docker snap's cli with a `DOCKER_HOST` elsewhere.
-- **a wrapper around the snap's docker** is not detected. `XDG_CACHE_HOME` on a non-hidden dir under the home is
-  then enough, since the cidfile is under the cli root too (next), which is then the temp root.
+- **a wrapper around the snap's docker** (a script, not a link) is not detected. `XDG_CACHE_HOME` on a non-hidden
+  dir under the home is then enough, since the cidfile is under the cli root too (next), which is then the temp
+  root.
 - **the cidfile** moves off `os.MkdirTemp("")` into a dir of the cli root, made as `MkTemp` makes one and removed
   with `RemoveTemp`, so it carries an owner file and `pats clean` sweeps it like any other temp dir. where the docker
   snap is not the cli, that moves it from `$TMPDIR` to the temp root.
@@ -155,7 +157,7 @@ not checked: the ci job, which has not run yet.
 ## tests
 
 - detection: a `docker` that is a link to `/usr/bin/snap` (in `/snap/bin`, and in `/var/lib/snapd/snap/bin`), one in
-  `/snap/bin` that is no link, and an apt one, with a fake `PATH`.
+  `/snap/bin` that is no link, a link of the user's to either, and an apt one, with a fake `PATH`.
 - the cli root is `~/snap/docker/common/pats-tmp/<client-id>` for the docker snap and the temp root otherwise. the
   cidfile, the iidfile, the generated dockerfile, a placed cli's tree, the material and a pushed step script are
   under it, and a bind's source is not (a fake runner records the args). a start leaves no owner file behind. a
