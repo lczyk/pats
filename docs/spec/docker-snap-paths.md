@@ -59,8 +59,9 @@ docker from the deb and no job runs a non-snap pats against the docker snap.
   mode 0700, whether or not the user has run the snap's docker before.
 - **by the sandbox's driver.** the cli root is the docker driver's. a dir made for a sandbox of another driver (lxd,
   podman, bwrap, the host) is in the temp root whatever `docker` is on `PATH`. `MkTemp` keeps its meaning, and the
-  six places that make a dir the cli opens ask for one by driver: four are in the docker driver itself, and the two
-  in `internal/eval` (the material, a step sandbox's staging) know their sandbox.
+  six places that make a dir the cli opens ask for one by driver: four are in the container driver, which is podman's
+  too and knows which of the two it runs, and the two in `internal/eval` (the material, a step sandbox's staging)
+  know their sandbox.
 - **the client id** (`src/sandbox/clientid.go`, one per cache) is in the path because the leases stay in the cache.
   a temp dir's owner file names a run, and `pats clean` calls the run dead when its own cache has no lease for it.
   two caches in one dir (a run under another `XDG_CACHE_HOME`, the test suite) would each take the other's live
@@ -79,7 +80,10 @@ docker from the deb and no job runs a non-snap pats against the docker snap.
 - **`pats clean`** sweeps the temp root as today, and `~/snap/docker/common/pats-tmp/<client-id>` whenever it
   exists, whether or not the docker snap is detected now: a `PATH` that changed, or a docker snap swapped for the
   deb, leaves dirs there. same rules, `-a` and `-f`. it reads the temp dirs of both before it sweeps the leases,
-  since a lease stays while a temp dir names it. it makes neither dir.
+  since a lease stays while a temp dir names it. it makes neither dir. a dir it may not look at is one that is not
+  there: the pats snap reaches no other snap's `~/snap/<name>`, so its clean gets a permission error for the path,
+  not a missing file, and says nothing. it has nothing there in any case, with a cache and so a client id of its
+  own.
 - **a link in the temp root.** `<cache>/tmp/docker-snap` is a link to the cli root, made when pats first makes the
   cli root and left there. it is for someone who looks for a run's dirs in the usual place and finds half of them.
   pats hands the cli the real path, never the link: the cli cannot pass through `~/.cache`. `pats clean` sweeps dirs
@@ -110,9 +114,14 @@ on ubuntu 26.04 amd64, the docker snap 29.8.0, a user in the `docker` group who 
   a `build:` sandbox and of one with a placed cli, the pair, its steps in a step sandbox, the scorer, and `pats clean
   -n` with nothing left.
 
-not checked: arm64, and the detection, which is not written. that pats run had its bind sources under the same dir,
-where the proposal leaves them in the cache: the first test (above) had both under the home, and binds from
-`~/.cache` are what works today.
+on ubuntu 26.04 arm64, the same docker snap, by hand in a dir under `~/snap/docker/common`: a build with its
+context and `--iidfile`, `docker cp` of a file in and out, a cidfile and a bind all worked. 1.0.0 as installed
+failed a forced `pats init` on the iidfile there too. an init that finds its image built already (by the pats snap,
+here) builds nothing, and the first failure is then the cidfile at the run.
+
+not checked: the detection, which is not written, and a pats run with the proposed dir on arm64. the amd64 pats run
+had its bind sources under the same dir, where the proposal leaves them in the cache: the first test (above) had
+both under the home, and binds from `~/.cache` are what works today.
 
 ## alternatives
 
@@ -145,7 +154,8 @@ where the proposal leaves them in the cache: the first test (above) had both und
   under it, and a bind's source is not (a fake runner records the args). a start leaves no owner file behind. a
   podman or lxd sandbox's dirs are in the temp root with the docker snap on `PATH`.
 - `pats clean` sweeps a dead run's dir from both roots and keeps a live one's; it sweeps the docker snap's root with
-  no docker snap on `PATH`; it leaves another client id's dir alone; a dry run makes no dir.
+  no docker snap on `PATH`; it leaves another client id's dir alone; a dry run makes no dir; a root it may not read is
+  passed over with no warning.
 - making the cli root leaves the link `docker-snap` in the temp root, naming it; a second run leaves the link as it
   is; `pats clean` does not take it; with no docker snap there is no link.
 - init names a build context under `/srv`, `~/.work` and `~/snap/other` when the cli is the docker snap, and not one
