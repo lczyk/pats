@@ -27,7 +27,9 @@ func TestMain(m *testing.M) {
 		return filepath.Join(dir, "harness", a.SHA256), nil
 	}
 	// no test reaches openrouter; the model check's own tests call it.
-	checkModels = func(context.Context, []config.Agent, *http.Client) ([]string, error) { return nil, nil }
+	checkModels = func(context.Context, []config.Agent, *http.Client) (map[string]*modelPrice, []string, error) {
+		return nil, nil, nil
+	}
 	// the fixtures run their steps on the host, in every build.
 	config.AllowHostStepsInTests()
 	code := m.Run()

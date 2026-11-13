@@ -262,10 +262,11 @@ func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs 
 	if ro.Offline {
 		upstream <- nil
 	} else {
-		warns, err := checkModels(ctx, catalogueAgents(cfg, pairAgents(cfg, judgePairs), "openrouter"), http.DefaultClient)
+		prices, warns, err := checkModels(ctx, catalogueAgents(cfg, pairAgents(cfg, judgePairs), "openrouter"), http.DefaultClient)
 		if err != nil {
 			return err
 		}
+		ro.prices = prices
 		for _, w := range warns {
 			lg.warn("%s", w)
 		}

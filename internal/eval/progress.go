@@ -71,6 +71,8 @@ type pairStat struct {
 	failure  atomic.Value  // string: what it said of that error
 	// spend, when set, hears each step's cost as the harness reports it.
 	spend func(c float64)
+	// price, when set, costs the tokens of a harness that reports no cost.
+	price *modelPrice
 }
 
 // spent is the spend the pair's harness reported so far.
@@ -441,12 +443,18 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 		atomic.StoreInt64(&s.tools, int64(r.ToolCalls))
 		s.failed.Store(r.IsError)
 		s.failure.Store(r.ErrorMsg)
-		if r.HasCost {
+		// a harness that reports tokens and no cost is priced by its
+		// model's list price, so a budget has something to check.
+		now, has := r.CostUSD, r.HasCost
+		if !has {
+			now, has = s.price.cost(r.Input, r.Output, r.CacheRead, r.CacheWrite)
+		}
+		if has {
 			s.costSeen.Store(true)
 		}
-		if r.CostUSD != cost {
-			d := r.CostUSD - cost
-			cost = r.CostUSD
+		if now != cost {
+			d := now - cost
+			cost = now
 			s.addCost(d)
 		}
 	}
@@ -459,9 +467,12 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 // the stream doesn't say), and HasCost tells the caller a zero CostUSD is a
 // real zero rather than an unreported one.
 type runSummary struct {
-	Turns            int            `json:"turns,omitempty"`
-	CostUSD          float64        `json:"cost_usd,omitempty"`
-	HasCost          bool           `json:"has_cost"` // false when the harness reports no dollar cost at all
+	Turns   int     `json:"turns,omitempty"`
+	CostUSD float64 `json:"cost_usd,omitempty"`
+	HasCost bool    `json:"has_cost"` // false when the harness reports no dollar cost at all
+	// CostEstimated says CostUSD is the tokens at the model's list price,
+	// for a harness that reports no cost: the call may have cost another.
+	CostEstimated    bool           `json:"cost_estimated,omitempty"`
 	InputTokens      int            `json:"input_tokens,omitempty"`
 	OutputTokens     int            `json:"output_tokens,omitempty"`
 	CacheReadTokens  int            `json:"cache_read_tokens,omitempty"`
@@ -533,6 +544,17 @@ func summarize(hd *machine.Harness, stdoutPath string) *runSummary {
 		return nil
 	}
 	return summaryOf(r)
+}
+
+// estimate prices the summary's tokens when its harness reported no cost
+// and the model's price is known.
+func (s *runSummary) estimate(p *modelPrice) {
+	if s == nil || s.HasCost {
+		return
+	}
+	if c, ok := p.cost(s.InputTokens, s.OutputTokens, s.CacheReadTokens, s.CacheWriteTokens); ok {
+		s.CostUSD, s.HasCost, s.CostEstimated = c, true, true
+	}
 }
 
 // summaryOf is what a pass heard as a summary, nil when it heard nothing.

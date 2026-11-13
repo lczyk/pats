@@ -42,6 +42,36 @@ func catalogueServer(t *testing.T, status int, body string) {
 	t.Setenv("PATS_OPENROUTER_URL", srv.URL)
 }
 
+// the check hands back what the catalogue says each agent's model costs. a
+// cache price a model leaves out is its prompt's, and a model with no price
+// it can read has none.
+func TestModelPrices(t *testing.T) {
+	catalogueServer(t, 200, `{"data": [
+	{"id": "x/full", "supported_parameters": ["tools"], "pricing": {"prompt": "0.000002", "completion": "0.000008", "input_cache_read": "0.0000005", "input_cache_write": "0.0000025"}},
+	{"id": "x/plain", "supported_parameters": ["tools"], "pricing": {"prompt": "0.000001", "completion": "0.000003"}},
+	{"id": "x/free", "supported_parameters": ["tools"], "pricing": {"prompt": "0", "completion": "0"}},
+	{"id": "x/none", "supported_parameters": ["tools"]},
+	{"id": "x/odd", "supported_parameters": ["tools"], "pricing": {"prompt": "-1", "completion": "cheap"}}
+]}`)
+	agents := []config.Agent{orAgent("full", "x/full:nitro"), orAgent("plain", "x/plain"), orAgent("free", "x/free"), orAgent("none", "x/none"), orAgent("odd", "x/odd")}
+	prices, _, err := checkOpenrouterModels(context.Background(), agents, http.DefaultClient)
+	require.NoError(t, err)
+	assert.Equal(t, *prices["full"], modelPrice{in: 2e-6, out: 8e-6, cacheRead: 5e-7, cacheWrite: 2.5e-6})
+	assert.Equal(t, *prices["plain"], modelPrice{in: 1e-6, out: 3e-6, cacheRead: 1e-6, cacheWrite: 1e-6})
+	assert.Equal(t, *prices["free"], modelPrice{})
+	assert.That(t, prices["none"] == nil && prices["odd"] == nil, "a model with no readable price has one")
+
+	c, ok := prices["full"].cost(1000, 100, 2000, 400)
+	assert.Equal(t, ok, true)
+	assert.NearlyEqual(t, c, 0.002+0.0008+0.001+0.001, 1e-12)
+	_, ok = prices["full"].cost(0, 0, 0, 0)
+	assert.Equal(t, ok, false) // nothing to price is no cost, not a cost of 0
+	_, ok = prices["none"].cost(1, 1, 0, 0)
+	assert.Equal(t, ok, false)
+	c, ok = prices["free"].cost(1, 1, 0, 0)
+	assert.That(t, ok && c == 0, "a free model's tokens cost a real zero")
+}
+
 func orAgent(id, model string) config.Agent {
 	return config.Agent{Name: id, Harness: "opencode-openrouter", Model: model}
 }
@@ -54,15 +84,15 @@ func TestCheckOpenrouterModels(t *testing.T) {
 	ok := []config.Agent{orAgent("a", "openai/gpt-4o-mini"), orAgent("b", "x/y:free"), orAgent("c", "x/y:nitro:free"),
 		orAgent("d", "x/y:free:floor:nitro"), orAgent("e", "openai/gpt-4o:nitro"),
 		{Name: "claude", Harness: "claude-cli-keyless", Model: "nonsense"}}
-	warns, err := checkOpenrouterModels(context.Background(), catalogueAgents(&config.Config{}, ok, "openrouter"), http.DefaultClient)
+	_, warns, err := checkOpenrouterModels(context.Background(), catalogueAgents(&config.Config{}, ok, "openrouter"), http.DefaultClient)
 	require.NoError(t, err)
 	assert.Len(t, warns, 0)
 
-	_, err = checkOpenrouterModels(context.Background(), []config.Agent{orAgent("typo", "openai/gpt-4o-mni")}, http.DefaultClient)
+	_, _, err = checkOpenrouterModels(context.Background(), []config.Agent{orAgent("typo", "openai/gpt-4o-mni")}, http.DefaultClient)
 	assert.Error(t, err, `agent "typo": model "openai/gpt-4o-mni" is not on openrouter; closest: openai/gpt-4o-mini`)
-	_, err = checkOpenrouterModels(context.Background(), []config.Agent{orAgent("p", "prose/only")}, http.DefaultClient)
+	_, _, err = checkOpenrouterModels(context.Background(), []config.Agent{orAgent("p", "prose/only")}, http.DefaultClient)
 	assert.Error(t, err, "does not take tools")
-	_, err = checkOpenrouterModels(context.Background(), []config.Agent{orAgent("u", "x/y:weird")}, http.DefaultClient)
+	_, _, err = checkOpenrouterModels(context.Background(), []config.Agent{orAgent("u", "x/y:weird")}, http.DefaultClient)
 	assert.Error(t, err, `model "x/y:weird" is not on openrouter`)
 }
 
@@ -75,7 +105,7 @@ func TestCheckOpenrouterModelsUnreadable(t *testing.T) {
 		body   string
 	}{{500, "oops"}, {200, "{}"}, {200, "not json"}} {
 		catalogueServer(t, c.status, c.body)
-		warns, err := checkOpenrouterModels(context.Background(), agents, http.DefaultClient)
+		_, warns, err := checkOpenrouterModels(context.Background(), agents, http.DefaultClient)
 		require.NoError(t, err, c.body)
 		require.Len(t, warns, 1)
 		assert.That(t, strings.HasPrefix(warns[0], "model check skipped: "), "%s", warns[0])
@@ -91,7 +121,7 @@ func TestCheckOpenrouterModelsUnreadable(t *testing.T) {
 	t.Setenv("PATS_OPENROUTER_URL", slow.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
-	_, err := checkOpenrouterModels(ctx, agents, http.DefaultClient)
+	_, _, err := checkOpenrouterModels(ctx, agents, http.DefaultClient)
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
@@ -126,7 +156,7 @@ func FuzzCheckOpenrouterModels(f *testing.F) {
 		}
 
 		client := &http.Client{Transport: cannedBody(body)}
-		warns, err := checkOpenrouterModels(context.Background(), []config.Agent{orAgent("axx", model)}, client)
+		_, warns, err := checkOpenrouterModels(context.Background(), []config.Agent{orAgent("axx", model)}, client)
 
 		// the catalogue as its reader takes it: the first json value of the body.
 		var cat struct {

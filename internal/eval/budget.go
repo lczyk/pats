@@ -122,3 +122,11 @@ func usd(x float64) string {
 	}
 	return fmt.Sprintf("$%.*f", 1-int(math.Floor(math.Log10(x))), x)
 }
+
+// estMark goes before an amount that is an estimate.
+func estMark(estimated bool) string {
+	if estimated {
+		return "~"
+	}
+	return ""
+}

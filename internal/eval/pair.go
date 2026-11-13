@@ -64,6 +64,7 @@ func runPair(
 	sandboxes map[string]config.Sandbox, stat *pairStat,
 ) error {
 	a, t, outDir := job.agent, job.task, job.outDir
+	stat.price = opts.prices[a.Name]
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
@@ -342,6 +343,7 @@ func runPair(
 	}
 	// the ledger reads the summary's cost when the pair ends: set before
 	// anything here can fail.
+	meta.Summary.estimate(stat.price)
 	if s := meta.Summary; s != nil {
 		stat.tokens, stat.cost, stat.costKnown = s.OutputTokens, s.CostUSD, s.HasCost
 		if s.ParseErrors > 0 {
@@ -381,7 +383,7 @@ func runPair(
 		// cost + turns are omitted for harnesses whose stream doesn't report them.
 		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))
 		if s.HasCost {
-			stats += fmt.Sprintf("  $%.2f", s.CostUSD)
+			stats += fmt.Sprintf("  %s$%.2f", estMark(s.CostEstimated), s.CostUSD)
 		}
 		if s.Turns > 0 {
 			stats += fmt.Sprintf("  %d turns", s.Turns)

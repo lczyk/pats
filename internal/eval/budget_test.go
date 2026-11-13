@@ -2,8 +2,10 @@ package eval
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 
+	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -60,6 +63,63 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	require.NoError(t, err)
 	assert.Equal(t, string(b), "collected\n")
 	assert.ContainsString(t, out.String(), "axx/txx budget")
+}
+
+// a harness that reports tokens and no cost is priced by what the catalogue
+// says its model costs: the pair's summary holds the estimate, marked as
+// one, and the agent's budget stops the pair on it as on a reported cost.
+// without a price, as offline, the pair has no cost.
+func TestCostFromTokens(t *testing.T) {
+	// a million input tokens and a million cached, then on until stopped.
+	const usage = `{"in":1000000,"cached":1000000,"out":0}` + "\n"
+	const body = `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+hxx:
+  kind: harness
+  items:
+    tok:
+      run: tok
+      models: openrouter
+      parse: |
+        ev = json.decode(line, default = {})
+        out.usage(turns = 1, input_tokens = ev.get("in", 0), cache_read_tokens = ev.get("cached", 0), output_tokens = ev.get("out", 0))
+axx: {kind: agent, items: {axx: {harness: tok, model: x/y, sandbox: sxx%s}}}
+txx: {kind: task, items: {txx: {prompt: p, timeout: 1m}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`
+	run := func(t *testing.T, agentKeys string, box *fakeSandbox, prices map[string]*modelPrice) pairMeta {
+		old := newSandbox
+		newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return box, nil }
+		defer func() { newSandbox = old }()
+		oldCheck := checkModels
+		checkModels = func(context.Context, []config.Agent, *http.Client) (map[string]*modelPrice, []string, error) {
+			return prices, nil, nil
+		}
+		defer func() { checkModels = oldCheck }()
+		dir := t.TempDir()
+		cfg := parseCfg(t, fmt.Sprintf(body, agentKeys))
+		pinAll(t, dir, cfg)
+		var out bytes.Buffer
+		runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+		require.NoError(t, err, "%s", out.String())
+		return readMeta(t, runDir, "axx", "txx")
+	}
+	// $2 a million input tokens, $0.5 a million cached.
+	price := map[string]*modelPrice{"axx": {in: 2e-6, out: 8e-6, cacheRead: 5e-7, cacheWrite: 2e-6}}
+
+	m := run(t, "", &fakeSandbox{stdout: usage}, price)
+	assert.Equal(t, m.Status, "ok")
+	assert.NearlyEqual(t, m.Summary.CostUSD, 2.5, 1e-9)
+	assert.Equal(t, m.Summary.HasCost, true)
+	assert.Equal(t, m.Summary.CostEstimated, true)
+
+	m = run(t, ", budget: 1", &fakeSandbox{blockUntilDone: true, preRun: usage, preflightOut: usage}, price)
+	assert.Equal(t, m.Status, "budget")
+	assert.Equal(t, m.Error, "cost $2.50 passed its budget $1.00")
+
+	m = run(t, "", &fakeSandbox{stdout: usage}, nil)
+	assert.Equal(t, m.Summary.HasCost, false)
+	assert.Equal(t, m.Summary.CostEstimated, false)
 }
 
 // a format that reports its cost once, at its end, is stopped there: the

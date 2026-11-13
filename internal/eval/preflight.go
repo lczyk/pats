@@ -139,7 +139,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	// also read as a pair's is, for what it says of cost, so the two are no
 	// longer one writer and the buffer takes a lock.
 	var buf lockedBuffer
-	stat := &pairStat{}
+	stat := &pairStat{price: opts.prices[a.Name]}
 	tap := &statTap{stat: stat, scan: statScanner(hd)}
 	r := h.exec(ctx, sess, io.MultiWriter(&buf, tap), &buf, preflightTimeout)
 	if r.err != nil {

@@ -50,6 +50,9 @@ type Options struct {
 	live io.Writer // -vv's stream when Out is a pair's buffer (see liveStream)
 	// ledger is the invocation's spend (budget.md); nil counts nothing.
 	ledger *ledger
+	// prices is what the catalogue says each agent's model costs, for a
+	// harness that reports tokens and no cost; nil offline.
+	prices map[string]*modelPrice
 }
 
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
@@ -133,10 +136,11 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	// a model openrouter does not have, or one without tools, fails here,
 	// before the run dir and any sandbox.
 	if !opts.Offline {
-		warns, err := checkModels(ctx, catalogueAgents(cfg, pairAgents(cfg, pairs), "openrouter"), http.DefaultClient)
+		prices, warns, err := checkModels(ctx, catalogueAgents(cfg, pairAgents(cfg, pairs), "openrouter"), http.DefaultClient)
 		if err != nil {
 			return "", err
 		}
+		opts.prices = prices
 		for _, w := range warns {
 			lg.warn("%s", w)
 		}

@@ -72,9 +72,12 @@ type reportPair struct {
 	OutputTokens     *int     `json:"output_tokens"`
 	ReasoningTokens  *int     `json:"reasoning_tokens"`
 	CostUSD          *float64 `json:"cost_usd"`
-	PremiumRequests  *int     `json:"premium_requests"`
-	DeniedEgress     []string `json:"denied_egress"`
-	BlockedEgress    []string `json:"blocked_egress"`
+	// CostEstimated says cost_usd is the tokens at the model's list price,
+	// for a harness that reports none.
+	CostEstimated   bool     `json:"cost_estimated"`
+	PremiumRequests *int     `json:"premium_requests"`
+	DeniedEgress    []string `json:"denied_egress"`
+	BlockedEgress   []string `json:"blocked_egress"`
 	// EgressEnforced is false when the pair's egress was advisory (the host
 	// driver), null when unknown or no policy ran.
 	EgressEnforced *bool `json:"egress_enforced"`
@@ -191,7 +194,7 @@ func (p *reportPair) summaryFields(pm *pairMeta) {
 	p.PremiumRequests = known(s.PremiumRequests)
 	if s.HasCost {
 		c := s.CostUSD
-		p.CostUSD = &c
+		p.CostUSD, p.CostEstimated = &c, s.CostEstimated
 	}
 }
 
@@ -468,6 +471,7 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 	agentSet, taskSet := map[string]bool{}, map[string]bool{}
 	marks := map[string]string{}
 	cost, costKnown, secs, secsKnown := map[string]float64{}, map[string]bool{}, map[string]float64{}, map[string]bool{}
+	costEst := map[string]bool{} // an agent with a pair whose cost is an estimate
 	for _, p := range pairs {
 		agentSet[p.agent], taskSet[p.task] = true, true
 		marks[p.agent+"/"+p.task] = statusMark(p)
@@ -479,6 +483,7 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 		if s := p.meta.Summary; s != nil && s.HasCost {
 			cost[p.agent] += s.CostUSD
 			costKnown[p.agent] = true
+			costEst[p.agent] = costEst[p.agent] || s.CostEstimated
 		}
 	}
 	for k := range r.PerPair {
@@ -601,7 +606,7 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 		if !costKnown[a] {
 			return []cell{{"-", "\033[2m"}}
 		}
-		return []cell{{fmt.Sprintf("$%.2f", cost[a]), ""}}
+		return []cell{{fmt.Sprintf("%s$%.2f", estMark(costEst[a]), cost[a]), ""}}
 	})
 	row("time", func(a string) []cell {
 		if !secsKnown[a] {

@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +24,43 @@ import (
 // checkModels is the check Run makes; a var so tests that are not about it
 // skip the network.
 var checkModels = checkOpenrouterModels
+
+// modelPrice is what the catalogue says a model's tokens cost, in us dollars
+// each: its list price, which the provider a call is routed to may differ
+// from.
+type modelPrice struct{ in, out, cacheRead, cacheWrite float64 }
+
+// cost prices a pair's tokens, false when it has none to price. input here
+// leaves the cached tokens out, as the summary's does.
+func (p *modelPrice) cost(in, out, cacheRead, cacheWrite int) (float64, bool) {
+	if p == nil || in+out+cacheRead+cacheWrite == 0 {
+		return 0, false
+	}
+	return p.in*float64(in) + p.out*float64(out) + p.cacheRead*float64(cacheRead) + p.cacheWrite*float64(cacheWrite), true
+}
+
+// priceOf reads a catalogue entry's prices, nil when it states none it can
+// read. a cache price it leaves out is the prompt's: such a token is billed
+// as input.
+func priceOf(m openrouterModel) *modelPrice {
+	num := func(s string) (float64, bool) {
+		f, err := strconv.ParseFloat(s, 64)
+		return f, err == nil && f >= 0 && !math.IsInf(f, 0) && !math.IsNaN(f)
+	}
+	in, ok1 := num(m.Pricing.Prompt)
+	out, ok2 := num(m.Pricing.Completion)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	p := &modelPrice{in: in, out: out, cacheRead: in, cacheWrite: in}
+	if f, ok := num(m.Pricing.InputCacheRead); ok {
+		p.cacheRead = f
+	}
+	if f, ok := num(m.Pricing.InputCacheWrite); ok {
+		p.cacheWrite = f
+	}
+	return p
+}
 
 // modelCheckBudget bounds the whole check.
 const modelCheckBudget = 10 * time.Second
@@ -56,35 +95,47 @@ func catalogueID(id string) string {
 type openrouterModel struct {
 	ID                  string   `json:"id"`
 	SupportedParameters []string `json:"supported_parameters"`
+	Pricing             struct {
+		Prompt          string `json:"prompt"`
+		Completion      string `json:"completion"`
+		InputCacheRead  string `json:"input_cache_read"`
+		InputCacheWrite string `json:"input_cache_write"`
+	} `json:"pricing"`
 }
 
 // checkOpenrouterModels checks each agent's model against the catalogue: it
 // exists, and takes tools. the caller passes the agents whose harness names
 // the catalogue (catalogueAgents). a model that fails is
 // the error; a catalogue that cannot be read is a warning, and the run goes
-// on. a cancelled ctx (ctrl-c) is never swallowed.
-func checkOpenrouterModels(ctx context.Context, agents []config.Agent, client *http.Client) (warnings []string, err error) {
+// on. a cancelled ctx (ctrl-c) is never swallowed. it also hands back what
+// the catalogue says each agent's model costs, by agent name: what prices a
+// pair whose harness reports tokens and no cost.
+func checkOpenrouterModels(ctx context.Context, agents []config.Agent, client *http.Client) (prices map[string]*modelPrice, warnings []string, err error) {
 	check := agents
 	if len(check) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, modelCheckBudget)
 	defer cancel()
 	models, ferr := fetchCatalogue(cctx, client)
 	if ferr != nil {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
-		return []string{"model check skipped: " + ferr.Error()}, nil
+		return nil, []string{"model check skipped: " + ferr.Error()}, nil
 	}
 	byID := map[string]openrouterModel{}
 	for _, m := range models {
 		byID[m.ID] = m
 	}
 	var errs []string
+	prices = map[string]*modelPrice{}
 	for _, a := range check {
 		id := catalogueID(a.Model)
 		m, ok := byID[id]
+		if p := priceOf(m); ok && p != nil {
+			prices[a.Name] = p
+		}
 		switch {
 		case !ok:
 			msg := fmt.Sprintf("agent %q: model %q is not on openrouter", a.Name, a.Model)
@@ -97,9 +148,9 @@ func checkOpenrouterModels(ctx context.Context, agents []config.Agent, client *h
 		}
 	}
 	if len(errs) > 0 {
-		return nil, fmt.Errorf("model check:\n  %s", strings.Join(errs, "\n  "))
+		return nil, nil, fmt.Errorf("model check:\n  %s", strings.Join(errs, "\n  "))
 	}
-	return nil, nil
+	return prices, nil, nil
 }
 
 func fetchCatalogue(ctx context.Context, client *http.Client) ([]openrouterModel, error) {

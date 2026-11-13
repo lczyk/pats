@@ -40,13 +40,15 @@ type multiPair struct {
 // multiSample is one attempt: a run the pair ran in, its mean null when
 // nothing scored it there.
 type multiSample struct {
-	Run       string             `json:"run"`
-	Mean      *float64           `json:"mean"`
-	Status    *string            `json:"status"`
-	Error     *string            `json:"error"`
-	CostUSD   *float64           `json:"cost_usd"`
-	DurationS *float64           `json:"duration_s"`
-	Scores    map[string]float64 `json:"scores"`
+	Run     string   `json:"run"`
+	Mean    *float64 `json:"mean"`
+	Status  *string  `json:"status"`
+	Error   *string  `json:"error"`
+	CostUSD *float64 `json:"cost_usd"`
+	// CostEstimated says cost_usd is the tokens at the model's list price.
+	CostEstimated bool               `json:"cost_estimated"`
+	DurationS     *float64           `json:"duration_s"`
+	Scores        map[string]float64 `json:"scores"`
 	// EgressEnforced is false when the attempt's egress was advisory (the
 	// host driver), null when unknown or no policy ran.
 	EgressEnforced *bool `json:"egress_enforced"`
@@ -163,7 +165,7 @@ func buildMulti(runDirs []string, warn io.Writer) (*multiDoc, map[string][]strin
 				}
 				if sm := r.meta.Summary; sm != nil && sm.HasCost {
 					c := sm.CostUSD
-					s.CostUSD = &c
+					s.CostUSD, s.CostEstimated = &c, sm.CostEstimated
 				}
 				if eg := r.meta.Egress; eg != nil && eg.Enforced != nil {
 					e := *eg.Enforced
@@ -328,6 +330,7 @@ func pivotMulti(w io.Writer, doc *multiDoc, statuses map[string][]string, color 
 		}
 		avg = append(avg, m)
 		sum, known, missing, secs, nsecs := 0.0, false, false, 0.0, 0
+		est := false // a sample's cost is an estimate
 		for _, p := range doc.Pairs {
 			if p.Agent != a {
 				continue
@@ -336,6 +339,7 @@ func pivotMulti(w io.Writer, doc *multiDoc, statuses map[string][]string, color 
 				if s.CostUSD != nil {
 					sum += *s.CostUSD
 					known = true
+					est = est || s.CostEstimated
 				} else {
 					missing = true
 				}
@@ -347,7 +351,7 @@ func pivotMulti(w io.Writer, doc *multiDoc, statuses map[string][]string, color 
 		}
 		c := "-"
 		if known {
-			c = fmt.Sprintf("$%.2f", sum)
+			c = fmt.Sprintf("%s$%.2f", estMark(est), sum)
 			if missing {
 				c += "+"
 			}
