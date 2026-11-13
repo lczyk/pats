@@ -178,7 +178,7 @@ func runPair(
 	// setup -- start, the in-sandbox prepare -- has its own budget; the
 	// task's timeout covers the agent only.
 	var r harnessRun
-	var budget, stopped bool // the agent's max-cost stopped it; it or the deadline did
+	var budget, stopped bool // the agent's budget stopped it; it or the deadline did
 	var sess sandbox.Session
 	// synced: the host copy of the agent's files is current, so collect
 	// can read it.
@@ -217,12 +217,12 @@ func runPair(
 		if s := opts.stream(); s != nil {
 			stderrW = io.MultiWriter(stderrF, s)
 		}
-		// the agent gets a context of its own: its agent's max-cost cancels
+		// the agent gets a context of its own: its agent's budget cancels
 		// it alone, and sync and collect still run on the pair's.
 		actx, acancel := context.WithCancelCause(ctx)
 		stat.spend = func(c float64) {
 			opts.ledger.add(stat, c)
-			if spent := stat.spent(); a.MaxCost != nil && spent > *a.MaxCost {
+			if spent := stat.spent(); a.Budget != nil && spent > *a.Budget {
 				acancel(errBudget)
 			}
 		}
@@ -251,7 +251,7 @@ func runPair(
 		// an interrupt of the run wins over whatever else ended the agent.
 		status, errStr = "error", "interrupted"
 	case budget:
-		status, errStr = "budget", fmt.Sprintf("cost $%.2f passed max-cost $%.2f", stat.spent(), *a.MaxCost)
+		status, errStr = "budget", fmt.Sprintf("cost $%.2f passed its budget $%.2f", stat.spent(), *a.Budget)
 		if syncErr != nil {
 			errStr += fmt.Sprintf("; sync: %v", syncErr)
 		}

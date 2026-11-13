@@ -96,7 +96,7 @@ type RunCommand struct {
 	DryRun  bool     `long:"dry-run" short:"n" description:"list the pairs with a cost estimate from past runs, and run nothing"`
 	JSON    bool     `long:"json" description:"with -n: the list as one json object a line on stdout, the log on stderr"`
 	Repeat  int      `long:"repeat" short:"N" default:"1" description:"run the selection this many times, one run after another, each its own run dir"`
-	MaxCost float64  `long:"max-cost" value-name:"<usd>" description:"stop starting pairs once the reported spend reaches this many us dollars, across every repeat"`
+	Budget  float64  `long:"budget" value-name:"<usd>" description:"stop starting pairs once the reported spend reaches this many us dollars, across every repeat"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -106,9 +106,9 @@ func (r *RunCommand) Execute(args []string) error {
 	if r.Repeat < 1 {
 		return errors.New("--repeat must be at least 1")
 	}
-	if r.MaxCost != 0 || flagSet("run", "max-cost") {
-		if err := config.CheckCost(r.MaxCost); err != nil {
-			return fmt.Errorf("--max-cost: %w", err)
+	if r.Budget != 0 || flagSet("run", "budget") {
+		if err := config.CheckCost(r.Budget); err != nil {
+			return fmt.Errorf("--budget: %w", err)
 		}
 	}
 	cfg, err := load(opts.Config)
@@ -125,7 +125,7 @@ func (r *RunCommand) Execute(args []string) error {
 		Out:       out,
 		DryRun:    r.DryRun,
 		Repeat:    r.Repeat,
-		MaxCost:   r.MaxCost,
+		Budget:    r.Budget,
 		JSON:      r.JSON,
 		JSONOut:   os.Stdout,
 		Jobs:      r.Jobs,
@@ -182,7 +182,7 @@ type JudgeCommand struct {
 	Tasks   []string `long:"task" short:"t" description:"only judge these tasks' pairs, or task vectors' (repeatable); default: all"`
 	Scorers []string `long:"scorer" short:"s" description:"only run these agent scorers or scorer vectors (repeatable); default: all"`
 	Suites  []string `long:"suite" short:"S" description:"only judge these suites or suite vectors (repeatable); default: all"`
-	MaxCost float64  `long:"max-cost" value-name:"<usd>" description:"stop starting judge jobs once their reported spend reaches this many us dollars, across every run"`
+	Budget  float64  `long:"budget" value-name:"<usd>" description:"stop starting judge jobs once their reported spend reaches this many us dollars, across every run"`
 	Offline bool     `long:"offline" description:"skip checking for newer upstream images and the openrouter model check"`
 }
 
@@ -193,9 +193,9 @@ func (c *JudgeCommand) Execute(args []string) error {
 	if c.Repeat < 1 {
 		return errors.New("--repeat must be at least 1")
 	}
-	if c.MaxCost != 0 || flagSet("judge", "max-cost") {
-		if err := config.CheckCost(c.MaxCost); err != nil {
-			return fmt.Errorf("--max-cost: %w", err)
+	if c.Budget != 0 || flagSet("judge", "budget") {
+		if err := config.CheckCost(c.Budget); err != nil {
+			return fmt.Errorf("--budget: %w", err)
 		}
 	}
 	cfg, err := load(opts.Config)
@@ -208,7 +208,7 @@ func (c *JudgeCommand) Execute(args []string) error {
 		Runs:      c.Runs,
 		Jobs:      c.Jobs,
 		Repeat:    c.Repeat,
-		MaxCost:   c.MaxCost,
+		Budget:    c.Budget,
 		Offline:   c.Offline,
 		Suites:    c.Suites,
 		Agents:    c.Agents,

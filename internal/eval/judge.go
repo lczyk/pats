@@ -29,7 +29,7 @@ type JudgeOptions struct {
 	Runs      int    // --runs: the latest this many runs, each in turn
 	Jobs      int    // judge jobs at once; 0 -> 1, negative -> auto
 	Repeat    int    // samples per judgement; 0 or 1 is one
-	MaxCost   float64
+	Budget    float64
 	Offline   bool
 	Suites    []string
 	Agents    []string
@@ -133,7 +133,7 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 	}()
 	defer sandbox.Shutdown()
 
-	ro := Options{ConfigDir: jo.ConfigDir, Out: jo.Out, Color: color, Verbose: jo.Verbose, Offline: jo.Offline, MaxCost: jo.MaxCost}
+	ro := Options{ConfigDir: jo.ConfigDir, Out: jo.Out, Color: color, Verbose: jo.Verbose, Offline: jo.Offline, Budget: jo.Budget}
 	n := max(jo.Repeat, 1)
 	var judgePairs []config.TestPair
 	seen := map[string]bool{}
@@ -160,7 +160,7 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 		jobs = resolveJobs(jo.Jobs, func() int { return autoCPUs(ctx, cfg, judgePairs) })
 	}
 
-	ro.ledger = newLedger(jo.MaxCost)
+	ro.ledger = newLedger(jo.Budget)
 
 	for _, d := range runDirs {
 		if len(runDirs) > 1 {
@@ -177,7 +177,7 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 		return ErrInterrupted
 	}
 	if spent, notStarted := ro.ledger.totals(); notStarted > 0 {
-		lg.warn("budget $%.2f reached at $%.2f: %d judge job(s) not started", jo.MaxCost, spent, notStarted)
+		lg.warn("budget $%.2f reached at $%.2f: %d judge job(s) not started", jo.Budget, spent, notStarted)
 		return ErrBudget
 	}
 	return nil

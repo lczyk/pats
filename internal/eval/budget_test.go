@@ -34,7 +34,7 @@ func readMeta(t *testing.T, runDir, agent, task string) pairMeta {
 	return m
 }
 
-// a pair whose spend passes its agent's max-cost is stopped as a timed-out
+// a pair whose spend passes its agent's budget is stopped as a timed-out
 // one is: synced, collected, and its status budget, naming both amounts.
 func TestAgentMaxCost(t *testing.T) {
 	// the agent reports three $1 steps, then runs on until stopped.
@@ -45,7 +45,7 @@ func TestAgentMaxCost(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {image: s}}}
-axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx, max-cost: 2.5}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx, budget: 2.5}}}
 txx: {kind: task, items: {txx: {prompt: p, collect: echo collected, timeout: 1m}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
@@ -55,7 +55,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	require.NoError(t, err)
 	m := readMeta(t, runDir, "axx", "txx")
 	assert.Equal(t, m.Status, "budget")
-	assert.Equal(t, m.Error, "cost $3.00 passed max-cost $2.50")
+	assert.Equal(t, m.Error, "cost $3.00 passed its budget $2.50")
 	b, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "collect.log"))
 	require.NoError(t, err)
 	assert.Equal(t, string(b), "collected\n")
@@ -74,7 +74,7 @@ func TestAgentMaxCostAtTheEnd(t *testing.T) {
 	dir := t.TempDir()
 	cfg := parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {image: s}}}
-axx: {kind: agent, items: {axx: {harness: claude-cli-keyless, model: m, sandbox: sxx, max-cost: 2.5}}}
+axx: {kind: agent, items: {axx: {harness: claude-cli-keyless, model: m, sandbox: sxx, budget: 2.5}}}
 txx: {kind: task, items: {txx: {prompt: p, timeout: 1m}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
@@ -84,27 +84,27 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	require.NoError(t, err)
 	m := readMeta(t, runDir, "axx", "txx")
 	assert.Equal(t, m.Status, "budget")
-	assert.Equal(t, m.Error, "cost $3.00 passed max-cost $2.50")
+	assert.Equal(t, m.Error, "cost $3.00 passed its budget $2.50")
 	// its preflight reported a cost, so nothing warns of a cap with nothing to check.
 	assert.That(t, !strings.Contains(out.String(), "reports no cost"), "%s", out.String())
 }
 
 // a cap has nothing to check under a harness that reports no cost: the
-// config loads, and the agent's preflight says so, for its own max-cost and
+// config loads, and the agent's preflight says so, for its own budget and
 // for the run's.
 func TestMaxCostNoCost(t *testing.T) {
 	silent := &fakeSandbox{preRun: `{"type":"item.completed","item":{"type":"command_execution"}}` + "\n"}
 	old := newSandbox
 	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return silent, nil }
 	defer func() { newSandbox = old }()
-	const warn = "WARN agent axx reports no cost: max-cost has nothing to check"
+	const warn = "WARN agent axx reports no cost: its budget has nothing to check"
 	for name, c := range map[string]struct {
 		agent string
 		opts  Options
 		warns bool
 	}{
-		"the agent's cap": {"max-cost: 2", Options{}, true},
-		"the run's cap":   {"effort: low", Options{MaxCost: 5}, true},
+		"the agent's cap": {"budget: 2", Options{}, true},
+		"the run's cap":   {"effort: low", Options{Budget: 5}, true},
 		"no cap":          {"effort: low", Options{}, false},
 	} {
 		dir := t.TempDir()
@@ -123,7 +123,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	}
 }
 
-// with --max-cost no pair starts once the spend reached it: the rest are
+// with --budget no pair starts once the spend reached it: the rest are
 // not started, and the run says so and errors.
 func TestRunMaxCost(t *testing.T) {
 	fake := &fakeSandbox{preRun: steps(1, 1)}
@@ -139,7 +139,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
-	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, MaxCost: 1.5})
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, Budget: 1.5})
 	assert.ErrorIs(t, err, ErrBudget)
 	assert.ContainsString(t, out.String(), "WARN budget $1.50 reached at $2.00: 1 pair(s) not started")
 	ran := 0
@@ -154,7 +154,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	dir2 := t.TempDir()
 	pinAll(t, dir2, cfg)
 	out.Reset()
-	_, err = Run(cfg, Options{ConfigDir: dir2, Now: time.Now(), Out: &out, Jobs: 1, MaxCost: 3, Repeat: 3})
+	_, err = Run(cfg, Options{ConfigDir: dir2, Now: time.Now(), Out: &out, Jobs: 1, Budget: 3, Repeat: 3})
 	assert.ErrorIs(t, err, ErrBudget)
 	runs, _ := sortedRunNames(filepath.Join(dir2, runsSubdir))
 	assert.Len(t, runs, 1)
@@ -277,7 +277,7 @@ sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 	dir = t.TempDir()
 	pinAll(t, dir, cfg)
 	out.Reset()
-	runDir, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 4, MaxCost: 2.5})
+	runDir, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 4, Budget: 2.5})
 	assert.ErrorIs(t, err, ErrBudget)
 	n := ran(runDir)
 	assert.That(t, n >= 3 && n < 8, "%d pairs ran under a budget three of them spend: %s", n, out.String())

@@ -6,12 +6,12 @@ import (
 )
 
 // the budget (docs/spec/budget.md): a run-wide cap stops new pairs once the
-// reported spend reaches it, and an agent's max-cost stops one pair.
+// reported spend reaches it, and an agent's budget stops one pair.
 
-// errBudget cancels an agent whose pair passed its agent's max-cost.
-var errBudget = errors.New("max-cost passed")
+// errBudget cancels an agent whose pair passed its agent's budget.
+var errBudget = errors.New("budget passed")
 
-// ErrBudget is a run that left pairs unstarted at its --max-cost.
+// ErrBudget is a run that left pairs unstarted at its --budget.
 var ErrBudget = errors.New("budget reached")
 
 // ledger is a run's spend, under one lock: what finished pairs cost, and

@@ -370,9 +370,9 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 		if a.Model == "" && (h == nil || strings.Contains(h.Run, "PATS_MODEL")) {
 			add("agent %q: model is required", a.Name)
 		}
-		if a.MaxCost != nil {
-			if err := CheckCost(*a.MaxCost); err != nil {
-				add("agent %q: max-cost: %v", a.Name, err)
+		if a.Budget != nil {
+			if err := CheckCost(*a.Budget); err != nil {
+				add("agent %q: budget: %v", a.Name, err)
 			}
 		}
 		sbID, err := c.ResolveSandbox(a)

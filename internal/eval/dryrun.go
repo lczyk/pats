@@ -35,7 +35,7 @@ type dryTotal struct {
 	Executions   int      `json:"executions"`
 	KnownUSD     float64  `json:"known_usd"`
 	UnknownPairs int      `json:"unknown_pairs"`
-	MaxCostUSD   *float64 `json:"max_cost_usd"`
+	BudgetUSD    *float64 `json:"budget_usd"`
 	Fits         *bool    `json:"fits"`
 }
 
@@ -83,10 +83,10 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 		}
 		lines = append(lines, d)
 	}
-	if opts.MaxCost > 0 {
-		c := opts.MaxCost
+	if opts.Budget > 0 {
+		c := opts.Budget
 		fits := total.KnownUSD < c
-		total.MaxCostUSD, total.Fits = &c, &fits
+		total.BudgetUSD, total.Fits = &c, &fits
 	}
 	if opts.JSON {
 		enc := json.NewEncoder(opts.JSONOut)
@@ -125,7 +125,7 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 		if !*total.Fits {
 			rel = "not under"
 		}
-		sum += fmt.Sprintf(", %s --max-cost $%.2f", rel, *total.MaxCostUSD)
+		sum += fmt.Sprintf(", %s --budget $%.2f", rel, *total.BudgetUSD)
 	}
 	lg.info("%s", sum)
 	return nil

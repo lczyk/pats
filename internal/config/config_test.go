@@ -279,8 +279,8 @@ func TestValidateErrors(t *testing.T) {
 		{"agent unknown sandbox", base + "bxx: {kind: agent, items: {bxx: {harness: claude-cli-keyless, model: m, sandbox: ghost}}}\n", "unknown sandbox \"ghost\""},
 		{"effort on an unknown harness", base + "bxx: {kind: agent, items: {bxx: {harness: bogus, model: m, effort: high}}}\n", "unknown harness \"bogus\""},
 		{"env a shell will not set", base + "s2x: {kind: sandbox, items: {s2x: {image: img, env: {UID: '1'}}}}\n", "read-only in a shell"},
-		{"max-cost zero", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: 0}}}\n", "is not a cost cap"},
-		{"max-cost negative", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: -1}}}\n", "is not a cost cap"},
+		{"budget zero", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, budget: 0}}}\n", "is not a cost cap"},
+		{"budget negative", base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, budget: -1}}}\n", "is not a cost cap"},
 		{"image and build", "sxx: {kind: sandbox, items: {sxx: {image: img, build: .}}}\n", "mutually exclusive"},
 		{"bwrap build", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, build: .}}}\n", "build is refused under the bwrap driver"},
 		{"bwrap provision", "sxx: {kind: sandbox, items: {sxx: {driver: bwrap, provision: p}}}\n", "provision is refused under the bwrap driver"},
@@ -496,7 +496,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("agents: [foo\n"))
 	f.Add([]byte("xxx: {kind: task, items: {axx: {prompt-file: \"${nope}\"}}}\n"))
 	f.Add([]byte(base))
-	f.Add([]byte(base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, max-cost: .nan}}}\nsu2: {kind: suite, items: {su2: {agents: [axx, bxx], tasks: txx}}}\n"))
+	f.Add([]byte(base + "bxx: {kind: agent, items: {bxx: {harness: opencode-openrouter, model: m, budget: .nan}}}\nsu2: {kind: suite, items: {su2: {agents: [axx, bxx], tasks: txx}}}\n"))
 	f.Add([]byte("sdf: {kind: scorer, defaults: &py {score: ./s.py}, items: {one: ~, two: ~}}\nmore: {kind: scorer, defaults: {<<: *py, score: ~}, items: {three: {score: ./t.py}}}\n"))
 	f.Add([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, env: {A: b}, egress: {methods: [GET], allow: [a.test, 'POST a.test/graphql'], deny: ['github.com/*/x*']}}}}\n"))
 	f.Add([]byte("xxx: {kind: task, defaults: {prompt: p, timeout: 5m, env: {MODE: knockout}}, items: {axx: ~, bxx: {env: {MODE: ~}, egress: {allow: [c.test]}}}}\n"))

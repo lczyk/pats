@@ -45,7 +45,7 @@ type Options struct {
 	JSON    bool
 	JSONOut io.Writer
 	Repeat  int     // runs of the selection, one after another; 0 or 1 is one
-	MaxCost float64 // the invocation's budget in us dollars; 0 is none
+	Budget  float64 // the invocation's budget in us dollars; 0 is none
 
 	live io.Writer // -vv's stream when Out is a pair's buffer (see liveStream)
 	// ledger is the invocation's spend (budget.md); nil counts nothing.
@@ -169,7 +169,7 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
 
 	// the budget spans every repeat: the invocation's.
-	opts.ledger = newLedger(opts.MaxCost)
+	opts.ledger = newLedger(opts.Budget)
 
 	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
 	// run dir; what is above happens once for all of them.
@@ -208,7 +208,7 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 		if unrun > 0 {
 			what += fmt.Sprintf(" and %d more run(s)", unrun)
 		}
-		lg.warn("budget $%.2f reached at $%.2f: %s not started", opts.MaxCost, spent, what)
+		lg.warn("budget $%.2f reached at $%.2f: %s not started", opts.Budget, spent, what)
 		return runDir, ErrBudget
 	}
 	return runDir, nil

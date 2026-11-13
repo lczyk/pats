@@ -70,13 +70,13 @@ sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 	assert.Equal(t, len(after), len(runs)) // no run dir made
 
 	var js, log bytes.Buffer
-	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Repeat: 5, MaxCost: 20})
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Repeat: 5, Budget: 20})
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(js.String()), "\n")
 	require.Len(t, lines, 3)
 	assert.ContainsString(t, lines[0], `"agent":"orx","task":"txx","sandbox":"sxx","estimate_usd":2,"samples":3,"unknown":null,"repeat":5,"estimate_total_usd":10`)
 	assert.ContainsString(t, lines[1], `"unknown":"no history"`)
-	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":10,"known_usd":10,"unknown_pairs":1,"max_cost_usd":20,"fits":true}`)
+	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":10,"known_usd":10,"unknown_pairs":1,"budget_usd":20,"fits":true}`)
 	assert.ContainsString(t, log.String(), "WARN skipping ") // warnings go to the log, never into the json
 }
 

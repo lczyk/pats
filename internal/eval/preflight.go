@@ -159,8 +159,8 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	}
 	// a cap is checked against the cost a harness reports: one that reported
 	// none here leaves it nothing to check.
-	if (a.MaxCost != nil || opts.MaxCost > 0) && !stat.costSeen.Load() {
-		logw{opts.Out, opts.Color, opts.Verbose}.warn("agent %s reports no cost: max-cost has nothing to check", a.Name)
+	if (a.Budget != nil || opts.Budget > 0) && !stat.costSeen.Load() {
+		logw{opts.Out, opts.Color, opts.Verbose}.warn("agent %s reports no cost: its budget has nothing to check", a.Name)
 	}
 	return nil
 }
