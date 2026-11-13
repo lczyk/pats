@@ -110,6 +110,52 @@ jobs:
     - name: bwrap e2e
       run: PATS_BWRAP_E2E=1 go test ./src/sandbox/ -run 'TestBwrapE2E|TestBwrapStartPreflight' -v -timeout 30m
 
+  # a pats that is not the snap against the docker snap, whose cli opens no
+  # file under /tmp or a hidden dir of the home (docs/spec/docker-snap-paths.md).
+  # the runner's own docker is stopped so the snap's daemon has the socket,
+  # and /snap/bin goes first on PATH so `docker` is the snap's cli.
+  docker-snap:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Go
+      uses: actions/setup-go@v7.0.0
+      with:
+        go-version: '1.26'
+
+    - name: Swap the runner's docker for the docker snap
+      run: |
+        sudo systemctl stop docker.socket docker.service
+        sudo snap install docker
+        echo /snap/bin >> "$GITHUB_PATH"
+
+    # a docker test skips when there is no daemon: without this check the
+    # job would pass having tested nothing.
+    - name: Check docker is the snap's
+      run: |
+        [ "$(command -v docker)" = /snap/bin/docker ]
+        for _ in $(seq 30); do docker info > /dev/null 2>&1 && break; sleep 2; done
+        docker info
+
+    - name: Build
+      run: make build
+
+    # the tests bind and build from t.TempDir(), which the docker snap sees
+    # only under the home.
+    - name: Test
+      run: |
+        mkdir -p "$HOME/pats-tmp"
+        TMPDIR="$HOME/pats-tmp" make test
+
+    - name: Docker pair
+      run: hack/snap_smoke.sh docker
+      env:
+        PATS: ${{ github.workspace }}/bin/pats
+        PAIR_ONLY: "1"
+
   # the workflows themselves only run on a push or a tag, so lint them here.
   actionlint:
     runs-on: ubuntu-latest

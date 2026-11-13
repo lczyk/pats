@@ -7,6 +7,9 @@
 # engine's plug connected.
 #
 #   hack/snap_smoke.sh [docker] [lxd]
+#
+# PAIR_ONLY=1 skips the checks of a reduced build, for a pats that is not the
+# snap: the pairs alone, as a clone's bin/pats runs them.
 set -e
 
 PATS="${PATS:-pats}"
@@ -71,22 +74,24 @@ main() {
     local version engine
     version="$("${PATS}" --version)"
     printf 'using %s (%s)\n' "$(command -v "${PATS}")" "${version}"
-    printf '%s\n' "${version}" | grep -qF "(tags: ${TAGS})" || _fail "tags: ${version}"
-    printf 'ok    tags\n'
+    if [ -z "${PAIR_ONLY:-}" ]; then
+        printf '%s\n' "${version}" | grep -qF "(tags: ${TAGS})" || _fail "tags: ${version}"
+        printf 'ok    tags\n'
 
-    _load_error "no host driver" '
+        _load_error "no host driver" '
 sandbox: {kind: sandbox, items: {h: {driver: host, sand-not-boxed: true}}}
 agents: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: h}}}
 tasks: {kind: task, items: {t: {prompt: p}}}
 suites: {kind: suite, items: {s: {agents: a, tasks: t}}}' \
-        'driver "host" is not in this build'
+            'driver "host" is not in this build'
 
-    _load_error "no host steps" '
+        _load_error "no host steps" '
 sandbox: {kind: sandbox, items: {d: {driver: docker, image: docker.io/library/ubuntu:24.04}}}
 agents: {kind: agent, items: {a: {harness: opencode-openrouter, model: m, sandbox: d}}}
 tasks: {kind: task, items: {t: {prompt: p, stage: echo hi}}}
 suites: {kind: suite, items: {s: {agents: a, tasks: t}}}' \
-        'this build runs no host steps'
+            'this build runs no host steps'
+    fi
 
     for engine in "$@"; do
         case "${engine}" in
