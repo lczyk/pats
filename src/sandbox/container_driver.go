@@ -1,0 +1,261 @@
+package sandbox
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// Target is docker:<context> with the daemon's id and version, or what the
+// engine says it is (podman, engine_podman.go).
+func (c *container) Target(ctx context.Context) (Target, error) {
+	if t := engines[c.driver].target; t != nil {
+		return t(ctx, c)
+	}
+	name, err := c.dockerOut(ctx, "context", "show")
+	if err != nil {
+		return Target{}, err
+	}
+	info, err := c.dockerOut(ctx, "info", "--format", "{{.ID}}|{{.ServerVersion}}")
+	if err != nil {
+		return Target{}, err
+	}
+	id, ver, _ := strings.Cut(strings.TrimSpace(string(info)), "|")
+	return Target{Key: c.driver + ":" + strings.TrimSpace(string(name)), Daemon: id, Version: ver}, nil
+}
+
+// CPUs is the daemon's cpu count: on a desktop, its vm's.
+func (c *container) CPUs(ctx context.Context) int {
+	out, err := c.dockerOut(ctx, "info", "--format", engines[c.driver].cpus)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return n
+}
+
+// Resolve is ref's id and, when it came from a registry, the digest of
+// ref's repository: an image pulled from two repositories has one in each.
+// an image id has the first.
+func (c *container) Resolve(ctx context.Context, ref string) (Image, error) {
+	out, err := c.dockerOut(ctx, "image", "inspect", "--format", "{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}", ref)
+	if err != nil {
+		return Image{}, noImage(err)
+	}
+	id, digests, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
+	img := Image{ID: ImageID(id), Name: ref}
+	want := Repository(ref)
+	for i, rd := range strings.Fields(digests) {
+		name, d, ok := strings.Cut(rd, "@")
+		if !ok {
+			continue
+		}
+		if Repository(name) == want || (i == 0 && isImageID(ref)) {
+			img.Digest, img.Repo = d, name
+			break
+		}
+	}
+	return img, nil
+}
+
+// isImageID says whether ref names an image by id, whole or short.
+func isImageID(ref string) bool {
+	h := strings.TrimPrefix(ref, "sha256:")
+	return len(h) >= 12 && isHex(h)
+}
+
+func (c *container) Images(ctx context.Context) (map[string]bool, error) {
+	out, err := c.dockerOut(ctx, "images", "-a", "-q", "--no-trunc")
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{}
+	for _, id := range strings.Fields(string(out)) {
+		ids[ImageID(id)] = true
+	}
+	return ids, nil
+}
+
+// ImageID spells a container image id one way, sha256:<hex>: podman's
+// image inspect prints the hex alone, where its images and --iidfile, and
+// docker everywhere, print the prefix.
+func ImageID(id string) string {
+	if isFingerprint(id) {
+		return "sha256:" + id
+	}
+	return id
+}
+
+func (c *container) Pull(ctx context.Context, ref string, force bool, log io.Writer) (Image, bool, error) {
+	if !force {
+		if img, err := c.Resolve(ctx, ref); err == nil {
+			return img, false, nil
+		} else if !errors.Is(err, ErrNoImage) {
+			return Image{}, false, err
+		}
+	}
+	if log == nil {
+		log = io.Discard
+	}
+	var errb bytes.Buffer
+	if err := c.r.Run(ctx, nil, log, io.MultiWriter(log, &errb), "pull", ref); err != nil {
+		return Image{}, false, fmt.Errorf("%s pull %s: %w%s", c.driver, ref, err, stderrTail(&errb))
+	}
+	img, err := c.Resolve(ctx, ref)
+	return img, err == nil, err
+}
+
+// Build is a build: dockerfile, or one generated for base / provision:
+// the provision step run on spec.Base (the pats sandbox when empty), with
+// the material as the context. the base returned is the pats sandbox, when
+// the build used it.
+func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (Image, string, bool, error) {
+	sandbox := spec.SandboxImage
+	if sandbox == nil {
+		sandbox = func() string { img, _ := SandboxImage(""); return img }
+	}
+	b := containerBuild{Dir: spec.Dir, Dockerfile: spec.Dockerfile, Force: spec.Force, Log: log, Progress: spec.Progress}
+	if spec.Dockerfile == "" {
+		gen, err := c.p.mkTemp("pats-build-")
+		if err != nil {
+			return Image{}, "", false, err
+		}
+		defer RemoveTemp(gen)
+		b.Dockerfile = filepath.Join(gen, "Dockerfile")
+		if err := os.WriteFile(b.Dockerfile, []byte(provisionDockerfile(spec, sandbox)), 0o644); err != nil {
+			return Image{}, "", false, err
+		}
+		if len(spec.Harness) > 0 {
+			b.Contexts = func() (map[string]string, func(), error) { return c.harnessContexts(spec.Harness) }
+		}
+		b.Dir = spec.Material
+		if b.Dir == "" {
+			// no material: the context is empty, and nothing reads it.
+			b.Dir = filepath.Join(gen, "context")
+			if err := os.Mkdir(b.Dir, 0o755); err != nil {
+				return Image{}, "", false, err
+			}
+		}
+	}
+	id, base, built, err := buildContainerImage(ctx, c.p, c.r, c.driver, b, sandbox)
+	if err != nil {
+		return Image{}, "", false, err
+	}
+	return Image{ID: ImageID(id)}, base, built, nil
+}
+
+// provisionDockerfile runs spec's provision step on its base, with its
+// material copied in for the step and removed after. with no base it builds
+// on the pats sandbox, which the build arg names and the default repeats so
+// the dockerfile reads as valid on its own.
+func provisionDockerfile(spec BuildSpec, sandbox func() string) string {
+	arg, from := baseArg, spec.Base
+	if from == "" {
+		arg, from = baseArg+"="+sandbox(), "${"+baseArg+"}"
+	}
+	var df strings.Builder
+	fmt.Fprintf(&df, "ARG %s\nFROM %s\nUSER root\n", arg, from)
+	// each cli's tree, from a build context of its own, as root's. the
+	// comment is the tree's identity: it is what puts a pin in the image's
+	// key, since the dockerfile is hashed and the tree's bytes are not.
+	for _, p := range spec.Harness {
+		fmt.Fprintf(&df, "# %s\nCOPY --chown=0:0 --from=%s / /\n", p.Artefact.Line(), harnessContext(p.Artefact.CLI))
+	}
+	if len(spec.Argv) > 0 {
+		if spec.Material != "" {
+			fmt.Fprintf(&df, "COPY . %s\n", ProvisionMount)
+		}
+		run, _ := json.Marshal(provisionArgv(spec.Argv))
+		fmt.Fprintf(&df, "RUN %s\n", run)
+		fmt.Fprintf(&df, "RUN rm -rf %s\n", ProvisionMount)
+	}
+	return df.String()
+}
+
+// harnessContext names the build context a cli's tree is copied from.
+func harnessContext(cli string) string { return "pats-harness-" + cli }
+
+// harnessContexts unpacks each placed cli's tree into a temp dir of its own
+// and names it as a build context. the caller removes them once built.
+func (c *container) harnessContexts(placed []Placed) (map[string]string, func(), error) {
+	var dirs []string
+	cleanup := func() {
+		for _, d := range dirs {
+			RemoveTemp(d)
+		}
+	}
+	out := map[string]string{}
+	for _, p := range placed {
+		dir, err := c.p.mkTemp("pats-harness-")
+		if err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		dirs = append(dirs, dir)
+		if err := BuildTree(p.Artefact, p.File, dir); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		out[harnessContext(p.Artefact.CLI)] = dir
+	}
+	return out, cleanup, nil
+}
+
+// provisionArgv runs argv with the material's bin/ first on PATH.
+func provisionArgv(argv []string) []string {
+	return append([]string{"/bin/sh", "-c", `PATH="` + ProvisionMount + `/bin:$PATH"; export PATH; exec "$@"`, "provision"}, argv...)
+}
+
+// ProxyImage pulls the published proxy image, or the one ref names.
+func (c *container) ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (Image, bool, error) {
+	return c.Pull(ctx, ref, force, log)
+}
+
+func (c *container) Stamps(ctx context.Context, id string, clis []string) (map[string]string, error) {
+	return c.stamps(ctx, id, clis, c.p.t.stamp)
+}
+
+func (c *container) RemoveImage(ctx context.Context, id string) error {
+	_, err := c.dockerOut(ctx, "rmi", id) // no -f: an image a container uses stays
+	if err != nil && notFound(err) {
+		return nil
+	}
+	return err
+}
+
+// Upstream is the digest ref's tag names in its registry now.
+func (c *container) Upstream(ctx context.Context, ref string) (string, error) {
+	return c.p.reg.tagDigest(ctx, ref)
+}
+
+// Arch is the arch of image base, which the engine holds: not the daemon's,
+// which may run an image of another under emulation.
+func (c *container) Arch(ctx context.Context, base string) (string, error) {
+	out, err := c.dockerOut(ctx, "image", "inspect", "--format", "{{.Architecture}}", base)
+	if err != nil {
+		return "", fmt.Errorf("the arch of %s: %w", base, err)
+	}
+	return placeArch(strings.TrimSpace(string(out)))
+}
+
+// RemapsUIDs says whether the engine maps the uid pats runs a command as to
+// another on the host (rootless, userns-remap): files written through a bind
+// are then not the user's, and pats's 0700 temp dirs not readable inside.
+func (c *container) RemapsUIDs(ctx context.Context) (bool, error) {
+	e := engines[c.driver]
+	if e.remaps == nil {
+		return false, nil
+	}
+	out, err := c.dockerOut(ctx, "info", "--format", e.remapsInfo)
+	if err != nil {
+		return false, err
+	}
+	return e.remaps(string(out)), nil
+}

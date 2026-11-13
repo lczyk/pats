@@ -2,6 +2,10 @@ package eval
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +13,7 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
 	"github.com/lczyk/pats/internal/config"
 )
 
@@ -18,34 +23,31 @@ func TestScoreExec(t *testing.T) {
 	dir := t.TempDir()
 	// scorer: 1.0 if the output contains "good", else 0.0.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "has-good.sh"),
-		[]byte("#!/bin/sh\ngrep -q good \"$PATS_OUTPUT_DIR/stdout.log\" && echo 1.0 || echo 0.0\n"), 0o755))
+		[]byte("#!/bin/sh\ngrep -q good \"$PATS_SCORED_DIR/stdout.log\" && echo 1.0 || echo 0.0\n"), 0o755))
 
 	// fake run dir: agent a ran two tasks, one good one bad.
 	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
-	for task, body := range map[string]string{"t1": "this is good", "t2": "this is bad"} {
-		od := filepath.Join(run, "a", task)
+	for task, body := range map[string]string{"t1x": "this is good", "t2x": "this is bad"} {
+		od := filepath.Join(run, "axx", task)
 		require.NoError(t, os.MkdirAll(od, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte(body), 0o644))
 	}
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t1", Prompt: "p.txt"}, {ID: "t2", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "has-good", Score: "has-good.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t1", "t2"}, Scorers: config.StrList{"has-good"},
-		}},
-	}
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~, t2x: ~}}
+scorers: {kind: scorer, items: {has-good: {score: ./has-good.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [t1x, t2x], scorers: [has-good]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
 	require.NoError(t, err)
 
-	assert.Equal(t, rep.PerPair["a/t1"], 1.0)
-	assert.Equal(t, rep.PerPair["a/t2"], 0.0)
-	assert.Equal(t, rep.PerAgent["a"], 0.5) // mean of the two tasks
+	assert.Equal(t, rep.PerPair["axx/t1x"], 1.0)
+	assert.Equal(t, rep.PerPair["axx/t2x"], 0.0)
+	assert.Equal(t, rep.PerAgent["axx"], 0.5) // mean of the two tasks
 	assert.Equal(t, rep.Overall, 0.5)
 
 	// scores.json written into the run dir.
@@ -53,61 +55,76 @@ func TestScoreExec(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// scorers get PATS_AGENT_KIND alongside PATS_MODEL (README documents both).
+// scorers get PATS_RUN_NAME (the run dir's basename), PATS_RUN_DIR (the dir
+// holding every pair's output) and PATS_SCORER_VECTOR.
+func TestScoreExecRunEnv(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "run-env.sh"),
+		[]byte("#!/bin/sh\n[ \"$PATS_RUN_NAME\" = \"$(basename \"$PATS_RUN_DIR\")\" ] && [ -d \"$PATS_RUN_DIR/axx/t1x\" ] && [ \"$PATS_SCORER_VECTOR\" = scorers ] && echo 1.0 || echo 0.0\n"), 0o755))
+	run := filepath.Join(dir, ".pats", "runs", "001-20260621-fluffy-bunny")
+	require.NoError(t, os.MkdirAll(filepath.Join(run, "axx", "t1x"), 0o755))
+
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~}}
+scorers: {kind: scorer, items: {run-env: {score: ./run-env.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [t1x], scorers: [run-env]}}}
+`)
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
+	require.NoError(t, err)
+	assert.Equal(t, rep.PerPair["axx/t1x"], 1.0)
+}
+
+// scorers get PATS_SCORED_HARNESS alongside PATS_SCORED_MODEL, and none of the unprefixed names.
 func TestScorerEnvIncludesAgentKind(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "check-kind.sh"),
-		[]byte("#!/bin/sh\n[ \"$PATS_AGENT_KIND\" = \"opencode-openrouter\" ] && echo 1.0 || echo 0.0\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "check-harness.sh"),
+		[]byte("#!/bin/sh\n[ \"$PATS_SCORED_HARNESS\" = \"opencode-openrouter\" ] && [ -z \"$PATS_AGENT_HARNESS$PATS_OUTPUT_DIR$PATS_TASK_NAME\" ] && echo 1.0 || echo 0.0\n"), 0o755))
 
 	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
-	od := filepath.Join(run, "a", "t")
+	od := filepath.Join(run, "axx", "txx")
 	require.NoError(t, os.MkdirAll(od, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "check-kind", Score: "check-kind.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"check-kind"},
-		}},
-	}
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {txx: ~}}
+scorers: {kind: scorer, items: {check-harness: {score: ./check-harness.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [txx], scorers: [check-harness]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
 	require.NoError(t, err)
-	assert.Equal(t, rep.PerPair["a/t"], 1.0)
+	assert.Equal(t, rep.PerPair["axx/txx"], 1.0)
 }
 
-// COVER: -j-1 during scoring must not shell out to `docker info` -- the score
-// phase never runs a container. fails against the old resolveJobs, which
-// hard-wired dockerNCPU for every caller.
+// COVER: -j-1 during scoring must not ask a driver for its cpus -- the score
+// phase never runs a container.
 func TestScoreAutoJobsSkipsDocker(t *testing.T) {
 	probed := false
-	old := dockerNCPU
-	dockerNCPU = func() int { probed = true; return 4 }
-	defer func() { dockerNCPU = old }()
+	old := hostFor
+	hostFor = func(config.Sandbox) (host, error) { probed = true; return newFakeHost(), nil }
+	defer func() { hostFor = old }()
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))
 
 	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
-	od := filepath.Join(run, "a", "t")
+	od := filepath.Join(run, "axx", "txx")
 	require.NoError(t, os.MkdirAll(od, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one"},
-		}},
-	}
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {txx: ~}}
+scorers: {kind: scorer, items: {one: {score: ./one.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [txx], scorers: [one]}}}
+`)
 
 	var out bytes.Buffer
 	_, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Jobs: -1, Out: &out})
@@ -141,26 +158,187 @@ func TestScoreMultipleScorers(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "zero.sh"), []byte("#!/bin/sh\necho 0.0\n"), 0o755))
 
 	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
-	od := filepath.Join(run, "a", "t")
+	od := filepath.Join(run, "axx", "txx")
 	require.NoError(t, os.MkdirAll(od, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}, {ID: "zero", Score: "zero.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one", "zero"},
-		}},
-	}
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {txx: ~}}
+scorers: {kind: scorer, items: {one: {score: ./one.sh}, zero: {score: ./zero.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [txx], scorers: [one, zero]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
 	require.NoError(t, err)
 	// (1.0 + 0.0) / 2 = 0.5
-	assert.Equal(t, rep.PerPair["a/t"], 0.5)
+	assert.Equal(t, rep.PerPair["axx/txx"], 0.5)
+}
+
+// -a / -t / -s narrow the scores computed; they intersect, and a combination
+// that leaves none is an error rather than an empty scores.json.
+func TestScoreFilters(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "one.sh"), []byte("#!/bin/sh\necho 1.0\n"), 0o755))
+	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
+	for _, p := range []string{"axx/t1x", "axx/t2x", "bxx/t1x", "bxx/t2x"} {
+		od := filepath.Join(run, p)
+		require.NoError(t, os.MkdirAll(od, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
+	}
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+agx: {kind: agent, defaults: {harness: opencode-openrouter, model: m, sandbox: sxx}, items: {axx: ~, bxx: ~}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~, t2x: ~}}
+scorers: {kind: scorer, defaults: {score: ./one.sh}, items: {xxx: ~, yxx: ~}}
+suites:
+  kind: suite
+  items:
+    all: {agents: agx, tasks: tasks, scorers: xxx}
+    only-t2: {agents: agx, tasks: t2x, scorers: yxx}
+    run-only: {agents: agx, tasks: t1x}
+`)
+	// which scores a selection computes: no earlier scores.json to merge into.
+	computed := func(o ScoreOptions) []string {
+		t.Helper()
+		_ = os.Remove(filepath.Join(run, "scores.json"))
+		o.ConfigDir, o.RunDir, o.Out = dir, run, &bytes.Buffer{}
+		rep, err := Score(cfg, o)
+		require.NoError(t, err)
+		var got []string
+		for _, c := range rep.Scores {
+			got = append(got, c.Agent+"/"+c.Task+"/"+c.Scorer)
+		}
+		return got
+	}
+
+	assert.Len(t, computed(ScoreOptions{}), 6) // 4 pairs x xxx, plus axx/t2x and bxx/t2x x yxx
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Scorers: []string{"yxx"}}), []string{"axx/t2x/yxx", "bxx/t2x/yxx"})
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Agents: []string{"axx"}, Scorers: []string{"xxx"}}),
+		[]string{"axx/t1x/xxx", "axx/t2x/xxx"})
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Tasks: []string{"t1x"}}), []string{"axx/t1x/xxx", "bxx/t1x/xxx"})
+	assert.EqualArraysUnordered(t, computed(ScoreOptions{Suites: []string{"only-t2"}, Agents: []string{"bxx"}}),
+		[]string{"bxx/t2x/yxx"})
+
+	// each filter alone matches, together they leave nothing.
+	_, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{},
+		Tasks: []string{"t1x"}, Scorers: []string{"yxx"}})
+	assert.Error(t, err, "nothing to score")
+
+	// filters that match the config but not this run's outputs, and a suite
+	// with no scorers, must not rewrite scores.json empty.
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Suites: []string{"run-only"}})
+	assert.Error(t, err, "nothing to score")
+	require.NoError(t, os.RemoveAll(filepath.Join(run, "bxx")))
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Agents: []string{"bxx"}})
+	assert.Error(t, err, "nothing to score")
+
+	// -r all skips a run that lacks the selection instead of failing on it, and
+	// fails only when no run has it.
+	run2 := filepath.Join(dir, ".pats", "runs", "20260622-1")
+	require.NoError(t, os.MkdirAll(filepath.Join(run2, "bxx", "t1x"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(run2, "bxx", "t1x", "stdout.log"), []byte("x"), 0o644))
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: "all", Out: &out, Agents: []string{"bxx"}})
+	require.NoError(t, err)
+	assert.Equal(t, rep.RunDir, run2)
+	assert.ContainsString(t, out.String(), "20260621-1: nothing to score")
+	require.NoError(t, os.RemoveAll(filepath.Join(run2, "bxx")))
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: "all", Out: &bytes.Buffer{}, Agents: []string{"bxx"}})
+	assert.Error(t, err, "nothing to score in any run")
+
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Scorers: []string{"nope"}})
+	assert.Error(t, err, `--scorer "nope"`)
+	_, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &bytes.Buffer{}, Agents: []string{"nope"}})
+	assert.Error(t, err, `--agent "nope"`)
+}
+
+// a narrowed score folds its scores into scores.json: what it recomputed is
+// replaced, the rest is kept, and a failed narrowed score leaves the file be.
+func TestScoreNarrowedMerges(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755))
+	}
+	write("x.sh", "echo 1.0")
+	write("y.sh", "echo 0.0")
+	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
+	for _, p := range []string{"axx/t1x", "bxx/t1x"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(run, p), 0o755))
+	}
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+agx: {kind: agent, defaults: {harness: opencode-openrouter, model: m, sandbox: sxx}, items: {axx: ~, bxx: ~}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~}}
+scorers: {kind: scorer, items: {xxx: {score: ./x.sh}, yxx: {score: ./y.sh}}}
+suites: {kind: suite, items: {all: {agents: agx, tasks: tasks, scorers: scorers}}}
+`)
+	score := func(o ScoreOptions) (*ScoreReport, error) {
+		o.ConfigDir, o.RunDir, o.Out = dir, run, &bytes.Buffer{}
+		return Score(cfg, o)
+	}
+	scoreMap := func(r *ScoreReport) map[string]float64 {
+		m := map[string]float64{}
+		for _, c := range r.Scores {
+			m[c.Agent+"/"+c.Task+"/"+c.Scorer] = c.Score
+		}
+		return m
+	}
+
+	rep, err := score(ScoreOptions{})
+	require.NoError(t, err)
+	assert.Len(t, rep.Scores, 4)
+
+	// y fixed: rescoring only y keeps x's scores and the means cover all four.
+	write("y.sh", "echo 1.0")
+	rep, err = score(ScoreOptions{Scorers: []string{"yxx"}})
+	require.NoError(t, err)
+	assert.EqualMaps(t, scoreMap(rep), map[string]float64{"axx/t1x/xxx": 1, "axx/t1x/yxx": 1, "bxx/t1x/xxx": 1, "bxx/t1x/yxx": 1})
+	assert.Equal(t, rep.Overall, 1.0)
+
+	// a recomputed score that now fails is dropped, not kept stale.
+	write("x.sh", "exit 1")
+	rep, err = score(ScoreOptions{Agents: []string{"axx"}, Scorers: []string{"xxx"}})
+	require.NoError(t, err)
+	assert.EqualMaps(t, scoreMap(rep), map[string]float64{"axx/t1x/yxx": 1, "bxx/t1x/xxx": 1, "bxx/t1x/yxx": 1})
+
+	// the file on disk is the merged report.
+	data, err := os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	var onDisk ScoreReport
+	require.NoError(t, json.Unmarshal(data, &onDisk))
+	assert.Len(t, onDisk.Scores, 3)
+	assert.Equal(t, onDisk.Version, scoresVersion)
+
+	// a corrupt scores.json stops a narrowed score instead of being replaced.
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), []byte(`{"cells": [`), 0o644))
+	_, err = score(ScoreOptions{Scorers: []string{"yxx"}})
+	assert.Error(t, err, "scores.json")
+	got, err := os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), `{"cells": [`)
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), data, 0o644))
+
+	// another pats's scores.json is never merged into: it decodes, but as
+	// nothing this pats wrote, and merging would drop what it held.
+	old := `{"cells": [{"agent": "axx", "task": "t1x", "scorer": "xxx", "score": 1}], "overall": 1}`
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), []byte(old), 0o644))
+	_, err = score(ScoreOptions{Scorers: []string{"yxx"}})
+	assert.ErrorIs(t, err, errOldScores)
+	got, err = os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), old)
+	require.NoError(t, os.WriteFile(filepath.Join(run, "scores.json"), data, 0o644))
+
+	// a narrowed score that reaches nothing leaves scores.json as it was.
+	require.NoError(t, os.RemoveAll(filepath.Join(run, "bxx")))
+	_, err = score(ScoreOptions{Agents: []string{"bxx"}})
+	assert.Error(t, err, "nothing to score")
+	after, err := os.ReadFile(filepath.Join(run, "scores.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(after), string(data))
 }
 
 func TestParseScore(t *testing.T) {
@@ -180,53 +358,6 @@ func TestParseScore(t *testing.T) {
 		_, err := parseScore(bad)
 		assert.Error(t, err, assert.AnyError)
 	}
-}
-
-func TestReportPivot(t *testing.T) {
-	r := &ScoreReport{
-		Cells: []ScoreCell{
-			{Agent: "a1", Task: "t1", Scorer: "s1", Score: 1.0},
-			{Agent: "a1", Task: "t2", Scorer: "s1", Score: 0.5},
-			{Agent: "a1", Task: "t2", Scorer: "s2", Score: 0.0},
-			{Agent: "a2", Task: "t1", Scorer: "s1", Score: 0.9},
-			// a2/t2 missing -> dim dash cell
-		},
-		PerPair:  map[string]float64{"a1/t1": 1.0, "a1/t2": 0.25, "a2/t1": 0.9},
-		PerAgent: map[string]float64{"a1": 0.625, "a2": 0.9},
-		Overall:  0.7625,
-	}
-	var buf bytes.Buffer
-	report(&buf, r, false)
-	out := buf.String()
-
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	assert.ContainsString(t, lines[0], "a1")
-	assert.ContainsString(t, lines[0], "a2")
-	// worst-first: t2 (0.25) row before t1.
-	assert.ContainsString(t, lines[1], "t2")
-	assert.ContainsString(t, lines[1], "0.25 [##-----]")
-	assert.ContainsString(t, lines[1], "-") // missing a2/t2 cell
-	assert.ContainsString(t, lines[2], "t1")
-	assert.ContainsString(t, lines[2], "1.00 [#######]")
-	assert.ContainsString(t, lines[2], "0.90 [######-]")
-	assert.ContainsString(t, lines[3], "avg")
-	assert.ContainsString(t, lines[4], "overall")
-	assert.ContainsString(t, lines[4], "0.76")
-
-	// breakdown covers every pair, worst first; deviants indented per line,
-	// worst first (no mode tally here -- each pair's scores are all distinct).
-	assert.ContainsString(t, out, "scorer breakdown:")
-	assert.ContainsString(t, out, "a1/t2")
-	assert.ContainsString(t, out, "\n    s2=0.00\n    s1=0.50\n")
-	assert.ContainsString(t, out, "a1/t1") // perfect pairs listed too
-	assert.ContainsString(t, out, "\n    s1=1.00\n")
-
-	// no ansi when color off; ansi present when on.
-	assert.That(t, !strings.Contains(out, "\033["), "no ansi in plain output")
-	buf.Reset()
-	report(&buf, r, true)
-	assert.ContainsString(t, buf.String(), "\033[32m")
-	assert.ContainsString(t, buf.String(), "\033[31m")
 }
 
 // numeric -r selectors: positive = run number, 0 = latest, negative = from
@@ -269,21 +400,18 @@ func TestScoreAllRuns(t *testing.T) {
 
 	runs := []string{"001-20260701-fluffy-bunny", "002-20260702-undyed-purse"}
 	for _, r := range runs {
-		od := filepath.Join(dir, ".pats", "runs", r, "a", "t")
+		od := filepath.Join(dir, ".pats", "runs", r, "axx", "txx")
 		require.NoError(t, os.MkdirAll(od, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(od, "stdout.log"), []byte("x"), 0o644))
 	}
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "bwrap"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "p.txt"}},
-		Scorers:   []config.Scorer{{ID: "one", Score: "one.sh"}},
-		Suites: []config.Suite{{
-			ID: "su", Agents: config.StrList{"a"},
-			Tasks: config.StrList{"t"}, Scorers: config.StrList{"one"},
-		}},
-	}
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {txx: ~}}
+scorers: {kind: scorer, items: {one: {score: ./one.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [txx], scorers: [one]}}}
+`)
 
 	var out bytes.Buffer
 	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: "all", Out: &out})
@@ -299,13 +427,83 @@ func TestScoreAllRuns(t *testing.T) {
 	}
 }
 
-// FuzzParseScore: scorer stdout isn't trusted input (arbitrary user script),
-// just wants no panic.
+// FuzzParseScore: scorer stdout isn't trusted input (arbitrary user script).
+// an accepted score is a number in [0,1]; n/a is the first non-empty line
+// saying "na" in some case, and nothing else is; the lines after the first
+// never matter.
 func FuzzParseScore(f *testing.F) {
-	for _, s := range []string{"0.5\n", "na\n", "", "\n\n1\n", "inf", "1e400", "-0"} {
+	for _, s := range []string{
+		"0.5\n", "na\n", "", "\n\n1\n", "inf", "1e400", "-0", "nan", "0x1p-1", "+1", "1e-400",
+		" Na \n0.9\n", "1\nna\n", "nah\n", "\xc2\xa0NA\xc2\xa0", "0.25\r\nnoise", "\x00", "1.0000000000000002",
+	} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		parseScore(s)
+		got, err := parseScore(s)
+
+		// the first non-empty line, found without parseScore's own split.
+		first := ""
+		for line := range strings.Lines(s) {
+			if first = strings.TrimSpace(line); first != "" {
+				break
+			}
+		}
+		isNA := first == "na" || first == "NA" || first == "Na" || first == "nA"
+		assert.Equal(t, errors.Is(err, errScorerNA), isNA, "n/a from %q", s)
+
+		if err != nil {
+			assert.Equal(t, got, 0.0, "an error carries no score: %q", s)
+		} else {
+			assert.That(t, !math.IsNaN(got) && got >= 0 && got <= 1, "score %v out of [0,1] from %q", got, s)
+		}
+
+		alone, errAlone := parseScore(first)
+		assert.Equal(t, math.Float64bits(alone), math.Float64bits(got), "the first line alone scores another number: %q", s)
+		assert.Equal(t, fmt.Sprint(errAlone), fmt.Sprint(err), "the first line alone fails another way: %q", s)
 	})
+}
+
+// a plain score runs no judge: it takes each agent score from its stored
+// verdict, when the verdict is good and the pair one a judge grades, and
+// counts the pairs no judge can grade.
+func TestScoreReadsStoredVerdicts(t *testing.T) {
+	dir := t.TempDir()
+	run := filepath.Join(dir, ".pats", "runs", "001-20260621-a-b")
+	pair := func(task, meta string) {
+		od := filepath.Join(run, "axx", task)
+		require.NoError(t, os.MkdirAll(od, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(od, "metadata.json"), []byte(meta), 0o644))
+	}
+	stored := func(task, v string) {
+		d := judgementDir(run, "jud", "axx", task)
+		require.NoError(t, os.MkdirAll(d, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(d, "verdict.json"), []byte(v), 0o644))
+	}
+	pair("t1x", `{"status":"ok","synced":true}`)
+	stored("t1x", `{"ok":true,"score":0.75}`)
+	pair("t2x", `{"status":"ok","synced":true}`)
+	stored("t2x", `{"ok":false,"error":"no score"}`)
+	// a verdict left on a pair no judge grades is never read as current.
+	pair("t3x", `{"status":"timeout","synced":false}`)
+	stored("t3x", `{"ok":true,"score":1}`)
+
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~, t2x: ~, t3x: ~}}
+scorers: {kind: scorer, items: {jud: {agent: jxx, prompt: grade it}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [t1x, t2x, t3x], scorers: jud}}}
+`)
+	var out bytes.Buffer
+	rep, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out})
+	require.NoError(t, err)
+	assert.Len(t, rep.Scores, 1)
+	assert.Equal(t, rep.PerPair["axx/t1x"], 0.75)
+	assert.Equal(t, rep.FailedPairs["axx"], 1)
+
+	// narrowed to one pair, it still reads that pair's verdict.
+	rep, err = Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: run, Out: &out, Tasks: []string{"t1x"}})
+	require.NoError(t, err)
+	assert.Equal(t, rep.PerPair["axx/t1x"], 0.75)
 }

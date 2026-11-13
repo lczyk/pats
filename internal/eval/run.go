@@ -6,25 +6,21 @@ package eval
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"maps"
+	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
-	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -37,94 +33,212 @@ type Options struct {
 	Out       io.Writer // progress + host script output
 	Jobs      int       // max concurrent pairs; 0 -> serial (1), negative -> auto (see resolveJobs)
 	Color     bool      // colour log tags (set internally from Out's tty-ness)
+	Verbose   int       // -v count: 1 adds detail lines, 2 streams host scripts and the agent's stderr
 	Agents    []string  // filter the pairs to these agents (empty -> all)
 	Tasks     []string  // filter the pairs to these tasks (empty -> all)
 	Suites    []string  // only expand these suites (empty -> all)
-}
+	Offline   bool      // skip the upstream checks, for a machine without a network
+	// DryRun lists the pairs with a cost estimate and stops before the first
+	// sandbox; JSON (with DryRun only) writes that list as json lines to
+	// JSONOut, while Out takes the log.
+	DryRun  bool
+	JSON    bool
+	JSONOut io.Writer
+	Repeat  int     // runs of the selection, one after another; 0 or 1 is one
+	Budget  float64 // the invocation's budget in us dollars; 0 is none
 
-// newSandbox is sandbox.New, swappable in tests to run the orchestration
-// against a fake sandbox (no docker).
-var newSandbox = sandbox.New
+	live io.Writer // -vv's stream when Out is a pair's buffer (see liveStream)
+	// ledger is the invocation's spend (budget.md); nil counts nothing.
+	ledger *ledger
+	// prices is what the catalogue says each agent's model costs, for a
+	// harness that reports tokens and no cost; nil offline.
+	prices map[string]*modelPrice
+}
 
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
 // a single pair failing is logged and skipped -- it does not abort the run.
-func Run(cfg *config.Config, opts Options) (string, error) {
-	// absolute config dir: prepare/collect run with cwd=ConfigDir, and the
+func Run(cfg *config.Config, opts Options) (_ string, err error) {
+	// absolute config dir: stage/collect run with cwd=ConfigDir, and the
 	// PATS_*_DIR paths must resolve regardless of that cwd.
 	if abs, err := filepath.Abs(opts.ConfigDir); err == nil {
 		opts.ConfigDir = abs
 	}
 	opts.Color = useColor(opts.Out) // decided once from the real terminal; po copies inherit it
-	lg := logw{opts.Out, opts.Color}
-	unlock, err := lockConfigDir(opts.ConfigDir)
+	lg := logw{opts.Out, opts.Color, opts.Verbose}
+	// a dry run only reads: it runs beside a live run.
+	if !opts.DryRun {
+		unlock, err := lockConfigDir(opts.ConfigDir)
+		if err != nil {
+			return "", err
+		}
+		defer unlock()
+	}
+	// a file outside the project changes what this run does: say so.
+	if n := cfg.Harnesses.Note(); n != "" {
+		lg.info("%s", n)
+	}
+	suites, err := cfg.RunSuites(opts.Suites)
 	if err != nil {
 		return "", err
 	}
-	defer unlock()
-	pairs, err := cfg.ExpandTestPairs(opts.Suites...)
+	pairs, err := cfg.ExpandTestPairs(suites...)
 	if err != nil {
 		return "", err
 	}
-	// a vectors-only config (no suites) is valid to hold but runs nothing --
-	// say that, rather than letting FilterPairs blame an agent/task filter the
-	// user never passed.
+	// a config with no suites is valid to hold but runs nothing -- say that,
+	// rather than letting FilterPairs blame an agent/task filter the user
+	// never passed.
 	if len(pairs) == 0 {
-		return "", fmt.Errorf("no (agent, task) pairs to run: the selected suites expand to none (a config with no `suites:` runs nothing)")
+		return "", fmt.Errorf("no (agent, task) pairs to run: the selected suites expand to none (a config with no suite vector runs nothing)")
 	}
-	if pairs, err = config.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
+	if pairs, err = cfg.FilterPairs(pairs, opts.Agents, opts.Tasks); err != nil {
+		if manual := cfg.ManualSuitesWith(opts.Agents, opts.Tasks); len(opts.Suites) == 0 && len(manual) > 0 {
+			what := "manual suite " + manual[0] + " holds it"
+			if len(manual) > 1 {
+				what = "manual suites " + strings.Join(manual, ", ") + " hold it"
+			}
+			return "", fmt.Errorf("%w (%s: add -S %s)", err, what, manual[0])
+		}
 		return "", err
 	}
 	// first output up front: the slow startup steps (image build, preflight) are
 	// otherwise silent, so a bare `pats run` looks hung until the first pair logs.
-	lg.info("%d pair(s) to run", len(pairs))
+	lg.detail("%d pair(s) to run", len(pairs))
+	// behind the machine's own proxy every sandbox goes through it: said
+	// before the first pair, so a run behind a proxy is never a surprise.
+	mp, err := machineProxy()
+	if err != nil {
+		return "", fmt.Errorf("the machine's proxy env: %w", err)
+	}
+	if mp != nil {
+		lg.info("egress via upstream %s", mp.Chain.Describe())
+	}
+	warnUnboxed(cfg, pairs, lg)
 	// cancel on ctrl+C so the in-flight container is torn down, not orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// ctrl-c anywhere from here (the model check, the preflight, a repeat)
+	// is an interrupted run, whatever error the step it cut made of it.
+	defer func() {
+		if ctx.Err() != nil {
+			err = ErrInterrupted // shutdown below runs first, and may be what was cut
+		}
+	}()
+	// an lxd run's marker goes when the run ends; its lease stops.
+	defer sandbox.Shutdown()
 
-	// resolve images first -- everything after (preflight included) runs on
-	// them: the default pats sandbox for sandboxes naming neither image nor
-	// build, then build: contexts to image ids.
-	defaultImages(cfg, opts, pairs)
-	if err := buildImages(ctx, cfg, opts, pairs); err != nil {
-		return "", err
-	}
-	// pre-pull the egress proxy image (if any) before preflight, which itself
-	// starts the proxy -- else the pull stalls the first check silently.
-	if err := pullEgressImages(ctx, cfg, opts, pairs); err != nil {
-		return "", err
-	}
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
-	tasks := index(cfg.Tasks, func(t config.Task) string { return t.ID })
-	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
-
-	// fail fast on bad/expired creds before spinning per-pair containers.
-	lg.info("preflight: checking agent credentials")
-	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
-		return "", err
-	}
-
-	runDir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
+	// the images `pats init` pinned, first: everything after (preflight
+	// included) starts from them, and a run never builds or pulls.
+	checks, err := usePins(ctx, cfg, opts, pairs, nil)
 	if err != nil {
 		return "", err
 	}
-	lg.info("run dir: %s", relToCwd(runDir))
+	// a model openrouter does not have, or one without tools, fails here,
+	// before the run dir and any sandbox.
+	if !opts.Offline {
+		prices, warns, err := checkModels(ctx, catalogueAgents(cfg, pairAgents(cfg, pairs), "openrouter"), http.DefaultClient)
+		if err != nil {
+			return "", err
+		}
+		opts.prices = prices
+		for _, w := range warns {
+			lg.warn("%s", w)
+		}
+	}
+	if opts.DryRun {
+		return "", dryRun(cfg, opts, pairs, lg)
+	}
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
+	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 
-	jobs := resolveJobs(opts.Jobs, dockerNCPU)
+	// newer upstream images, looked up while preflight runs: a warning
+	// each, never a stop.
+	upstream := make(chan []string, 1)
+	if opts.Offline {
+		upstream <- nil
+	} else {
+		go func() { upstream <- checkUpstream(ctx, checks, upstreamBudget) }()
+	}
 
+	// fail fast on bad/expired creds before spinning per-pair containers.
+	lg.detail("preflight: checking agent credentials")
+	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
+		return "", err
+	}
+	for _, w := range <-upstream {
+		lg.warn("%s", w)
+	}
+
+	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
+
+	// the budget spans every repeat: the invocation's.
+	opts.ledger = newLedger(opts.Budget)
+
+	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
+	// run dir; what is above happens once for all of them.
+	n := max(opts.Repeat, 1)
+	var runDir string
+	unrun, current := 0, 0 // repeats a reached budget stopped; the one it stopped in
+	for i := 1; i <= n; i++ {
+		if ctx.Err() != nil {
+			break
+		}
+		if opts.ledger.reached() {
+			unrun = n - i + 1
+			break
+		}
+		current = i
+		dir, err := nextRunDir(filepath.Join(opts.ConfigDir, runsSubdir), opts.Now)
+		if err != nil {
+			return runDir, err
+		}
+		runDir = dir
+		if n > 1 {
+			lg.info("run %d/%d: %s", i, n, filepath.Base(runDir))
+		} else {
+			lg.detail("run dir: %s", relToCwd(runDir))
+		}
+		runOnce(ctx, cfg, opts, lg, runDir, pairs, jobs, agents, tasks, sandboxes)
+	}
+	if ctx.Err() != nil {
+		return runDir, ErrInterrupted
+	}
+	if spent, notStarted := opts.ledger.totals(); notStarted > 0 || unrun > 0 {
+		what := fmt.Sprintf("%d pair(s)", notStarted)
+		if n > 1 {
+			what += fmt.Sprintf(" of run %d/%d", current, n)
+		}
+		if unrun > 0 {
+			what += fmt.Sprintf(" and %d more run(s)", unrun)
+		}
+		lg.warn("budget $%.2f reached at $%.2f: %s not started", opts.Budget, spent, what)
+		return runDir, ErrBudget
+	}
+	return runDir, nil
+}
+
+// ErrInterrupted is a run stopped by ctrl-c or sigterm.
+var ErrInterrupted = errors.New("interrupted")
+
+// runOnce runs every pair once into runDir, up to jobs at a time.
+func runOnce(ctx context.Context, cfg *config.Config, opts Options, lg logw, runDir string, pairs []config.TestPair, jobs int,
+	agents map[string]config.Agent, tasks map[string]config.Task, sandboxes map[string]config.Sandbox,
+) {
 	// on a tty, draw a sticky progress region (total bar + a live line per
 	// in-flight pair); otherwise (pipe/ci/tee) print plain per-pair lines.
 	var bar *progress
 	if isProgressTTY(opts.Out) {
 		labelW := 0
 		for _, p := range pairs {
-			if w := len(p.Agent) + len(" x ") + len(p.Task); w > labelW {
+			if w := len(p.Agent) + len("/") + len(p.Task); w > labelW {
 				labelW = w
 			}
 		}
 		bar = newProgress(opts.Out, len(pairs), labelW)
 		defer bar.close()
 	} else if jobs > 1 {
-		lg.info("running %d pairs, up to %d in parallel", len(pairs), jobs)
+		lg.detail("running %d pairs, up to %d in parallel", len(pairs), jobs)
 	}
 
 	// bounded worker pool. a failing pair is logged + skipped, never aborts
@@ -132,39 +246,54 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 	// buffered (bar active, or jobs>1) each pair writes to its own buffer,
 	// emitted atomically on completion so concurrent progress + host-script
 	// output don't interleave; serial non-tty writes straight to opts.Out.
-	sem := make(chan struct{}, jobs)
+	slots := newSlots(cfg, jobs)
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
-	for _, p := range pairs {
-		if ctx.Err() != nil {
-			if bar != nil {
-				bar.log(lg.line(lvWarn, "interrupted -- stopping"))
-			} else {
-				lg.warn("interrupted -- stopping")
-			}
-			break
-		}
-		sem <- struct{}{}
+	var interrupted sync.Once
+	began := time.Now()
+	stats := make([]*pairStat, len(pairs))
+	for i, p := range pairs {
+		stats[i] = &pairStat{}
 		wg.Add(1)
-		go func(p config.TestPair) {
+		go func(p config.TestPair, stat *pairStat) {
 			defer wg.Done()
-			defer func() { <-sem }()
+			defer slots.take(cfg, agents[p.Agent])()
+			if ctx.Err() != nil {
+				interrupted.Do(func() {
+					if bar != nil {
+						bar.log(lg.line(lvWarn, "interrupted -- stopping"))
+					} else {
+						lg.warn("interrupted -- stopping")
+					}
+				})
+				return
+			}
 
-			label := p.Agent + " x " + p.Task
+			// the run-wide cap: once the spend reached it, no pair starts.
+			if !opts.ledger.admit(stat) {
+				return
+			}
+			defer opts.ledger.finish(stat)
+
+			label := p.Agent + "/" + p.Task
 			po := opts
 			var buf bytes.Buffer
 			if bar != nil || jobs > 1 {
 				po.Out = &buf
+				if opts.Verbose >= 2 {
+					ls := liveStream(label, bar, opts.Out, &outMu)
+					defer ls.flush()
+					po.live = ls
+				}
 			}
-			// always track per-pair counters: the bar shows them live, and the
-			// completion line logs the final out/tool/net regardless of tty.
-			stat := &pairStat{}
 			if bar != nil {
 				egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
-				bar.start(label, stat, egressPath, statScanner(agents[p.Agent].Kind) != nil)
+				bar.start(label, stat, egressPath, cfg.HarnessOf(agents[p.Agent]).Parser() != nil)
 			}
-			if err := runPair(ctx, cfg, po, runDir, p, agents[p.Agent], tasks[p.Task], sandboxes, stat); err != nil {
-				logw{po.Out, opts.Color}.error("[%s x %s] %v", p.Agent, p.Task, err)
+			job := taskJob(runDir, p, agents[p.Agent], tasks[p.Task])
+			if err := runPair(ctx, cfg, po, runDir, job, sandboxes, stat); err != nil {
+				logw{po.Out, opts.Color, opts.Verbose}.error("%s/%s %v", p.Agent, p.Task, err)
+				pairFailed(ctx, cfg, job, sandboxes, stat, err)
 			}
 			switch {
 			case bar != nil:
@@ -174,10 +303,16 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 				opts.Out.Write(buf.Bytes())
 				outMu.Unlock()
 			}
-		}(p)
+		}(p, stats[i])
 	}
 	wg.Wait()
-	return runDir, nil
+	if opts.Verbose >= 1 {
+		if sum := runTotals(stats, time.Since(began)); bar != nil {
+			bar.log(lg.line(lvInfo, "%s", sum))
+		} else {
+			lg.info("%s", sum)
+		}
+	}
 }
 
 // resolveJobs maps a Jobs option to a concrete worker count.
@@ -187,7 +322,7 @@ func Run(cfg *config.Config, opts Options) (string, error) {
 //	<0  -> auto: autoN() (vm-accurate docker cpu count on macos for the run
 //	       phase; host cpus for the score phase, which never touches docker),
 //	       falling back to host cpus when autoN() reports < 1, clamped to
-//	       [1,8]. pairs/cells are network-bound (model round-trips), so cpu is
+//	       [1,8]. pairs and scores are network-bound (model round-trips), so cpu is
 //	       a rough proxy, not a real limit -- the clamp stops a big box from
 //	       hammering the daemon + tripping rate-limits.
 func resolveJobs(j int, autoN func() int) int {
@@ -204,310 +339,110 @@ func resolveJobs(j int, autoN func() int) int {
 	return min(max(n, 1), 8)
 }
 
-// dockerNCPU returns the docker daemon's cpu count, or 0 if it can't be read.
-// a var, like newSandbox, so a test can assert the score phase never reaches
-// for it -- scoring runs no containers.
-var dockerNCPU = func() int {
-	out, err := exec.Command("docker", "info", "--format", "{{.NCPU}}").Output()
+// autoCPUs sizes -j auto by the machine the pairs run on: an lxd server's
+// cpus when a sandbox the run uses is lxd, else the first used sandbox's
+// daemon's.
+func autoCPUs(ctx context.Context, cfg *config.Config, pairs []config.TestPair) int {
+	used := usedSandboxes(cfg, pairs)
+	var pick *config.Sandbox
+	for i, sb := range cfg.Sandboxes {
+		if used[sb.Name] && (pick == nil || (sb.Driver == sandbox.LXDDriver && pick.Driver != sandbox.LXDDriver)) {
+			pick = &cfg.Sandboxes[i]
+		}
+	}
+	if pick == nil {
+		return 0
+	}
+	h, err := hostFor(*pick)
 	if err != nil {
 		return 0
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	return n
+	return h.CPUs(ctx)
 }
 
-type pairMeta struct {
-	Agent       string  `json:"agent"`
-	Task        string  `json:"task"`
-	Sandbox     string  `json:"sandbox"`
-	Image       string  `json:"image"`
-	ExitCode    int     `json:"exit_code"`
-	DurationS   float64 `json:"duration_s"`
-	Status      string  `json:"status"` // ok | nonzero | error
-	Error       string  `json:"error,omitempty"`
-	PatsVersion string  `json:"pats_version"`
-	// hosts the agent tried to reach but egress denied (proxy mode). a non-empty
-	// list flags attempted cheating / unexpected fetches.
-	DeniedEgress []string `json:"denied_egress,omitempty"`
-	// per-kind digest parsed from the harness log: cost, tokens, turns, tools.
-	Summary *runSummary `json:"summary,omitempty"`
+// machineProxy is the machine's proxy as pats found it; a var so tests set
+// one.
+var machineProxy = sandbox.Machine
+
+// slots bounds the agent calls running at once: -j run-wide, and a
+// sandbox's max-parallel under it. a call takes its sandbox's slot before a
+// run-wide one, so calls queued on a capped sandbox never hold a slot
+// another sandbox could use.
+type slots struct {
+	all     chan struct{}
+	sandbox map[string]chan struct{}
 }
 
-// deniedEgress reads the proxy audit log (one json line per request) and
-// returns the unique denied targets -- the full url for mitm'd requests, the
-// host otherwise. missing file -> nil (not proxy mode).
-func deniedEgress(auditPath string) []string {
-	data, err := os.ReadFile(auditPath)
-	if err != nil {
-		return nil
+func newSlots(cfg *config.Config, jobs int) *slots {
+	s := &slots{all: make(chan struct{}, jobs), sandbox: map[string]chan struct{}{}}
+	for _, sb := range cfg.Sandboxes {
+		if sb.MaxParallel > 0 {
+			s.sandbox[sb.Name] = make(chan struct{}, sb.MaxParallel)
+		}
 	}
-	seen := map[string]bool{}
-	var out []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var e struct {
-			Host    string `json:"host"`
-			URL     string `json:"url"`
-			Allowed bool   `json:"allowed"`
-		}
-		if json.Unmarshal([]byte(line), &e) != nil || e.Allowed {
-			continue
-		}
-		target := e.Host
-		if e.URL != "" {
-			target = e.URL
-		}
-		if seen[target] {
-			continue
-		}
-		seen[target] = true
-		out = append(out, target)
-	}
-	return out
+	return s
 }
 
-// runPair prepares, runs, and collects one (agent, task) pair. stat must be
-// non-nil (every caller passes a fresh &pairStat{}) -- it's dereferenced
-// unconditionally below, both to tap live counters and to record the final
-// net count.
-func runPair(
-	ctx context.Context, cfg *config.Config, opts Options, runDir string, p config.TestPair,
-	a config.Agent, t config.Task, sandboxes map[string]config.Sandbox, stat *pairStat,
-) error {
-	outDir := filepath.Join(runDir, p.Agent, p.Task)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
+// take waits for a's slots and returns what gives them back.
+func (s *slots) take(cfg *config.Config, a config.Agent) (release func()) {
+	var own chan struct{}
+	if id, err := cfg.ResolveSandbox(a); err == nil {
+		own = s.sandbox[id]
 	}
-	workDir, err := sandbox.MkTemp("pats-work-")
-	if err != nil {
-		return err
+	if own != nil {
+		own <- struct{}{}
 	}
-	defer os.RemoveAll(workDir) // safe: agent runs as host uid, files are host-owned
-
-	sbID, err := cfg.ResolveSandbox(a)
-	if err != nil {
-		return err
-	}
-	sb := sandboxes[sbID]
-
-	// host-side env for prepare/collect scripts (they run in the project dir
-	// and seed/gather the sandbox via these paths).
-	hostEnv := map[string]string{
-		"PATS_AGENT_ID":   p.Agent,
-		"PATS_AGENT_KIND": a.Kind,
-		"PATS_TASK_ID":    p.Task,
-		"PATS_MODEL":      a.ResolvedModel(),
-		"PATS_WORKDIR":    workDir,
-		"PATS_OUTPUT_DIR": outDir,
-	}
-
-	// every agent is a harness: give it a writable HOME + wire creds. this
-	// precedes prepare so prepare can seed harness config into it.
-	h, err := newHarness(opts, a, sb, workDir, filepath.Join(outDir, "egress.log"), p.Agent+" x "+p.Task)
-	if err != nil {
-		return err
-	}
-	defer h.cleanup()
-	hostEnv["PATS_AGENT_HOME"] = h.homeDir
-
-	if t.Prepare != "" {
-		if err := runHost(opts, expandID(t.Prepare, t.ID), hostEnv); err != nil {
-			return fmt.Errorf("prepare: %w", err)
+	s.all <- struct{}{}
+	return func() {
+		<-s.all
+		if own != nil {
+			<-own
 		}
 	}
+}
 
-	promptData, err := resolvePrompt(opts.ConfigDir, t.ResolvedPrompt(), hostEnv)
-	if err != nil {
-		return fmt.Errorf("resolve prompt: %w", err)
-	}
-	if err := os.WriteFile(h.promptPath(), promptData, 0o644); err != nil {
-		return err
-	}
-
-	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
-	if err != nil {
-		return err
-	}
-	defer stdoutF.Close()
-	stderrF, err := os.Create(filepath.Join(outDir, "stderr.log"))
-	if err != nil {
-		return err
-	}
-	defer stderrF.Close()
-
-	// agent output goes to the log file, always also tapped through statTap for
-	// the in-run counters (out lines + per-kind tool parse) -- the full
-	// stdout.log is still written intact. stat is never nil (see doc comment).
-	stdoutW := io.MultiWriter(stdoutF, &statTap{stat: stat, scan: statScanner(a.Kind)})
-	r := h.run(ctx, stdoutW, stderrF, t.TimeoutDuration())
-	status, errStr := "ok", ""
+// stream is where -vv streams host scripts and the agent's stderr, beside
+// their logs; nil below -vv.
+func (o Options) stream() io.Writer {
 	switch {
-	case r.timedOut:
-		status, errStr = "timeout", fmt.Sprintf("timed out after %s", t.TimeoutDuration())
-	case r.err != nil:
-		status, errStr = "error", r.err.Error()
-	case r.code != 0:
-		status = "nonzero"
+	case o.Verbose < 2:
+		return nil
+	case o.live != nil:
+		return o.live
 	}
-
-	lg := logw{opts.Out, opts.Color}
-
-	// collect when the agent ran and left something to gather: either it
-	// finished (r.err == nil) or it timed out mid-run -- either way the
-	// container produced files. a launch failure (r.err != nil, !timedOut)
-	// left nothing to collect.
-	if (r.err == nil || r.timedOut) && t.Collect != "" {
-		if err := runHost(opts, expandID(t.Collect, t.ID), hostEnv); err != nil {
-			lg.warn("[%s x %s] collect: %v", p.Agent, p.Task, err)
-		}
-	}
-
-	denied := deniedEgress(filepath.Join(outDir, "egress.log"))
-	if len(denied) > 0 {
-		lg.warn("[%s x %s] egress denied: %s", p.Agent, p.Task, strings.Join(denied, ", "))
-	}
-
-	meta := pairMeta{
-		Agent: p.Agent, Task: p.Task,
-		Sandbox: sbID, Image: sb.Image,
-		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr,
-		PatsVersion: version.Info.Version, DeniedEgress: denied,
-		Summary: summarize(a.Kind, filepath.Join(outDir, "stdout.log")),
-	}
-	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
-		return err
-	}
-
-	// final net count straight from the audit log (the bar's poll may lag).
-	if n, err := countLines(filepath.Join(outDir, "egress.log")); err == nil {
-		atomic.StoreInt64(&stat.net, int64(n))
-		atomic.StoreInt32(&stat.netSeen, 1)
-	}
-	// line 1: the verdict (level by status). line 2: the stats, indented under it.
-	statusLine := fmt.Sprintf("[%s x %s] %s (exit %d, %.1fs)", p.Agent, p.Task, status, r.code, r.dur)
-	switch status {
-	case "ok":
-		lg.info("%s", statusLine)
-	case "nonzero", "timeout":
-		lg.warn("%s", statusLine)
-	default:
-		lg.error("%s", statusLine)
-	}
-	stats := stat.cols(statScanner(a.Kind) != nil)
-	if s := meta.Summary; s != nil {
-		// cost + turns are omitted for harnesses whose stream doesn't report them.
-		stats += fmt.Sprintf("  %s tok", humanK(s.OutputTokens))
-		if s.HasCost {
-			stats += fmt.Sprintf("  $%.2f", s.CostUSD)
-		}
-		if s.NumTurns > 0 {
-			stats += fmt.Sprintf("  %d turns", s.NumTurns)
-		}
-	}
-	lg.info("[%s x %s] %s", p.Agent, p.Task, stats)
-	return nil
+	return o.Out
 }
 
-// homeMount is the in-sandbox HOME for a harness -- a writable dir the agent
-// (running as an arbitrary uid) owns, where its creds + cache live.
-const homeMount = "/pats-home"
-
-type harnessSetup struct {
-	dir     string // host side of homeMount
-	mounts  []sandbox.Mount
-	cleanup func()
-}
-
-// harnessHome gives a harness a writable HOME (the --user uid owns nothing),
-// copies its file-based credentials when present, and warns when no supported
-// credential source is available. copies are writable for token refreshes but
-// discarded after the invocation; pats never modifies the host credential file.
-// label ("agent x task") prefixes the warning.
-func harnessHome(opts Options, label, kind string, env map[string]string, hasToken bool) (harnessSetup, error) {
-	homeDir, err := sandbox.MkTemp("pats-home-")
-	if err != nil {
-		return harnessSetup{}, err
-	}
-	env["HOME"] = homeMount
-	maps.Copy(env, agent.HomeEnv(kind, homeMount))
-
-	hasCreds := hasToken
-	if cf, rel := agent.HostCredsFile(kind); cf != "" {
-		dst := filepath.Join(homeDir, rel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			os.RemoveAll(homeDir)
-			return harnessSetup{}, err
+// runTotals is the run's last -v line: how its pairs ended, their output
+// tokens and cost where the harness reports them, and the wall time.
+func runTotals(stats []*pairStat, wall time.Duration) string {
+	counts := map[string]int{}
+	tokens, cost := 0, 0.0
+	for _, s := range stats {
+		if s.status == "" {
+			continue // not started: interrupted first
 		}
-		if err := copyFile(cf, dst); err != nil {
-			os.RemoveAll(homeDir)
-			return harnessSetup{}, err
-		}
-		hasCreds = true
+		counts[s.status]++
+		tokens += s.tokens
+		cost += s.cost
 	}
-	if !hasCreds {
-		logw{opts.Out, opts.Color}.warn("[%s] no creds forwarded (expected %s); the harness may fail on auth", label, agent.CredentialHint(kind))
-	}
-	return harnessSetup{
-		dir:     homeDir,
-		mounts:  []sandbox.Mount{{Host: homeDir, Container: homeMount}},
-		cleanup: func() { os.RemoveAll(homeDir) },
-	}, nil
-}
-
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, 0o600)
-}
-
-// expandID substitutes ${id} in a run-field value with the owning entity's id.
-func expandID(s, id string) string { return strings.ReplaceAll(s, "${id}", id) }
-
-// egressFor renders a sandbox's egress policy for one agent run. under an
-// allowlisting proxy the harness's own hosts (inference, token refresh) are
-// merged in, so pats.yaml only lists what the task needs.
-func egressFor(sb config.Sandbox, kind, auditPath string) sandbox.Egress {
-	eg := sandbox.Egress{
-		Mode:      sb.Egress.Mode,
-		Default:   sb.Egress.Default,
-		Allow:     sb.Egress.Allow,
-		Deny:      sb.Egress.Deny,
-		DenyURLs:  sb.Egress.DenyURLs,
-		AllowURLs: sb.Egress.AllowURLs,
-		Image:     sb.Egress.Image,
-		AuditPath: auditPath,
-	}
-	if (eg.Mode == "proxy" || eg.Mode == "mitm-proxy") && eg.Default != "allow" {
-		eg.Allow = mergeHosts(eg.Allow, agent.RequiredHosts[kind])
-	}
-	return eg
-}
-
-// mergeHosts appends extras not already in hosts (exact string match; overlap
-// via wildcards is harmless -- the proxy just sees a redundant entry).
-//
-// hosts is copied before appending: the caller passes cfg.Sandboxes[i].Egress.Allow,
-// shared by every concurrent pair. today an in-place append is safe because
-// yaml.v3 decodes sequences with cap == len (verified), so the append below
-// always reallocates -- but nothing enforces that invariant, and a future
-// caller (or yaml.v3 change) could silently start corrupting a sibling pair's
-// egress policy.
-func mergeHosts(hosts, extras []string) []string {
-	seen := map[string]bool{}
-	for _, h := range hosts {
-		seen[h] = true
-	}
-	out := append([]string(nil), hosts...)
-	for _, e := range extras {
-		if !seen[e] {
-			out = append(out, e)
+	var parts []string
+	for _, st := range []string{"ok", "nonzero", "timeout", "budget", "error"} {
+		if counts[st] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
 		}
 	}
-	return out
+	if len(parts) == 0 {
+		parts = append(parts, "no pair ran")
+	}
+	out := strings.Join(parts, ", ")
+	if tokens > 0 {
+		out += fmt.Sprintf("  %s tok", humanK(tokens))
+	}
+	if cost > 0 {
+		out += fmt.Sprintf("  $%.2f", cost)
+	}
+	return out + "  " + wall.Round(100*time.Millisecond).String()
 }
 
 // relToCwd renders a path relative to the working dir for display; falls back to
@@ -519,113 +454,6 @@ func relToCwd(p string) string {
 		}
 	}
 	return p
-}
-
-// commandFor tokenizes a run-field value (POSIX-sh quoting, no shell/expansion)
-// and returns an *exec.Cmd that runs argv[0] -- a +x regular file resolved
-// against configDir -- with the remaining tokens as literal args, in configDir,
-// with os env + the given PATS_* env. errors on bad quoting, an empty command,
-// or argv[0] not being an executable file.
-func commandFor(configDir, spec string, env map[string]string) (*exec.Cmd, error) {
-	argv, err := splitArgs(spec)
-	if err != nil {
-		return nil, err
-	}
-	if len(argv) == 0 {
-		return nil, fmt.Errorf("empty command")
-	}
-	path := argv[0]
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(configDir, path)
-	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	if fi.Mode()&0o111 == 0 {
-		return nil, fmt.Errorf("%s is not executable (chmod +x)", path)
-	}
-	cmd := exec.Command(path, argv[1:]...)
-	cmd.Dir = configDir
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	return cmd, nil
-}
-
-// resolvePrompt turns a task/scorer prompt spec into the actual prompt bytes.
-// it tokenises the spec (POSIX-sh quoting) and inspects argv[0]:
-//
-//	a +x regular file        -> exec argv (a generator), its stdout is the prompt
-//	a non-executable file     -> the file's contents (no args allowed)
-//	anything else / bad quote -> the whole spec, verbatim, is the literal prompt
-//
-// the last rule is what lets a free-text prompt ("write a readme", or one with
-// an apostrophe) pass through untouched. env (PATS_*) is passed to a generator.
-func resolvePrompt(configDir, spec string, env map[string]string) ([]byte, error) {
-	argv, err := splitArgs(spec)
-	if err != nil || len(argv) == 0 {
-		return []byte(spec), nil // unparseable quoting -> literal
-	}
-	path := argv[0]
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(configDir, path)
-	}
-	fi, serr := os.Stat(path)
-	if serr != nil || !fi.Mode().IsRegular() {
-		return []byte(spec), nil // not a file -> literal prompt
-	}
-	if fi.Mode()&0o111 == 0 {
-		// a plain file's contents are the prompt; trailing args are meaningless
-		// here -- erroring beats silently dropping them (and a literal prompt
-		// whose first word collides with a file would otherwise vanish).
-		if len(argv) > 1 {
-			return nil, fmt.Errorf("prompt %q is not executable but has args (chmod +x to run it, or drop the args)", argv[0])
-		}
-		return os.ReadFile(path) // plain file -> contents
-	}
-	cmd, err := commandFor(configDir, spec, env) // executable -> stdout
-	if err != nil {
-		return nil, err
-	}
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("exec prompt %s: %w%s", argv[0], err, stderrTail(&errb))
-	}
-	return out.Bytes(), nil
-}
-
-// stderrTail renders a failed script's captured stderr for embedding in the
-// error (last few lines -- enough to see the crash, not the whole log).
-func stderrTail(b *bytes.Buffer) string {
-	s := strings.TrimSpace(b.String())
-	if s == "" {
-		return ""
-	}
-	const keep = 10
-	if lines := strings.Split(s, "\n"); len(lines) > keep {
-		s = "... " + strings.Join(lines[len(lines)-keep:], "\n")
-	}
-	return "\nstderr: " + s
-}
-
-// runHost runs a prepare/collect field on the host: it execs the field's file
-// (with args) in the project dir, PATS_* env appended, no shell. output streams
-// to opts.Out. callers expand ${id} first.
-func runHost(opts Options, command string, env map[string]string) error {
-	cmd, err := commandFor(opts.ConfigDir, command, env)
-	if err != nil {
-		return err
-	}
-	cmd.Stdout = opts.Out
-	cmd.Stderr = opts.Out
-	return cmd.Run()
 }
 
 // nextRunDir creates and returns base/<nnn>-<yyyymmdd>-<adj>-<noun>: a
@@ -655,16 +483,6 @@ func nextRunDir(base string, now time.Time) (string, error) {
 	_ = os.Symlink(filepath.Base(dir), link)
 	return dir, nil
 }
-
-func writeJSON(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-
-func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
 
 // humanK renders a token count compactly: 412 -> "412", 9213 -> "9.2k".
 func humanK(n int) string {

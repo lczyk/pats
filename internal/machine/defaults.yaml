@@ -1,0 +1,303 @@
+# what this pats knows about the harnesses it ships: docs/spec/machine-file.md.
+
+clis:
+  claude:
+    version: 2.1.319
+    login-file: .claude/.credentials.json
+    artefacts:
+      https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${version}.tgz:
+        arch: [amd64]
+        hash: sha256:9b7b53954b8ffb886fafeefe9ef1e0e9e5c15e8aaf2f54d65ba64d0cca795dc7
+        bin: package/claude
+      https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-${version}.tgz:
+        arch: [arm64]
+        hash: sha256:f1ce44ea6a383ff39463e82906ad2d9d6fe1bc92976d2ac38da965b15a6f8036
+        bin: package/claude
+
+  codex:
+    version: 0.167.0
+    login-file: .codex/auth.json
+    # codex takes its state dir from CODEX_HOME, not from HOME.
+    home-env: {CODEX_HOME: .codex}
+    artefacts:
+      https://registry.npmjs.org/@openai/codex/-/codex-${version}-linux-x64.tgz:
+        arch: [amd64]
+        hash: sha256:2dc9aa871abb513c3539d20d025f701faf1974c46ee906bda3a1e1f5026d4434
+        bin: package/vendor/x86_64-unknown-linux-musl/bin/codex
+      https://registry.npmjs.org/@openai/codex/-/codex-${version}-linux-arm64.tgz:
+        arch: [arm64]
+        hash: sha256:e24d7b6f0af5695a36c04692c3a79672bdadebcac7c44005259cb3cad36ac40e
+        bin: package/vendor/aarch64-unknown-linux-musl/bin/codex
+
+  copilot:
+    version: 1.0.107
+    # no login-file: the default login is in the os keychain, and the
+    # plaintext fallback hides in a config file that exists tokenless too.
+    artefacts:
+      https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-${version}.tgz:
+        arch: [amd64]
+        hash: sha256:00f6d702f12ef534d2792463286e2a07b25b77c994dada157b4cba7cb9fcdb4f
+        bin: package/copilot
+      https://registry.npmjs.org/@github/copilot-linux-arm64/-/copilot-linux-arm64-${version}.tgz:
+        arch: [arm64]
+        hash: sha256:e88dcc30c636f8e6586de17027f20ea883da3e4378e8dc0aed8696cd3cdce1e6
+        bin: package/copilot
+
+  opencode:
+    version: 1.19.5
+    artefacts:
+      https://registry.npmjs.org/opencode-linux-x64/-/opencode-linux-x64-${version}.tgz:
+        arch: [amd64]
+        hash: sha256:2d7cfc303decc6cbbcdb22ff1be258b03ce2b5eae57583545afc8f12c01dd5e0
+        bin: package/bin/opencode
+      https://registry.npmjs.org/opencode-linux-arm64/-/opencode-linux-arm64-${version}.tgz:
+        arch: [arm64]
+        hash: sha256:ba14f4ce5c8fe567a00bac1c50aafe7eda6e1de7aa37964994c66148a28d529a
+        bin: package/bin/opencode
+
+  pi:
+    version: 1.5.2
+    artefacts:
+      https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-x64.tar.gz:
+        arch: [amd64]
+        hash: sha256:811c6f2c9e7aaee252b5404252e556fb713aa209c1f7f924226aa77d4ef70cb5
+        bin: pi/pi
+      https://github.com/earendil-works/pi/releases/download/v${version}/pi-linux-arm64.tar.gz:
+        arch: [arm64]
+        hash: sha256:42805cd5615952fcbbfc9c56b04f8feb84395134952e169a6cdc8d7676975666
+        bin: pi/pi
+
+harnesses:
+  claude-cli-keyless:
+    cli: claude
+    # stream-json with partial messages gives events as they happen. plain
+    # --print buffers to exit.
+    run: >-
+      claude --print --output-format stream-json --verbose --include-partial-messages
+      ${PATS_EFFORT:+--effort "$PATS_EFFORT"} --model "$PATS_MODEL"
+      --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"
+    egress:
+      allow:
+        - .anthropic.com   # inference
+        - .claude.com      # oauth token refresh, a 401 mid-run without it
+    auth-env: [ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN]
+    login: true
+    pass-env: [ANTHROPIC_BASE_URL]
+    auth-hint: >-
+      a claude token env (CLAUDE_CODE_OAUTH_TOKEN) or ~/.claude/.credentials.json
+      (or PATS_CLAUDE_AUTH_PATH)
+    # tools are the tool_use blocks of each assistant turn. the totals come on
+    # the result event, and a later result restates them.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) != "dict":
+          ev = {}
+      t = ev.get("type")
+      if t == "assistant":
+          for c in ev.get("message", {}).get("content", []):
+              if c.get("type") == "tool_use":
+                  out.tool(c.get("name", ""))
+      elif t == "result":
+          u = ev.get("usage", {})
+          out.usage(
+              total = True,
+              turns = ev.get("num_turns", 0),
+              cost_usd = ev.get("total_cost_usd", 0),
+              input_tokens = u.get("input_tokens", 0),
+              output_tokens = u.get("output_tokens", 0),
+              cache_read_tokens = u.get("cache_read_input_tokens", 0),
+              cache_write_tokens = u.get("cache_creation_input_tokens", 0),
+              ttft_ms = ev.get("ttft_ms", 0),
+              api_duration_ms = ev.get("duration_api_ms", 0),
+          )
+          # a result that is an error says what went wrong where its answer would be.
+          out.error(ev.get("is_error", False), ev.get("result") or "")
+          # every result is a candidate: a sub-agent's late note follows the answer.
+          out.final(ev.get("result", ""), add = True)
+
+  codex-cli-keyless:
+    cli: codex
+    # pats is the outer sandbox, so codex's own approvals and sandbox are off.
+    # the prompt comes on stdin, so shell quoting never changes it.
+    run: >-
+      codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check
+      --dangerously-bypass-approvals-and-sandbox --model "$PATS_MODEL"
+      ${PATS_EFFORT:+-c model_reasoning_effort="$PATS_EFFORT"} - < "$PATS_PROMPT_FILE"
+    # api.github.com and raw.githubusercontent.com are left out on purpose:
+    # an update probe and a banner, and the run works without them.
+    egress:
+      allow:
+        - .openai.com    # oauth token refresh and api endpoints
+        - .chatgpt.com   # chatgpt-account inference
+    # no auth-env on purpose. codex reads CODEX_API_KEY and OPENAI_API_KEY
+    # when set, and withholding them is what keeps this harness keyless.
+    login: true
+    auth-hint: ~/.codex/auth.json (file-based codex login, or PATS_CODEX_AUTH_PATH)
+    # no turns: `codex exec` is one turn by construction. no cost_usd: a
+    # chatgpt-account run has no price.
+    parse: |
+      TOOLS = ["command_execution", "file_change", "web_search"]
+
+      ev = json.decode(line, default = None)
+      if type(ev) != "dict":
+          ev = {}
+      t = ev.get("type")
+      if t == "item.completed":
+          item = ev.get("item", {})
+          kind = item.get("type")
+          if kind in TOOLS:
+              out.tool(kind)
+          elif kind == "mcp_tool_call":
+              server, tool = item.get("server", ""), item.get("tool", "")
+              out.tool("mcp:%s/%s" % (server, tool) if server and tool else kind)
+          elif kind == "agent_message":
+              out.final(item.get("text", ""))
+      elif t == "turn.completed":
+          u = ev.get("usage", {})
+          # cached tokens are a part of input here. the totals keep them apart.
+          cached = u.get("cached_input_tokens", 0)
+          out.usage(
+              input_tokens = u.get("input_tokens", 0) - cached,
+              cache_read_tokens = cached,
+              output_tokens = u.get("output_tokens", 0),
+              reasoning_tokens = u.get("reasoning_output_tokens", 0),
+          )
+      elif t in ("turn.failed", "error"):
+          # a failed turn holds its message in an error, an error event its own.
+          out.error(msg = ev.get("error", {}).get("message") or ev.get("message") or "")
+
+  copilot-cli-keyless:
+    cli: copilot
+    # --disable-builtin-mcps drops the github mcp server, which would hand the
+    # task github api access through the forwarded token.
+    run: >-
+      copilot -p "$(cat "$PATS_PROMPT_FILE")" --allow-all --output-format json
+      --no-auto-update --no-remote-export --disable-builtin-mcps --model "$PATS_MODEL"
+      ${PATS_EFFORT:+--effort "$PATS_EFFORT"}
+    egress:
+      allow:
+        - .github.com          # auth and the copilot token exchange
+        - .githubcopilot.com   # inference
+    # only the copilot variable. GH_TOKEN and GITHUB_TOKEN are ambient in many
+    # shells and usually lack the copilot permission.
+    auth-env: [COPILOT_GITHUB_TOKEN]
+    auth-hint: >-
+      COPILOT_GITHUB_TOKEN (macos: security find-generic-password -s copilot-cli -w; or gh auth token)
+    # the stream has no input or cache counts and no price: a run is billed in
+    # premium requests.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) != "dict":
+          ev = {}
+      t = ev.get("type")
+      data = ev.get("data", {})
+      if t == "tool.execution_start":
+          out.tool(data.get("toolName", ""))
+      elif t == "assistant.turn_end":
+          out.usage(turns = 1)
+      elif t == "assistant.message":
+          out.usage(output_tokens = data.get("outputTokens", 0))
+          text = data.get("content", "")
+          if text.strip():
+              out.final(text)
+      elif t == "result":
+          u = ev.get("usage", {})
+          out.usage(
+              total = True,
+              premium_requests = u.get("premiumRequests", 0),
+              api_duration_ms = u.get("totalApiDurationMs", 0),
+          )
+          code = ev.get("exitCode")
+          out.error(code != None and code != 0)
+
+  opencode-openrouter:
+    cli: opencode
+    # the openrouter/ prefix is added here, so a config's model stays
+    # e.g. openai/gpt-4o-mini.
+    run: >-
+      opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions
+      --format json --thinking ${PATS_EFFORT:+--variant "$PATS_EFFORT"}
+      "$(cat "$PATS_PROMPT_FILE")"
+    egress:
+      allow:
+        - openrouter.ai        # inference
+        - models.dev           # model catalogue
+        - models.opencode.ai   # model catalogue, newer releases
+        - registry.npmjs.org   # runtime plugin fetch
+    auth-env: [OPENROUTER_API_KEY]
+    models: openrouter
+    # usage is per step, so the totals add up over step_finish. the reply is
+    # the text of the last step: a step that ended stays the reply until a
+    # later one says something.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) != "dict":
+          ev = {}
+      t = ev.get("type")
+      part = ev.get("part", {})
+      if t == "tool_use":
+          out.tool(part.get("tool", ""))
+      elif t == "step_start":
+          out.clear()
+      elif t == "text":
+          out.text(part.get("text", ""))
+      elif t == "step_finish":
+          out.clear(next = True)
+          tok = part.get("tokens", {})
+          cache = tok.get("cache", {})
+          # reasoning comes apart from output here. the totals count it in.
+          reasoning = tok.get("reasoning", 0)
+          out.usage(
+              turns = 1,
+              cost_usd = part.get("cost", 0),
+              input_tokens = tok.get("input", 0),
+              output_tokens = tok.get("output", 0) + reasoning,
+              reasoning_tokens = reasoning,
+              cache_read_tokens = cache.get("read", 0),
+              cache_write_tokens = cache.get("write", 0),
+          )
+      elif t == "error":
+          err = ev.get("error", {})
+          out.error(msg = err.get("data", {}).get("message") or err.get("name") or "")
+
+  pi-openrouter:
+    cli: pi
+    # pats is the outer sandbox, so the workspace's own pi files are trusted.
+    # PI_OFFLINE keeps pi off every host but the provider's.
+    run: >-
+      PI_OFFLINE=1 pi --print --mode json --no-session --approve --provider openrouter
+      --model "$PATS_MODEL" ${PATS_EFFORT:+--thinking "$PATS_EFFORT"}
+      -- "$(cat "$PATS_PROMPT_FILE")"
+    egress:
+      allow:
+        - openrouter.ai   # inference
+    auth-env: [OPENROUTER_API_KEY]
+    models: openrouter
+    # usage and the stop reason come on each assistant message as it ends. pi
+    # exits 0 on a failed reply, so the stop reason is the one sign of it, and
+    # the last message's decides: a retry that worked is no error.
+    parse: |
+      ev = json.decode(line, default = None)
+      if type(ev) != "dict":
+          ev = {}
+      t = ev.get("type")
+      if t == "tool_execution_start":
+          out.tool(ev.get("toolName", ""))
+      elif t == "message_end" and ev.get("message", {}).get("role") == "assistant":
+          m = ev["message"]
+          # first, so a usage this cannot read still leaves the error heard.
+          out.error(m.get("stopReason") in ("error", "aborted"), m.get("errorMessage") or "")
+          u = m.get("usage", {})
+          # reasoning is a part of output here, and cached tokens are none of input.
+          out.usage(
+              turns = 1,
+              cost_usd = u.get("cost", {}).get("total", 0),
+              input_tokens = u.get("input", 0),
+              output_tokens = u.get("output", 0),
+              reasoning_tokens = u.get("reasoning", 0),
+              cache_read_tokens = u.get("cacheRead", 0),
+              cache_write_tokens = u.get("cacheWrite", 0),
+          )
+          text = "".join([c.get("text", "") for c in m.get("content", []) if c.get("type") == "text"])
+          if text.strip():
+              out.final(text)

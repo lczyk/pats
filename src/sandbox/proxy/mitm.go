@@ -1,135 +1,24 @@
-// mitm: for hosts named by a url rule the proxy terminates tls with a leaf
+// mitm: for hosts named by a url entry the proxy terminates tls with a leaf
 // signed by the per-run CA, filters each request by full url, and re-dials the
-// real host. everything else stays a blind tunnel (see proxy.go).
+// real host. everything else stays a tunnel (see proxy.go).
 package proxy
 
 import (
-	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
-	"path"
-	"regexp"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
-
-// URLRule is one host-anchored url pattern, e.g. "github.com/*/chisel-releases*".
-// the host part (up to the first /) is a literal hostname; the rest is a glob
-// where * matches any characters, / included. matching runs against host+path,
-// host+path+"?"+query when there is one, and both again with the path
-// canonicalised via path.Clean -- so a pattern can filter on the query string,
-// and "a/../b" can't dodge a rule anchored on "b".
-type URLRule struct {
-	host string
-	re   *regexp.Regexp // matches host+path, e.g. "github.com/canonical/chisel-releases/x"
-}
-
-func ParseURLRules(pats []string) []URLRule {
-	var out []URLRule
-	for _, p := range pats {
-		p = strings.ToLower(strings.TrimSpace(p))
-		if p == "" {
-			continue
-		}
-		host, _, _ := strings.Cut(p, "/")
-		// NOTE: wildcard/empty hosts are rejected at config validation; here we
-		// just skip them so a hand-set env can't mitm the world by accident.
-		if host == "" || strings.Contains(host, "*") {
-			continue
-		}
-		var b strings.Builder
-		b.WriteString("^")
-		for _, part := range strings.Split(p, "*") {
-			b.WriteString(regexp.QuoteMeta(part))
-			b.WriteString(".*")
-		}
-		re := regexp.MustCompile(strings.TrimSuffix(b.String(), ".*") + "$")
-		out = append(out, URLRule{host: host, re: re})
-	}
-	return out
-}
-
-// mitmHost says whether this host's tls must be terminated (it has url rules).
-func (r Rule) mitmHost(host string) bool {
-	host = strings.ToLower(host)
-	for _, u := range r.DenyURLs {
-		if u.host == host {
-			return true
-		}
-	}
-	for _, u := range r.AllowURLs {
-		if u.host == host {
-			return true
-		}
-	}
-	return false
-}
-
-// matchCandidates builds the strings a url rule may match a request against:
-// host+path (kept so rules written against the bare path still match), the
-// same with "?"+query appended when the query is non-empty, and both again
-// with the path run through path.Clean when that differs from the original --
-// so "host/a/../b" can't dodge a rule anchored on "host/b". an empty path is
-// excluded from that last step: path.Clean("") returns ".", which differs
-// from "" and would otherwise add a bogus host+"." candidate for every
-// request with no path at all.
-func matchCandidates(host, urlPath, rawQuery string) []string {
-	host = strings.ToLower(host)
-	urlPath = strings.ToLower(urlPath)
-	rawQuery = strings.ToLower(rawQuery)
-
-	bare := host + urlPath
-	cands := []string{bare}
-	if rawQuery != "" {
-		cands = append(cands, bare+"?"+rawQuery)
-	}
-	if cleaned := path.Clean(urlPath); cleaned != urlPath && cleaned != "." {
-		cbare := host + cleaned
-		cands = append(cands, cbare)
-		if rawQuery != "" {
-			cands = append(cands, cbare+"?"+rawQuery)
-		}
-	}
-	return cands
-}
-
-// permitsURL checks a request's host+path+query (no scheme) against the url
-// rules: a deny match on any candidate form -- see matchCandidates -- always
-// loses; then, if the host has allow-url rules, only a request matching one
-// passes. hosts with no url rules are unaffected.
-func (r Rule) permitsURL(host, urlPath, rawQuery string) bool {
-	cands := matchCandidates(host, urlPath, rawQuery)
-	for _, u := range r.DenyURLs {
-		for _, c := range cands {
-			if u.re.MatchString(c) {
-				return false
-			}
-		}
-	}
-	host = strings.ToLower(host)
-	restricted, matched := false, false
-	for _, u := range r.AllowURLs {
-		if u.host != host {
-			continue
-		}
-		restricted = true
-		for _, c := range cands {
-			if u.re.MatchString(c) {
-				matched = true
-				break
-			}
-		}
-	}
-	return !restricted || matched
-}
 
 // Signer mints per-host leaf certs signed by the run CA, cached.
 type Signer struct {
@@ -193,14 +82,15 @@ func (s *Signer) leaf(host string) (*tls.Certificate, error) {
 	return c, nil
 }
 
-// handleMitm terminates the CONNECT tls with a signed leaf, then serves the
-// decrypted requests, filtering each by url and forwarding the allowed ones to
-// the real host via upstream.
-func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, upstream http.RoundTripper) {
-	host, port := splitHostPort(req.Host)
-	if port == "" {
-		port = "443"
-	}
+var errSNIMismatch = errors.New("sni does not name the CONNECT host")
+
+// handleMitm terminates the CONNECT tls with a leaf for the CONNECT host, then
+// serves the decrypted connection as http: each request is filtered by url
+// and the allowed ones forwarded to the real host via Upstream. the leaf is
+// only ever for the CONNECT host and each inner request's Host must name it
+// too: a shared front end must not be reached under a name the policy never
+// saw.
+func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string, port uint16) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "cannot hijack", http.StatusInternalServerError)
@@ -210,81 +100,137 @@ func handleMitm(w http.ResponseWriter, req *http.Request, r Rule, s *Signer, ups
 	if err != nil {
 		return
 	}
-	defer raw.Close()
 	// the 200 must go straight to the wire, not through WriteHeader -- see the
 	// matching comment in handleConnect (proxy.go).
 	if _, err := raw.Write([]byte("HTTP/1.1 200 OK\r\n\r\n")); err != nil {
+		raw.Close()
 		return
 	}
 
+	want, _ := NormalizeHost(host)
 	// rrw.Reader may already hold bytes the client pipelined behind the
 	// CONNECT (e.g. the TLS ClientHello) -- read through it, or the handshake
 	// below stalls waiting for bytes that already arrived.
 	tconn := tls.Server(bufConn{Conn: raw, r: rrw.Reader}, &tls.Config{
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if chi.ServerName != "" {
-				return s.leaf(chi.ServerName)
+				if got, err := NormalizeHost(chi.ServerName); err != nil || got != want {
+					p.audit(Event{Ev: "open", Host: host, Port: portStr(port), Kind: "tunnel", Rule: "mitm", Reason: "sni-mismatch"})
+					return nil, errSNIMismatch
+				}
 			}
-			return s.leaf(host)
+			return p.Signer.leaf(host)
 		},
 		NextProtos: []string{"http/1.1"}, // NOTE: no h2; clients downgrade fine
 	})
-	defer tconn.Close()
+	// the server's header timeout stopped applying at the hijack: bound the
+	// handshake here, or a client that never finishes it holds the conn.
+	_ = raw.SetDeadline(time.Now().Add(helloWait))
 	if err := tconn.Handshake(); err != nil {
+		// an sni mismatch is audited where it is caught. anything else that
+		// fails here (a non-tls client, a client rejecting the leaf) would
+		// otherwise leave no trace.
+		if !errors.Is(err, errSNIMismatch) {
+			reason := "handshake"
+			var rh tls.RecordHeaderError
+			if errors.As(err, &rh) {
+				reason = "not-tls"
+			}
+			p.audit(Event{Ev: "open", Host: host, Port: portStr(port), Kind: "mitm", Rule: "mitm", Reason: reason})
+		}
+		tconn.Close()
 		return
 	}
+	_ = raw.SetDeadline(time.Time{})
 
-	br := bufio.NewReader(tconn)
-	for {
-		inner, err := http.ReadRequest(br)
-		if err != nil {
-			return
-		}
-		fullURL := host + inner.URL.Path
-		if inner.URL.RawQuery != "" {
-			fullURL += "?" + inner.URL.RawQuery
-		}
-		if !r.permitsURL(host, inner.URL.Path, inner.URL.RawQuery) {
-			auditURL(host, port, fullURL, false)
-			resp := &http.Response{StatusCode: http.StatusForbidden, ProtoMajor: 1, ProtoMinor: 1,
-				Body: http.NoBody, Header: http.Header{}, Close: true}
-			resp.Write(tconn)
-			return
-		}
-		auditURL(host, port, fullURL, true)
-
-		inner.URL.Scheme = "https"
-		inner.URL.Host = req.Host
-		inner.RequestURI = ""
-		resp, err := upstream.RoundTrip(inner)
-		if err != nil {
-			(&http.Response{StatusCode: http.StatusBadGateway, ProtoMajor: 1, ProtoMinor: 1,
-				Body: http.NoBody, Header: http.Header{}, Close: true}).Write(tconn)
-			return
-		}
-		// the upstream leg may be http/2, but the client side of this conn is
-		// http/1.1 (see NextProtos above), so the response can't be written
-		// verbatim: Write puts resp.Proto in the status line ("HTTP/2.0 200 OK"
-		// on an http/1.1 stream), and when resp.ContentLength is -1 it adds
-		// Transfer-Encoding: chunked while a stale upstream Content-Length
-		// header line survives alongside -- double framing. lenient parsers
-		// (curl, node) shrug both off; strict ones (rust hyper, e.g. github
-		// copilot's auth stack) kill the request. renumber and let Write
-		// re-derive the framing from resp.ContentLength alone.
-		resp.Proto, resp.ProtoMajor, resp.ProtoMinor = "HTTP/1.1", 1, 1
-		resp.Header.Del("Content-Length")
-		resp.Header.Del("Transfer-Encoding")
-		if resp.ContentLength < 0 {
-			// unknown length must be chunked explicitly: Write would fall back
-			// to close-delimiting, which stalls a keep-alive client forever.
-			resp.TransferEncoding = []string{"chunked"}
-		} else {
-			resp.TransferEncoding = nil
-		}
-		err = resp.Write(tconn)
-		resp.Body.Close()
-		if err != nil || resp.Close || inner.Close {
-			return
-		}
+	origin := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, portStr(port))}
+	idle := p.Idle
+	if idle <= 0 {
+		idle = idleWait
 	}
+	serveConn(tconn, idle, http.HandlerFunc(func(w http.ResponseWriter, inner *http.Request) {
+		ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "mitm",
+			Method: inner.Method, URL: auditURL(host, inner.URL), UA: inner.UserAgent()}
+		if innerHost, _ := splitHostPort(inner.Host, port); !sameHost(innerHost, want) {
+			ev.Rule, ev.Reason = "mitm", "host-mismatch"
+			ev.Status = p.refuse(w)
+			p.audit(ev)
+			return
+		}
+		v := p.Rule.Decide(host, port, inner.Method, inner.URL.Path, inner.URL.RawQuery)
+		ev.Rule, ev.Reason = v.Rule, v.Reason
+		if v.Allowed && inner.URL.Opaque != "" {
+			// "http:secret/x" has no path to decide on, and goes on as one.
+			v.Allowed, ev.Rule, ev.Reason = false, "url", "bad-url"
+		}
+		if !v.Allowed {
+			ev.Status = p.refuse(w)
+			p.audit(ev)
+			return
+		}
+		p.forward(w, inner, ev, origin)
+	}))
+}
+
+// idleWait is how long a client's connection may sit between requests.
+const idleWait = 2 * time.Minute
+
+// serveConn serves the one connection c as net/http serves any it accepts:
+// its framing, its keep-alive and what a handler left unread are the
+// server's. it returns once the connection is closed, or a handler took it
+// over (a refusal by reset). idle bounds its silences.
+func serveConn(c net.Conn, idle time.Duration, h http.Handler) {
+	ln := &oneConn{conn: c, done: make(chan struct{})}
+	h1 := new(http.Protocols)
+	h1.SetHTTP1(true)
+	srv := &http.Server{
+		Handler:   h,
+		Protocols: h1,
+		// "OPTIONS *" is a request like any other: decided, relayed, audited.
+		DisableGeneralOptionsHandler: true,
+		// the wait for a connection's first request counts as its headers'.
+		ReadHeaderTimeout: idle,
+		IdleTimeout:       idle,
+		ConnState: func(_ net.Conn, s http.ConnState) {
+			if s == http.StateClosed || s == http.StateHijacked {
+				ln.Close()
+			}
+		},
+	}
+	_ = srv.Serve(ln)
+}
+
+// oneConn is a listener of one connection: accepted once, and then nothing
+// more until it is closed.
+type oneConn struct {
+	conn net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func (l *oneConn) Accept() (net.Conn, error) {
+	if c := l.conn; c != nil {
+		l.conn = nil
+		return c, nil
+	}
+	<-l.done
+	return nil, net.ErrClosed
+}
+
+func (l *oneConn) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *oneConn) Addr() net.Addr { return oneAddr{} }
+
+type oneAddr struct{}
+
+func (oneAddr) Network() string { return "conn" }
+func (oneAddr) String() string  { return "conn" }
+
+// sameHost compares a request host to the normalised CONNECT host.
+func sameHost(got, want string) bool {
+	n, err := NormalizeHost(got)
+	return err == nil && n == want
 }

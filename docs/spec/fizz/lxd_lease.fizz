@@ -1,0 +1,147 @@
+---
+options:
+  max_actions: 60
+  crash_on_yield: false
+action_options:
+  RenewFail:
+    max_actions: 4
+  RenewLate:
+    max_actions: 1
+  Crash:
+    max_actions: 1
+deadlock_detection: true
+---
+# pats clean vs a live run's lease, with clocks that disagree.
+#
+# models: src/sandbox/lxd.go setupServer / renew (the run's marker acl and its
+# user.pats.lease) and src/sandbox/lxd_clean.go clean (runDead). one run, one
+# cleaner. time is real time in ticks of 30s; each machine stamps with its own
+# clock, the cleaner's COFF ticks ahead. the lxc call that renews may fail
+# (its error is ignored) or land late. a model, not the code.
+#
+# run: timeout -k 10 300 fizz lxd_lease.fizz
+#
+# requirements:
+# R1: WHILE the cleaner's clock runs less than COFF_MAX ahead of the run's
+#     and renewals land within 30s, THE SYSTEM SHALL NOT remove the
+#     resources of a run whose process is alive.
+# R2: IF a run's process has died, THEN clean SHALL be able to remove it
+#     once its lease looks stale.
+#
+# accepted (2026-11-07): clean reads the lease, a time on the run's clock,
+# against its own clock and acts at once, with no wait. so R1 is conditional.
+# the renewal loop wakes every 30s and renews once leaseEvery has passed since
+# its last actual attempt, so a wake that comes late (scheduling) pushes every
+# later renewal back by a wake (WAKE_LATE). with renewals otherwise on time the
+# cleaner may run up to 7m ahead (COFF = 14 passes, 15 fails; 7.5m with
+# WAKE_LATE = False); each renewal that fails outright takes another 2m off
+# that (RENEW_FAILS = True); a renewal landing 60s late takes 30s (LATE = 2).
+# closing the gap means a lease both sides time on their own clocks, and that
+# needs clean to wait out a whole stale window, which it is not to do.
+#
+# SLOW_RUNS: clean reads every run's marker, lease included, inside its Runs
+# query, which may take time. the code samples now before the query
+# (src/sandbox/clean.go: p.clock.Now(), then d.Runs): passes. NOW_FIRST = False
+# samples it after, and a slow query makes the lease look older by the query's
+# time: with COFF at its limit, one tick of query time fails R1.
+#
+# constants (ticks of 30s): renewal every E (leaseEvery = 2m), stale after S
+# (leaseStale = 10m).
+
+E = 4
+S = 20
+COFF = 14        # the most skew R1 survives with renewals on time
+WAKE_LATE = True
+LATE = 1         # a renewal lands this many ticks after it was sent
+RENEW_FAILS = False
+TMAX = 14
+SLOW_RUNS = True
+NOW_FIRST = True
+
+action Init:
+    t = 0
+    alive = True
+    lease = 0             # the marker's user.pats.lease, run's clock
+    next_renew = E
+    pending = None        # a renewal in flight: record(value, lands)
+    cstate = "idle"       # cleaner: idle | reading | done
+    seen = 0              # the lease the Runs query read
+    t_read = 0            # the cleaner's time when the query started
+    removed = False
+    removed_live = False
+
+# time moves only once nothing is due now: the ticker fires on time.
+atomic fair action Tick:
+    require t < TMAX
+    require cstate != "reading" or t < t_read + 2
+    require not (alive and t >= next_renew + (1 if WAKE_LATE else 0) and pending == None)
+    require not (pending != None and t >= pending.lands)
+    t = t + 1
+
+atomic fair action Renew:
+    require alive and t >= next_renew and pending == None
+    pending = record(value=t, lands=t)
+    next_renew = t + E
+
+atomic action RenewLate:
+    require alive and t >= next_renew and pending == None
+    pending = record(value=t, lands=t + LATE)
+    next_renew = t + E
+
+atomic action RenewFail:
+    require RENEW_FAILS and alive and t >= next_renew and pending == None
+    next_renew = t + E
+
+atomic fair action Land:
+    require pending != None and t >= pending.lands
+    lease = pending.value
+    pending = None
+
+atomic action Crash:
+    require alive
+    alive = False
+    pending = None
+
+# runDead by the cleaner's clock, and removal straight after. with SLOW_RUNS
+# the query reads the lease in one step and the judge runs later, time passing
+# in between.
+atomic action CleanRead:
+    require SLOW_RUNS and cstate == "idle"
+    seen = lease
+    t_read = t
+    cstate = "reading"
+
+atomic action CleanJudge:
+    require cstate == "reading"
+    now = t
+    if NOW_FIRST:
+        now = t_read
+    if seen < now + COFF - S:
+        removed = True
+        if alive:
+            removed_live = True
+    cstate = "done"
+
+atomic action Clean:
+    require not SLOW_RUNS and cstate == "idle"
+    if lease < t + COFF - S:
+        removed = True
+        if alive:
+            removed_live = True
+    cstate = "done"
+
+atomic action Idle:
+    require t == TMAX or cstate == "done"
+    pass
+
+# R1
+always assertion NeverRemovesLive:
+    return not removed_live
+
+# R2, as coverage
+exists assertion RemovesDead:
+    return removed and not removed_live
+
+# coverage: clean looked at a live run and left it.
+exists assertion KeepsLive:
+    return cstate == "done" and not removed and alive

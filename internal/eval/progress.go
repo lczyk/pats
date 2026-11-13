@@ -6,12 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/term"
+
+	"github.com/lczyk/pats/internal/machine"
+	"github.com/lczyk/pats/internal/parse"
 )
 
 // progress is a sticky multi-line terminal display for a parallel run: a total
@@ -32,6 +38,9 @@ type progress struct {
 	pollEvery int // refresh the net count every N redraw ticks (it's pricier i/o)
 	stop      chan struct{}
 	donec     chan struct{} // closed when the ticker goroutine has exited
+	// size is the terminal's columns and rows, asked for at each frame; nil
+	// when out is no terminal.
+	size func() (cols, rows int)
 }
 
 // redraw fast for a smooth spinner/timer; poll egress.log (per-pair file i/o)
@@ -46,12 +55,43 @@ const (
 // ticker's egress-log poll, and all are read by the renderer.
 type pairStat struct {
 	out     int64 // stdout lines (stream-json events)
-	tools   int64 // tool_use events (per-kind parse; 0 for kinds w/o a parser)
+	tools   int64 // tool_use events (per-harness parse; 0 for harnesses w/o a parser)
 	net     int64 // egress requests, from the proxy audit log
 	netSeen int32 // 1 once egress.log was readable (i.e. proxy mode) -> show net
+
+	// set once the pair ends, for the run's summary.
+	status    string
+	tokens    int
+	cost      float64
+	costKnown bool // the summary reported a cost
+
+	liveCost atomic.Uint64 // float64 bits: spend reported so far, for the bar
+	costSeen atomic.Bool   // the harness reported a cost at all, 0 included
+	failed   atomic.Bool   // the harness's stream says the run is in error, as it stands
+	failure  atomic.Value  // string: what it said of that error
+	// spend, when set, hears each step's cost as the harness reports it.
+	spend func(c float64)
+	// price, when set, costs the tokens of a harness that reports no cost.
+	price *modelPrice
 }
 
-// cols renders the counter columns "out [tool] [net]" -- tool only when the kind
+// spent is the spend the pair's harness reported so far.
+func (s *pairStat) spent() float64 { return math.Float64frombits(s.liveCost.Load()) }
+
+// addCost records a step's cost as the harness reports it.
+func (s *pairStat) addCost(c float64) {
+	for {
+		old := s.liveCost.Load()
+		if s.liveCost.CompareAndSwap(old, math.Float64bits(math.Float64frombits(old)+c)) {
+			break
+		}
+	}
+	if s.spend != nil {
+		s.spend(c)
+	}
+}
+
+// cols renders the counter columns "out [tool] [net]" -- tool only when the harness
 // has a parser (showTools), net only once the proxy audit log was seen.
 func (s *pairStat) cols(showTools bool) string {
 	parts := []string{fmt.Sprintf("%5d out", atomic.LoadInt64(&s.out))}
@@ -61,14 +101,18 @@ func (s *pairStat) cols(showTools bool) string {
 	if atomic.LoadInt32(&s.netSeen) == 1 {
 		parts = append(parts, fmt.Sprintf("%4d net", atomic.LoadInt64(&s.net)))
 	}
+	if c := s.spent(); c > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", c))
+	}
 	return strings.Join(parts, "  ")
 }
 
 type inflight struct {
 	label     string
 	stat      *pairStat
-	egress    string  // path to egress.log, polled for the net count ("" -> skip)
-	showTools bool    // the agent kind has a tool parser -> show the tool column
+	egress    string // path to egress.log, polled for the net count ("" -> skip)
+	tail      auditTail
+	showTools bool    // the harness has a tool parser -> show the tool column
 	spin      float64 // spinner accumulator, advanced by spinRate each tick
 	spinRate  float64 // per-pair speed (jittered) so spinners slowly desync
 }
@@ -86,6 +130,12 @@ func newProgress(out io.Writer, total, labelW int) *progress {
 		pollEvery: max(int(netPollEvery/redrawEvery), 1),
 		stop:      make(chan struct{}), donec: make(chan struct{}),
 		ticker: time.NewTicker(redrawEvery),
+	}
+	if f, ok := out.(*os.File); ok {
+		p.size = func() (int, int) {
+			cols, rows, _ := term.GetSize(int(f.Fd()))
+			return cols, rows
+		}
 	}
 	p.mu.Lock()
 	p.redraw()
@@ -162,21 +212,57 @@ func (p *progress) refreshNet() {
 	type item struct {
 		st   *pairStat
 		path string
+		tail *auditTail
 	}
 	p.mu.Lock()
 	var items []item
 	for _, a := range p.active {
 		if a.egress != "" {
-			items = append(items, item{a.stat, a.egress})
+			items = append(items, item{a.stat, a.egress, &a.tail})
 		}
 	}
 	p.mu.Unlock()
 	for _, it := range items {
-		if n, err := countLines(it.path); err == nil {
+		if n, ok := it.tail.count(it.path); ok {
 			atomic.StoreInt64(&it.st.net, int64(n))
 			atomic.StoreInt32(&it.st.netSeen, 1)
 		}
 	}
+}
+
+// auditTail counts the requests in a growing egress.log, reading at each
+// call only what was written since the last. only the ticker calls it.
+type auditTail struct {
+	off int64
+	n   int
+}
+
+// count is the open and req lines so far, false while there is no file.
+func (t *auditTail) count(path string) (int, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || fi.Size() < t.off {
+		t.off, t.n = 0, 0 // not the file it was
+	}
+	if _, err := f.Seek(t.off, io.SeekStart); err != nil {
+		return t.n, true
+	}
+	data, _ := io.ReadAll(f)
+	// a line still being written is left for the next call.
+	data = data[:bytes.LastIndexByte(data, '\n')+1]
+	t.off += int64(len(data))
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		var e struct {
+			Ev string `json:"ev"`
+		}
+		if json.Unmarshal(line, &e) == nil && (e.Ev == "open" || e.Ev == "req") {
+			t.n++
+		}
+	}
+	return t.n, true
 }
 
 // emitLocked prints s above the region, then redraws the region -- in a single
@@ -246,7 +332,30 @@ func (p *progress) regionLines() []string {
 	}
 	for _, a := range p.active {
 		sp := spinner[int(a.spin)%len(spinner)]
-		lines = append(lines, fmt.Sprintf("  %c [%-*s]  %s", sp, w, a.label, a.stat.cols(a.showTools)))
+		lines = append(lines, fmt.Sprintf("  %c %-*s  %s", sp, w, a.label, a.stat.cols(a.showTools)))
+	}
+	if p.size == nil {
+		return lines
+	}
+	cols, rows := p.size()
+	return fitRegion(lines, cols, rows)
+}
+
+// fitRegion cuts the region to a terminal of cols by rows, zero for a side
+// not known. a redraw moves the cursor up by the lines it drew: a line that
+// wraps, or a region taller than the screen, leaves it somewhere else. so
+// each line is cut short of the last column, and the lines to what leaves
+// the row under them on screen, the last one saying how many it stands for.
+func fitRegion(lines []string, cols, rows int) []string {
+	if keep := rows - 2; keep >= 1 && len(lines) > keep+1 {
+		lines = append(lines[:keep:keep], fmt.Sprintf("  ... and %d more", len(lines)-keep))
+	}
+	if cols > 1 {
+		for i, l := range lines {
+			if r := []rune(l); len(r) > cols-1 {
+				lines[i] = string(r[:cols-1])
+			}
+		}
 	}
 	return lines
 }
@@ -256,23 +365,12 @@ func mmss(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", s/60, s%60)
 }
 
-func countLines(path string) (int, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	return bytes.Count(b, []byte{'\n'}), nil
-}
-
-// isProgressTTY reports whether w is a terminal a bar can be drawn on (a char
-// device). a *bytes.Buffer (tests) or a pipe/file (ci, tee) is not.
+// isProgressTTY reports whether w is a terminal a bar can be drawn on. a
+// *bytes.Buffer (tests), a pipe or a file (ci, tee) is not, and neither is
+// /dev/null, a character device like a terminal.
 func isProgressTTY(w io.Writer) bool {
 	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return ok && term.IsTerminal(int(f.Fd()))
 }
 
 // useColor reports whether to colour log tags: only on a tty and only when
@@ -287,20 +385,20 @@ func useColor(w io.Writer) bool {
 // post-run summary scanners already allow a single line (claude's
 // stream-json lines carry base64 signatures) rather than invent a smaller
 // cap that could clip a legitimate one. past the cap, extra bytes are
-// dropped -- the retained (truncated) line then fails its per-kind json
+// dropped -- the retained (truncated) line then fails its per-harness json
 // scan and is silently skipped (same as any other malformed line), but the
 // eventual newline still counts as one "out" line, so the running total
-// stays accurate even though the tool/kind breakdown for that one line is lost.
+// stays accurate even though the tool/harness breakdown for that one line is lost.
 const statTapMaxBuf = 8 * 1024 * 1024
 
 // statTap taps a pair's stdout: it splits the stream into lines (buffering across
-// writes), counts each as an "out" line, and runs the per-kind scanner on it. it
+// writes), counts each as an "out" line, and runs the per-harness scanner on it. it
 // does not disturb the stdout.log written alongside via a MultiWriter. buf is
 // capped at statTapMaxBuf -- bytes past the cap are dropped, though the eventual
 // newline still counts as one out line.
 type statTap struct {
 	stat *pairStat
-	scan func([]byte, *pairStat) // per-kind line parser; nil -> count lines only
+	scan func([]byte, *pairStat) // per-harness line parser; nil -> count lines only
 	buf  []byte
 }
 
@@ -329,398 +427,150 @@ func (t *statTap) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-// statScanner returns the per-kind stdout line parser, or nil for kinds whose
-// stream format pats can't read (those get the out count only).
-//
-// NOTE: this is the one harness-coupled spot -- a stream-format change breaks
-// here, not the run. add a case per new kind.
-func statScanner(kind string) func([]byte, *pairStat) {
-	switch kind {
-	case "claude-cli-keyless":
-		return scanClaude
-	case "codex-cli-keyless":
-		return scanCodex
-	case "copilot-cli-keyless":
-		return scanCopilot
-	case "opencode-openrouter":
-		return scanOpencode
+// statScanner returns the live reader of a harness's stdout lines: a fresh
+// pass of its parse script that keeps the pair's tool count and its spend
+// current. nil for a harness with no script (those get the out count only).
+func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
+	p := hd.Parser()
+	if p == nil {
+		return nil
 	}
-	return nil
-}
-
-// claudeEvent is one line of claude-code's stream-json -- the single place the
-// format is spelled out; scanClaude (live counters) and claudeSummary (post-run
-// digest) both decode into it. each assistant turn arrives as a top-level
-// {"type":"assistant","message":{"content":[...]}} object; a tool call is a
-// content block with type "tool_use". (the raw API content_block_start events
-// are nested under a "stream_event" envelope when --include-partial-messages is
-// set -- the assistant message-level events are present either way, so we key
-// off those.) the totals arrive on the final {"type":"result"} event.
-type claudeEvent struct {
-	Type    string `json:"type"`
-	Message struct {
-		Content []struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		} `json:"content"`
-	} `json:"message"`
-	NumTurns int     `json:"num_turns"`
-	CostUSD  float64 `json:"total_cost_usd"`
-	TTFTms   int     `json:"ttft_ms"`
-	APIms    int     `json:"duration_api_ms"`
-	IsError  bool    `json:"is_error"`
-	Usage    struct {
-		Input         int `json:"input_tokens"`
-		Output        int `json:"output_tokens"`
-		CacheRead     int `json:"cache_read_input_tokens"`
-		CacheCreation int `json:"cache_creation_input_tokens"`
-	} `json:"usage"`
-}
-
-// scanClaude counts tool calls in claude-code's stream-json (see claudeEvent).
-func scanClaude(line []byte, s *pairStat) {
-	var ev claudeEvent
-	if json.Unmarshal(line, &ev) != nil || ev.Type != "assistant" {
-		return
-	}
-	for _, c := range ev.Message.Content {
-		if c.Type == "tool_use" {
-			atomic.AddInt64(&s.tools, 1)
+	pass := p.NewPass()
+	var cost float64
+	return func(line []byte, s *pairStat) {
+		_ = pass.Line(line) // the pass after the pair reports a failed line
+		r := pass.Result()
+		atomic.StoreInt64(&s.tools, int64(r.ToolCalls))
+		s.failed.Store(r.IsError)
+		s.failure.Store(r.ErrorMsg)
+		// a harness that reports tokens and no cost is priced by its
+		// model's list price, so a budget has something to check.
+		now, has := r.CostUSD, r.HasCost
+		if !has {
+			now, has = s.price.cost(r.Input, r.Output, r.CacheRead, r.CacheWrite)
 		}
-	}
-}
-
-// opencodeEvent is one line of `opencode run --format json` output -- the
-// single place that format is spelled out; scanOpencode (live counters) and
-// opencodeSummary (post-run digest) both decode into it. emitted types:
-// tool_use (a completed/errored tool part, name in part.tool), step_start,
-// step_finish (per-step usage: cost + tokens), text, reasoning (only with
-// --thinking), error. usage is per step, so totals are summed across
-// step_finish events.
-type opencodeEvent struct {
-	Type string `json:"type"`
-	Part struct {
-		Tool   string  `json:"tool"`
-		Cost   float64 `json:"cost"`
-		Tokens struct {
-			Input     int `json:"input"`
-			Output    int `json:"output"`
-			Reasoning int `json:"reasoning"`
-			Cache     struct {
-				Read  int `json:"read"`
-				Write int `json:"write"`
-			} `json:"cache"`
-		} `json:"tokens"`
-	} `json:"part"`
-}
-
-// scanOpencode counts tool calls in opencode's json event stream (see
-// opencodeEvent).
-func scanOpencode(line []byte, s *pairStat) {
-	var ev opencodeEvent
-	if json.Unmarshal(line, &ev) == nil && ev.Type == "tool_use" {
-		atomic.AddInt64(&s.tools, 1)
-	}
-}
-
-// codexEvent is one line of `codex exec --json`. tool-like work is emitted as
-// completed items; final token totals arrive on turn.completed. a chatgpt-account
-// run does not expose a per-run dollar cost.
-//
-// the usage counters nest: cached_input_tokens is a slice of input_tokens, and
-// reasoning_output_tokens a slice of output_tokens (claude's usage nests the
-// same way for reasoning, but keeps its cache reads out of input_tokens).
-type codexEvent struct {
-	Type string `json:"type"`
-	Item struct {
-		Type   string `json:"type"`
-		Server string `json:"server"`
-		Tool   string `json:"tool"`
-	} `json:"item"`
-	Usage struct {
-		Input     int `json:"input_tokens"`
-		Cached    int `json:"cached_input_tokens"`
-		Output    int `json:"output_tokens"`
-		Reasoning int `json:"reasoning_output_tokens"`
-	} `json:"usage"`
-}
-
-func codexToolName(ev codexEvent) string {
-	if ev.Type != "item.completed" {
-		return ""
-	}
-	switch ev.Item.Type {
-	case "command_execution", "file_change", "web_search":
-		return ev.Item.Type
-	case "mcp_tool_call":
-		if ev.Item.Server != "" && ev.Item.Tool != "" {
-			return "mcp:" + ev.Item.Server + "/" + ev.Item.Tool
+		if has {
+			s.costSeen.Store(true)
 		}
-		return ev.Item.Type
-	default:
-		return ""
-	}
-}
-
-// scanCodex counts completed tool-like items, avoiding double-counting their
-// matching item.started events.
-func scanCodex(line []byte, s *pairStat) {
-	var ev codexEvent
-	if json.Unmarshal(line, &ev) == nil && codexToolName(ev) != "" {
-		atomic.AddInt64(&s.tools, 1)
-	}
-}
-
-// copilotEvent is one line of `copilot -p --output-format json` -- the single
-// place that format is spelled out; scanCopilot (live counters) and
-// copilotSummary (post-run digest) both decode into it. tool calls appear as
-// tool.execution_start (the only tool event carrying the name; the matching
-// tool.execution_complete doesn't). assistant.turn_end marks a model
-// round-trip, assistant.message carries per-message outputTokens (the stream
-// reports no input or cache counts), and the final "result" event carries the
-// exit code plus session usage. streaming/delta noise is ephemeral and decodes
-// to types we ignore.
-type copilotEvent struct {
-	Type string `json:"type"`
-	Data struct {
-		ToolName     string `json:"toolName"`
-		OutputTokens int    `json:"outputTokens"`
-	} `json:"data"`
-	ExitCode *int `json:"exitCode"` // "result" only; pointer so 0 counts as reported
-	Usage    struct {
-		PremiumRequests    int `json:"premiumRequests"`
-		TotalAPIDurationMs int `json:"totalApiDurationMs"`
-	} `json:"usage"`
-}
-
-// scanCopilot counts tool executions in copilot's json event stream (see
-// copilotEvent).
-func scanCopilot(line []byte, s *pairStat) {
-	var ev copilotEvent
-	if json.Unmarshal(line, &ev) == nil && ev.Type == "tool.execution_start" {
-		atomic.AddInt64(&s.tools, 1)
+		if now != cost {
+			d := now - cost
+			cost = now
+			s.addCost(d)
+		}
 	}
 }
 
 // runSummary is the post-run digest extracted from a harness's log, stored in
-// metadata.json. fields are per-kind best-effort -- zero/empty when absent, so
+// metadata.json. fields are per-harness best-effort -- zero/empty when absent, so
 // they carry the same meaning whichever harness produced them: InputTokens
-// never includes the cache-read half, NumTurns counts model round-trips (0 when
+// never includes the cache-read half, Turns counts model round-trips (0 when
 // the stream doesn't say), and HasCost tells the caller a zero CostUSD is a
 // real zero rather than an unreported one.
 type runSummary struct {
-	NumTurns            int            `json:"num_turns,omitempty"`
-	CostUSD             float64        `json:"cost_usd,omitempty"`
-	HasCost             bool           `json:"has_cost"` // false when the harness reports no dollar cost at all
-	InputTokens         int            `json:"input_tokens,omitempty"`
-	OutputTokens        int            `json:"output_tokens,omitempty"`
-	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens int            `json:"cache_creation_tokens,omitempty"`
-	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // opencode splits these out; claude + codex fold them into output
-	PremiumRequests     int            `json:"premium_requests,omitempty"` // copilot's billing unit -- its cost analog
-	TTFTms              int            `json:"ttft_ms,omitempty"`
-	APIDurationMs       int            `json:"api_duration_ms,omitempty"`
-	IsError             bool           `json:"is_error,omitempty"`
-	Tools               map[string]int `json:"tools,omitempty"` // tool_use counts by name
+	Turns   int     `json:"turns,omitempty"`
+	CostUSD float64 `json:"cost_usd,omitempty"`
+	HasCost bool    `json:"has_cost"` // false when the harness reports no dollar cost at all
+	// CostEstimated says CostUSD is the tokens at the model's list price,
+	// for a harness that reports no cost: the call may have cost another.
+	CostEstimated    bool           `json:"cost_estimated,omitempty"`
+	InputTokens      int            `json:"input_tokens,omitempty"`
+	OutputTokens     int            `json:"output_tokens,omitempty"`
+	CacheReadTokens  int            `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int            `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int            `json:"reasoning_tokens,omitempty"` // the reasoning part of OutputTokens, where the log splits it out
+	PremiumRequests  int            `json:"premium_requests,omitempty"` // copilot's billing unit -- its cost analog
+	TTFTms           int            `json:"ttft_ms,omitempty"`
+	APIDurationMs    int            `json:"api_duration_ms,omitempty"`
+	IsError          bool           `json:"is_error,omitempty"`
+	Error            string         `json:"error,omitempty"` // what the harness said of its error
+	Tools            map[string]int `json:"tools,omitempty"` // tool_use counts by name
+	// ParseErrors counts the lines the harness's parse script failed on:
+	// above 0, the rest of the summary is what the other lines said.
+	ParseErrors int `json:"parse_errors,omitempty"`
+
+	parseError string // the first failed line, for the pair's warning
 }
 
-// summarize extracts a runSummary from a finished pair's stdout log, per agent
-// kind. nil for kinds whose log format pats can't read.
-//
-// NOTE: harness-coupled, like statScanner -- a stream-format change breaks here.
-func summarize(kind, stdoutPath string) *runSummary {
-	switch kind {
-	case "claude-cli-keyless":
-		return claudeSummary(stdoutPath)
-	case "codex-cli-keyless":
-		return codexSummary(stdoutPath)
-	case "copilot-cli-keyless":
-		return copilotSummary(stdoutPath)
-	case "opencode-openrouter":
-		return opencodeSummary(stdoutPath)
-	}
-	return nil
-}
-
-// codexSummary parses codex's json event stream (see codexEvent): tool names
-// from completed items, tokens from turn.completed. turn.failed and error both
-// mark the summary as failed even when the process itself exited cleanly.
-//
-// NumTurns stays 0: `codex exec` is a single turn by construction, so counting
-// turn.completed events would print a constant 1 next to claude's and opencode's
-// real round-trip counts. the stream carries no round-trip marker to use instead.
-// CostUSD stays 0 for the same honesty -- a keyless (chatgpt-account) run is
-// billed against the subscription, never priced per run.
-func codexSummary(path string) *runSummary {
+// readLog runs a fresh pass of a parse script over a finished stdout log. a
+// line past the scanner's cap fails the whole read: part of a log is not
+// taken for all of it.
+func readLog(p *parse.Program, path string) (*parse.Result, error) {
 	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	pass := p.NewPass()
+	sc := logScanner(f)
+	for sc.Scan() {
+		_ = pass.Line(sc.Bytes()) // counted in the result
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return pass.Result(), nil
+}
+
+// logScanner reads a stdout log line by line as the live tap frames them: a
+// line ends at its newline and keeps whatever is before it (the pass drops
+// one carriage return, for both), and may be as long as the tap holds.
+func logScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), statTapMaxBuf+2) // lines carry base64 sigs -- allow big, and their \r\n
+	sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			return i + 1, data[:i], nil
+		}
+		if atEOF && len(data) > 0 {
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	})
+	return sc
+}
+
+// summarize extracts a runSummary from a finished pair's stdout log, by its
+// harness's parse script. nil for a harness with no script, for a log that
+// cannot be read whole, and for one the script heard nothing in: an empty
+// log, or another format's. a failed line is enough for a summary, so its
+// count always has a place.
+func summarize(hd *machine.Harness, stdoutPath string) *runSummary {
+	p := hd.Parser()
+	if p == nil {
+		return nil
+	}
+	r, err := readLog(p, stdoutPath)
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
-
-	sum := &runSummary{Tools: map[string]int{}}
-	hasEvent := false
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for sc.Scan() {
-		var ev codexEvent
-		if json.Unmarshal(sc.Bytes(), &ev) != nil {
-			continue
-		}
-		switch ev.Type {
-		case "item.completed":
-			if name := codexToolName(ev); name != "" {
-				sum.Tools[name]++
-				hasEvent = true
-			}
-		case "turn.completed":
-			// cached is a slice of input, so subtract to match the other kinds.
-			sum.InputTokens += ev.Usage.Input - ev.Usage.Cached
-			sum.CacheReadTokens += ev.Usage.Cached
-			sum.OutputTokens += ev.Usage.Output
-			sum.ReasoningTokens += ev.Usage.Reasoning
-			hasEvent = true
-		case "turn.failed", "error":
-			sum.IsError = true
-			hasEvent = true
-		}
-	}
-	if !hasEvent {
-		return nil
-	}
-	return sum
+	return summaryOf(r)
 }
 
-// copilotSummary parses copilot's json event stream (see copilotEvent): tool
-// names from tool.execution_start, turns counted as assistant.turn_end events
-// (real model round-trips), output tokens summed over assistant.message.
-// input/cache token counts stay 0 -- the stream doesn't report them. CostUSD
-// stays 0 like codex's (a copilot run is billed in premium requests against
-// the subscription, recorded in PremiumRequests instead); IsError comes from
-// the final result event's exit code.
-func copilotSummary(path string) *runSummary {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
+// estimate prices the summary's tokens when its harness reported no cost
+// and the model's price is known.
+func (s *runSummary) estimate(p *modelPrice) {
+	if s == nil || s.HasCost {
+		return
 	}
-	defer f.Close()
-
-	sum := &runSummary{Tools: map[string]int{}}
-	hasEvent := false
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for sc.Scan() {
-		var ev copilotEvent
-		if json.Unmarshal(sc.Bytes(), &ev) != nil {
-			continue
-		}
-		switch ev.Type {
-		case "tool.execution_start":
-			sum.Tools[ev.Data.ToolName]++
-			hasEvent = true
-		case "assistant.turn_end":
-			sum.NumTurns++
-			hasEvent = true
-		case "assistant.message":
-			sum.OutputTokens += ev.Data.OutputTokens
-			hasEvent = true
-		case "result":
-			sum.PremiumRequests = ev.Usage.PremiumRequests
-			sum.APIDurationMs = ev.Usage.TotalAPIDurationMs
-			sum.IsError = ev.ExitCode != nil && *ev.ExitCode != 0
-			hasEvent = true
-		}
+	if c, ok := p.cost(s.InputTokens, s.OutputTokens, s.CacheReadTokens, s.CacheWriteTokens); ok {
+		s.CostUSD, s.HasCost, s.CostEstimated = c, true, true
 	}
-	if !hasEvent {
-		return nil // empty/garbage log -> nothing worth storing
-	}
-	return sum
 }
 
-// opencodeSummary parses opencode's json event stream (see opencodeEvent):
-// tool names from tool_use events, cost + tokens summed over step_finish
-// events (one per model round-trip, so their count doubles as num_turns).
-func opencodeSummary(path string) *runSummary {
-	f, err := os.Open(path)
-	if err != nil {
+// summaryOf is what a pass heard as a summary, nil when it heard nothing.
+func summaryOf(r *parse.Result) *runSummary {
+	if !r.Said && r.Errors == 0 {
 		return nil
 	}
-	defer f.Close()
-
-	sum := &runSummary{Tools: map[string]int{}}
-	steps := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for sc.Scan() {
-		var ev opencodeEvent
-		if json.Unmarshal(sc.Bytes(), &ev) != nil {
-			continue
-		}
-		switch ev.Type {
-		case "tool_use":
-			sum.Tools[ev.Part.Tool]++
-		case "step_finish":
-			steps++
-			sum.HasCost = true
-			sum.CostUSD += ev.Part.Cost
-			sum.InputTokens += ev.Part.Tokens.Input
-			sum.OutputTokens += ev.Part.Tokens.Output
-			sum.ReasoningTokens += ev.Part.Tokens.Reasoning
-			sum.CacheReadTokens += ev.Part.Tokens.Cache.Read
-			sum.CacheCreationTokens += ev.Part.Tokens.Cache.Write
-		case "error":
-			sum.IsError = true
-		}
+	sum := &runSummary{
+		Turns: r.Turns, CostUSD: r.CostUSD, HasCost: r.HasCost,
+		InputTokens: r.Input, OutputTokens: r.Output, CacheReadTokens: r.CacheRead, CacheWriteTokens: r.CacheWrite,
+		ReasoningTokens: r.Reasoning, PremiumRequests: r.PremiumRequests,
+		TTFTms: r.TTFTms, APIDurationMs: r.APIms, IsError: r.IsError, Error: r.ErrorMsg,
+		Tools: r.Tools, ParseErrors: r.Errors,
 	}
-	sum.NumTurns = steps
-	if steps == 0 && len(sum.Tools) == 0 && !sum.IsError {
-		return nil // empty/garbage log -> nothing worth storing
-	}
-	return sum
-}
-
-// claudeSummary parses claude-code stream-json (see claudeEvent): tool_use
-// names from each assistant turn, and the totals (cost, tokens, turns, ttft)
-// from the final "result" event.
-func claudeSummary(path string) *runSummary {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	sum := &runSummary{Tools: map[string]int{}}
-	hasResult := false
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024) // lines carry base64 sigs -- allow big
-	for sc.Scan() {
-		var ev claudeEvent
-		if json.Unmarshal(sc.Bytes(), &ev) != nil {
-			continue
-		}
-		switch ev.Type {
-		case "assistant":
-			for _, c := range ev.Message.Content {
-				if c.Type == "tool_use" {
-					sum.Tools[c.Name]++
-				}
-			}
-		case "result":
-			hasResult = true
-			sum.NumTurns = ev.NumTurns
-			sum.HasCost = true
-			sum.CostUSD = ev.CostUSD
-			sum.TTFTms = ev.TTFTms
-			sum.APIDurationMs = ev.APIms
-			sum.IsError = ev.IsError
-			sum.InputTokens = ev.Usage.Input
-			sum.OutputTokens = ev.Usage.Output
-			sum.CacheReadTokens = ev.Usage.CacheRead
-			sum.CacheCreationTokens = ev.Usage.CacheCreation
-		}
-	}
-	if !hasResult && len(sum.Tools) == 0 {
-		return nil // empty/garbage log -> nothing worth storing
+	if r.Errors > 0 {
+		sum.parseError = fmt.Sprintf("line %d: %s (%d line(s) failed)", r.FirstErrorLine, r.FirstError, r.Errors)
 	}
 	return sum
 }

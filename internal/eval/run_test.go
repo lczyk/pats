@@ -1,24 +1,33 @@
 package eval
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
-	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 func dockerOrSkip(t *testing.T) {
@@ -34,7 +43,7 @@ func dockerOrSkip(t *testing.T) {
 // full run-phase e2e: a harness agent runs in a sandbox, reads the staged
 // prompt, writes a result; the collect script copies it to the output dir;
 // metadata records ok. proves prepare/agent/collect + run-dir layout. the
-// kind's command is overridden with a no-cred stand-in.
+// harness's command is overridden with a no-cred stand-in.
 func TestRunE2E(t *testing.T) {
 	dockerOrSkip(t)
 	dir := t.TempDir()
@@ -42,25 +51,26 @@ func TestRunE2E(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ncp \"$PATS_WORKDIR/result.txt\" \"$PATS_OUTPUT_DIR/\"\n"), 0o755))
 
-	old := agent.HarnessCmds["opencode-openrouter"]
-	agent.HarnessCmds["opencode-openrouter"] = `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`
-	defer func() { agent.HarnessCmds["opencode-openrouter"] = old }()
-
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "ubuntu:26.04"}},
-		Agents: []config.Agent{{
-			ID: "a", Kind: "opencode-openrouter", Model: "m1", Sandbox: "s",
-		}},
-		Tasks:  []config.Task{{ID: "t", Prompt: "prompt.txt", Collect: "collect.sh"}},
-		Suites: []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	cfg.Harnesses.Harness("opencode-openrouter").Run = `cat "$PATS_PROMPT_FILE" > result.txt; echo "model=$PATS_MODEL"`
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // a stand-in: the image need not hold opencode
 
 	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	// every run after init builds and pulls nothing, here or in the driver.
+	calls := dockerSpy(t)
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	assertNoBuildOrPull(t, calls)
 	require.NoError(t, err)
 
-	outDir := filepath.Join(runDir, "a", "t")
+	outDir := filepath.Join(runDir, "axx", "txx")
 
 	stdout, err := os.ReadFile(filepath.Join(outDir, "stdout.log"))
 	require.NoError(t, err)
@@ -74,6 +84,25 @@ func TestRunE2E(t *testing.T) {
 	meta, err := os.ReadFile(filepath.Join(outDir, "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "ok"`)
+	assert.ContainsString(t, string(meta), `"synced": true`)
+}
+
+func TestFilesHome(t *testing.T) {
+	yes, no := true, false
+	for _, c := range []struct {
+		m    pairMeta
+		want bool
+	}{
+		{pairMeta{Status: "error", Synced: &yes}, true},
+		{pairMeta{Status: "ok", Synced: &no}, false},
+		// from before the field: by status.
+		{pairMeta{Status: "ok"}, true},
+		{pairMeta{Status: "nonzero"}, true},
+		{pairMeta{Status: "timeout"}, false},
+		{pairMeta{Status: "error"}, false},
+	} {
+		assert.Equal(t, c.m.filesHome(), c.want)
+	}
 }
 
 func TestNextRunDirIncrements(t *testing.T) {
@@ -131,31 +160,31 @@ func TestResolveJobs(t *testing.T) {
 	}
 }
 
-func TestResolvePrompt(t *testing.T) {
-	dir := t.TempDir()
-	// plain file -> contents.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.txt"), []byte("from file\n"), 0o644))
-	got, err := resolvePrompt(dir, "p.txt", nil)
+func TestTaskPrompt(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "cases", "axx")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.md"), []byte("from file\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gen.sh"),
+		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_NAME $1 $(basename \"$PWD\")\"\n"), 0o755))
+
+	// literal text, verbatim -- quotes, apostrophes and ${...} included.
+	got, err := taskPrompt(context.Background(), root, dir, config.Task{Prompt: "it's ${not} a template"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "it's ${not} a template")
+
+	// prompt-file resolves against the task's dir.
+	got, err = taskPrompt(context.Background(), root, dir, config.Task{PromptFile: "p.md"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, string(got), "from file\n")
 
-	// executable file -> its stdout, with env + args passed through.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "gen.sh"),
-		[]byte("#!/bin/sh\necho \"gen $PATS_TASK_ID $1\"\n"), 0o755))
-	got, err = resolvePrompt(dir, "gen.sh --flavour spicy", map[string]string{"PATS_TASK_ID": "t1"})
+	// prompt-cmd: stdout, run in the task's dir with env + args passed through.
+	got, err = taskPrompt(context.Background(), root, dir, config.Task{PromptCmd: "./gen.sh --flavour"}, map[string]string{"PATS_TASK_NAME": "t1x"})
 	require.NoError(t, err)
-	assert.Equal(t, string(got), "gen t1 --flavour\n")
+	assert.Equal(t, string(got), "gen t1x --flavour axx\n")
 
-	// not a file -> the spec is the literal prompt (even with quotes/apostrophes).
-	got, err = resolvePrompt(dir, "just write a readme", nil)
-	require.NoError(t, err)
-	assert.Equal(t, string(got), "just write a readme")
-	got, err = resolvePrompt(dir, "it's a literal prompt", nil) // bad quoting -> literal
-	require.NoError(t, err)
-	assert.Equal(t, string(got), "it's a literal prompt")
-
-	// non-executable file named WITH args -> error, not a silent arg-drop.
-	_, err = resolvePrompt(dir, "p.txt --flag", nil)
+	// a missing prompt-file is an error, never a literal fallback.
+	_, err = taskPrompt(context.Background(), root, dir, config.Task{PromptFile: "nope.md"}, nil)
 	assert.Error(t, err, assert.AnyError)
 }
 
@@ -229,17 +258,89 @@ type fakeSandbox struct {
 	blockUntilDone bool
 	// onRun, if set, sees the pair run's spec while its mounts still exist.
 	onRun func(spec sandbox.Spec)
+	// onClose, if set, sees the pair's spec as its session closes.
+	onClose func(spec sandbox.Spec)
+	// startErr fails the session start; onRoot answers root execs.
+	startErr error
+	onRoot   func(cmd sandbox.Cmd, stdout io.Writer) (int, error)
+	rootCmds []sandbox.Cmd
+	pushed   []string
+	// preflights counts the credential preflight's sessions.
+	preflights int
+	// preRun is written to the agent's stdout as it starts, before
+	// blockUntilDone waits: a harness streaming events as it goes.
+	preRun string
+	// preflightOut is what the agent prints in its credential preflight,
+	// and preflightEnv the env that exec got.
+	preflightOut string
+	preflightEnv map[string]string
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
-	// first call per agent is the credential preflight -- always passes so the
-	// canned outcome lands on the real pair run.
-	if f.calls++; f.calls == 1 {
+	f.calls++
+	return 0, nil
+}
+
+// Start gives the credential preflight (its workdir says so) a session that
+// always passes, so the canned outcome lands on the pair's agent exec.
+func (f *fakeSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Session, error) {
+	preflight := strings.HasPrefix(filepath.Base(spec.Workdir), "pats-preflight-")
+	if preflight {
+		f.preflights++
+	}
+	if f.startErr != nil && !preflight {
+		return nil, f.startErr
+	}
+	return &fakeSession{f: f, spec: spec, preflight: preflight}, nil
+}
+
+// fakeSession runs root commands (prepare, its cleanup, the hand-over) as
+// recorded no-ops, and the agent with the fake's canned outcome.
+type fakeSession struct {
+	f         *fakeSandbox
+	spec      sandbox.Spec
+	preflight bool
+}
+
+func (s *fakeSession) Push(ctx context.Context, hostPath, path string) error {
+	s.f.pushed = append(s.f.pushed, path)
+	return nil
+}
+
+func (s *fakeSession) Pull(ctx context.Context, path, hostDir string) error { return nil }
+
+func (s *fakeSession) HandOver(ctx context.Context, paths ...string) error { return nil }
+
+func (s *fakeSession) Sync(ctx context.Context) error { return nil }
+
+func (s *fakeSession) Close() error {
+	if s.f.onClose != nil && !s.preflight {
+		s.f.onClose(s.spec)
+	}
+	return nil
+}
+
+func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr io.Writer) (int, error) {
+	f := s.f
+	if cmd.Root {
+		f.rootCmds = append(f.rootCmds, cmd)
+		if f.onRoot != nil {
+			return f.onRoot(cmd, stdout)
+		}
+		return 0, nil
+	}
+	f.calls++
+	if s.preflight {
+		f.preflightEnv = cmd.Env
+		io.WriteString(stdout, f.preflightOut)
 		return 0, nil
 	}
 	if f.onRun != nil {
+		spec := s.spec
+		spec.Argv, spec.Env = cmd.Argv, cmd.Env
 		f.onRun(spec)
 	}
+	io.WriteString(stdout, f.preRun)
 	if f.blockUntilDone {
 		<-ctx.Done()
 	}
@@ -255,48 +356,167 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr
 // -- exercised against a fake sandbox, no docker needed.
 func TestRunOrchestrationFakeSandbox(t *testing.T) {
 	fakes := map[string]*fakeSandbox{
-		"ok":   {code: 0, stdout: "fine\n"},
+		"okx":  {code: 0, stdout: "fine\n"},
 		"bad":  {code: 3},
 		"boom": {err: errors.New("launch failed")},
 	}
 	old := newSandbox
 	// the image name doubles as the fake selector: each agent gets its own
 	// sandbox with image = fake key.
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fakes[image], nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fakes[s.Image], nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 
-	var sbs []config.Sandbox
-	var agents []config.Agent
-	var ids config.StrList
+	src := "boxes: {kind: sandbox, items: {"
 	for id := range fakes {
-		sbs = append(sbs, config.Sandbox{ID: id, Kind: "container", Driver: "docker", Image: id})
-		agents = append(agents, config.Agent{ID: id, Kind: "opencode-openrouter", Model: "m", Sandbox: id})
-		ids = append(ids, id)
+		src += id + ": {image: " + id + "}, "
 	}
-	cfg := &config.Config{
-		Sandboxes: sbs,
-		Agents:    agents,
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
-		Suites:    []config.Suite{{ID: "su", Agents: ids, Tasks: config.StrList{"t"}}},
+	src += "}}\nagents: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {"
+	for id := range fakes {
+		src += id + ": {sandbox: " + id + "}, "
 	}
-	require.NoError(t, cfg.Validate())
+	src += "}}\ntxx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}\n"
+	src += "sux: {kind: suite, items: {sux: {agents: agents, tasks: txx}}}\n"
+	cfg := parseCfg(t, src)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err) // a failing pair is logged, not fatal
 
-	wantStatus := map[string]string{"ok": "ok", "bad": "nonzero", "boom": "error"}
+	wantStatus := map[string]string{"okx": "ok", "bad": "nonzero", "boom": "error"}
 	for id, want := range wantStatus {
-		meta, err := os.ReadFile(filepath.Join(runDir, id, "t", "metadata.json"))
+		meta, err := os.ReadFile(filepath.Join(runDir, id, "txx", "metadata.json"))
 		require.NoError(t, err)
 		assert.ContainsString(t, string(meta), `"status": "`+want+`"`)
 	}
-	stdout, err := os.ReadFile(filepath.Join(runDir, "ok", "t", "stdout.log"))
+	stdout, err := os.ReadFile(filepath.Join(runDir, "okx", "txx", "stdout.log"))
 	require.NoError(t, err)
 	assert.Equal(t, string(stdout), "fine\n")
+}
+
+// -N runs the selection that many times, each its own run dir, with the
+// credential preflight once; an interrupt stops the series after the
+// current run and is an error.
+func TestRunRepeat(t *testing.T) {
+	fake := &fakeSandbox{stdout: "fine\n"}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Repeat: 3})
+	require.NoError(t, err)
+	runs, err := sortedRunNames(filepath.Join(dir, runsSubdir))
+	require.NoError(t, err)
+	assert.Len(t, runs, 3)
+	assert.Equal(t, fake.preflights, 1)
+	assert.ContainsString(t, out.String(), "INFO run 3/3: "+runs[2])
+	for _, r := range runs {
+		_, err := os.Stat(filepath.Join(dir, runsSubdir, r, "axx", "txx", "metadata.json"))
+		assert.NoError(t, err, r)
+	}
+
+	// ctrl-c during the first repeat: no second run dir, and an error. the
+	// agent waits for the signal to land, as a real one would still run.
+	fake.onRun = func(sandbox.Spec) { _ = syscall.Kill(os.Getpid(), syscall.SIGINT) }
+	fake.blockUntilDone = true
+	dir2 := t.TempDir()
+	pinAll(t, dir2, cfg)
+	_, err = Run(cfg, Options{ConfigDir: dir2, Now: time.Now(), Out: &out, Repeat: 3})
+	assert.ErrorIs(t, err, ErrInterrupted)
+	runs, err = sortedRunNames(filepath.Join(dir2, runsSubdir))
+	require.NoError(t, err)
+	assert.Len(t, runs, 1)
+	m, err := os.ReadFile(filepath.Join(dir2, runsSubdir, runs[0], "axx", "txx", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(m), `"error": "interrupted"`)
+
+	// the last (here the only) repeat interrupted is an error too.
+	dir3 := t.TempDir()
+	pinAll(t, dir3, cfg)
+	_, err = Run(cfg, Options{ConfigDir: dir3, Now: time.Now(), Out: &out})
+	assert.ErrorIs(t, err, ErrInterrupted)
+}
+
+// the proxy's audit tail lands only once the session closes (its log
+// follower drains then): metadata is folded after that, so a denied host
+// logged last is still in it.
+func TestRunFoldsAuditAfterClose(t *testing.T) {
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{onClose: func(spec sandbox.Spec) {
+			f, err := os.OpenFile(spec.Egress.AuditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			require.NoError(t, err)
+			defer f.Close()
+			_, _ = f.WriteString(`{"ev":"open","host":"late.example","rule":"default"}` + "\n")
+		}}, nil
+	}
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(meta), `"late.example"`)
+	assert.ContainsString(t, out.String(), "egress denied (no rule): late.example")
+}
+
+// the default is the verdict per pair; -v adds the detail lines and the
+// run's totals; -vv streams the host scripts, which log either way.
+func TestRunVerbosity(t *testing.T) {
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{stdout: "fine\n"}, nil
+	}
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, stage: echo staged, collect: echo collected}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	for v, c := range []struct{ has, hasnt []string }{
+		{[]string{"INFO axx/txx ok (exit 0"}, []string{"run dir", "1 ok", "staged", "collected"}},
+		{[]string{"INFO axx/txx ok (exit 0", "INFO run dir", "INFO 1 ok"}, []string{"staged", "collected"}},
+		{[]string{"INFO axx/txx ok (exit 0", "INFO 1 ok", "staged", "collected"}, nil},
+	} {
+		var out bytes.Buffer
+		runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Verbose: v})
+		require.NoError(t, err)
+		for _, w := range c.has {
+			assert.ContainsString(t, out.String(), w, "-v x%d", v)
+		}
+		for _, w := range c.hasnt {
+			assert.That(t, !strings.Contains(out.String(), w), "-v x%d printed %q:\n%s", v, w, out.String())
+		}
+		for name, want := range map[string]string{"stage.log": "staged\n", "collect.log": "collected\n"} {
+			b, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", name))
+			require.NoError(t, err)
+			assert.Equal(t, string(b), want)
+		}
+	}
 }
 
 // COVER: a deadline whose sandbox reports a plain non-zero exit with no
@@ -308,25 +528,25 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 func TestRunPairTimeoutStatus(t *testing.T) {
 	fake := &fakeSandbox{blockUntilDone: true, code: 143} // SIGTERM exit, no error -- the coin-flip case
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, timeout: 30ms}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
-	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "timeout"`)
 	assert.ContainsString(t, string(meta), `"error": "timed out after`)
@@ -339,34 +559,44 @@ func TestRunPairTimeoutStatus(t *testing.T) {
 // runErr == nil || timedOut collect condition, and fails against the old
 // runErr == nil gate.
 func TestRunPairCollectsOnTimeout(t *testing.T) {
-	fake := &fakeSandbox{blockUntilDone: true, err: errors.New("some docker hiccup")}
+	var sbEnv map[string]string
+	fake := &fakeSandbox{blockUntilDone: true, err: errors.New("some docker hiccup"),
+		onRun: func(spec sandbox.Spec) { sbEnv = spec.Env }}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
-		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n"), 0o755))
+		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\nprintf '%s\\n%s\\n' \"$PATS_RUN_DIR\" \"$PATS_RUN_NAME\" > \"$PATS_OUTPUT_DIR/run-env\"\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms", Collect: "collect.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
-	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "timeout"`)
+	assert.ContainsString(t, string(meta), `"synced": true`) // a timed-out agent still left files
 
-	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+	_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 	assert.NoError(t, err) // collect ran despite runErr != nil, because the pair timed out
+
+	// host scripts see the run dir and its basename; the sandbox gets the id only.
+	runEnv, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "run-env"))
+	require.NoError(t, err)
+	assert.Equal(t, string(runEnv), runDir+"\n"+filepath.Base(runDir)+"\n")
+	assert.Equal(t, sbEnv["PATS_RUN_NAME"], filepath.Base(runDir))
+	assert.Equal(t, sbEnv["PATS_RUN_DIR"], "")
 }
 
 // COVER: the other half of the collect gate -- sandbox setup (egress in
@@ -381,7 +611,7 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 		err:            fmt.Errorf("%w: egress: create network: boom", sandbox.ErrLaunch),
 	}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -389,24 +619,24 @@ func TestRunPairLaunchFailureUnderDeadline(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ntouch \"$PATS_OUTPUT_DIR/collected\"\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Timeout: "30ms", Collect: "collect.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, timeout: 30ms, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
-	meta, err := os.ReadFile(filepath.Join(runDir, "a", "t", "metadata.json"))
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
 	require.NoError(t, err)
 	assert.ContainsString(t, string(meta), `"status": "error"`)
 	assert.ContainsString(t, string(meta), "create network") // the real cause, not "timed out after"
 
-	_, err = os.Stat(filepath.Join(runDir, "a", "t", "collected"))
+	_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 	assert.That(t, os.IsNotExist(err), "collect must not run when the sandbox never launched")
 }
 
@@ -431,7 +661,7 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(home, "agent-wrote"), []byte("x"), 0o644)
 	}}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -441,21 +671,21 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "collect.sh"),
 		[]byte("#!/bin/sh\ncp \"$PATS_AGENT_HOME/agent-wrote\" \"$PATS_OUTPUT_DIR/\"\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Prepare: "prepare.sh", Collect: "collect.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, stage: ./prepare.sh, collect: ./collect.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
 	require.That(t, home != "", "pair run has no HOME mount")
 	assert.Equal(t, string(seeded), "seeded\n")
-	_, err = os.Stat(filepath.Join(runDir, "a", "t", "agent-wrote"))
+	_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "agent-wrote"))
 	assert.NoError(t, err)
 	_, err = os.Stat(home)
 	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after the pair")
@@ -466,27 +696,41 @@ func TestRunPairPrepareSeedsHome(t *testing.T) {
 func TestRunDefaultSandboxImage(t *testing.T) {
 	var image string
 	old := newSandbox
-	newSandbox = func(driver, img string) (sandbox.Sandbox, error) {
-		image = img
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		image = s.Image
 		return &fakeSandbox{}, nil
 	}
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // nothing to place: the default image is pulled as it is
+	h := newFakeHost()
+	useHost(t, h)
 
+	// before init the run stops, naming the command.
 	var out bytes.Buffer
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
-	require.NoError(t, err)
+	assert.Error(t, err, "run `pats init` first")
+
+	// init pulls the published sandbox, and the run starts from its id.
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}))
 	want, _ := sandbox.SandboxImage("")
-	assert.Equal(t, image, want)
+	assert.EqualArrays(t, h.pulls, []string{want})
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	assert.Equal(t, image, "sha256:pulled-"+want)
+
+	// runs after init build and pull nothing.
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	assert.EqualArrays(t, h.pulls, []string{want})
 }
 
 // the prompt is staged in the harness HOME, never in the workdir the agent
@@ -502,20 +746,20 @@ func TestRunPairPromptOutsideWorkdir(t *testing.T) {
 		inWorkdir = err == nil
 	}}
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return fake, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("do the thing"), 0o644))
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err)
 
@@ -524,10 +768,10 @@ func TestRunPairPromptOutsideWorkdir(t *testing.T) {
 	assert.That(t, !inWorkdir, "prompt staged in the workdir")
 }
 
-// a failing prepare still tears down the HOME it was handed.
-func TestRunPairPrepareFailureCleansHome(t *testing.T) {
+// a failing stage still tears down the HOME it was handed.
+func TestRunPairStageFailureCleansHome(t *testing.T) {
 	old := newSandbox
-	newSandbox = func(driver, image string) (sandbox.Sandbox, error) { return &fakeSandbox{}, nil }
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return &fakeSandbox{}, nil }
 	defer func() { newSandbox = old }()
 
 	dir := t.TempDir()
@@ -535,59 +779,162 @@ func TestRunPairPrepareFailureCleansHome(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "prepare.sh"),
 		[]byte("#!/bin/sh\nprintf %s \"$PATS_AGENT_HOME\" > \"$PATS_OUTPUT_DIR/home-path\"\nexit 1\n"), 0o755))
 
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "s"}},
-		Agents:    []config.Agent{{ID: "a", Kind: "opencode-openrouter", Model: "m", Sandbox: "s"}},
-		Tasks:     []config.Task{{ID: "t", Prompt: "prompt.txt", Prepare: "prepare.sh"}},
-		Suites:    []config.Suite{{ID: "su", Agents: config.StrList{"a"}, Tasks: config.StrList{"t"}}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, stage: ./prepare.sh}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	runDir, _ := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 
-	home, err := os.ReadFile(filepath.Join(runDir, "a", "t", "home-path"))
+	home, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "home-path"))
 	require.NoError(t, err)
 	require.That(t, len(home) > 0, "prepare saw an empty PATS_AGENT_HOME")
 	_, err = os.Stat(string(home))
 	assert.That(t, os.IsNotExist(err), "HOME not cleaned up after a failed prepare")
 }
 
-// COVER: a vectors-only config (no suites) is deliberately allowed by Validate
-// -- see its "nothing to orphan-check against" early return -- so it expands to
-// zero pairs. Run must say that, not fall through to FilterPairs and blame an
+// COVER: a config with no suites is deliberately allowed by Validate -- see
+// its "nothing to orphan-check against" early return -- so it expands to zero
+// pairs. Run must say that, not fall through to FilterPairs and blame an
 // --agent/--task filter the user never passed.
 func TestZeroPairsRunErrors(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &config.Config{
-		Sandboxes: []config.Sandbox{{ID: "s", Kind: "container", Driver: "docker", Image: "ubuntu:26.04"}},
-	}
-	require.NoError(t, cfg.Validate())
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
+`)
 
 	var out bytes.Buffer
+	pinAll(t, dir, cfg)
 	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.Error(t, err, assert.AnyError)
 	assert.ContainsString(t, err.Error(), "no (agent, task) pairs to run")
 }
 
-func TestDeniedEgress(t *testing.T) {
-	assert.That(t, deniedEgress(filepath.Join(t.TempDir(), "nope")) == nil, "missing file -> nil")
+func TestReadEgressAudit(t *testing.T) {
+	assert.Equal(t, readEgressAudit(filepath.Join(t.TempDir(), "nope")).Requests, 0)
 
 	p := filepath.Join(t.TempDir(), "egress.log")
 	require.NoError(t, os.WriteFile(p, []byte(`
-{"host":"ok.example.com","allowed":true}
-{"host":"evil.example.com","allowed":false}
-{"host":"evil.example.com","allowed":false}
-{"host":"gh.com","url":"gh.com/x/secrets","allowed":false}
+{"ev":"open","host":"ok.example.com","kind":"tunnel","allowed":true,"rule":"ok.example.com"}
+{"ev":"close","host":"ok.example.com","allowed":true,"in":1000,"out":24}
+{"ev":"open","host":"evil.example.com","allowed":false,"rule":"default"}
+{"ev":"open","host":"evil.example.com","allowed":false,"rule":"default"}
+{"ev":"req","host":"gh.com","url":"gh.com/x/secrets","allowed":false,"rule":"gh.com/x/*"}
+{"ev":"req","host":"docs.test","url":"docs.test/private","allowed":false,"rule":"docs.test/public*","reason":"url-not-allowed"}
+{"ev":"open","host":"lan.test","allowed":false,"rule":"lan.test","reason":"private"}
+{"ev":"open","host":"front.test","allowed":false,"rule":"front.test","reason":"sni-mismatch"}
+{"ev":"req","host":"bad.test","url":"bad.test/","allowed":false,"rule":"bad.test","reason":"revoked","status":502}
+{"ev":"open","host":"down.test","allowed":false,"rule":"down.test","reason":"dial"}
+{"ev":"open","host":"corp.test","allowed":false,"rule":"corp.test","reason":"upstream: 407"}
+{"ev":"req","host":"apt.test","url":"apt.test/x.deb","allowed":true,"rule":"apt.test","in":500,"out":10}
 not json
 `), 0o644))
-	got := deniedEgress(p)
-	// unique targets, url preferred over host, allowed + malformed skipped.
-	want := []string{"evil.example.com", "gh.com/x/secrets"}
-	require.Equal(t, len(got), len(want))
-	for i := range want {
-		assert.Equal(t, got[i], want[i])
+	a := readEgressAudit(p)
+	assert.EqualArrays(t, a.Denied, []string{"evil.example.com"})
+	assert.EqualArrays(t, a.Blocked, []string{"gh.com/x/secrets", "docs.test/private", "lan.test", "front.test"})
+	assert.EqualArrays(t, a.Failed, []string{"bad.test/", "down.test", "corp.test"})
+	assert.Equal(t, a.Requests, 11) // open + req, close lines excluded
+	assert.Equal(t, a.In, int64(1500))
+	assert.Equal(t, a.Out, int64(34))
+}
+
+// FuzzEgressAudit: an audit log carries the hosts and urls the agent chose.
+// folding two logs joined is folding each and joining the folds, so no line
+// reaches past itself; lines that are not json change nothing; every listed
+// target is one a refused line named, once; and the denied list, the cheat
+// signal, is exactly the refusals the default rule made.
+func FuzzEgressAudit(f *testing.F) {
+	lines := []string{
+		`{"ev":"open","host":"ok.example.com","kind":"tunnel","allowed":true,"rule":"ok.example.com"}`,
+		`{"ev":"close","host":"ok.example.com","allowed":true,"in":1000,"out":24}`,
+		`{"ev":"open","host":"evil.example.com","allowed":false,"rule":"default"}`,
+		`{"ev":"req","host":"gh.com","url":"gh.com/x/secrets","allowed":false,"rule":"gh.com/x/*"}`,
+		`{"ev":"req","host":"bad.test","url":"bad.test/","allowed":false,"rule":"bad.test","reason":"revoked","status":502}`,
+		`{"ev":"open","host":"corp.test","allowed":false,"rule":"default","reason":"upstream: 407"}`,
+		`{"ev":"req","host":"apt.test","url":"apt.test/x.deb","allowed":true,"rule":"apt.test","in":500,"out":10}`,
+		`{"ev":"req","host":"evil.example.com","url":"evil.example.com/\n{\"ev\":\"open\"}","allowed":false,"rule":"default"}`,
+		`{"ev":"open"}`, `{"ev":"req","in":9223372036854775807,"allowed":true}`, "not json", "null", "",
 	}
+	for i, l := range lines {
+		f.Add([]byte(l+"\n"), []byte(lines[(i+3)%len(lines)]))
+	}
+	f.Add([]byte(strings.Join(lines, "\n")), []byte(strings.Join(lines, "\r\n")))
+
+	dir := f.TempDir() // one dir for every input
+	f.Fuzz(func(t *testing.T, a, b []byte) {
+		fold := func(name string, parts ...[]byte) (egressAudit, string) {
+			p := filepath.Join(dir, name)
+			require.NoError(t, os.WriteFile(p, bytes.Join(parts, []byte("\n")), 0o644))
+			return readEgressAudit(p), p
+		}
+		same := func(got, want egressAudit, what string) {
+			t.Helper()
+			assert.That(t, got.Requests == want.Requests && got.In == want.In && got.Out == want.Out,
+				"%s: totals (%d, %d, %d), want (%d, %d, %d)", what, got.Requests, got.In, got.Out, want.Requests, want.In, want.Out)
+			assert.EqualArrays(t, got.Denied, want.Denied, what+": denied")
+			assert.EqualArrays(t, got.Blocked, want.Blocked, what+": blocked")
+			assert.EqualArrays(t, got.Failed, want.Failed, what+": failed")
+		}
+		// xs, then the ys not in it.
+		union := func(xs, ys []string) []string {
+			out := slices.Clone(xs)
+			for _, y := range ys {
+				if !slices.Contains(out, y) {
+					out = append(out, y)
+				}
+			}
+			return out
+		}
+
+		fa, pa := fold("a.log", a)
+		fb, _ := fold("b.log", b)
+		joined, _ := fold("ab.log", a, b)
+		same(joined, egressAudit{
+			Denied: union(fa.Denied, fb.Denied), Blocked: union(fa.Blocked, fb.Blocked), Failed: union(fa.Failed, fb.Failed),
+			Requests: fa.Requests + fb.Requests, In: fa.In + fb.In, Out: fa.Out + fb.Out,
+		}, "two logs joined")
+		noisy, _ := fold("noisy.log", []byte("not json"), a, []byte(`[1,2]`), nil, []byte(`{"ev":`))
+		same(noisy, fa, "garbage lines added")
+
+		evs, err := readEvents(pa)
+		require.NoError(t, err)
+		requests := 0
+		refused := map[string]bool{}
+		var denied []string
+		for _, e := range evs {
+			if e.Ev != "open" && e.Ev != "req" {
+				continue
+			}
+			requests++
+			if e.Allowed {
+				continue
+			}
+			target := e.Host
+			if e.URL != "" {
+				target = e.URL
+			}
+			refused[target] = true
+			if e.Rule == "default" && e.Reason == "" && !slices.Contains(denied, target) {
+				denied = append(denied, target)
+			}
+		}
+		assert.Equal(t, fa.Requests, requests)
+		assert.EqualArrays(t, fa.Denied, denied)
+		listed := map[string]bool{}
+		for _, list := range [][]string{fa.Denied, fa.Blocked, fa.Failed} {
+			once := map[string]bool{}
+			for _, target := range list {
+				assert.That(t, refused[target], "%q is listed, no refused line names it", target)
+				assert.That(t, !once[target], "%q is listed twice", target)
+				once[target], listed[target] = true, true
+			}
+		}
+		assert.Equal(t, len(listed), len(refused), "a refused target is in no list")
+	})
 }
 
 func TestHarnessHomeCodexCredentials(t *testing.T) {
@@ -599,7 +946,7 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 
 	var out bytes.Buffer
 	env := map[string]string{}
-	hs, err := harnessHome(Options{Out: &out}, "codex x t", "codex-cli-keyless", env, false)
+	hs, err := harnessHome(Options{Out: &out}, "codex x txx", hd("codex-cli-keyless"), env, false, nil)
 	require.NoError(t, err)
 	defer hs.cleanup()
 	require.Equal(t, len(hs.mounts), 1)
@@ -617,19 +964,498 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 
 func TestEgressForIncludesCodexHosts(t *testing.T) {
 	sb := config.Sandbox{Egress: config.Egress{
-		Mode:    "proxy",
-		Default: "deny",
-		Allow:   []string{"task.example.com"},
+		Set:    true,
+		Policy: proxy.Policy{Default: "deny", Allow: []string{"task.example.com"}},
 	}}
-	eg := egressFor(sb, "codex-cli-keyless", "/tmp/audit")
+	eg := egressFor(sb, config.TaskEgress{}, hd("codex-cli-keyless"), "/tmp/audit", true)
 	assert.Equal(t, eg.AuditPath, "/tmp/audit")
+	assert.Equal(t, eg.SelfTest, true)
+	assert.EqualArrays(t, eg.Policy.Harness, []string{".openai.com", ".chatgpt.com"})
 	want := map[string]bool{
 		"task.example.com": true,
 		".openai.com":      true,
 		".chatgpt.com":     true,
 	}
-	for _, host := range eg.Allow {
+	for _, host := range eg.Policy.Allow {
 		delete(want, host)
 	}
 	assert.Equal(t, len(want), 0)
+}
+
+// sandbox env reaches the agent, under what pats sets itself.
+func TestNewHarnessSandboxEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sb := config.Sandbox{Name: "sxx", Driver: "docker", Image: "img", Env: map[string]string{"DENO_CERT": "/sbx-ca/bundle.pem", "PATS_PROMPT_FILE": "mine"}}
+	a := config.Agent{Name: "axx", Harness: "opencode-openrouter", Model: "m"}
+	var out bytes.Buffer
+	h, err := newHarness(Options{Out: &out}, a, hd(a.Harness), sb, config.TaskEgress{}, t.TempDir(), "r", "", "axx x txx")
+	require.NoError(t, err)
+	defer h.cleanup()
+	assert.Equal(t, h.spec.Env["DENO_CERT"], "/sbx-ca/bundle.pem")
+	assert.NotEqual(t, h.spec.Env["PATS_PROMPT_FILE"], "mine")
+	assert.Equal(t, sb.Env["DENO_CERT"], "/sbx-ca/bundle.pem") // the config's map is not written to
+}
+
+// a task's lists union over the sandbox's; the sandbox keeps its scalars, and
+// the config's slices are never written to.
+func TestEgressForTaskUnion(t *testing.T) {
+	sb := config.Sandbox{Egress: config.Egress{
+		Set:    true,
+		Policy: proxy.Policy{Default: "deny", DenyResponse: "404", Allow: []string{"a.test"}, Deny: []string{"a.test/x*"}},
+	}}
+	te := config.TaskEgress{Set: true, Allow: []string{"pypi.org", "a.test"}, Deny: []string{"github.com/*/answer*"}}
+	eg := egressFor(sb, te, hd("opencode-openrouter"), "", false)
+	assert.EqualArrays(t, eg.Policy.Deny, []string{"a.test/x*", "github.com/*/answer*"})
+	assert.Equal(t, eg.Policy.Allow[0], "a.test")
+	assert.Equal(t, eg.Policy.Allow[1], "pypi.org")
+	assert.Equal(t, eg.Policy.DenyResponse, "404")
+	assert.Equal(t, len(sb.Egress.Policy.Allow), 1)
+	assert.Equal(t, len(sb.Egress.Policy.Deny), 1)
+
+	// a sandbox without the proxy ignores task lists (validation refuses the pairing).
+	open := egressFor(config.Sandbox{}, te, hd("opencode-openrouter"), "", false)
+	assert.Equal(t, open.Set, false)
+	assert.Equal(t, len(open.Policy.Allow), 0)
+}
+
+// a failed setup step is the pair's error, named in its metadata: the agent
+// never runs and nothing is collected.
+func TestRunPairSetupFailureMetadata(t *testing.T) {
+	for _, c := range []struct {
+		name, task string
+		fake       *fakeSandbox
+		want       string
+	}{
+		{"stage", "stage: exit 3", &fakeSandbox{}, "stage: "},
+		{"start", "env: {X: y}", &fakeSandbox{startErr: errors.New("no daemon")}, "start: no daemon"},
+		{"prepare", "prepare: exit 4", &fakeSandbox{onRoot: func(cmd sandbox.Cmd, stdout io.Writer) (int, error) {
+			if cmd.Argv[0] == "rm" {
+				return 0, nil
+			}
+			io.WriteString(stdout, "apt said no\n")
+			return 4, nil
+		}}, "prepare: exited 4"},
+		{"prepare cleanup", "prepare: exit 0", &fakeSandbox{onRoot: func(cmd sandbox.Cmd, stdout io.Writer) (int, error) {
+			if cmd.Argv[0] == "rm" {
+				return 1, nil // the material would stay where the agent can read it
+			}
+			return 0, nil
+		}}, "remove /pats-prepare: exited 1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			old := newSandbox
+			newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return c.fake, nil }
+			defer func() { newSandbox = old }()
+			dir := t.TempDir()
+			cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, `+c.task+`, collect: "touch $PATS_OUTPUT_DIR/collected"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+			var out bytes.Buffer
+			pinAll(t, dir, cfg)
+			runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+			require.NoError(t, err)
+			var pm pairMeta
+			b, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(b, &pm))
+			assert.Equal(t, pm.Status, "error")
+			assert.ContainsString(t, pm.Error, c.want)
+			assert.That(t, pm.Synced != nil && !*pm.Synced, "a failed setup synced nothing")
+			assert.Equal(t, c.fake.calls, 1) // the preflight only, never the pair's agent
+			_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
+			assert.That(t, os.IsNotExist(err), "collected after a failed setup")
+			if c.name == "prepare" {
+				log, _ := os.ReadFile(filepath.Join(runDir, "axx", "txx", "prepare.log"))
+				assert.ContainsString(t, string(log), "apt said no")
+			}
+		})
+	}
+}
+
+// a pair given up on before its agent could start -- here its prompt does
+// not resolve -- still ends as an error pair: its metadata says why, the
+// run's totals count it, and a judge reads it as n/a, not as unknown.
+func TestRunPairEarlyFailureMetadata(t *testing.T) {
+	fake := &fakeSandbox{}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-cmd: exit 5}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	var out bytes.Buffer
+	pinAll(t, dir, cfg)
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Verbose: 1})
+	require.NoError(t, err)
+	pm := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, pm.Status, "error")
+	assert.ContainsString(t, pm.Error, "prompt: ")
+	assert.Equal(t, pm.Sandbox, "sxx")
+	assert.That(t, pm.Synced != nil && !*pm.Synced, "a pair that never started synced nothing")
+	// its record still says which definition it was asked to run.
+	assert.Equal(t, pm.HarnessFrom, "default")
+	assert.Equal(t, pm.HarnessHash, hd("opencode-openrouter").Digest())
+	assert.ContainsString(t, out.String(), "1 error")
+	assert.Equal(t, judgeRowOf(filepath.Join(runDir, "axx", "txx")), rowNA)
+}
+
+// prepare runs inside the sandbox as root: its material pushed in, the
+// pats root's bin/ first on PATH, in-sandbox PATS_* paths, the task env, and
+// the material removed again before the agent.
+func TestRunPairPrepareInSandbox(t *testing.T) {
+	fake := &fakeSandbox{}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "helper"), []byte("#!/bin/sh\n"), 0o755))
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, prepare: helper --fast, env: {BRANCH: main}, stage: 'echo "$PATS_TASK_VECTOR" > "$PATS_OUTPUT_DIR/vector"'}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	var out bytes.Buffer
+	pinAll(t, dir, cfg)
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	vector, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "vector"))
+	require.NoError(t, err)
+	assert.Equal(t, string(vector), "txx\n") // a host step knows its task's vector
+	assert.Equal(t, strings.Join(fake.pushed, " "), prepareMount)
+	require.That(t, len(fake.rootCmds) >= 2, "root cmds: %v", fake.rootCmds)
+	prep := fake.rootCmds[0]
+	assert.Equal(t, strings.Join(prep.Argv[len(prep.Argv)-3:], " "), "/bin/sh -e "+prepareMount+"/script")
+	assert.Equal(t, prep.Argv[2], `PATH="$1/bin:$PATH"; export PATH; shift; exec "$@"`)
+	assert.Equal(t, prep.Argv[4], prepareMount) // the mount is an argument, never shell source
+	assert.Equal(t, prep.Env["PATS_WORKDIR"], sandbox.WorkMount)
+	assert.Equal(t, prep.Env["BRANCH"], "main")
+	assert.Equal(t, prep.Env["PATS_TASK_VECTOR"], "txx")
+	_, hasOut := prep.Env["PATS_OUTPUT_DIR"]
+	assert.Equal(t, hasOut, false)
+	assert.Equal(t, strings.Join(fake.rootCmds[1].Argv, " "), "rm -rf "+prepareMount)
+	assert.Equal(t, fake.calls, 2) // preflight, then the agent
+}
+
+// e2e of the in-sandbox prepare on real docker: it runs as root with the
+// pats root's bin/ on PATH, what it leaves in the workdir is the agent's to
+// write, and its material is gone before the agent starts.
+func TestRunE2EPrepare(t *testing.T) {
+	dockerOrSkip(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "seed"), []byte("#!/bin/sh\necho \"seeded by $(id -u) for $PATS_TASK_NAME\" > \"$PATS_WORKDIR/prepared.txt\"\n"), 0o755))
+
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: ubuntu:26.04}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, prepare: seed, collect: "cp $PATS_WORKDIR/prepared.txt $PATS_OUTPUT_DIR/"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	cfg.Harnesses.Harness("opencode-openrouter").Run = `echo agent >> prepared.txt && test ! -e /pats-prepare && echo material-gone >> prepared.txt`
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // a stand-in: the image need not hold opencode
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "prepared.txt"))
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, string(got), "seeded by 0 for txx\nagent\nmaterial-gone\n")
+}
+
+// e2e of base / provision on docker: the provision step runs once into a
+// cached image with the pats root's bin/ on PATH, and the agent runs on it.
+func TestRunE2EProvision(t *testing.T) {
+	dockerOrSkip(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "mark"), []byte("#!/bin/sh\necho \"provisioned $1\" > /etc/pats-mark\n"), 0o755))
+
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {base: ubuntu:26.04, provision: "mark once"}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m1, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, collect: "cp $PATS_WORKDIR/got.txt $PATS_OUTPUT_DIR/"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	cfg.Harnesses.Harness("opencode-openrouter").Run = `cat /etc/pats-mark > got.txt`
+	cfg.Harnesses.Harness("opencode-openrouter").CLI = "" // a stand-in: the image need not hold opencode
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	// every run after init builds and pulls nothing, here or in the driver.
+	calls := dockerSpy(t)
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	assertNoBuildOrPull(t, calls)
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "got.txt"))
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, string(got), "provisioned once\n")
+	// init kept the build's whole output.
+	log, err := os.ReadFile(filepath.Join(dir, ".pats", "init", "sxx.log"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(log), "load build definition from Dockerfile")
+	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", cfg.Sandboxes[0].Image).Run() })
+}
+
+// dockerSpy puts a docker on PATH that logs each call's arguments and runs
+// the real one; it returns the log's path.
+func dockerSpy(t *testing.T) string {
+	t.Helper()
+	real, err := exec.LookPath("docker")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\necho \"$*\" >> " + log + "\nexec " + real + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// assertNoBuildOrPull fails on any build or pull among the logged calls.
+func assertNoBuildOrPull(t *testing.T, log string) {
+	t.Helper()
+	b, _ := os.ReadFile(log)
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) > 0 && (f[0] == "build" || f[0] == "pull" || f[0] == "buildx" || (f[0] == "image" && len(f) > 1 && f[1] == "pull")) {
+			t.Errorf("a run after init called docker %s", line)
+		}
+	}
+	assert.That(t, len(b) > 0, "the spy saw no docker call: it is not on the path the run takes")
+}
+
+// a filter that only a manual suite satisfies says which -S reaches it.
+func TestRunManualSuiteHint(t *testing.T) {
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+agents: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m}, bxx: {harness: opencode-openrouter, model: m}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+core: {kind: suite, items: {core: {agents: axx, tasks: txx}}}
+extra: {kind: suite, defaults: {manual: true}, items: {abl: {agents: bxx, tasks: txx}}}
+`)
+	_, err := Run(cfg, Options{ConfigDir: t.TempDir(), Now: time.Now(), Out: io.Discard, Agents: []string{"bxx"}, DryRun: true})
+	assert.Error(t, err, "manual suite abl holds it: add -S abl")
+}
+
+// a token in the env is a way in of its own: a default login file this
+// process may not read does not stop it, while a named one that cannot be
+// read does, naming its variable.
+func TestHarnessHomeAuthPath(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0 mode file")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SNAP_REAL_HOME", "")
+	t.Setenv("PATS_CLAUDE_AUTH_PATH", "")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte("{}"), 0o000))
+	var out bytes.Buffer
+	hs, err := harnessHome(Options{Out: &out}, "claude x", hd("claude-cli-keyless"), map[string]string{}, true, nil)
+	require.NoError(t, err)
+	hs.cleanup()
+	_, err = harnessHome(Options{Out: &out}, "claude x", hd("claude-cli-keyless"), map[string]string{}, false, nil)
+	assert.Error(t, err, "set PATS_CLAUDE_AUTH_PATH")
+
+	t.Setenv("PATS_CLAUDE_AUTH_PATH", t.TempDir())
+	_, err = harnessHome(Options{Out: &out}, "claude x", hd("claude-cli-keyless"), map[string]string{}, true, nil)
+	assert.Error(t, err, "PATS_CLAUDE_AUTH_PATH=")
+}
+
+// a machine's file shows where it changes a run: one line as the run starts,
+// and in each pair's record where its harness is from and a digest of it.
+func TestRunRecordsHarnessOrigin(t *testing.T) {
+	fake := &fakeSandbox{}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+ags: {kind: agent, items: {axx: {harness: codex-cli-keyless, model: m, sandbox: sxx}, mxx: {harness: mine, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: ags, tasks: txx}}}
+`, "harnesses:\n  mine:\n    run: mine --go\n  codex-cli-keyless:\n    pass-env: [CODEX_EXTRA]\n")
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	assert.ContainsString(t, out.String(), "INFO machine file "+cfg.Harnesses.Path+": changes harnesses.codex-cli-keyless.pass-env; adds harnesses.mine\n")
+
+	// a harness that names no way of logging in is not warned about one.
+	assert.Equal(t, strings.Contains(out.String(), "mxx/txx no creds forwarded"), false)
+
+	changed, added := readMeta(t, runDir, "axx", "txx"), readMeta(t, runDir, "mxx", "txx")
+	assert.Equal(t, changed.HarnessFrom, "machine")
+	assert.Equal(t, added.HarnessFrom, "machine")
+	assert.Equal(t, changed.HarnessHash, cfg.Harnesses.Harness("codex-cli-keyless").Digest())
+	assert.That(t, changed.HarnessHash != hd("codex-cli-keyless").Digest(), "the digest of a changed default is the default's")
+	assert.That(t, strings.HasPrefix(added.HarnessHash, "sha256:") && len(added.HarnessHash) == 71, "the digest %q", added.HarnessHash)
+
+	// with no machine file a default is a default, and nothing is said.
+	plain := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: codex-cli-keyless, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	dir2 := t.TempDir()
+	pinAll(t, dir2, plain)
+	out.Reset()
+	runDir, err = Run(plain, Options{ConfigDir: dir2, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, strings.Contains(out.String(), "machine file"), false)
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.HarnessFrom, "default")
+	assert.Equal(t, m.HarnessHash, hd("codex-cli-keyless").Digest())
+
+	var list bytes.Buffer
+	require.NoError(t, ListHarnesses(cfg, &list))
+	assert.ContainsString(t, list.String(), "codex-cli-keyless    codex     machine  yes    -\n")
+	assert.ContainsString(t, list.String(), "mine                 -         machine  -      -\n")
+	assert.ContainsString(t, list.String(), "opencode-openrouter  opencode  default  yes    openrouter\n")
+}
+
+// a harness a pats.yaml defines, with no cli, no parse script and no model:
+// it passes preflight and runs a pair, its variables and its hosts reach the
+// sandbox, and its record says where it is from and holds no summary.
+func TestRunProjectHarness(t *testing.T) {
+	t.Setenv("MINE_KEY", "secret")
+	t.Setenv("MINE_URL", "http://localhost:1")
+	t.Setenv("MINE_UNSET", "")
+	var spec sandbox.Spec
+	fake := &fakeSandbox{stdout: "did the thing\n", onRun: func(s sandbox.Spec) { spec = s }}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s, egress: {allow: [task.example]}}}}
+hxx:
+  kind: harness
+  items:
+    mine:
+      run: ./solve "$PATS_PROMPT_FILE"
+      egress: {allow: [api.mine.example], deny: [noise.mine.example]}
+      auth-env: [MINE_KEY, MINE_UNSET]
+      pass-env: [MINE_URL]
+axx: {kind: agent, items: {axx: {harness: mine, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+
+	assert.Equal(t, fake.preflights, 1)
+	assert.Equal(t, fake.preflightEnv["PATS_PREFLIGHT"], "1")
+	assert.Equal(t, spec.Argv[len(spec.Argv)-1], `./solve "$PATS_PROMPT_FILE"`)
+	assert.Equal(t, spec.Env["MINE_KEY"], "secret")
+	assert.Equal(t, spec.Env["MINE_URL"], "http://localhost:1")
+	_, set := spec.Env["MINE_UNSET"]
+	assert.Equal(t, set, false)
+	_, set = spec.Env["PATS_PREFLIGHT"]
+	assert.Equal(t, set, false) // the pair's own exec is no preflight
+	assert.Equal(t, spec.Env["PATS_MODEL"], "")
+
+	pol := spec.Egress.Policy
+	assert.Equal(t, strings.Join(pol.Allow, " "), "task.example api.mine.example")
+	assert.Equal(t, strings.Join(pol.Deny, " "), "noise.mine.example")
+	assert.Equal(t, strings.Join(pol.Harness, " "), "api.mine.example")
+
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.Status, "ok")
+	assert.Equal(t, m.Harness, "mine")
+	assert.Equal(t, m.HarnessFrom, "project")
+	assert.Equal(t, m.Model, "")
+	assert.That(t, m.Summary == nil, "a harness with no parse script got a summary")
+	raw, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
+	require.NoError(t, err)
+	assert.Equal(t, strings.Contains(string(raw), `"model"`), false)
+
+	var list bytes.Buffer
+	require.NoError(t, ListHarnesses(cfg, &list))
+	assert.ContainsString(t, list.String(), "mine                 -         project  -      -\n")
+	list.Reset()
+	require.NoError(t, ListAgents(cfg, &list))
+	assert.ContainsString(t, list.String(), "axx     axx    mine     -      sxx")
+}
+
+// placement end to end, on real docker: a cli is fetched from its source,
+// checked, placed in the image init builds, stamped there, and run by an
+// agent whose harness names it.
+func TestRunE2EPlacedHarness(t *testing.T) {
+	dockerOrSkip(t)
+	// a cli of one file: a script that says its version.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	script := "#!/bin/sh\necho 'tool 1.2.3'\n"
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "package/tool", Mode: 0o755, Typeflag: tar.TypeReg, Size: int64(len(script))}))
+	_, err := tw.Write([]byte(script))
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+	sum := sha256.Sum256(buf.Bytes())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(buf.Bytes()) }))
+	defer srv.Close()
+
+	old := fetchArtefact
+	fetchArtefact = sandbox.FetchArtefact // the real one, into this test run's cache
+	defer func() { fetchArtefact = old }()
+
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {base: ubuntu:26.04}}}
+hxx: {kind: harness, items: {tool-run: {run: tool --version > said.txt}}}
+axx: {kind: agent, items: {axx: {harness: tool-run, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, collect: "cp $PATS_WORKDIR/said.txt $PATS_OUTPUT_DIR/"}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	// the cli is the machine's to define: a table of the test's own.
+	tb := tables(t, `
+clis:
+  tool:
+    version: 1.2.3
+    artefacts:
+      `+srv.URL+`/tool-${version}.tgz:
+        arch: [amd64, arm64]
+        hash: sha256:`+hex.EncodeToString(sum[:])+`
+        bin: package/tool
+harnesses:
+  tool-run: {cli: tool, run: tool --version > said.txt}
+`)
+	cfg.Harnesses = tb
+
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	var e *pinEntry
+	for _, es := range f.Targets {
+		e = es["sxx"]
+	}
+	require.NotNil(t, e)
+	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", e.Image.ID).Run() })
+	assert.EqualMaps(t, e.Components, map[string]string{"tool": "1.2.3"})
+	assert.Equal(t, e.Harnesses["tool"]["hash"], "sha256:"+hex.EncodeToString(sum[:]))
+
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	said, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "said.txt"))
+	require.NoError(t, err, "%s", out.String())
+	assert.Equal(t, string(said), "tool 1.2.3\n")
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.Placed["tool"]["version"], "1.2.3")
+	assert.Equal(t, m.Components["tool"], "1.2.3")
 }

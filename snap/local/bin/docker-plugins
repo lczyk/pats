@@ -1,0 +1,9 @@
+#!/bin/sh -e
+# links this revision's buildx where the shipped docker cli looks for plugins,
+# then runs the app. the link names $SNAP, so it is remade on every launch.
+
+PLUGINS="${DOCKER_CONFIG}/cli-plugins"
+
+mkdir -p "${PLUGINS}"
+ln -sfn "${SNAP}/lib/docker/cli-plugins/docker-buildx" "${PLUGINS}/docker-buildx"
+exec "$@"

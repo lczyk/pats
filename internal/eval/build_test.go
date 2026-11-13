@@ -1,94 +1,22 @@
 package eval
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/src/sandbox"
 )
-
-func TestIgnoresPats(t *testing.T) {
-	for _, ok := range []string{".pats", ".pats/", "/.pats", "./.pats", ".pats/**", "node_modules\n.pats/\n*.log"} {
-		if !ignoresPats(ok) {
-			t.Errorf("ignoresPats(%q) = false, want true", ok)
-		}
-	}
-	// COVER: a glob that happens to cover .pats is deliberately not recognised.
-	for _, bad := range []string{"", "pats", ".pats2", ".*", "**/.pats-cache"} {
-		if ignoresPats(bad) {
-			t.Errorf("ignoresPats(%q) = true, want false", bad)
-		}
-	}
-}
-
-func TestUsesContext(t *testing.T) {
-	for body, want := range map[string]bool{
-		"FROM scratch\nCOPY x /x\n":                         true,
-		"FROM scratch\n  add x /x\n":                        true, // indented + lowercase
-		"FROM a AS b\nFROM c\nCOPY --from=b /x /x\n":        false,
-		"FROM ubuntu\nRUN apt-get update\n":                 false,
-		"# COPY mentioned in a comment only\nFROM ubuntu\n": false,
-	} {
-		assert.Equal(t, usesContext([]byte(body), nil), want, "dockerfile: %q", body)
-	}
-	// unreadable dockerfile (caller's read failed) -> assume it uses the
-	// context (fail-safe) -- the fail-safe now lives in usesContext itself, not
-	// in a read it performs, since the caller reads the dockerfile once and
-	// shares the result.
-	assert.Equal(t, usesContext(nil, os.ErrNotExist), true)
-}
-
-// readDockerfile mimics what buildImages does: read the dockerfile once and
-// hand the result (data, err) to the functions that used to each read it
-// themselves.
-func readDockerfile(dockerfile string) ([]byte, error) {
-	return os.ReadFile(dockerfile)
-}
-
-func TestCheckPatsIgnored(t *testing.T) {
-	copies := "FROM scratch\nCOPY x /x\n"
-	mk := func(t *testing.T, files map[string]string) string {
-		t.Helper()
-		dir := t.TempDir()
-		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".pats"), 0o755))
-		for name, body := range files {
-			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
-		}
-		return dir
-	}
-	check := func(ctxDir, dockerfile string) error {
-		data, err := readDockerfile(dockerfile)
-		return checkPatsIgnored(ctxDir, dockerfile, data, err)
-	}
-
-	// no .pats in the context -> fine regardless of ignores.
-	assert.NoError(t, check(t.TempDir(), "Dockerfile"))
-
-	// .pats present, dockerfile COPYs, no ignore file -> refused.
-	dir := mk(t, map[string]string{"Dockerfile": copies})
-	assert.Error(t, check(dir, filepath.Join(dir, "Dockerfile")), ".dockerignore")
-
-	// .pats present but the dockerfile never reads the context -> fine.
-	dir = mk(t, map[string]string{"Dockerfile": "FROM ubuntu\nRUN true\n"})
-	assert.NoError(t, check(dir, filepath.Join(dir, "Dockerfile")))
-
-	// .dockerignore excluding .pats -> fine.
-	dir = mk(t, map[string]string{"Dockerfile": copies, ".dockerignore": "foo\n.pats/\n"})
-	assert.NoError(t, check(dir, filepath.Join(dir, "Dockerfile")))
-
-	// COVER: buildkit precedence -- a per-dockerfile ignore fully replaces
-	// .dockerignore, so .pats must be excluded there, not in .dockerignore.
-	dir = mk(t, map[string]string{
-		"Dockerfile":              copies,
-		".dockerignore":           ".pats/\n",
-		"Dockerfile.dockerignore": "*.log\n",
-	})
-	assert.Error(t, check(dir, filepath.Join(dir, "Dockerfile")), "Dockerfile.dockerignore")
-}
 
 func TestResolveBuildSpec(t *testing.T) {
 	dir := t.TempDir()
@@ -111,131 +39,131 @@ func TestResolveBuildSpec(t *testing.T) {
 	assert.Error(t, err, "build context")
 }
 
-func TestIgnoreMatcher(t *testing.T) {
-	pats := parseIgnore("# comment\n\n.pats/\n*.log\nsub/**\n!sub/keep.txt\nbuild\n")
-	for rel, want := range map[string]bool{
-		".pats":            true, // trailing-slash dir pattern
-		".pats/runs/1/x":   true, // parent-dir coverage
-		"a.log":            true,
-		"deep/a.log":       false, // *.log is anchored to the root, docker-style
-		"sub/anything":     true,  // /** spans
-		"sub/deep/er":      true,
-		"sub/keep.txt":     false, // negation, last match wins
-		"build":            true,
-		"builder":          false, // no partial-segment match
-		"Dockerfile":       false,
-		"src/main.go":      false,
-		".pats-cache/file": false, // .pats doesn't cover siblings
-	} {
-		assert.Equal(t, ignored(pats, rel), want, "rel: %q", rel)
+// an lxd sandbox's image: with no base the pats sandbox is built first and
+// the sandbox's own provision on top of it, keyed in a chain; each build's
+// progress and warnings reach the run's output under the sandbox's id, its
+// output the sandbox's build log, and a failure carries the log's tail and
+// where the whole log is.
+func TestLXDImageBuild(t *testing.T) {
+	type call struct {
+		base   string
+		argv   []string
+		placed []string
+		stamp  []string
+		role   string
 	}
-}
-
-func TestBuildContextHash(t *testing.T) {
-	mk := func(t *testing.T, files map[string]string) string {
-		t.Helper()
+	var lastUpstream map[string]string
+	var placed []sandbox.Placed // what the sandbox's agents run, when any
+	var clis []string
+	run := func(t *testing.T, sb config.Sandbox, fail bool) ([]call, []string, string, string, bool, error) {
+		var calls []call
+		h := &buildingHost{fakeHost: newFakeHost(), build: func(spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
+			c := call{base: spec.Base, argv: spec.Argv, stamp: spec.Stamp, role: spec.Role}
+			for _, p := range spec.Harness {
+				c.placed = append(c.placed, p.Artefact.CLI)
+			}
+			calls = append(calls, c)
+			spec.Progress("building " + spec.Base)
+			spec.Warn("low on space")
+			fmt.Fprintf(log, "build output of %s\n", spec.Base)
+			if fail && len(calls) == 2 {
+				return sandbox.Image{}, "", false, errors.New("provisioning exited 1")
+			}
+			n := strconv.Itoa(len(calls))
+			return sandbox.Image{ID: "fp-" + n, Name: "pats-img-" + n}, "fp-" + spec.Base, len(calls) == 1, nil
+		}}
+		var out bytes.Buffer
 		dir := t.TempDir()
-		for name, body := range files {
-			p := filepath.Join(dir, name)
-			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
-			require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
-		}
-		return dir
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
+		logPath := filepath.Join(t.TempDir(), "init", sb.Name+".log")
+		_, layers, built, upstream, err := lxdImage(context.Background(), h, sb, placed, clis, Options{ConfigDir: dir, Out: &out, Verbose: 1}, logPath, false)
+		b, _ := os.ReadFile(logPath)
+		lastUpstream = upstream
+		return calls, layers, out.String(), string(b), built, err
 	}
-	copies := "FROM scratch\nCOPY x /x\n"
-	hashWith := func(dir, base string) (string, error) {
-		dockerfile := filepath.Join(dir, "Dockerfile")
-		data, err := readDockerfile(dockerfile)
-		return buildContextHash(dir, dockerfile, data, err, base)
-	}
-	hashOf := func(dir string) (string, error) { return hashWith(dir, "pats/sandbox:v0") }
 
-	// deterministic across calls.
-	dir := mk(t, map[string]string{"Dockerfile": copies, "x": "1"})
-	h1, err := hashOf(dir)
-	require.NoError(t, err)
-	h2, err := hashOf(dir)
-	require.NoError(t, err)
-	assert.Equal(t, h1, h2)
-
-	// a content edit changes the hash.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "x"), []byte("2"), 0o644))
-	h3, err := hashOf(dir)
-	require.NoError(t, err)
-	assert.That(t, h1 != h3, "content edit did not change the hash")
-
-	// an ignored file doesn't participate: churn in it keeps the hash stable.
-	dir = mk(t, map[string]string{
-		"Dockerfile":     copies,
-		".dockerignore":  ".pats/\n",
-		"x":              "1",
-		".pats/runs/log": "a",
+	t.Run("the pats sandbox, then the provision", func(t *testing.T) {
+		calls, layers, out, log, built, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Provision: "provision.sh"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 2)
+		assert.EqualArrays(t, layers, []string{"fp-1"})
+		// the base the bottom layer keyed on, for the upstream check.
+		assert.EqualMaps(t, lastUpstream, map[string]string{lxdSandboxBase: "fp-" + lxdSandboxBase})
+		assert.Equal(t, calls[0].base, lxdSandboxBase)
+		assert.Equal(t, calls[1].base, "pats-img-1")
+		assert.That(t, len(calls[1].argv) > 0, "the provision step has no argv")
+		assert.That(t, built, "the first build ran, but built is false")
+		assert.ContainsString(t, out, `sandbox "box": building `+lxdSandboxBase)
+		assert.ContainsString(t, out, `sandbox "box": low on space`)
+		assert.ContainsString(t, log, "build output of "+lxdSandboxBase)
+		assert.ContainsString(t, log, "build output of pats-img-1")
 	})
-	h1, err = hashOf(dir)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".pats", "runs", "log"), []byte("bbbb"), 0o644))
-	h2, err = hashOf(dir)
-	require.NoError(t, err)
-	assert.Equal(t, h1, h2)
+	t.Run("a base of its own", func(t *testing.T) {
+		calls, layers, _, _, built, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Base: "ubuntu:24.04"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 1)
+		assert.Len(t, layers, 0)
+		assert.EqualMaps(t, lastUpstream, map[string]string{"ubuntu:24.04": "fp-ubuntu:24.04"})
+		assert.Equal(t, calls[0].base, "ubuntu:24.04")
+		assert.That(t, built, "built is false")
+	})
+	t.Run("a failed build", func(t *testing.T) {
+		_, _, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Provision: "provision.sh"}, true)
+		require.Error(t, err, "provisioning exited 1")
+		assert.ContainsString(t, err.Error(), "build output of pats-img-1")
+		assert.ContainsString(t, err.Error(), "(full log: ")
+		assert.ContainsString(t, err.Error(), filepath.Join("init", "box.log"))
+	})
+	t.Run("the pats sandbox alone", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 1) // no empty project layer on top
+		assert.Len(t, layers, 0)
+	})
 
-	// a context-less dockerfile hashes the dockerfile alone -- context churn
-	// (even unignored) can't invalidate it.
-	dir = mk(t, map[string]string{"Dockerfile": "FROM ubuntu\nRUN true\n", "x": "1"})
-	h1, err = hashOf(dir)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "x"), []byte("2"), 0o644))
-	h2, err = hashOf(dir)
-	require.NoError(t, err)
-	assert.Equal(t, h1, h2)
-
-	// the PATS_SANDBOX base joins the hash only for a dockerfile that uses it.
-	h3, err = hashWith(dir, "pats/sandbox:v1")
-	require.NoError(t, err)
-	assert.Equal(t, h1, h3)
-	dir = mk(t, map[string]string{"Dockerfile": "ARG PATS_SANDBOX\nFROM ${PATS_SANDBOX}\nRUN true\n"})
-	h1, err = hashOf(dir)
-	require.NoError(t, err)
-	h3, err = hashWith(dir, "pats/sandbox:v1")
-	require.NoError(t, err)
-	assert.That(t, h1 != h3, "base change did not change the hash of a dockerfile that uses it")
+	// the clis a sandbox's agents run go in pats's own layer, under the
+	// project's: with its tools on the base it picks, alone on a base of the
+	// sandbox's. two images as before, and each stamped for the clis.
+	placed = []sandbox.Placed{{Artefact: sandbox.Artefact{CLI: "claude"}}, {Artefact: sandbox.Artefact{CLI: "codex"}}}
+	clis = []string{"claude", "codex"}
+	t.Run("placed with the tools", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Provision: "provision.sh"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 2)
+		assert.EqualArrays(t, calls[0].placed, clis)
+		assert.Equal(t, calls[0].role, "sandbox")
+		assert.Len(t, calls[1].placed, 0) // the project's layer places nothing
+		assert.EqualArrays(t, calls[0].stamp, clis)
+		assert.EqualArrays(t, calls[1].stamp, clis)
+		assert.EqualArrays(t, layers, []string{"fp-1"})
+	})
+	t.Run("placed on a base of its own", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Base: "ubuntu:24.04", Provision: "provision.sh"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 2)
+		assert.Equal(t, calls[0].base, "ubuntu:24.04")
+		assert.Len(t, calls[0].argv, 0) // the trees alone: its tools are the base's own
+		assert.EqualArrays(t, calls[0].placed, clis)
+		assert.Equal(t, calls[1].base, "pats-img-1")
+		assert.Equal(t, calls[1].role, "project")
+		assert.EqualArrays(t, layers, []string{"fp-1"})
+		assert.EqualMaps(t, lastUpstream, map[string]string{"ubuntu:24.04": "fp-ubuntu:24.04"})
+	})
+	t.Run("placed, no provision", func(t *testing.T) {
+		calls, layers, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Base: "ubuntu:24.04"}, false)
+		require.NoError(t, err)
+		require.Equal(t, len(calls), 1) // pats's layer is the image
+		assert.EqualArrays(t, calls[0].placed, clis)
+		assert.Len(t, layers, 0)
+	})
 }
 
-// e2e: a tiny no-network context builds and yields an image id; an unchanged
-// context is reused via the hash label without rebuilding; an edit misses.
-func TestBuildImage(t *testing.T) {
-	dockerOrSkip(t)
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hi\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "Dockerfile"),
-		[]byte("FROM scratch\nCOPY hello.txt /hello.txt\n"), 0o644))
+// buildingHost builds with build.
+type buildingHost struct {
+	*fakeHost
+	build func(spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error)
+}
 
-	ctxDir, df, err := resolveBuildSpec(dir, ".")
-	require.NoError(t, err)
-	dfData, dfErr := readDockerfile(df)
-	require.NoError(t, dfErr)
-	hash, err := buildContextHash(ctxDir, df, dfData, dfErr, "")
-	require.NoError(t, err)
-
-	// nothing labelled with this hash yet.
-	assert.Equal(t, cachedImageID(context.Background(), "docker", hash), "")
-
-	id, err := buildImage(context.Background(), "docker", ctxDir, df, hash, "")
-	require.NoError(t, err)
-	assert.ContainsString(t, id, "sha256:")
-	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", id).Run() })
-
-	// same inputs -> the label lookup finds the image, no rebuild needed.
-	assert.Equal(t, cachedImageID(context.Background(), "docker", hash), id)
-
-	// an edit changes the hash -> lookup misses.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("changed\n"), 0o644))
-	dfData2, dfErr2 := readDockerfile(df)
-	require.NoError(t, dfErr2)
-	hash2, err := buildContextHash(ctxDir, df, dfData2, dfErr2, "")
-	require.NoError(t, err)
-	assert.That(t, hash != hash2, "edit did not change the hash")
-	assert.Equal(t, cachedImageID(context.Background(), "docker", hash2), "")
-
-	// empty hash (hashing failed upstream) never matches anything.
-	assert.Equal(t, cachedImageID(context.Background(), "docker", ""), "")
+func (h *buildingHost) Build(_ context.Context, spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
+	return h.build(spec, log)
 }

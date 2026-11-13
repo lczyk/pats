@@ -11,9 +11,10 @@ import (
 	"time"
 )
 
-// genCA mints an ephemeral CA for one pair's mitm proxy: the key never leaves
-// the proxy sidecar, the cert is what the agent container is told to trust.
-func genCA() (certPEM, keyPEM []byte, err error) {
+// GenCA mints an ephemeral CA: for one pair's mitm proxy (the key never leaves
+// the proxy, the cert is what the sandbox is told to trust), or for a
+// standalone `pats egress run`.
+func GenCA() (certPEM, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err

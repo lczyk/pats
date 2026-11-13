@@ -1,10 +1,8 @@
 package eval
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -13,42 +11,76 @@ import (
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-// list helpers print one line per configured entity, tab-aligned. read-only:
-// no lock, no disk writes.
+// list helpers print one line per configured item, tab-aligned, with the
+// vector it came from. read-only: no lock, no disk writes.
 
-// ListAgents prints id, kind, model, resolved sandbox, and effort per agent.
+// ListAgents prints vector, name, harness, model, resolved sandbox, and effort per agent.
 func ListAgents(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "AGENT\tKIND\tMODEL\tSANDBOX\tEFFORT")
+	fmt.Fprintln(w, "VECTOR\tAGENT\tHARNESS\tMODEL\tSANDBOX\tEFFORT")
 	for _, a := range cfg.Agents {
 		sb, err := cfg.ResolveSandbox(a)
 		if err != nil {
 			sb = "?" // dangling/ambiguous sandbox ref; validate would have caught it
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", a.ID, a.Kind, a.ResolvedModel(), sb, a.Effort)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", a.Vector, a.Name, a.Harness, dash(a.Model), sb, a.Effort)
 	}
 	return w.Flush()
 }
 
-// ListTasks prints id and prompt per task.
+// ListHarnesses prints each harness an agent may name, with its cli, where
+// its definition is from, and what it has of a parse script and a model
+// catalogue.
+func ListHarnesses(cfg *config.Config, out io.Writer) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "HARNESS\tCLI\tFROM\tPARSE\tMODELS")
+	for _, name := range cfg.Harnesses.Names() {
+		h := cfg.Harnesses.Harness(name)
+		parse := "-"
+		if h.Parser() != nil {
+			parse = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, dash(h.CLI), h.From, parse, dash(h.Models))
+	}
+	return w.Flush()
+}
+
+// dash is s, or a dash for none.
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// ListTasks prints vector, name, the directory it was defined in, and where its
+// prompt comes from, per task.
 func ListTasks(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TASK\tPROMPT")
+	fmt.Fprintln(w, "VECTOR\tTASK\tDIR\tPROMPT")
 	for _, t := range cfg.Tasks {
-		fmt.Fprintf(w, "%s\t%s\n", t.ID, t.ResolvedPrompt())
+		dir := t.Dir
+		if dir == "" {
+			dir = "."
+		}
+		prompt := "inline"
+		switch {
+		case t.PromptFile != "":
+			prompt = "file: " + t.PromptFile
+		case t.PromptCmd != "":
+			prompt = "cmd: " + t.PromptCmd
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Vector, t.Name, dir, prompt)
 	}
 	return w.Flush()
 }
 
-// ListSandboxes prints id, kind, resolved driver, image, and egress mode.
+// ListSandboxes prints vector, name, driver, image, and egress mode per sandbox.
 func ListSandboxes(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SANDBOX\tKIND\tDRIVER\tIMAGE\tEGRESS")
+	fmt.Fprintln(w, "VECTOR\tSANDBOX\tDRIVER\tIMAGE\tEGRESS")
 	for _, s := range cfg.Sandboxes {
-		mode := s.Egress.Mode
-		if mode == "" {
-			mode = "open" // the default: no egress filtering
-		}
+		mode := s.Egress.Mode()
 		image := s.Image
 		switch {
 		case image == "" && s.Build != "":
@@ -56,37 +88,50 @@ func ListSandboxes(cfg *config.Config, out io.Writer) error {
 		case image == "":
 			image, _ = sandbox.SandboxImage("") // the published default; a dev build's warning belongs to run, not list
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Kind, s.ResolvedDriver(), image, mode)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Vector, s.Name, s.Driver, image, mode)
 	}
 	return w.Flush()
 }
 
-// ListScorers prints id, kind, and the source (exec file or agent id).
+// ListScorers prints vector, name, and the source: inline, the command, or the
+// judging agent.
 func ListScorers(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SCORER\tKIND\tSOURCE")
+	fmt.Fprintln(w, "VECTOR\tSCORER\tSOURCE")
 	for _, s := range cfg.Scorers {
-		kind, src := s.Kind, s.Score
-		switch s.Kind {
-		case "":
-			kind, src = "exec", s.ExecFile()
-		case "agent":
-			src = s.AgentID
+		src := "inline"
+		switch {
+		case s.IsAgent():
+			src = "agent: " + s.Agent
+		case !strings.Contains(strings.TrimSpace(s.Score), "\n"):
+			src = strings.TrimSpace(s.Score)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", s.ID, kind, src)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", s.Vector, s.Name, src)
 	}
 	return w.Flush()
 }
 
-// ListSuites prints id and axis sizes per suite, plus the pair counts its
-// cross-products expand to.
+// ListSuites prints vector, name and axis sizes per suite after expansion, plus
+// the pair counts its cross-products expand to.
 func ListSuites(cfg *config.Config, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS")
+	fmt.Fprintln(w, "VECTOR\tSUITE\tAGENTS\tTASKS\tSCORERS\tRUN PAIRS\tSCORE PAIRS\tMANUAL")
 	for _, s := range cfg.Suites {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\n",
-			s.ID, len(s.Agents), len(s.Tasks), len(s.Scorers),
-			len(s.Agents)*len(s.Tasks), len(s.Tasks)*len(s.Scorers))
+		test, _ := cfg.ExpandTestPairs(s.Name)
+		score, _ := cfg.ExpandScorePairs(s.Name)
+		agents, tasks, scorers := map[string]bool{}, map[string]bool{}, map[string]bool{}
+		for _, p := range test {
+			agents[p.Agent], tasks[p.Task] = true, true
+		}
+		for _, p := range score {
+			scorers[p.Scorer] = true
+		}
+		manual := ""
+		if s.Manual {
+			manual = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			s.Vector, s.Name, len(agents), len(tasks), len(scorers), len(test), len(score), manual)
 	}
 	return w.Flush()
 }
@@ -114,35 +159,30 @@ func ListRuns(configDir string, out io.Writer) error {
 // runStatusTally counts pair metadata.json files under a run and tallies their
 // status (e.g. "7 ok, 2 error"). returns the tally and the pair count.
 func runStatusTally(runDir string) (string, int) {
-	metas, _ := filepath.Glob(filepath.Join(runDir, "*", "*", "metadata.json"))
+	pairs := readPairs(runDir, nil, nil)
 	counts := map[string]int{}
-	for _, m := range metas {
-		var pm pairMeta
-		if b, err := os.ReadFile(m); err == nil && json.Unmarshal(b, &pm) == nil {
-			counts[pm.Status]++
+	for _, p := range pairs {
+		if p.meta != nil {
+			counts[p.meta.Status]++
 		}
 	}
 	var parts []string
-	for _, s := range []string{"ok", "nonzero", "error"} {
+	for _, s := range []string{"ok", "nonzero", "timeout", "budget", "interrupted", "error"} {
 		if counts[s] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[s], s))
 		}
 	}
 	if len(parts) == 0 {
-		return "-", len(metas)
+		return "-", len(pairs)
 	}
-	return strings.Join(parts, ", "), len(metas)
+	return strings.Join(parts, ", "), len(pairs)
 }
 
 // runScore returns the run's overall score (2dp) from scores.json, or "-" if it
-// hasn't been scored.
+// hasn't been scored by this pats.
 func runScore(runDir string) string {
-	b, err := os.ReadFile(filepath.Join(runDir, "scores.json"))
+	r, err := readScores(runDir)
 	if err != nil {
-		return "-"
-	}
-	var r ScoreReport
-	if json.Unmarshal(b, &r) != nil {
 		return "-"
 	}
 	return fmt.Sprintf("%.2f", r.Overall)

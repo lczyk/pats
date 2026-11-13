@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lczyk/assert"
@@ -11,27 +12,39 @@ import (
 	"github.com/lczyk/pats/internal/config"
 )
 
-func listTestConfig() *config.Config {
-	return &config.Config{
-		Sandboxes: []config.Sandbox{
-			{ID: "box", Kind: "container", Image: "ubuntu", Egress: config.Egress{Mode: "proxy"}},
-			{ID: "bare", Kind: "bwrap"},      // egress mode empty -> "open"
-			{ID: "stock", Kind: "container"}, // no image, no build -> the published pats sandbox
-		},
-		Agents: []config.Agent{
-			{ID: "claude", Kind: "claude-cli-keyless", Model: "opus", Sandbox: "box", Effort: "high"},
-		},
-		Tasks: []config.Task{{ID: "refactor", Prompt: "refactor.txt"}},
-		Scorers: []config.Scorer{
-			{ID: "exact", Score: "exact.sh"}, // default kind -> exec
-			{ID: "judge", Kind: "agent", AgentID: "claude"},
-		},
-	}
+// listTestConfig is parsed, not validated: it holds a bwrap sandbox and an
+// agent scorer, both rejected by Validate, so list output covers them. stock
+// names neither image nor build, the published pats sandbox.
+func listTestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg, err := config.Parse([]byte(`
+boxes:
+  kind: sandbox
+  items:
+    box: {image: ubuntu, egress: {allow: [a.test]}}
+    bare: {driver: bwrap}
+    stock: {}
+agents:
+  kind: agent
+  items:
+    claude: {harness: claude-cli-keyless, model: opus, sandbox: box, effort: high}
+tasks:
+  kind: task
+  items:
+    refactor: {prompt-file: refactor.txt}
+scorers:
+  kind: scorer
+  items:
+    exact: {score: ./exact.sh}
+    judge: {agent: claude, prompt: judge.txt}
+`))
+	require.NoError(t, err)
+	return cfg
 }
 
 func TestListAgents(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListAgents(listTestConfig(), &out))
+	require.NoError(t, ListAgents(listTestConfig(t), &out))
 	s := out.String()
 	for _, want := range []string{"claude", "opus", "box", "high"} {
 		assert.ContainsString(t, s, want)
@@ -40,14 +53,14 @@ func TestListAgents(t *testing.T) {
 
 func TestListTasks(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListTasks(listTestConfig(), &out))
+	require.NoError(t, ListTasks(listTestConfig(t), &out))
 	assert.ContainsString(t, out.String(), "refactor")
 	assert.ContainsString(t, out.String(), "refactor.txt")
 }
 
 func TestListSandboxes(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListSandboxes(listTestConfig(), &out))
+	require.NoError(t, ListSandboxes(listTestConfig(t), &out))
 	s := out.String()
 	for _, want := range []string{"proxy", "docker", "bare", "open", "ghcr.io/lczyk/pats/sandbox:"} { // docker = resolved driver, open = default egress
 		assert.ContainsString(t, s, want)
@@ -56,11 +69,10 @@ func TestListSandboxes(t *testing.T) {
 
 func TestListScorers(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListScorers(listTestConfig(), &out))
+	require.NoError(t, ListScorers(listTestConfig(t), &out))
 	s := out.String()
-	assert.ContainsString(t, s, "exact.sh") // exec -> file
-	assert.ContainsString(t, s, "judge")    // agent scorer id
-	assert.ContainsString(t, s, "agent")    // agent -> agent-id source
+	assert.ContainsString(t, s, "exact.sh")      // file scorer -> its script
+	assert.ContainsString(t, s, "agent: claude") // agent scorer -> its judge
 }
 
 func TestListRuns(t *testing.T) {
@@ -76,7 +88,10 @@ func TestListRuns(t *testing.T) {
 	mk("20260101-002", "t1", "ok")
 	mk("20260101-002", "t2", "error")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "20260101-001", "scores.json"),
-		[]byte(`{"overall":0.5}`), 0o644))
+		[]byte(`{"version":3,"overall":0.5}`), 0o644))
+	// another pats's scores.json shows as unscored, not as its stale overall.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, runsSubdir, "20260101-002", "scores.json"),
+		[]byte(`{"overall":0.9}`), 0o644))
 
 	var out bytes.Buffer
 	require.NoError(t, ListRuns(dir, &out))
@@ -85,6 +100,7 @@ func TestListRuns(t *testing.T) {
 	assert.ContainsString(t, s, "2 ok")          // tally
 	assert.ContainsString(t, s, "0.50")          // scored
 	assert.ContainsString(t, s, "1 ok, 1 error") // mixed-status tally, ordered
+	assert.That(t, !strings.Contains(s, "0.90"), "an old scores.json is not read")
 }
 
 // no runs dir -> no error, empty-ish output.
@@ -95,6 +111,6 @@ func TestListRunsEmpty(t *testing.T) {
 
 func TestListSuites(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, ListSuites(listTestConfig(), &out))
+	require.NoError(t, ListSuites(listTestConfig(t), &out))
 	assert.ContainsString(t, out.String(), "SUITE")
 }

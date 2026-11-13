@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/lczyk/pats/internal/config"
@@ -15,17 +17,45 @@ import (
 // authenticate and reach its model -- the cheapest faithful credential check.
 const preflightPrompt = "Reply with the single word: OK. Do nothing else."
 
-// preflightTimeout bounds a single credential check.
+// preflightTimeout bounds a single credential check: the agent's reply. its
+// sandbox has setupTimeout to come up, as a pair's does -- on a cold lxd
+// server the first instance from a fresh image takes minutes.
 const preflightTimeout = 90 * time.Second
 
 // Preflight runs each distinct test-matrix agent once with a trivial prompt,
 // through its real sandbox + egress + creds path, and fails if any can't
 // authenticate. catches expired/missing creds up front instead of after a
 // per-pair clone + container spin. returns the first failing agent's error.
-func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.ID })
-	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.ID })
+func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair, judged ...config.Scorer) error {
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
+	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 
+	// each step sandbox the tasks name starts once, with its checks, and
+	// runs a step: a box that cannot see the tree fails here, not mid-run,
+	// and before the credential checks, since it needs none.
+	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
+	var placed []config.Task
+	for _, p := range pairs {
+		placed = append(placed, tasks[p.Task])
+	}
+	for _, sc := range judged {
+		placed = append(placed, sc.Task())
+	}
+	done := map[string]bool{}
+	for _, t := range placed {
+		sp, err := stepPlaceOf(cfg, sandboxes, t.StepSandbox, t.StepEnv)
+		if err != nil {
+			return err
+		}
+		if sp == nil || done[sp.sb.Name] {
+			continue
+		}
+		done[sp.sb.Name] = true
+		if err := preflightSteps(ctx, opts, sp); err != nil {
+			return fmt.Errorf("step sandbox %q failed preflight: %w", sp.sb.Name, err)
+		}
+		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: step sandbox %s ok", sp.sb.Name)
+	}
 	seen := map[string]bool{}
 	for _, p := range pairs {
 		if seen[p.Agent] {
@@ -35,9 +65,24 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 		if err := preflightAgent(ctx, cfg, opts, agents[p.Agent], sandboxes); err != nil {
 			return fmt.Errorf("agent %q failed credential preflight: %w", p.Agent, err)
 		}
-		logw{opts.Out, opts.Color}.info("preflight: %s ok", p.Agent)
+		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok", p.Agent)
 	}
 	return nil
+}
+
+// preflightSteps starts a step sandbox on the tree alone and runs `true`
+// in it as a step.
+func preflightSteps(ctx context.Context, opts Options, sp *stepPlace) error {
+	mounts, err := stepBindsFor(opts.ConfigDir, nil, nil)
+	if err != nil {
+		return err
+	}
+	box, err := openStepBox(ctx, sp, mounts, "preflight-egress.log", configProbe(opts.ConfigDir))
+	if err != nil {
+		return err
+	}
+	defer box.close("")
+	return box.run(ctx, sp, step{script: "true", dir: opts.ConfigDir}, opts.ConfigDir, nil, io.Discard, io.Discard)
 }
 
 func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a config.Agent, sandboxes map[string]config.Sandbox) error {
@@ -46,32 +91,96 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 	sb := sandboxes[sbID]
+	if sandbox.TraitsOf(sb.Driver).HostCLIs {
+		// no image carries the cli: the machine's PATH must.
+		if hd := cfg.HarnessOf(a); hd != nil && hd.CLI != "" {
+			if _, err := sandbox.HostLookPath(hd.CLI); err != nil {
+				return fmt.Errorf("its harness cli %s is not on this machine's PATH; install it", hd.CLI)
+			}
+		}
+	}
+	if sandbox.TraitsOf(sb.Driver).Unboxed && sb.Egress.Set {
+		// no fail-closed self-test to run: nothing stops what goes around
+		// the proxy.
+		logw{opts.Out, opts.Color, opts.Verbose}.info("preflight: %s: egress is advisory under the host driver", a.Name)
+	}
 
 	workDir, err := sandbox.MkTemp("pats-preflight-")
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(workDir)
+	defer sandbox.RemoveTemp(workDir)
 
 	// same egress policy as real runs (no audit).
-	h, err := newHarness(opts, a, sb, workDir, "", a.ID+" x preflight")
+	hd := cfg.HarnessOf(a)
+	h, err := newHarness(opts, a, hd, sb, config.TaskEgress{}, workDir, "", "", a.Name+" x preflight")
 	if err != nil {
 		return err
 	}
 	defer h.cleanup()
+	// a harness that cannot answer a prompt cheaply (a script, a baseline)
+	// sees this and exits 0.
+	h.spec.Env["PATS_PREFLIGHT"] = "1"
 	if err := os.WriteFile(h.promptPath(), []byte(preflightPrompt), 0o644); err != nil {
 		return err
 	}
 
-	var buf bytes.Buffer
-	r := h.run(ctx, &buf, &buf, preflightTimeout)
+	sctx, scancel := context.WithTimeout(ctx, setupTimeout)
+	sess, err := h.box.Start(sctx, h.spec)
+	if err == nil {
+		defer sess.Close()
+		err = sess.HandOver(sctx, h.paths.Work, h.paths.Home)
+	}
+	scancel()
+	if err != nil {
+		return fmt.Errorf("start: %w", err)
+	}
+	// stdout and stderr land in one buffer, for the error's tail. stdout is
+	// also read as a pair's is, for what it says of cost, so the two are no
+	// longer one writer and the buffer takes a lock.
+	var buf lockedBuffer
+	stat := &pairStat{price: opts.prices[a.Name]}
+	tap := &statTap{stat: stat, scan: statScanner(hd)}
+	r := h.exec(ctx, sess, io.MultiWriter(&buf, tap), &buf, preflightTimeout)
 	if r.err != nil {
 		return fmt.Errorf("%w\n%s", r.err, tail(buf.String(), 600))
 	}
+	// what the harness said of its error, or failing that the end of its output.
+	said, _ := stat.failure.Load().(string)
+	if said == "" {
+		said = tail(buf.String(), 600)
+	}
 	if r.code != 0 {
-		return fmt.Errorf("harness exited %d (likely bad/expired creds)\n%s", r.code, tail(buf.String(), 600))
+		return fmt.Errorf("harness exited %d (likely bad/expired creds)\n%s", r.code, said)
+	}
+	// some harnesses exit 0 on a reply that failed, and say so in their stream.
+	if stat.failed.Load() {
+		return fmt.Errorf("harness reported an error (likely bad/expired creds)\n%s", said)
+	}
+	// a cap is checked against the cost a harness reports: one that reported
+	// none here leaves it nothing to check.
+	if (a.Budget != nil || opts.Budget > 0) && !stat.costSeen.Load() {
+		logw{opts.Out, opts.Color, opts.Verbose}.warn("agent %s reports no cost: its budget has nothing to check", a.Name)
 	}
 	return nil
+}
+
+// lockedBuffer is a buffer two streams write to at once.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // tail returns the last n bytes of s, prefixed when truncated.

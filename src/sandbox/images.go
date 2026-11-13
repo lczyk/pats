@@ -14,21 +14,22 @@ import (
 // sibling src/sandbox/proxy package -- the two speak the PROXY_* env
 // protocol). :latest follows the newest stable release.
 const (
-	sandboxRepo = "ghcr.io/lczyk/pats/sandbox"
-	proxyRepo   = "ghcr.io/lczyk/pats/egress-proxy"
+	patsRegistry = "ghcr.io/lczyk/pats"
+	sandboxRepo  = patsRegistry + "/sandbox"
+	proxyRepo    = patsRegistry + "/egress-proxy"
 )
 
-// SandboxImage resolves the default sandbox image; see Image.
+// SandboxImage resolves the default sandbox image; see publishedImage.
 func SandboxImage(configured string) (image, warn string) {
-	return Image(sandboxRepo, configured, "set image: to pin")
+	return publishedImage(sandboxRepo, configured, "set image: to pin")
 }
 
-// ProxyImage resolves a sandbox's egress proxy image; see Image.
+// ProxyImage resolves a sandbox's egress proxy image; see publishedImage.
 func ProxyImage(configured string) (image, warn string) {
-	return Image(proxyRepo, configured, "set a sandbox proxy-image to pin")
+	return publishedImage(proxyRepo, configured, "set a sandbox proxy-image to pin")
 }
 
-// Image resolves one of pats' published images and, when it can't pin to a
+// publishedImage resolves one of pats' published images and, when it can't pin to a
 // version, a warning to surface. a configured ref wins. otherwise the default
 // is repo:v<version> for this build's pats version -- the proxy's filtering
 // protocol and the sandbox's cli set are coupled to the binary, so :latest
@@ -40,7 +41,7 @@ func ProxyImage(configured string) (image, warn string) {
 // file), but a leading v is stripped anyway so a caller setting the version
 // by hand can't make release installs -- the ones that most need a matching
 // image -- the only builds that never pin.
-func Image(repo, configured, hint string) (image, warn string) {
+func publishedImage(repo, configured, hint string) (image, warn string) {
 	if configured != "" {
 		return configured, ""
 	}
@@ -50,6 +51,17 @@ func Image(repo, configured, hint string) (image, warn string) {
 	}
 	return repo + ":v" + v, ""
 }
+
+// releaseBuild says whether this binary is a tagged install of a release:
+// no vcs stamp, a release-shaped version. a clone build counts as dev even
+// at its tag.
+func releaseBuild() bool {
+	return version.Info.CommitSHA == "" && IsRelease(version.Info.Version)
+}
+
+// IsRelease reports whether v (a leading v allowed) is a tagged release
+// version, one with published images.
+func IsRelease(v string) bool { return releaseVersion(strings.TrimPrefix(v, "v")) }
 
 // releaseVersion reports whether v is a tagged release: X.Y.Z, optionally
 // with an alpha / beta / rc pre-release (1.0.0-beta.1, 1.0.0-rc1) -- the shapes that

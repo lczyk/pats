@@ -1,206 +1,149 @@
-// Package agent turns an agent definition into a sandbox execution. it knows
-// the per-kind argv shape; the sandbox package handles isolation.
+// Package agent turns an agent definition into a sandbox execution: the
+// command, the environment and the credentials its harness entry names. the
+// sandbox package handles isolation.
 package agent
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/machine"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
-// one-shot harness invocations: model + prompt from PATS_* env, permissions
-// bypassed for non-interactive use. each edits files in the cwd (/workspace),
-// which the task's collect step then gathers; assistant text goes to stdout.
-const (
-	// claude-cli, keyless: model is an anthropic id; auth via oauth creds file
-	// (~/.claude/.credentials.json), mounted into HOME by the run phase.
-	// stream-json + verbose + partial messages make claude emit ndjson events as
-	// they happen (plain --print buffers to exit), so the run-phase tee shows the
-	// agent live. raw ndjson lands in stdout.log; scoring reads collected files,
-	// not the stream, so the format change is harmless.
-	// ${PATS_EFFORT:+...} adds --effort only when an effort is set (empty -> omitted).
-	claudeKeylessCmd = `claude --print --output-format stream-json --verbose --include-partial-messages ${PATS_EFFORT:+--effort "$PATS_EFFORT"} --model "$PATS_MODEL" --permission-mode bypassPermissions "$(cat "$PATS_PROMPT_FILE")"`
-	// opencode via openrouter: reads OPENROUTER_API_KEY from env. the openrouter/
-	// prefix is added here so the config model stays e.g. openai/gpt-4o-mini.
-	// --format json makes opencode emit one json event per line (tool_use,
-	// step_finish with usage, text, reasoning) instead of bare assistant prose --
-	// same role as claude's stream-json: a parseable stdout.log. --thinking
-	// includes the reasoning events. effort maps to --variant (provider-specific
-	// reasoning effort, e.g. high|max|minimal), same ${PATS_EFFORT:+...} trick.
-	opencodeOpenrouterCmd = `opencode run --model "openrouter/$PATS_MODEL" --dangerously-skip-permissions --format json --thinking ${PATS_EFFORT:+--variant "$PATS_EFFORT"} "$(cat "$PATS_PROMPT_FILE")"`
-	// codex-cli, keyless: auth comes only from CODEX_HOME/auth.json, copied into
-	// the harness home by the run phase. pats is the outer sandbox, so codex's
-	// own approvals + sandbox are bypassed. --ignore-user-config keeps personal
-	// config out of an eval while retaining auth; --ephemeral avoids transcripts.
-	// the prompt is read from stdin so shell quoting never changes its contents.
-	codexKeylessCmd = `codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model "$PATS_MODEL" ${PATS_EFFORT:+-c model_reasoning_effort="$PATS_EFFORT"} - < "$PATS_PROMPT_FILE"`
-	// copilot-cli, keyless: auth is a github token in COPILOT_GITHUB_TOKEN (see
-	// credKeys) -- copilot has no api-key inference mode, so every path is
-	// subscription-billed. --allow-all bypasses tool/path/url confirmation (pats
-	// is the outer sandbox); --output-format json is the live ndjson stream;
-	// --no-auto-update stops a self-update inside the eval; --no-remote-export
-	// keeps sessions off github web/mobile; --disable-builtin-mcps drops the
-	// github mcp server, which would otherwise hand the task github api access
-	// through the forwarded token. personal config never reaches the run: the
-	// sandbox HOME is fresh and ~/.copilot is never copied in.
-	copilotKeylessCmd = `copilot -p "$(cat "$PATS_PROMPT_FILE")" --allow-all --output-format json --no-auto-update --no-remote-export --disable-builtin-mcps --model "$PATS_MODEL" ${PATS_EFFORT:+--effort "$PATS_EFFORT"}`
-)
-
-// HarnessCmds maps an agent kind to its one-shot shell command -- the registry
-// of supported kinds. (tests may temporarily override an entry to run a
-// no-cred stand-in through the sandbox.)
-var HarnessCmds = map[string]string{
-	"claude-cli-keyless":  claudeKeylessCmd,
-	"codex-cli-keyless":   codexKeylessCmd,
-	"copilot-cli-keyless": copilotKeylessCmd,
-	"opencode-openrouter": opencodeOpenrouterCmd,
-}
-
-// RequiredHosts lists the hosts a harness itself must reach to function at all
-// (inference api, auth/token refresh, startup fetches). the run phase merges
-// these into a proxy-mode allowlist so pats.yaml only lists what the task
-// needs. entries use the proxy's match syntax (".x.com" = x.com + subdomains).
-var RequiredHosts = map[string][]string{
-	"claude-cli-keyless": {
-		".anthropic.com", // inference api
-		".claude.com",    // oauth token refresh (missing it -> 401 mid-run)
-	},
-	// codex also probes api.github.com for a newer release and fetches an
-	// announcement banner from raw.githubusercontent.com. both are left out: the
-	// run works without them, and a self-update inside an eval is the last thing
-	// we want. they show up as denied entries in the egress audit -- expected.
-	"codex-cli-keyless": {
-		".openai.com",  // oauth token refresh + api endpoints
-		".chatgpt.com", // chatgpt-account inference (incl. telemetry to ab.chatgpt.com)
-	},
-	// announcement/banner fetches from .githubusercontent.com are left out,
-	// codex-style: the run works without them and they'd show up as expected
-	// denials in the egress audit.
-	"copilot-cli-keyless": {
-		".github.com",        // auth + copilot token exchange
-		".githubcopilot.com", // inference (api./api.business./api.enterprise. by plan)
-	},
-	"opencode-openrouter": {
-		"openrouter.ai",      // inference
-		"models.dev",         // opencode model catalog
-		"registry.npmjs.org", // opencode runtime plugin/dep fetch
-	},
-}
-
-// Spec builds the sandboxed execution for a task-running agent.
-func Spec(a config.Agent, workdir string, env map[string]string) (sandbox.Spec, error) {
-	cmd, ok := HarnessCmds[a.Kind]
-	if !ok {
-		return sandbox.Spec{}, fmt.Errorf("agent %q: unsupported kind %q", a.ID, a.Kind)
+// Spec builds the sandboxed execution for a task-running agent: its harness's
+// one-shot command, which reads the model and the prompt from the PATS_* env
+// and edits files in the cwd.
+func Spec(h *machine.Harness, a config.Agent, workdir string, env map[string]string) (sandbox.Spec, error) {
+	if h == nil || h.Run == "" {
+		return sandbox.Spec{}, fmt.Errorf("agent %q: unsupported harness %q", a.Name, a.Harness)
 	}
-	return sandbox.Spec{Argv: []string{"sh", "-c", cmd}, Workdir: workdir, Env: env}, nil
+	return sandbox.Spec{Argv: []string{"sh", "-c", h.Run}, Workdir: workdir, Env: env}, nil
 }
 
 // Env assembles the PATS_* environment handed to a task-running agent.
-// promptFile + outputDir are in-sandbox paths (see sandbox.WorkMount).
-func Env(a config.Agent, promptFile, outputDir string) map[string]string {
-	return map[string]string{
-		"PATS_MODEL":       a.ResolvedModel(),
-		"PATS_AGENT_KIND":  a.Kind,
-		"PATS_PROMPT_FILE": promptFile,
-		"PATS_OUTPUT_DIR":  outputDir,
-		"PATS_EFFORT":      a.Effort,
+// promptFile + outputDir are in-sandbox paths (see sandbox.WorkMount). runID
+// is the run dir's basename, or "" outside a run (preflight).
+func Env(a config.Agent, promptFile, outputDir, runID string) map[string]string {
+	env := map[string]string{
+		"PATS_MODEL":         a.Model,
+		"PATS_AGENT_HARNESS": a.Harness,
+		"PATS_PROMPT_FILE":   promptFile,
+		"PATS_OUTPUT_DIR":    outputDir,
+		"PATS_EFFORT":        a.Effort,
 	}
+	if runID != "" {
+		env["PATS_RUN_NAME"] = runID
+	}
+	return env
 }
 
-// HomeEnv is the kind-specific env derived from the in-sandbox HOME, or nil.
-// codex resolves its state dir from CODEX_HOME rather than trusting $HOME, so
-// it's pinned to the same .codex the run phase copies auth.json into.
-func HomeEnv(kind, home string) map[string]string {
-	if kind == "codex-cli-keyless" {
-		return map[string]string{"CODEX_HOME": filepath.Join(home, ".codex")}
+// HomeEnv is the env a harness's cli derives from the in-sandbox HOME, or
+// nil: a cli that resolves its state dir from a variable of its own rather
+// than from $HOME is pointed at the dir the run phase copies its login into.
+func HomeEnv(h *machine.Harness, home string) map[string]string {
+	if h == nil || h.Cli() == nil || len(h.Cli().HomeEnv) == 0 {
+		return nil
 	}
-	return nil
+	out := map[string]string{}
+	for k, rel := range h.Cli().HomeEnv {
+		out[k] = filepath.Join(home, filepath.FromSlash(rel))
+	}
+	return out
 }
 
-// credKeys are forwarded from the host env into a harness sandbox so the cli
-// can authenticate. the agent runs as an arbitrary uid with no keychain access,
-// so a token/key in the env is one way in (e.g. `claude setup-token` ->
-// CLAUDE_CODE_OAUTH_TOKEN, or ANTHROPIC_API_KEY). the other is the creds file
-// (see HostCredsFile), mounted mason-style.
+// CredEnv returns the env vars the harness may inherit from the host, and
+// whether any credential (an auth-env variable, not a pass-env one) was
+// found. the agent runs as an arbitrary uid with no keychain access, so a
+// token in the env is one way in; the other is the login file (HostCredsFile).
 //
-// the list is per-kind: forwarding every key to every harness lets an unrelated
-// credential sitting in the host env change a harness's auth mode behind your
-// back, which for a keyless kind means it silently stops being keyless.
-var credKeys = map[string][]string{
-	"claude-cli-keyless": {
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"CLAUDE_CODE_OAUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-	},
-	// deliberately empty, not missing: codex reads CODEX_API_KEY/OPENAI_API_KEY
-	// when either is set, so withholding them is what keeps this kind keyless.
-	// auth comes from the copied auth.json alone (see HostCredsFile).
-	"codex-cli-keyless": {},
-	// only the copilot-specific var: GH_TOKEN/GITHUB_TOKEN are ambient in many
-	// envs for unrelated tooling and usually lack the copilot-requests
-	// permission, so forwarding them would swap the harness's identity behind
-	// your back. no creds file either -- the default login lives in the os
-	// keychain, and the plaintext fallback hides inside ~/.copilot/config.json
-	// under an undocumented field (the file exists tokenless for keychain
-	// logins, so copying it would fake a credential).
-	"copilot-cli-keyless": {"COPILOT_GITHUB_TOKEN"},
-	"opencode-openrouter": {"OPENROUTER_API_KEY"},
-}
-
-// CredEnv returns the cred-related env vars the given kind may inherit from the
-// host, and whether any actual key/token (not just a base-url) was found.
-func CredEnv(kind string) (env map[string]string, hasToken bool) {
+// the lists are per harness: forwarding every key to every harness lets an
+// unrelated credential sitting in the host env change a harness's auth mode
+// behind your back, which for a keyless one means it silently stops being
+// keyless.
+func CredEnv(h *machine.Harness) (env map[string]string, hasToken bool) {
 	env = map[string]string{}
-	for _, k := range credKeys[kind] {
+	if h == nil {
+		return env, false
+	}
+	for _, k := range h.AuthEnv {
 		if v, ok := os.LookupEnv(k); ok && v != "" {
 			env[k] = v
-			if k != "ANTHROPIC_BASE_URL" {
-				hasToken = true
-			}
+			hasToken = true
+		}
+	}
+	for _, k := range h.PassEnv {
+		if v, ok := os.LookupEnv(k); ok && v != "" {
+			env[k] = v
 		}
 	}
 	return env, hasToken
 }
 
-// HostCredsFile returns a harness credential file and its HOME-relative
-// destination. keyring-backed logins have no file and return empty strings.
-func HostCredsFile(kind string) (host, relative string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", ""
+// AuthPathVar names the variable that points a harness at a copy of its
+// login file, "" for a harness that copies none.
+func AuthPathVar(h *machine.Harness) string {
+	if h == nil || h.LoginFile() == "" {
+		return ""
 	}
-	switch kind {
-	case "claude-cli-keyless":
-		relative = filepath.Join(".claude", ".credentials.json")
-	case "codex-cli-keyless":
-		relative = filepath.Join(".codex", "auth.json")
-	default:
-		return "", ""
-	}
-	p := filepath.Join(home, relative)
-	if _, err := os.Stat(p); err == nil {
-		return p, relative
-	}
-	return "", ""
+	return h.Cli().AuthPathVar()
 }
 
-// CredentialHint describes the host credential source used in auth warnings.
-func CredentialHint(kind string) string {
-	switch kind {
-	case "claude-cli-keyless":
-		return "a claude token env or ~/.claude/.credentials.json"
-	case "codex-cli-keyless":
-		return "~/.codex/auth.json (file-based codex login)"
-	case "copilot-cli-keyless":
-		return `COPILOT_GITHUB_TOKEN (macos: security find-generic-password -s copilot-cli -w; or gh auth token)`
-	case "opencode-openrouter":
-		return "OPENROUTER_API_KEY"
-	default:
+// HostCredsFile returns a harness's login file and its HOME-relative
+// destination: what AuthPathVar names, else the cli's own file under the
+// user's real home. a harness that copies no login returns empty strings, as
+// does a default file that is not there. a named file that cannot be read, or
+// a default one this process may not read (a strict snap and a home's
+// dotfiles), is an error naming the variable.
+func HostCredsFile(h *machine.Harness) (host, relative string, err error) {
+	if h == nil || h.LoginFile() == "" {
+		return "", "", nil
+	}
+	relative = filepath.FromSlash(h.LoginFile())
+	v := AuthPathVar(h)
+	if p := os.Getenv(v); p != "" {
+		if _, err := os.ReadFile(p); err != nil {
+			return "", "", fmt.Errorf("%s=%s: %w", v, p, err)
+		}
+		return p, relative, nil
+	}
+	home := os.Getenv("SNAP_REAL_HOME")
+	if home == "" {
+		if home, err = os.UserHomeDir(); err != nil {
+			return "", "", nil
+		}
+	}
+	p := filepath.Join(home, relative)
+	_, err = os.ReadFile(p)
+	switch {
+	case err == nil:
+		return p, relative, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return "", "", nil
+	}
+	return "", "", fmt.Errorf("%s cannot be read here (%w): set %s to a copy of it", p, err, v)
+}
+
+// CredentialHint describes the host credential source used in auth warnings:
+// the entry's own hint, else its variables and its login file.
+func CredentialHint(h *machine.Harness) string {
+	if h == nil {
 		return "harness credentials"
 	}
+	if h.AuthHint != "" {
+		return h.AuthHint
+	}
+	parts := append([]string(nil), h.AuthEnv...)
+	if f := h.LoginFile(); f != "" {
+		parts = append(parts, "~/"+f+" (or "+AuthPathVar(h)+")")
+	}
+	if len(parts) == 0 {
+		return "harness credentials"
+	}
+	return strings.Join(parts, " or ")
 }

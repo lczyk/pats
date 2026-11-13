@@ -1,12 +1,12 @@
-# action and go module updates for 1.x, one pull request a week each. a
-# release must be a week old before it is proposed, so one pulled for being
-# bad never gets here. dependabot reads this file from the default branch
-# only, so it lives here and names 1.x as the target.
+# action and go module updates, one pull request a week each. a release
+# must be a week old before it is proposed, so one pulled for being bad
+# never gets here. the go toolchain itself is not covered: its version is
+# named in the workflows, the snap and the proxy image, and moves by hand.
+# dependabot reads this file from the default branch only.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
-    target-branch: 1.x
     schedule:
       interval: weekly
     cooldown:
@@ -19,7 +19,6 @@ updates:
 
   - package-ecosystem: gomod
     directory: /
-    target-branch: 1.x
     schedule:
       interval: weekly
     cooldown:

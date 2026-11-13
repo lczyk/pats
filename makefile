@@ -1,6 +1,9 @@
 .SUFFIXES:
 
-SRCS := $(shell find ./cmd ./internal ./src -name '*.go')
+SRCS   := $(shell find ./cmd ./internal ./src ./images -name '*.go') ./version.go
+# go:embed inputs: the version string, what images/embed.go bakes in, and
+# the default clis and harnesses
+EMBEDS := ./VERSION ./images/provision-sandbox.sh ./internal/machine/defaults.yaml
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -8,7 +11,7 @@ help:  ## Show this help
 .PHONY: build
 build: ./bin/pats  ## Build the pats binary into ./bin (upx-compressed if available)
 
-./bin/pats: $(SRCS) makefile go.mod go.sum
+./bin/pats: $(SRCS) $(EMBEDS) makefile go.mod go.sum
 	mkdir -p ./bin
 	go build -o ./bin/pats ./cmd/pats
 	@if command -v upx >/dev/null 2>&1; then \
@@ -27,28 +30,69 @@ test:  ## Run the test suite with the race detector
 .PHONY: lint
 lint:  ## go vet + gofmt check (no writes)
 	go vet ./...
-	@out=$$(gofmt -s -l ./cmd ./internal ./src); \
+	@out=$$(gofmt -s -l ./cmd ./internal ./src ./images version.go); \
 	if [ -n "$$out" ]; then \
 		echo "unformatted files:"; echo "$$out"; exit 1; \
 	fi
 
 .PHONY: format
 format:  ## gofmt the tree in place
-	gofmt -s -w ./cmd ./internal ./src
+	gofmt -s -w ./cmd ./internal ./src ./images version.go
 
 .PHONY: cover
 cover:  ## Show test coverage per function in the CLI
 	go test -coverprofile=/tmp/pats-cover.out ./...
 	go tool cover -func=/tmp/pats-cover.out
 
+# every model in docs/spec/fizz must pass as written. publish.fizz also keeps the designs it rejects:
+# snapshot and selfres must still fail R2 (the race the aliases job exists for).
+.PHONY: fizz
+fizz:  ## Model-check the fizzbee specs in docs/spec/fizz
+	@if ! command -v fizz >/dev/null 2>&1; then echo "fizz not found, skipping (https://github.com/fizzbee-io/fizzbee)"; exit 0; fi; \
+	cd docs/spec/fizz && for f in *.fizz; do \
+		printf '%-24s ' "$$f"; \
+		timeout -k 10 300 fizz $$f 2>&1 | grep -E '^PASSED' || { echo "not passed"; exit 1; }; \
+	done; \
+	for d in snapshot selfres; do \
+		printf '%-24s ' "publish.fizz $$d"; \
+		timeout -k 10 300 fizz --preinit-hook "DESIGN = \"$$d\"" publish.fizz 2>&1 | grep -E '^FAILED' || { echo "passed, expected to fail"; exit 1; }; \
+	done
+
 FUZZTIME ?= 10s
 
 .PHONY: fuzz
 fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
-	go test ./internal/config -run - -fuzz FuzzParse -fuzztime $(FUZZTIME)
-	go test ./internal/eval -run - -fuzz FuzzParseScore -fuzztime $(FUZZTIME)
-	go test ./src/sandbox/proxy -run - -fuzz FuzzPermitsURL -fuzztime $(FUZZTIME)
-	go test ./src/sandbox/proxy -run - -fuzz FuzzParseURLRules -fuzztime $(FUZZTIME)
+	@for t in \
+		./internal/config:FuzzParse \
+		./internal/config:FuzzCheckTemplates \
+		./internal/eval:FuzzParseScore \
+		./internal/eval:FuzzParseVerdict \
+		./internal/eval:FuzzFinalTexts \
+		./internal/eval:FuzzStatTap \
+		./internal/eval:FuzzSummarize \
+		./internal/eval:FuzzEgressAudit \
+		./internal/eval:FuzzReadPins \
+		./internal/eval:FuzzCheckOpenrouterModels \
+		./src/sandbox:FuzzReadTar \
+		./src/sandbox:FuzzUnpackLayer \
+		./src/sandbox:FuzzFromRefs \
+		./src/sandbox:FuzzNormalizeRef \
+		./src/sandbox:FuzzEnvScript \
+		./src/sandbox:FuzzBuildSteps \
+		./src/sandbox:FuzzParseStamps \
+		./src/sandbox:FuzzIgnore \
+		./src/sandbox/proxy:FuzzDecide \
+		./src/sandbox/proxy:FuzzDecideAllow \
+		./src/sandbox/proxy:FuzzSpelledQuery \
+		./src/sandbox/proxy:FuzzNormalizeHost \
+		./src/sandbox/proxy:FuzzParseEntry \
+		./src/sandbox/proxy:FuzzParseClientHello \
+		./src/sandbox/proxy:FuzzPeekHello \
+	; do \
+		echo "go test $${t%%:*} -fuzz $${t##*:}"; \
+		go test "$${t%%:*}" -run - -fuzz "^$${t##*:}\$$" -fuzztime $(FUZZTIME) || failed="$$failed $${t##*:}"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "failed:$$failed"; exit 1; fi
 
 .PHONY: bench
 bench:  ## Run all benchmarks
@@ -57,15 +101,10 @@ bench:  ## Run all benchmarks
 .PHONY: verify
 verify: lint test  ## Aggregate gate: lint + test
 
-# docs/spec/publish.fizz checks each design in turn: snapshot and selfres fail R2 (the race the
-# aliases job exists for), converge -- the workflow as written -- passes.
-.PHONY: spec
-spec:  ## Model-check the image publish pipeline with fizzbee (docs/spec/publish.fizz)
-	@if ! command -v fizz >/dev/null 2>&1; then echo "fizz not found, skipping (https://github.com/fizzbee-io/fizzbee)"; exit 0; fi; \
-	cd docs/spec && for d in snapshot selfres converge; do \
-		printf '%-9s ' "$$d"; \
-		timeout -k 10 300 fizz --preinit-hook "DESIGN = \"$$d\"" publish.fizz 2>&1 | grep -E '^(PASSED|FAILED)' || echo "no result"; \
-	done
+# needs a logged-in gh, or GH_TOKEN. ci verifies with this same version.
+.PHONY: actions-lock
+actions-lock:  ## Re-pin the workflows' actions in .github/workflows/actions.lock (flags via ARGS=.., e.g. --verify, --relock)
+	go run github.com/github/gh-actions-lock/cmd/gh-actions-lock@v0.4.1 $(ARGS)
 
 .PHONY: clean
 clean:  ## Remove build artifacts

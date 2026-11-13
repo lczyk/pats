@@ -11,7 +11,7 @@ import (
 )
 
 func TestGenCA(t *testing.T) {
-	certPEM, keyPEM, err := genCA()
+	certPEM, keyPEM, err := GenCA()
 	require.NoError(t, err)
 	block, _ := pem.Decode(certPEM)
 	require.NotNil(t, block)

@@ -1,0 +1,176 @@
+# pats as a strict snap. docs/spec/snap.md is the design: what the reduced
+# build leaves out, the plugs, and how the version is stamped. it packs only
+# once the build tags it names exist in the code.
+name: pats
+title: pats
+summary: run ai coding agents on eval tasks in sandboxes, and score them
+description: |
+  pats runs ai coding agents (the claude, codex, copilot, opencode and pi
+  clis) on eval tasks, each in a docker or lxd sandbox behind an egress
+  proxy, and scores what they produce.
+
+  this snap is the strict build: docker and local lxd only, through the
+  docker and lxc clients it ships, and every step in a step sandbox. connect
+  the engine you use: `snap connect pats:docker` (or
+  `pats:docker docker:docker-daemon` for the docker snap), or
+  `snap connect pats:lxd lxd:lxd`.
+license: MIT
+adopt-info: pats
+base: core24
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  pats:
+    command: bin/pats
+    # links the shipped buildx where the docker cli looks for plugins.
+    command-chain:
+      - bin/docker-plugins
+    environment:
+      XDG_CACHE_HOME: $SNAP_USER_COMMON/cache
+      XDG_CONFIG_HOME: $SNAP_USER_COMMON/config
+      DOCKER_CONFIG: $SNAP_USER_COMMON/docker
+      LXD_DIR: /var/snap/lxd/common/lxd
+      PATH: $SNAP/bin:$PATH
+    plugs:
+      - network
+      - network-bind
+      - home
+      - docker
+      - lxd
+  # the shipped docker cli, with pats's docker config, for `pats.docker login`
+  # to a private registry pats pulls or builds from.
+  docker:
+    command: bin/docker
+    environment:
+      DOCKER_CONFIG: $SNAP_USER_COMMON/docker
+    plugs:
+      - network
+      - home
+      - docker
+
+parts:
+  pats:
+    plugin: go
+    source: .
+    build-snaps:
+      - go/1.26/stable
+    build-packages:
+      - binutils
+      - git
+    build-environment:
+      - CGO_ENABLED: "0"
+      # the copied checkout belongs to whoever ran snapcraft, not to the
+      # builder, and git refuses a repo it does not own.
+      - GIT_CONFIG_COUNT: "1"
+      - GIT_CONFIG_KEY_0: safe.directory
+      - GIT_CONFIG_VALUE_0: "*"
+    # a clean tree at the tag v$VERSION builds as that release: no commit
+    # stamped, so it shares the release's lxd proxy image. any other tree
+    # carries its commit and counts as a dev build, as a clone's build does.
+    override-pull: |
+      set -eu
+      craftctl default
+      v="$(cat VERSION)"
+      sha="$(git rev-parse --short=7 HEAD)"
+      tagged="$(git rev-parse -q --verify "refs/tags/v$v^{commit}" || true)"
+      changes="$(git status --porcelain --untracked-files=all)"
+      if [ "$tagged" = "$(git rev-parse HEAD)" ] && [ -z "$changes" ]; then
+        echo false > "$CRAFT_PART_SRC/../buildvcs"
+        craftctl set version="$v"
+      else
+        echo true > "$CRAFT_PART_SRC/../buildvcs"
+        craftctl set version="$v+git$sha"
+      fi
+      case "$v" in
+        *-*) craftctl set grade=devel ;;
+        *) craftctl set grade=stable ;;
+      esac
+    # static, so lxd can push this very binary into its proxy instance. built
+    # by hand: the plugin's own build runs `go mod download all` first, which
+    # adds to go.sum, and the toolchain then stamps a clean commit as modified.
+    override-build: |
+      set -eu
+      vcs="$(cat "$CRAFT_PART_SRC/../buildvcs")"
+      export GOFLAGS="-trimpath -buildvcs=$vcs"
+      before="$(git status --porcelain)"
+      go install -p "$CRAFT_PARALLEL_BUILD_COUNT" -tags=nohost,nobwrap,nopodman ./...
+      bin="$CRAFT_PART_INSTALL/bin/pats"
+      if readelf -l "$bin" | grep -q INTERP; then
+        echo "pats is not a static binary" >&2
+        exit 1
+      fi
+      if [ "$vcs" = true ] && ! go version -m "$bin" | grep -q vcs.revision; then
+        echo "a dev build of pats carries no commit" >&2
+        exit 1
+      fi
+      if [ -z "$before" ] && go version -m "$bin" | grep -q vcs.modified=true; then
+        echo "pats is stamped as modified, built from a clean tree" >&2
+        exit 1
+      fi
+
+  # the lxd client alone: the go plugin would build all of ./..., daemon and
+  # cgo included.
+  lxc:
+    plugin: go
+    source: https://github.com/canonical/lxd.git
+    source-tag: lxd-6.10.1
+    build-snaps:
+      - go/1.26/stable
+    build-environment:
+      - CGO_ENABLED: "0"
+    override-build: |
+      set -eu
+      mkdir -p "$CRAFT_PART_INSTALL/bin"
+      go build -trimpath -o "$CRAFT_PART_INSTALL/bin/lxc" ./lxc
+
+  # docker publishes a static cli per arch. its source has no plain go.mod,
+  # so the published build is taken as is, checked against a hash per arch
+  # (source-checksum cannot vary by arch). the version is a pin, bumped by
+  # hand with its hashes.
+  docker-cli:
+    plugin: nil
+    build-packages:
+      - curl
+    override-pull: |
+      set -eu
+      v=28.5.1
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) arch=x86_64 sum=5c0d19f31fece1accd0358bb8cff591fe25d7b6cba19f0fd412cbfdc07f75ff6 ;;
+        arm64) arch=aarch64 sum=de54e37157f45a43f42f6271302372d95c0eb992cc35ecaee74989bb14058c94 ;;
+      esac
+      curl -fsSLo docker.tgz "https://download.docker.com/linux/static/stable/$arch/docker-$v.tgz"
+      printf '%s  docker.tgz\n' "$sum" | sha256sum -c -
+      tar -xzf docker.tgz --strip-components=1 docker/docker
+    override-build: |
+      set -eu
+      install -D -m 0755 "$CRAFT_PART_SRC/docker" "$CRAFT_PART_INSTALL/bin/docker"
+
+  # buildkit for docker build: without it the cli falls back to the legacy
+  # builder. a static release, pinned and checked like the cli; the hashes are
+  # the release's checksums.txt.
+  docker-buildx:
+    plugin: nil
+    build-packages:
+      - curl
+    override-pull: |
+      set -eu
+      v=0.29.1
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) sum=7d2d7d6d4680aa349614965aaa33ccec43f1a9a21e908a5ce4cb6adfa5ad5141 ;;
+        arm64) sum=50e85c4e290b698908421161c1aee069bcc5d4a65b7b7201bfac3a176b223a7e ;;
+      esac
+      curl -fsSLo buildx "https://github.com/docker/buildx/releases/download/v$v/buildx-v$v.linux-$CRAFT_ARCH_BUILD_FOR"
+      printf '%s  buildx\n' "$sum" | sha256sum -c -
+    override-build: |
+      set -eu
+      install -D -m 0755 "$CRAFT_PART_SRC/buildx" "$CRAFT_PART_INSTALL/lib/docker/cli-plugins/docker-buildx"
+
+  docker-plugins:
+    plugin: dump
+    source: snap/local
+    stage:
+      - bin/docker-plugins

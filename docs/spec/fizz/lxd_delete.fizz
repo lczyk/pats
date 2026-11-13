@@ -1,0 +1,114 @@
+---
+options:
+  max_actions: 40
+  crash_on_yield: false
+deadlock_detection: true
+---
+# lxd instance delete vs a server-side create that outlives its client.
+#
+# models: src/sandbox/lxd.go deleteInstance and instanceBusy, as called from
+# lxdSession.Close (agent), closeEgress (proxy) and build (builder). the
+# server, its create operation and the deadline that kills the lxc client
+# are the environment. a model, not the code: the real loop gets a test.
+#
+# run: timeout -k 10 120 fizz lxd_delete.fizz
+#
+# requirements:
+# R1: IF the client's init was cut short while the server still creates the
+#     instance, THEN once Close reports success the instance SHALL NOT exist
+#     and SHALL NOT appear later.
+# R2: WHEN the server's create finishes within the retry budget, THE SYSTEM
+#     SHALL report success.
+# R3: Close SHALL return.
+# R2 is checked as coverage (KilledThenOk: success after a retried round is
+# reachable), not as a property; at this size that is the whole of it.
+#
+# CHECK_FIRST picks the order inside one retry round:
+#   False -- delete, then ask whether an operation still names the instance
+#            (the code at 11c7012). fails R1: the kill lands mid-create, the
+#            delete says not found, the create finishes, the ask sees nothing
+#            running, Close reports ok and the instance stays.
+#   True  -- ask first, then delete: a create that was not running before the
+#            delete cannot finish after it. passes; the code does this now.
+#
+# the ask (GET /1.0/operations) may fail (QUERY_FAILS). the code reads a failed
+# ask as busy and retries (instanceBusy): passes. QUERY_UNKNOWN_IS_BUSY = False
+# reads it as "nothing running" and fails R1: the kill lands mid-create, the ask
+# fails, the delete says not found, Close reports ok, the create finishes.
+
+CHECK_FIRST = True
+K = 2   # retry rounds before giving up (instanceGone)
+QUERY_FAILS = True
+QUERY_UNKNOWN_IS_BUSY = True
+
+action Init:
+    op = "idle"         # the server's create: idle | running | done
+    present = False     # the instance is visible on the server
+    client = "start"    # start | initing | closing | closed
+    result = None       # what Close reported: ok | gaveup
+    rounds = 0
+
+atomic fair action ClientInit:
+    require client == "start"
+    client = "initing"
+    op = "running"
+
+atomic fair action OpFinish:
+    require op == "running"
+    op = "done"
+    oneof:
+        present = True
+        pass
+
+atomic fair action ClientReturns:
+    require client == "initing" and op == "done"
+    client = "closing"
+
+atomic action Kill:
+    require client == "initing" and op == "running"
+    client = "closing"
+
+fair action Close:
+    require client == "closing"
+    done = False
+    while not done:
+        if CHECK_FIRST:
+            busy = (op == "running")
+            if QUERY_FAILS:
+                failed = oneof [False, True]
+                if failed:
+                    busy = QUERY_UNKNOWN_IS_BUSY
+            present = False
+        else:
+            present = False
+            busy = (op == "running")
+        if not busy:
+            result = "ok"
+            done = True
+        elif rounds >= K:
+            result = "gaveup"
+            done = True
+        else:
+            rounds = rounds + 1
+    client = "closed"
+
+atomic action Idle:
+    require client == "closed"
+    pass
+
+# R1
+always assertion NoLeftoverAfterOk:
+    if result == "ok":
+        return not present and op != "running"
+    return True
+
+# R3
+eventually always assertion Closes:
+    return client == "closed"
+
+# coverage: the kill races the create, and both outcomes are reachable.
+exists assertion KilledThenOk:
+    return result == "ok" and rounds > 0
+
+exists assertion GaveUp:
+    return result == "gaveup"

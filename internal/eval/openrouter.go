@@ -1,0 +1,249 @@
+package eval
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+	"os"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/lczyk/pats/internal/config"
+)
+
+// the model check (docs/spec/model-preflight.md): the model of an agent whose
+// harness names the openrouter catalogue is looked up in openrouter's public
+// catalogue before any sandbox starts, so a typo'd, retired or tool-less model
+// is a load error rather than a sandbox per pair.
+
+// checkModels is the check Run makes; a var so tests that are not about it
+// skip the network.
+var checkModels = checkOpenrouterModels
+
+// modelPrice is what the catalogue says a model's tokens cost, in us dollars
+// each: its list price, which the provider a call is routed to may differ
+// from.
+type modelPrice struct{ in, out, cacheRead, cacheWrite float64 }
+
+// cost prices a pair's tokens, false when it has none to price. input here
+// leaves the cached tokens out, as the summary's does.
+func (p *modelPrice) cost(in, out, cacheRead, cacheWrite int) (float64, bool) {
+	if p == nil || in+out+cacheRead+cacheWrite == 0 {
+		return 0, false
+	}
+	return p.in*float64(in) + p.out*float64(out) + p.cacheRead*float64(cacheRead) + p.cacheWrite*float64(cacheWrite), true
+}
+
+// priceOf reads a catalogue entry's prices, nil when it states none it can
+// read. a cache price it leaves out is the prompt's: such a token is billed
+// as input.
+func priceOf(m openrouterModel) *modelPrice {
+	num := func(s string) (float64, bool) {
+		f, err := strconv.ParseFloat(s, 64)
+		return f, err == nil && f >= 0 && !math.IsInf(f, 0) && !math.IsNaN(f)
+	}
+	in, ok1 := num(m.Pricing.Prompt)
+	out, ok2 := num(m.Pricing.Completion)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	p := &modelPrice{in: in, out: out, cacheRead: in, cacheWrite: in}
+	if f, ok := num(m.Pricing.InputCacheRead); ok {
+		p.cacheRead = f
+	}
+	if f, ok := num(m.Pricing.InputCacheWrite); ok {
+		p.cacheWrite = f
+	}
+	return p
+}
+
+// modelCheckBudget bounds the whole check.
+const modelCheckBudget = 10 * time.Second
+
+// openrouterURL is the api base the check reads; PATS_OPENROUTER_URL moves it
+// (tests point it at a local server).
+func openrouterURL() string {
+	if u := os.Getenv("PATS_OPENROUTER_URL"); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return "https://openrouter.ai/api/v1"
+}
+
+// routingSuffixes are openrouter's routing shortcuts: not catalogue ids, and
+// taken in any order beside a catalogue variant (x/y:nitro:free is x/y:free
+// routed by throughput).
+var routingSuffixes = map[string]bool{"nitro": true, "floor": true, "online": true, "exacto": true}
+
+// catalogueID is the catalogue id a model id names: its routing shortcuts
+// dropped wherever they sit, the rest kept in order.
+func catalogueID(id string) string {
+	parts := strings.Split(id, ":")
+	kept := parts[:1]
+	for _, s := range parts[1:] {
+		if !routingSuffixes[s] {
+			kept = append(kept, s)
+		}
+	}
+	return strings.Join(kept, ":")
+}
+
+type openrouterModel struct {
+	ID                  string   `json:"id"`
+	SupportedParameters []string `json:"supported_parameters"`
+	Pricing             struct {
+		Prompt          string `json:"prompt"`
+		Completion      string `json:"completion"`
+		InputCacheRead  string `json:"input_cache_read"`
+		InputCacheWrite string `json:"input_cache_write"`
+	} `json:"pricing"`
+}
+
+// checkOpenrouterModels checks each agent's model against the catalogue: it
+// exists, and takes tools. the caller passes the agents whose harness names
+// the catalogue (catalogueAgents). a model that fails is
+// the error; a catalogue that cannot be read is a warning, and the run goes
+// on. a cancelled ctx (ctrl-c) is never swallowed. it also hands back what
+// the catalogue says each agent's model costs, by agent name: what prices a
+// pair whose harness reports tokens and no cost.
+func checkOpenrouterModels(ctx context.Context, agents []config.Agent, client *http.Client) (prices map[string]*modelPrice, warnings []string, err error) {
+	check := agents
+	if len(check) == 0 {
+		return nil, nil, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, modelCheckBudget)
+	defer cancel()
+	models, ferr := fetchCatalogue(cctx, client)
+	if ferr != nil {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		return nil, []string{"model check skipped: " + ferr.Error()}, nil
+	}
+	byID := map[string]openrouterModel{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	var errs []string
+	prices = map[string]*modelPrice{}
+	for _, a := range check {
+		id := catalogueID(a.Model)
+		m, ok := byID[id]
+		if p := priceOf(m); ok && p != nil {
+			prices[a.Name] = p
+		}
+		switch {
+		case !ok:
+			msg := fmt.Sprintf("agent %q: model %q is not on openrouter", a.Name, a.Model)
+			if near := closestIDs(id, models, 3); len(near) > 0 {
+				msg += "; closest: " + strings.Join(near, ", ")
+			}
+			errs = append(errs, msg)
+		case !slices.Contains(m.SupportedParameters, "tools"):
+			errs = append(errs, fmt.Sprintf("agent %q: model %q does not take tools, which its harness drives the agent with", a.Name, a.Model))
+		}
+	}
+	if len(errs) > 0 {
+		return nil, nil, fmt.Errorf("model check:\n  %s", strings.Join(errs, "\n  "))
+	}
+	return prices, nil, nil
+}
+
+func fetchCatalogue(ctx context.Context, client *http.Client) ([]openrouterModel, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openrouterURL()+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openrouter catalogue: %s", resp.Status)
+	}
+	var body struct {
+		Data []openrouterModel `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("openrouter catalogue: %w", err)
+	}
+	if body.Data == nil {
+		return nil, fmt.Errorf("openrouter catalogue: no data")
+	}
+	return body.Data, nil
+}
+
+// closestIDs is up to n catalogue ids nearest to id by edit distance.
+func closestIDs(id string, models []openrouterModel, n int) []string {
+	type cand struct {
+		id string
+		d  int
+	}
+	var cs []cand
+	for _, m := range models {
+		cs = append(cs, cand{m.ID, editDistance(id, m.ID)})
+	}
+	sort.SliceStable(cs, func(i, j int) bool {
+		if cs[i].d != cs[j].d {
+			return cs[i].d < cs[j].d
+		}
+		return cs[i].id < cs[j].id
+	})
+	var out []string
+	for _, c := range cs[:min(n, len(cs))] {
+		out = append(out, c.id)
+	}
+	return out
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(b)]
+}
+
+// catalogueAgents is the agents whose harness checks its models against
+// catalogue. an agent with no model has none to check.
+func catalogueAgents(cfg *config.Config, agents []config.Agent, catalogue string) []config.Agent {
+	var out []config.Agent
+	for _, a := range agents {
+		if hd := cfg.HarnessOf(a); hd != nil && hd.Models == catalogue && a.Model != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// pairAgents is the distinct agents pairs run, in config order.
+func pairAgents(cfg *config.Config, pairs []config.TestPair) []config.Agent {
+	used := map[string]bool{}
+	for _, p := range pairs {
+		used[p.Agent] = true
+	}
+	var out []config.Agent
+	for _, a := range cfg.Agents {
+		if used[a.Name] {
+			out = append(out, a)
+		}
+	}
+	return out
+}

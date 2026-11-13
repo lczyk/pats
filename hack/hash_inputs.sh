@@ -18,6 +18,7 @@ case "$flavour" in
     sandbox)
         inputs=(
             "images/Dockerfile.sandbox-$ver"
+            "images/provision-sandbox.sh"
         )
         ;;
     *)

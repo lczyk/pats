@@ -8,16 +8,15 @@
 //
 // egress policy (Spec.Egress) controls the sandbox's network:
 //
-//	open/""    -> unrestricted
-//	none       -> no network at all
-//	proxy      -> no direct route out; an internal-only network plus a
-//	              filtering proxy sidecar (see src/sandbox/proxy) that
-//	              allow/denies by host and audits every request as json
-//	mitm-proxy -> proxy, plus: hosts named by url rules get their tls
-//	              terminated with a per-run CA so requests are filtered by
-//	              full url. the CA key reaches the proxy over env only and
-//	              never touches disk; the sandboxed process gets the CA cert
-//	              and a merged trust bundle, never the key.
+//	open  -> unrestricted
+//	none  -> no network at all
+//	proxy -> no direct route out; an internal-only network plus a filtering
+//	         proxy sidecar (see src/sandbox/proxy) that decides by the policy
+//	         and audits every request as json. hosts named by a url entry get
+//	         their tls terminated with a per-run CA so requests are filtered
+//	         by full url. the CA key reaches the proxy over env only and
+//	         never touches disk; the sandboxed process gets the CA cert and a
+//	         merged trust bundle, never the key.
 package sandbox
 
 import (
@@ -26,11 +25,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
-	"syscall"
-	"time"
+	"strings"
+	"sync"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // WorkMount is the in-sandbox path the host Workdir is bound to + used as cwd.
@@ -43,33 +43,92 @@ type Spec struct {
 	Env     map[string]string // environment seen by the command
 	Mounts  []Mount           // extra host->container binds (e.g. creds, home)
 	Egress  Egress            // outbound network policy (zero value = open)
+	Sudo    bool              // the agent may sudo (lxd only)
 }
 
 // Egress is the outbound network policy for one run. see the package doc for
 // the mode semantics.
 type Egress struct {
-	Mode      string // "" | open | none | proxy | mitm-proxy
-	Default   string // proxy: deny | allow
-	Allow     []string
-	Deny      []string
-	DenyURLs  []string // mitm-proxy: host-anchored url patterns to block (deny wins)
-	AllowURLs []string // mitm-proxy: a host with allow rules only passes matching urls
-	Image     string   // proxy sidecar image; empty -> the published build of src/sandbox/proxy
-	AuditPath string   // where to write the proxy's json audit log (proxy mode)
+	None      bool         // no network at all
+	Set       bool         // the proxy runs with Policy
+	Policy    proxy.Policy // what the proxy enforces
+	Image     string       // proxy sidecar image; empty -> the published build of src/sandbox/proxy
+	AuditPath string       // where to write the proxy's json audit log; "" discards it
+	SelfTest  bool         // prove the sandbox has no route out before running
 }
 
-// Mount is an extra host path bound into the sandbox.
+// Mount is an extra host path bound into the sandbox. a driver keeps the
+// order mounts come in, so a mount under another comes after it.
 type Mount struct {
 	Host      string
 	Container string
 	ReadOnly  bool
+	// Masks are paths under Container the sandbox sees as empty
+	// directories: a tmpfs over each where the mount is a bind, left out of
+	// the copy where it is pushed. a mount under a mask goes back over it.
+	Masks []string
 }
 
-// Sandbox runs a Spec in isolation, streaming stdout/stderr to the writers and
-// returning the command's exit code. a non-zero exit is NOT a Go error -- only
-// a failure to run (launch, context cancel, driver error) returns a non-nil err.
+// Sandbox runs a Spec in isolation. Start brings it up idle and returns a
+// Session to push files into, run commands in (as root or as the agent) and
+// pull files out of; Run is the one-shot form, Start + one agent Exec of
+// spec.Argv with spec.Env + Close. a non-zero exit is NOT a Go error -- only a
+// failure to run (launch, a context already done, driver error) returns a
+// non-nil err.
 type Sandbox interface {
+	Start(ctx context.Context, spec Spec) (Session, error)
 	Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error)
+}
+
+// Session is one started sandbox. Close tears it down and is safe to call
+// more than once.
+type Session interface {
+	// Push copies a host file to path, or a host directory's contents into
+	// path, inside the sandbox.
+	Push(ctx context.Context, hostPath, path string) error
+	// Pull copies the contents of the directory path inside the sandbox
+	// into hostDir.
+	Pull(ctx context.Context, path, hostDir string) error
+	// Exec runs cmd to completion, streaming its output. on ctx cancel the
+	// sandbox is stopped, since stopping the driver's client does not stop
+	// the process inside; what was killed reports its exit status, not an
+	// error, so the caller tells a cancel by its context.
+	Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error)
+	// HandOver ends the root part of a session: what root left under paths
+	// goes to the agent user (a missing path is skipped), and the agent gets
+	// the sudo the spec allows. called once, before the agent runs.
+	HandOver(ctx context.Context, paths ...string) error
+	// Sync brings the agent's writes to the workdir and the writable mounts
+	// back to their host paths; a no-op where they are bound.
+	Sync(ctx context.Context) error
+	Close() error
+}
+
+// Cmd is one process run in a started sandbox.
+type Cmd struct {
+	Argv []string
+	Env  map[string]string // on top of the sandbox's own (the egress env among it)
+	Root bool              // as root; otherwise as the agent user
+	Dir  string            // working directory; "" is WorkMount
+}
+
+// run is Run for any Sandbox: start, exec the agent, close.
+func run(ctx context.Context, sb Sandbox, spec Spec, stdout, stderr io.Writer) (int, error) {
+	sess, err := sb.Start(ctx, spec)
+	if err != nil {
+		return -1, err
+	}
+	defer sess.Close()
+	paths := []string{WorkMount}
+	for _, m := range spec.Mounts {
+		if !m.ReadOnly {
+			paths = append(paths, m.Container)
+		}
+	}
+	if err := sess.HandOver(ctx, paths...); err != nil {
+		return -1, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
+	return sess.Exec(ctx, Cmd{Argv: spec.Argv, Env: spec.Env}, stdout, stderr)
 }
 
 // ErrLaunch marks a Run error raised before the sandboxed process ever started
@@ -80,118 +139,334 @@ type Sandbox interface {
 // two apart.
 var ErrLaunch = errors.New("sandbox never launched")
 
-// New builds a Sandbox for the given driver. container drivers need an image.
-func New(driver, image string) (Sandbox, error) {
-	switch driver {
-	case "docker", "podman":
-		if image == "" {
-			return nil, fmt.Errorf("sandbox driver %q needs an image", driver)
+// Options is the place a driver works on.
+type Options struct {
+	Driver string // docker | podman | lxd
+	// lxd only.
+	Remote   string // an lxc remote; "" -> the cli's current one
+	VM       bool   // virtual machines rather than system containers
+	Uplink   string // an existing bridge for builders and proxies; "" -> pats's own
+	ProxyBin string // a linux pats for the server's arch, put in the proxy image
+	// EgressPool is the cidr egress networks are carved from; "" -> the
+	// default. docker, podman and lxd.
+	EgressPool string
+	// podman only: the cli's own overrides, CONTAINER_HOST (a service uri)
+	// and CONTAINER_CONNECTION (a named connection).
+	ContainerHost, ContainerConnection string
+	// Machine is the machine's own proxy, nil when pats runs without one.
+	Machine *MachineProxy
+	// TrustFile is SSL_CERT_FILE: host only, the bundle tls inspection
+	// trusts there.
+	TrustFile string
+	// machineErr is a machine proxy env WithEnv could not use: a start error.
+	machineErr error
+}
+
+// WithEnv fills what o leaves unset from the environment: EgressPoolEnv,
+// LXDUplinkEnv, LXDProxyBinEnv, podman's CONTAINER_HOST and
+// CONTAINER_CONNECTION, and the machine's proxy. the drivers themselves read
+// none of it.
+func (o Options) WithEnv() Options {
+	set := func(f *string, env string) {
+		if *f == "" {
+			*f = os.Getenv(env)
 		}
-		return &container{bin: driver, image: image}, nil
-	case "bwrap":
-		return nil, errors.New("sandbox driver bwrap not implemented yet")
-	case "":
-		return nil, errors.New("sandbox: empty driver")
-	default:
-		return nil, fmt.Errorf("sandbox: unknown driver %q", driver)
 	}
+	set(&o.EgressPool, EgressPoolEnv)
+	set(&o.Uplink, LXDUplinkEnv)
+	set(&o.ProxyBin, LXDProxyBinEnv)
+	set(&o.ContainerHost, "CONTAINER_HOST")
+	set(&o.ContainerConnection, "CONTAINER_CONNECTION")
+	if o.Machine == nil {
+		o.Machine, o.machineErr = Machine()
+	}
+	set(&o.TrustFile, "SSL_CERT_FILE")
+	return o
 }
 
-// container drives docker / podman (cli-compatible).
+// Limits caps a sandbox's resources; zero values leave the driver's default.
+type Limits struct {
+	CPU    int
+	Memory string // e.g. 8GiB
+	Disk   string // lxd only
+}
+
+// container drives docker / podman (cli-compatible); driver is which of the
+// two, and the cli r runs.
 type container struct {
-	bin   string
-	image string
-	// exec/execOut run the cli, swappable in tests (nil -> real exec). they
-	// cover the setup/teardown plumbing (egress etc.); the main agent `run`
-	// streams via exec.CommandContext directly and stays e2e-tested.
-	exec    func(ctx context.Context, bin string, args ...string) (string, error)
-	execOut func(ctx context.Context, bin string, args ...string) ([]byte, error)
+	p      *process
+	r      runner
+	o      Options
+	driver string
+	image  string // the sandbox's, "" on the driver itself
+	limits Limits
+	// egressPool is Options.EgressPool, parsed when a proxy needs it.
+	egressPool string
+	// confined is the daemon's answer, asked once and shared by every
+	// sandbox of the driver.
+	confined *confinedProbe
 }
 
+type confinedProbe struct {
+	mu   sync.Mutex
+	done bool
+	yes  bool
+}
+
+func newContainer(p *process, r runner, o Options) *container {
+	return &container{p: p, r: r, o: o, driver: o.Driver, egressPool: o.EgressPool, confined: &confinedProbe{}}
+}
+
+// noNewPrivs are the run flags that keep a container's processes from gaining
+// privileges, none on a daemon whose confinement they would break.
+func (c *container) noNewPrivs(ctx context.Context) ([]string, error) {
+	e := engines[c.driver]
+	if e.confined == nil {
+		return []string{"--security-opt", "no-new-privileges"}, nil
+	}
+	pr := c.confined
+	pr.mu.Lock()
+	done, yes := pr.done, pr.yes
+	pr.mu.Unlock()
+	if !done {
+		// asked outside the lock, so a start that waits can still be
+		// cancelled: two first starts may both ask.
+		out, err := c.dockerOut(ctx, "info", "--format", e.confinedInfo)
+		if err != nil {
+			return nil, err
+		}
+		yes = e.confined(string(out))
+		pr.mu.Lock()
+		pr.done, pr.yes = true, yes
+		pr.mu.Unlock()
+	}
+	if yes {
+		return nil, nil
+	}
+	return []string{"--security-opt", "no-new-privileges"}, nil
+}
+
+// Sandbox is c for sandboxes of o.Image.
+func (c *container) Sandbox(o SandboxOptions) (Sandbox, error) {
+	if o.Image == "" {
+		return nil, fmt.Errorf("sandbox driver %q needs an image", c.driver)
+	}
+	return c.on(o), nil
+}
+
+// on is a copy of c for sandboxes of o.
+func (c *container) on(o SandboxOptions) *container {
+	s := *c
+	s.image, s.limits = o.Image, o.Limits
+	return &s
+}
+
+// docker runs the cli and returns its output, stdout and stderr together.
 func (c *container) docker(ctx context.Context, args ...string) (string, error) {
-	if c.exec != nil {
-		return c.exec(ctx, c.bin, args...)
-	}
-	return docker(ctx, c.bin, args...)
+	return combined(ctx, c.r, args...)
 }
 
+// dockerOut runs the cli and returns its stdout alone, stderr in the error:
+// else a failed `docker run` collapses to a bare "exit status 125".
 func (c *container) dockerOut(ctx context.Context, args ...string) ([]byte, error) {
-	if c.execOut != nil {
-		return c.execOut(ctx, c.bin, args...)
-	}
-	return dockerOut(ctx, c.bin, args...)
+	return output(ctx, c.r, args...)
 }
 
 func (c *container) Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error) {
+	return run(ctx, c, spec, stdout, stderr)
+}
+
+// Start brings the container up idle (`sleep infinity` under --init) as root,
+// so a prepare step can run as root and the agent as the host uid, each by
+// exec. the workdir and mounts are bound, so the agent's files are on the
+// host as it writes them.
+func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	abs, err := filepath.Abs(spec.Workdir)
 	if err != nil {
-		return -1, fmt.Errorf("%w: resolve workdir: %w", ErrLaunch, err)
+		return nil, fmt.Errorf("%w: resolve workdir: %w", ErrLaunch, err)
+	}
+	// the lease before anything of the run exists, so clean judges it alive.
+	if err := c.p.holdLease(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
+	if !spec.Egress.None {
+		if err := c.o.machineCheck(c.driver); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+		}
 	}
 	// egress policy: none -> no network; proxy -> sidecar on an internal net.
-	netArgs, teardown, err := c.setupEgress(ctx, spec)
+	netArgs, env, teardown, err := c.setupEgress(ctx, spec)
 	if err != nil {
-		return -1, fmt.Errorf("%w: %w", ErrLaunch, err)
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
-	if teardown != nil {
-		defer teardown()
+	if teardown == nil {
+		teardown = func() {}
 	}
 
+	nnp, err := c.noNewPrivs(ctx)
+	if err != nil {
+		teardown()
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
 	args := []string{
-		"run", "--rm",
+		"run", "-d", "--rm",
 		"--init", // reap zombies if the agent spawns children
-		// run as the host user so files the agent writes into the bind-mounted
-		// workdir are host-owned -- else collect + cleanup hit root-owned files
-		// on linux. harness images must tolerate an arbitrary uid (writable
-		// HOME/tmp); that's handled when harness presets land.
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-w", WorkMount,
-		"-v", abs + ":" + WorkMount,
+		// the keepalive runs as root whatever the image's USER, so what ends
+		// the agent user's processes (a step's cleanup) never ends the box.
+		"--user", "0:0",
+		// an agent run as root (pats itself as root) could otherwise craft raw
+		// frames past its network's routing, or gain privileges via setuid.
+		"--cap-drop", "NET_RAW",
+	}
+	args = append(args, nnp...)
+	args = append(args, "-w", WorkMount, "-v", abs+":"+WorkMount)
+	// the run's labels go on every agent, named or not: they are what says
+	// the container is pats's, and whose.
+	args = append(args, c.p.runLabels()...)
+	args = append(args, engines[c.driver].runFlags...)
+	if name := agentName(abs); name != "" {
+		args = append(args, "--name", name)
 	}
 	args = append(args, netArgs...)
 	for _, m := range spec.Mounts {
 		mh, err := filepath.Abs(m.Host)
 		if err != nil {
-			return -1, fmt.Errorf("%w: resolve mount %s: %w", ErrLaunch, m.Host, err)
+			teardown()
+			return nil, fmt.Errorf("%w: resolve mount %s: %w", ErrLaunch, m.Host, err)
 		}
 		v := mh + ":" + m.Container
 		if m.ReadOnly {
 			v += ":ro"
 		}
 		args = append(args, "-v", v)
+		for _, mask := range m.Masks {
+			args = append(args, "--mount", "type=tmpfs,destination="+mask+engines[c.driver].maskOpts)
+		}
 	}
-	for _, kv := range sortedEnv(spec.Env) {
-		args = append(args, "-e", kv)
+	if c.limits.CPU > 0 {
+		args = append(args, "--cpus", fmt.Sprint(c.limits.CPU))
 	}
-	args = append(args, c.image)
-	args = append(args, spec.Argv...)
-
-	cmd := exec.CommandContext(ctx, c.bin, args...)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	// on ctx cancel (ctrl+C), SIGTERM the docker client so it stops the
-	// container (--rm then removes it) instead of orphaning it on SIGKILL.
-	// WaitDelay forces a hard kill if it doesn't exit in time.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 10 * time.Second
-
-	err = cmd.Run()
-	if err == nil {
-		return 0, nil
+	if c.limits.Memory != "" {
+		args = append(args, "--memory", c.limits.Memory)
 	}
-	if e, ok := asExitError(err); ok {
-		return e.ExitCode(), nil // ran; non-zero exit is the agent's
+	// the cid file names the container even when the cli is killed after the
+	// daemon made it, so a failed or cancelled start removes it.
+	// a private dir: in a shared one another user could plant the file, and
+	// a failed start would then remove a container of their choosing.
+	cidDir, err := os.MkdirTemp("", "pats-cid-")
+	if err != nil {
+		teardown()
+		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
-	return -1, fmt.Errorf("%s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", c.bin, err)
+	defer os.RemoveAll(cidDir)
+	cid := filepath.Join(cidDir, "cid")
+	args = append(args, "--cidfile", cid)
+	args = append(args, "--entrypoint", "sleep", c.image, "infinity")
+	out, err := c.dockerOut(ctx, args...)
+	if err != nil {
+		if b, rerr := os.ReadFile(cid); rerr == nil && len(b) > 0 {
+			rctx, cancel := context.WithTimeout(context.Background(), c.p.t.cliCleanup)
+			_, _ = c.docker(rctx, "rm", "-f", strings.TrimSpace(string(b)))
+			cancel()
+		}
+		teardown()
+		return nil, fmt.Errorf("%w: %s run failed (is the daemon up? `docker info`; on apple silicon an amd64 image may need --platform): %w", ErrLaunch, c.driver, err)
+	}
+	id := strings.TrimSpace(string(out))
+	if i := strings.LastIndexByte(id, '\n'); i >= 0 {
+		id = id[i+1:] // a pull's progress may precede the id
+	}
+	return &containerSession{c: c, id: id, env: env, teardown: teardown}, nil
 }
 
-// asExitError extracts a *exec.ExitError from err. cmd.Cancel/WaitDelay above
-// can wrap the exit error inside another error (e.g. on ctx cancel racing the
-// process exit), so this must use errors.As -- a bare `err.(*exec.ExitError)`
-// type assertion panics on exactly that wrapped case.
-func asExitError(err error) (*exec.ExitError, bool) {
-	var e *exec.ExitError
-	ok := errors.As(err, &e)
-	return e, ok
+// containerSession is a started container, addressed by id.
+type containerSession struct {
+	c        *container
+	id       string
+	env      map[string]string // under every exec's own: the machine's proxy, in an open sandbox
+	teardown func()            // the egress sidecar and network
+	once     sync.Once
+	rootRan  bool // a root exec happened, so HandOver has work to do
+}
+
+// Push and Pull copy a directory's contents, the /. form of docker cp: a
+// plain directory would land inside an existing destination under its own
+// name.
+func (s *containerSession) Push(ctx context.Context, hostPath, path string) error {
+	src := hostPath
+	if fi, err := os.Stat(hostPath); err == nil && fi.IsDir() {
+		src = strings.TrimSuffix(hostPath, "/") + "/."
+	}
+	if out, err := s.c.docker(ctx, "cp", src, s.id+":"+path); err != nil {
+		return fmt.Errorf("%s cp %s: %w (%s)", s.c.driver, hostPath, err, out)
+	}
+	return nil
+}
+
+func (s *containerSession) Pull(ctx context.Context, path, hostDir string) error {
+	if out, err := s.c.docker(ctx, "cp", s.id+":"+strings.TrimSuffix(path, "/")+"/.", hostDir); err != nil {
+		return fmt.Errorf("%s cp %s: %w (%s)", s.c.driver, path, err, out)
+	}
+	return nil
+}
+
+func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error) {
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	if cmd.Root {
+		user = "0:0"
+		s.rootRan = true
+	}
+	dir := cmd.Dir
+	if dir == "" {
+		dir = WorkMount
+	}
+	// the agent runs as the host uid so the files it writes into the bound
+	// workdir are host-owned -- else collect + cleanup hit root-owned files
+	// on linux. harness images must tolerate an arbitrary uid (writable
+	// HOME/tmp).
+	// the env goes in on stdin, read by a shell before the command runs: a
+	// value on the command line is readable by any local process (ps), and
+	// one in the cli's environment would change the cli.
+	args := []string{"exec", "-u", user, "-w", dir}
+	argv := cmd.Argv
+	var stdin io.Reader
+	if env := mergeEnv(s.env, cmd.Env); len(env) > 0 {
+		args = append(args, "-i")
+		argv, stdin = envArgv(argv), envScript(env)
+	}
+	args = append(args, s.id)
+	args = append(args, argv...)
+
+	// on ctx cancel (ctrl+C, the deadline) kill the container: ending the
+	// exec client leaves the process inside running.
+	kill := func() { _, _ = s.c.docker(context.Background(), "kill", s.id) }
+	return exitResult(s.c.p.execCancellable(ctx, s.c.r, stdin, stdout, stderr, kill, args...), s.c.driver+" exec failed")
+}
+
+func (s *containerSession) Sync(ctx context.Context) error { return nil }
+
+func (s *containerSession) HandOver(ctx context.Context, paths ...string) error {
+	if !s.rootRan {
+		return nil // nothing root could have left
+	}
+	script := fmt.Sprintf(`for p; do [ -e "$p" ] || continue; chown -R %d:%d "$p" || exit 1; done`, os.Getuid(), os.Getgid())
+	var out strings.Builder
+	code, err := s.Exec(ctx, Cmd{Argv: append([]string{"/bin/sh", "-c", script, "handover"}, paths...), Root: true}, &out, &out)
+	if err == nil && code != 0 {
+		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(out.String()))
+	}
+	if err != nil {
+		return fmt.Errorf("hand over %s: %w", strings.Join(paths, " "), err)
+	}
+	return nil
+}
+
+func (s *containerSession) Close() error {
+	s.once.Do(func() {
+		_, _ = s.c.docker(context.Background(), "rm", "-f", s.id)
+		s.teardown()
+	})
+	return nil
 }
 
 // sortedEnv renders the env map as sorted KEY=VALUE entries (stable argv).

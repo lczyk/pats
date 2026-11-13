@@ -1,14 +1,14 @@
-# pats egress proxy: filters sandbox outbound traffic by host, audits requests.
-# run by the run phase when a sandbox sets `egress: {mode: proxy}` (or
-# `mitm-proxy`, which additionally terminates tls for hosts with url rules).
+# pats egress proxy: the sidecar behind a sandbox's `egress:` block. it is the
+# pats binary itself, started as `pats egress run`, so the sidecar and the cli
+# share one engine (src/sandbox/proxy) and one env protocol (PATS_EGRESS_*).
 #
 # rootless: distroless nonroot (uid 65532), listens on unprivileged :8080,
-# writes nothing (audit goes to stdout), and takes its config -- the mitm CA
-# included -- inline via env, so it needs no fs access at all.
+# writes nothing (audit goes to stdout, readiness to stderr), and takes its
+# config -- the mitm CA included -- inline via env. the one file it reads is
+# the trust bundle the run phase mounts read-only when a policy terminates tls.
 #
 # published to ghcr.io/lczyk/pats/egress-proxy on tag push (publish-images
-# workflow); local build:
-#   docker build -t ghcr.io/lczyk/pats/egress-proxy:latest -f images/Dockerfile.egress-proxy .
+# workflow); local build: make egress-image.
 #
 # the build stage runs on the builder's own platform and cross-compiles for the
 # target, so a multi-arch build never runs go under emulation.
@@ -17,10 +17,13 @@ ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY cmd/egress-proxy ./cmd/egress-proxy
-COPY src/sandbox/proxy ./src/sandbox/proxy
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /egress-proxy ./cmd/egress-proxy
+COPY VERSION *.go ./
+COPY cmd ./cmd
+COPY internal ./internal
+COPY src ./src
+COPY images ./images
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /pats ./cmd/pats
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /egress-proxy /egress-proxy
-ENTRYPOINT ["/egress-proxy"]
+COPY --from=build /pats /pats
+ENTRYPOINT ["/pats", "egress", "run"]

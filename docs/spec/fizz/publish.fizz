@@ -1,0 +1,206 @@
+---
+deadlock_detection: true
+options:
+  max_concurrent_actions: 1
+---
+
+# publish_images (.github/workflows/publish_images.yml): concurrent workflow runs
+# racing on the registry's rolling tags.
+#
+# run: make specs   (converge, the default, PASSES; snapshot and selfres FAIL R2)
+#      or: timeout -k 10 120 fizz --preinit-hook 'DESIGN = "converge"' publish.fizz
+#
+# what it models: each pushed git tag starts one workflow run. a run's jobs are
+# separate actions, so the scheduler may interleave any two runs' jobs in any
+# order. registry tags are last-write-wins. versions are small ints: 1 and 2 are
+# stable (2 newer), 3 is a pre-release (sorts above both, never stable). the
+# docker build itself is one step; nothing about image content is modelled.
+#
+# requirements:
+# R1: THE PIPELINE SHALL point :latest only at a stable version.
+# R2: WHEN every pushed tag's run has finished, :latest (proxy and sandbox) SHALL
+#     name the newest stable version whose images were published.
+# R3: WHEN every run has finished, proxy :latest and sandbox :latest SHALL agree.
+# R4: THE PIPELINE SHALL point :latest only at a version whose image is published.
+#
+# designs:
+# snapshot -- a run decides "am i the newest stable" from a snapshot of git tags
+#             taken when it starts; proxy and sandbox-tags each push the version
+#             tag and, if so, the alias in the same command. fails R2: two
+#             stable releases pushed close together can end with :latest on
+#             the older one, and proxy and sandbox disagreeing.
+# selfres  -- as snapshot, but the proxy job resolves from its own checkout.
+#             same failure, no new one.
+# converge -- the workflow as written. version tags only from the build jobs; a
+#             final `aliases` job (concurrency group, no cancel-in-progress:
+#             serialised) re-reads git tags and the registry when it starts and
+#             points both :latest at the newest stable version published for
+#             both images. a waiting aliases job may be cancelled by a newer one
+#             queueing behind it.
+#
+# READ_ERRORS: an aliases job's `imagetools inspect` may fail for a reason
+# other than a missing tag (network, auth, a 5xx). the job fails on such an
+# error (ERRORS_FAIL, the workflow): a failed job is visible and is re-run, and
+# R2/R3 are claimed only when no aliases job failed. passes. ERRORS_FAIL =
+# False reads any failure as "not published" and moves on to an older version,
+# so it can succeed having pointed :latest back at an older release (R2), with
+# no job failed. not modelled: a failure between the job's two alias writes
+# (proxy, then sandbox); the job fails and its re-run writes both.
+#
+# not modelled: a build failing midway, the queue order beyond one running and
+# one waiting, registry eventual consistency, workflow_dispatch runs.
+
+VERSIONS = [1, 2, 3]
+STABLE = [1, 2]
+DESIGN = "converge"
+READ_ERRORS = True
+ERRORS_FAIL = True
+
+def newest_stable(vs):
+    best = 0
+    for v in vs:
+        if v in STABLE and v > best:
+            best = v
+    return best
+
+action Init:
+    pushed = []              # git tags on the remote, in push order
+    runs = {}                # version -> run state
+    proxy_tags = []          # versions published as egress-proxy:<v>
+    sandbox_tags = []        # versions published as sandbox:<v>
+    latest_proxy = 0         # 0 = unset
+    latest_sandbox = 0
+    alias_order = []         # converge: versions whose aliases job ran, in order
+    cancels = 0              # converge: aliases jobs dropped by the concurrency group
+    failed_jobs = 0          # aliases jobs failed on a registry read error
+
+# the environment: a tag push starts a run.
+atomic action PushTag:
+    v = oneof [x for x in VERSIONS if x not in pushed]
+    pushed.append(v)
+    runs[v] = record(alias=False, proxy_alias=False, resolved=False,
+                     proxy_resolved=False, proxy_done=False, built=False,
+                     sandbox_done=False, aliases_done=False)
+
+# snapshot / selfres: one snapshot of git tags at the run's start. converge
+# decides nothing up front, so it never resolves.
+atomic action ResolveTags:
+    require DESIGN != "converge"
+    v = oneof [x for x in runs if not runs[x].resolved]
+    runs[v].resolved = True
+    runs[v].alias = (v == newest_stable(pushed))
+
+# selfres only: the proxy job's own checkout, taken whenever it starts.
+atomic action ProxyResolve:
+    require DESIGN == "selfres"
+    v = oneof [x for x in runs if not runs[x].proxy_resolved]
+    runs[v].proxy_resolved = True
+    runs[v].proxy_alias = (v == newest_stable(pushed))
+
+atomic action ProxyPush:
+    if DESIGN == "selfres":
+        v = oneof [x for x in runs if runs[x].proxy_resolved and not runs[x].proxy_done]
+        alias = runs[v].proxy_alias
+    else:
+        v = oneof [x for x in runs if (runs[x].resolved or DESIGN == "converge") and not runs[x].proxy_done]
+        alias = runs[v].alias and DESIGN == "snapshot"
+    runs[v].proxy_done = True
+    if v not in proxy_tags:
+        proxy_tags.append(v)
+    if alias:
+        latest_proxy = v
+
+atomic action SandboxBuild:
+    v = oneof [x for x in runs if not runs[x].built]
+    runs[v].built = True
+
+atomic action SandboxTags:
+    v = oneof [x for x in runs if (runs[x].resolved or DESIGN == "converge") and runs[x].built and not runs[x].sandbox_done]
+    runs[v].sandbox_done = True
+    if v not in sandbox_tags:
+        sandbox_tags.append(v)
+    if runs[v].alias and DESIGN != "converge":
+        latest_sandbox = v
+
+# converge only: serialised, re-reads everything when it runs.
+atomic action Aliases:
+    require DESIGN == "converge"
+    v = oneof [x for x in runs if runs[x].proxy_done and runs[x].sandbox_done and not runs[x].aliases_done]
+    runs[v].aliases_done = True
+    alias_order.append(v)
+    both = [x for x in proxy_tags if x in sandbox_tags]
+    if READ_ERRORS:
+        # the inspect of the newest published stable version may fail.
+        newest = newest_stable(both)
+        if newest != 0:
+            err = oneof [False, True]
+            if err and ERRORS_FAIL:
+                failed_jobs = failed_jobs + 1
+                both = None
+            elif err:
+                both = [x for x in both if x != newest]
+    if both != None:
+        n = newest_stable(both)
+        if n != 0:
+            latest_proxy = n
+            latest_sandbox = n
+
+# converge only: a concurrency group with cancel-in-progress off keeps one
+# running and one pending job; a newer job queueing cancels the pending one. so
+# an aliases job may be dropped, but only while another run's aliases job is
+# queued behind it and will run later.
+atomic action CancelAliases:
+    require DESIGN == "converge"
+    ready = [x for x in runs if runs[x].proxy_done and runs[x].sandbox_done and not runs[x].aliases_done]
+    v = oneof ready
+    require len([x for x in ready if x != v]) > 0
+    runs[v].aliases_done = True
+    cancels = cancels + 1
+
+def run_finished(r, design):
+    done = r.proxy_done and r.sandbox_done
+    if design == "converge":
+        done = done and r.aliases_done
+    return done
+
+def quiescent(pushed, runs, design, versions):
+    # every run started has finished, however many tags were pushed: a
+    # one- or two-release history is checked too (sweep revision).
+    for v in runs:
+        if not run_finished(runs[v], design):
+            return False
+    return True
+
+atomic action Done:
+    require quiescent(pushed, runs, DESIGN, VERSIONS)
+    pass
+
+always assertion R1_LatestIsStable:
+    return latest_proxy in [0] + STABLE and latest_sandbox in [0] + STABLE
+
+always assertion R2_ConvergesToNewest:
+    if failed_jobs > 0:
+        return True
+    if not quiescent(pushed, runs, DESIGN, VERSIONS):
+        return True
+    want = newest_stable([x for x in proxy_tags if x in sandbox_tags])
+    return latest_proxy == want and latest_sandbox == want
+
+always assertion R3_ProxyAndSandboxAgree:
+    if not quiescent(pushed, runs, DESIGN, VERSIONS):
+        return True
+    return latest_proxy == latest_sandbox
+
+always assertion R4_LatestIsPublished:
+    return (latest_proxy == 0 or latest_proxy in proxy_tags) and (latest_sandbox == 0 or latest_sandbox in sandbox_tags)
+
+exists assertion AllRunsFinish:
+    return quiescent(pushed, runs, DESIGN, VERSIONS)
+
+# coverage for converge: the race the fix exists for (the older stable run's
+# aliases job runs last), and a cancelled aliases job, each still ending converged.
+exists assertion OlderRunAliasesLast:
+    return DESIGN != "converge" or (quiescent(pushed, runs, DESIGN, VERSIONS) and len(alias_order) > 0 and alias_order[-1] == 1 and 2 in alias_order)
+
+exists assertion CancelledAliasesJob:
+    return DESIGN != "converge" or (quiescent(pushed, runs, DESIGN, VERSIONS) and cancels > 0)
