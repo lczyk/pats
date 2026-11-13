@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -964,5 +965,8 @@ func TestLXDOperationNames(t *testing.T) {
 // refused says whether err is an entry refused for leaving its destination:
 // by its own name, or by the root it was written through.
 func refused(err error) bool {
-	return errors.Is(err, errEscape) || (err != nil && strings.Contains(err.Error(), "path escapes from parent"))
+	// go 1.26.3 says "file exists" of a mkdir over a link out of the
+	// root: refused all the same, in other words.
+	return errors.Is(err, errEscape) || errors.Is(err, fs.ErrExist) ||
+		(err != nil && strings.Contains(err.Error(), "path escapes from parent"))
 }

@@ -48,7 +48,15 @@ func TestContainerRunMountsAndEnv(t *testing.T) {
 	assert.Equal(t, code, 0)
 	assert.ContainsString(t, out.String(), "hello-pats")
 	assert.ContainsString(t, out.String(), "hi")
-	assert.ContainsString(t, out.String(), "NoNewPrivs:\t1")
+	// a confined daemon (the docker snap's) denies every exec under
+	// no-new-privileges, so pats leaves it off there.
+	nnp, err := sb.(*container).noNewPrivs(context.Background())
+	require.NoError(t, err)
+	want := "1"
+	if len(nnp) == 0 {
+		want = "0"
+	}
+	assert.ContainsString(t, out.String(), "NoNewPrivs:\t"+want)
 }
 
 func TestContainerExitCode(t *testing.T) {

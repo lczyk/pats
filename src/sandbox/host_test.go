@@ -393,11 +393,13 @@ func TestCopyTreeStaysInside(t *testing.T) {
 	linked := filepath.Join(base, "linked")
 	require.NoError(t, os.MkdirAll(linked, 0o755))
 	require.NoError(t, os.Symlink(outside, filepath.Join(linked, "d")))
-	assert.Error(t, copyInto(src, linked), "path escapes from parent")
+	err = copyInto(src, linked)
+	assert.That(t, refused(err), "a dir over a link out: %v", err)
 	unharmed()
 
 	// a path under what a sandbox wrote, through a link it left there.
-	assert.Error(t, copyUnder(src, "out", filepath.Join(base, "leak")), "path escapes from parent")
+	err = copyUnder(src, "out", filepath.Join(base, "leak"))
+	assert.That(t, refused(err), "a path through a link out: %v", err)
 	_, err = os.Stat(filepath.Join(base, "leak", "victim"))
 	assert.That(t, os.IsNotExist(err), "a file outside the sandbox's directory was copied")
 	require.NoError(t, copyUnder(src, "d", filepath.Join(base, "sub")))

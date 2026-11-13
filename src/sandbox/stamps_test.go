@@ -49,9 +49,12 @@ func TestStampScript(t *testing.T) {
 	}
 	write("claude", "echo '2.1.319 (Claude Code)'")
 	write("codex", "echo 'codex-cli 0.167.0'")
+	// a PATH of the test's dir alone: a cli the machine has (a copilot shim
+	// that cannot say its version) is not the test's. the script needs only
+	// the shell's builtins.
 	run := func() (string, error) {
 		cmd := exec.Command(sh, "-c", stampScript(allCLIs))
-		cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+		cmd.Env = []string{"PATH=" + dir}
 		out, err := cmd.Output()
 		return string(out), err
 	}
@@ -63,7 +66,7 @@ func TestStampScript(t *testing.T) {
 
 	// only the clis asked for are run, and with none nothing is.
 	only := exec.Command(sh, "-c", stampScript([]string{"codex", "not a cli; rm -rf /"}))
-	only.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+	only.Env = []string{"PATH=" + dir}
 	b, err := only.Output()
 	require.NoError(t, err)
 	assert.Equal(t, string(b), "codex=codex-cli 0.167.0\n")
