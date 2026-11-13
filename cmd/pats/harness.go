@@ -18,7 +18,7 @@ import (
 // HarnessCommand groups the commands about one harness.
 type HarnessCommand struct {
 	Parse HarnessParseCommand `command:"parse" description:"run a harness's parse script over a stdout log: the summary, the reply, each line it failed on"`
-	Pin   HarnessPinCommand   `command:"pin" description:"fetch a cli at a version and print its pin: the sha256 of its artefact for each arch"`
+	Pin   HarnessPinCommand   `command:"pin" description:"fetch a cli at a version and print its pin: the hash of its artefact for each arch"`
 }
 
 // HarnessPinCommand prints the pin of a cli's version.

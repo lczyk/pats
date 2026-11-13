@@ -40,24 +40,24 @@ clis:
     artefacts:
       `+srv.URL+`/tool-${version}-x64.tgz:
         arch: [amd64]
-        sha256: `+zero+`
+        hash: sha256:`+zero+`
         bin: package/tool
       `+srv.URL+`/tool-${version}-arm64.tgz:
         arch: [arm64]
-        sha256: `+zero+`
+        hash: sha256:`+zero+`
         bin: package/tool
   both:
     version: 1.0.0
     artefacts:
       `+srv.URL+`/both-${version}:
         arch: [amd64, arm64]
-        sha256: `+zero+`
+        hash: sha256:`+zero+`
   half:
     version: 1.0.0
     artefacts:
       `+srv.URL+`/half-${version}:
         arch: [amd64]
-        sha256: `+zero+`
+        hash: sha256:`+zero+`
 `)
 	var out bytes.Buffer
 	require.NoError(t, PinCLI(context.Background(), tb, "tool", "2.5.0", nil, &out))
@@ -69,14 +69,14 @@ clis:
     artefacts:
       `+srv.URL+`/tool-${version}-x64.tgz:
         arch: [amd64]
-        sha256: `+x64+`
+        hash: sha256:`+x64+`
         bin: package/tool
       `+srv.URL+`/tool-${version}-arm64.tgz:
         arch: [arm64]
-        sha256: `+arm+`
+        hash: sha256:`+arm+`
         bin: package/tool
 `)
-	assert.ContainsString(t, out.String(), "    version: 2.5.0\n    sha256:\n      amd64: "+x64+"\n      arm64: "+arm+"\n")
+	assert.ContainsString(t, out.String(), "    version: 2.5.0\n    hash:\n      amd64: sha256:"+x64+"\n      arm64: sha256:"+arm+"\n")
 	for _, s := range []string{x64, arm} {
 		_, err := os.Stat(filepath.Join(cache, "pats", "harness", s))
 		require.NoError(t, err)
@@ -88,8 +88,8 @@ clis:
 	require.NoError(t, PinCLI(context.Background(), tb, "both", "3.0.0", nil, &out))
 	assert.Len(t, asked, 1)
 	one := sha("/both-3.0.0")
-	assert.ContainsString(t, out.String(), "        arch: [amd64, arm64]\n        sha256: "+one+"\n\n")
-	assert.ContainsString(t, out.String(), "      amd64: "+one+"\n      arm64: "+one+"\n")
+	assert.ContainsString(t, out.String(), "        arch: [amd64, arm64]\n        hash: sha256:"+one+"\n\n")
+	assert.ContainsString(t, out.String(), "      amd64: sha256:"+one+"\n      arm64: sha256:"+one+"\n")
 
 	assert.Error(t, PinCLI(context.Background(), tb, "half", "1.0.0", nil, &out), `cli "half" has no artefact for arm64`)
 	assert.Error(t, PinCLI(context.Background(), tb, "nope", "1.0.0", nil, &out), `unknown cli "nope" (both, half, tool)`)

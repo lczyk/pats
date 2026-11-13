@@ -438,8 +438,8 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	assert.Equal(t, spec.Base, "") // on the pats sandbox
 	require.Len(t, spec.Harness, 2)
 	_, art, _ := claude.ArtefactFor("arm64", "")
-	assert.Equal(t, spec.Harness[0].Artefact.SHA256, art.SHA256)
-	assert.Equal(t, spec.Harness[0].File, "/cache/"+art.SHA256)
+	assert.Equal(t, spec.Harness[0].Artefact.SHA256, art.SHA256())
+	assert.Equal(t, spec.Harness[0].File, "/cache/"+art.SHA256())
 	assert.Equal(t, spec.Harness[0].Artefact.Bin, "package/claude")
 
 	f, err := readPins(dir)
@@ -448,7 +448,7 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	require.NotNil(t, e)
 	assert.Equal(t, e.Arch, "arm64")
 	assert.Equal(t, e.Image.Built, true)
-	assert.EqualMaps(t, e.Harnesses["claude"], map[string]string{"version": claude.Version, "sha256": art.SHA256, "tree": spec.Harness[0].Artefact.TreeID()})
+	assert.EqualMaps(t, e.Harnesses["claude"], map[string]string{"version": claude.Version, "hash": art.Hash, "tree": spec.Harness[0].Artefact.TreeID()})
 	assert.That(t, e.Inputs["harnesses"] != "", "the pin has no input for its harnesses")
 
 	// an image: is the user's whole statement of what is inside: nothing is
@@ -593,7 +593,7 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 
 // a harness item's own pin is what init fetches and places for the sandboxes
 // its agents run in, and what a run compares the image's stamps with: not
-// the machine's pin of the cli. an arch the pin has no sha256 for fails
+// the machine's pin of the cli. an arch the pin has no hash for fails
 // init, naming the harness, the version and the arch.
 func TestInitPlacesAProjectsPin(t *testing.T) {
 	dir := t.TempDir()
@@ -605,7 +605,7 @@ hxx:
   items:
     claude-cli-keyless:
       version: 9.9.9
-      sha256: {arm64: ` + sha + `}
+      hash: {arm64: sha256:` + sha + `}
 agx: {kind: agent, defaults: {model: m}, items: {cc: {harness: claude-cli-keyless, sandbox: dflt}}}
 txx: {kind: task, items: {txx: {prompt: p}}}
 sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
@@ -648,5 +648,5 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	out.Reset()
 	err = Init(parseCfg(t, body), InitOptions{ConfigDir: dir, Out: &out})
 	assert.Error(t, err, "init failed for sandbox(es) dflt")
-	assert.ContainsString(t, out.String(), "harness claude-cli-keyless pins cli claude at 9.9.9 with no sha256 for amd64")
+	assert.ContainsString(t, out.String(), "harness claude-cli-keyless pins cli claude at 9.9.9 with no hash for amd64")
 }

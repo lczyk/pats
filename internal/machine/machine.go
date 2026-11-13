@@ -48,56 +48,59 @@ type CLI struct {
 // the clis table has it.
 func (c *CLI) PinnedBy() string { return c.by }
 
-// Pin is the cli's pin as one line: its version and each arch's sha256. two
+// Pin is the cli's pin as one line: its version and each arch's hash. two
 // entries of one cli with the same line place the same bytes.
 func (c *CLI) Pin() string {
 	parts := []string{c.Version}
 	for _, arch := range Arches {
 		if _, a, ok := c.ArtefactKey(arch); ok {
-			parts = append(parts, arch+":"+a.SHA256)
+			parts = append(parts, arch+":"+a.Hash)
 		}
 	}
 	return strings.Join(parts, " ")
 }
 
 // pinned is the cli at a harness's own pin: the version, and for each
-// artefact the sha256 the pin has for its arches. where each is fetched
+// artefact the hash the pin has for its arches. where each is fetched
 // from and how it is placed stay the table's. an arch the pin has no
-// sha256 for has no artefact.
-func (c *CLI) pinned(harness, version string, shas map[string]string) (*CLI, error) {
+// hash for has no artefact.
+func (c *CLI) pinned(harness, version string, hashes map[string]string) (*CLI, error) {
 	out := *c
 	out.Version, out.by, out.Artefacts = version, harness, map[string]Artefact{}
-	left := maps.Clone(shas)
+	left := maps.Clone(hashes)
 	for _, u := range sortedKeys(c.Artefacts) {
 		a := c.Artefacts[u]
 		at := Artefact{Bin: a.Bin}
 		for _, arch := range a.Arch {
-			sha, ok := shas[arch]
+			hash, ok := hashes[arch]
 			if !ok {
 				continue
 			}
 			delete(left, arch)
-			if at.SHA256 != "" && at.SHA256 != sha {
-				return nil, fmt.Errorf("sha256 has two values for %s, which are one file of cli %s", strings.Join(a.Arch, " and "), c.Name)
+			if at.Hash != "" && at.Hash != hash {
+				return nil, fmt.Errorf("hash has two values for %s, which are one file of cli %s", strings.Join(a.Arch, " and "), c.Name)
 			}
-			at.Arch, at.SHA256 = append(at.Arch, arch), sha
+			at.Arch, at.Hash = append(at.Arch, arch), hash
 		}
 		if len(at.Arch) > 0 {
 			out.Artefacts[u] = at
 		}
 	}
 	if len(left) > 0 {
-		return nil, fmt.Errorf("sha256 %s: cli %s has no artefact for it", strings.Join(sortedKeys(left), ", "), c.Name)
+		return nil, fmt.Errorf("hash %s: cli %s has no artefact for it", strings.Join(sortedKeys(left), ", "), c.Name)
 	}
 	return &out, nil
 }
 
 // Artefact is one file a cli is published as (docs/spec/harness-images.md).
 type Artefact struct {
-	Arch   []string `yaml:"arch"`          // the arches the file is for
-	SHA256 string   `yaml:"sha256"`        // the file's
-	Bin    string   `yaml:"bin,omitempty"` // the executable inside the file, a gzipped tar; "" when the file is the executable
+	Arch []string `yaml:"arch"`          // the arches the file is for
+	Hash string   `yaml:"hash"`          // the file's, as sha256:<hex>: the one kind there is
+	Bin  string   `yaml:"bin,omitempty"` // the executable inside the file, a gzipped tar; "" when the file is the executable
 }
+
+// SHA256 is the hex of the artefact's hash.
+func (a Artefact) SHA256() string { return strings.TrimPrefix(a.Hash, HashKind) }
 
 // Arches are the arches a harness cli is placed for.
 var Arches = []string{"amd64", "arm64"}
@@ -143,11 +146,11 @@ type Harness struct {
 	// Parse is the script that reads the command's stdout
 	// (docs/spec/harness-parse.md), "" for none.
 	Parse string `yaml:"parse,omitempty"`
-	// Version and SHA256 are a project's own pin of the harness's cli, for
-	// the sandboxes its agents run in: a version, and the sha256 of each
+	// Version and Hash are a project's own pin of the harness's cli, for
+	// the sandboxes its agents run in: a version, and the hash of each
 	// arch's artefact (docs/spec/harness-images.md). a machine pins in clis.
 	Version string            `yaml:"version,omitempty"`
-	SHA256  map[string]string `yaml:"sha256,omitempty"`
+	Hash    map[string]string `yaml:"hash,omitempty"`
 
 	// From is the last place that set a key of the entry: FromDefault,
 	// FromMachine or FromProject.
@@ -335,8 +338,8 @@ func (t *Tables) check() error {
 				}
 				taken[x] = u
 			}
-			if !sha256Re.MatchString(a.SHA256) {
-				add("clis.%s: artefact %s: sha256 is 64 lower-case hex digits", name, u)
+			if !hashRe.MatchString(a.Hash) {
+				add("clis.%s: artefact %s: hash is %s and 64 lower-case hex digits", name, u, HashKind)
 			}
 			if a.Bin != "" && !underHome(a.Bin) {
 				add("clis.%s: artefact %s: bin %q is not a path inside the artefact", name, u, a.Bin)
@@ -380,29 +383,29 @@ func (t *Tables) check() error {
 		if h.Login && (h.cli == nil || h.cli.LoginFile == "") {
 			add("harnesses.%s: login needs a cli with a login-file", name)
 		}
-		if h.Version != "" || len(h.SHA256) > 0 {
+		if h.Version != "" || len(h.Hash) > 0 {
 			ok := true
 			bad := func(format string, a ...any) {
 				add("harnesses.%s: "+format, append([]any{name}, a...)...)
 				ok = false
 			}
-			if h.Version == "" || len(h.SHA256) == 0 {
-				bad("version and sha256 come together: a pin is a version and its bytes")
+			if h.Version == "" || len(h.Hash) == 0 {
+				bad("version and hash come together: a pin is a version and its bytes")
 			}
 			if h.CLI == "" {
-				bad("version and sha256 pin a cli, and the harness has none")
+				bad("version and hash pin a cli, and the harness has none")
 			}
-			for _, arch := range sortedKeys(h.SHA256) {
+			for _, arch := range sortedKeys(h.Hash) {
 				switch {
 				case !slices.Contains(Arches, arch):
-					bad("sha256: arch %q is not one of %s", arch, strings.Join(Arches, ", "))
-				case !sha256Re.MatchString(h.SHA256[arch]):
-					bad("sha256 %s is 64 lower-case hex digits", arch)
+					bad("hash: arch %q is not one of %s", arch, strings.Join(Arches, ", "))
+				case !hashRe.MatchString(h.Hash[arch]):
+					bad("hash %s is %s and 64 lower-case hex digits", arch, HashKind)
 				}
 			}
 			if ok && h.cli != nil {
 				var err error
-				if h.cli, err = h.cli.pinned(name, h.Version, h.SHA256); err != nil {
+				if h.cli, err = h.cli.pinned(name, h.Version, h.Hash); err != nil {
 					add("harnesses.%s: %v", name, err)
 				}
 			}
@@ -459,7 +462,10 @@ func (t *Tables) check() error {
 	return nil
 }
 
-var sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
+// HashKind starts a hash: what the bytes are hashed with. one kind exists.
+const HashKind = "sha256:"
+
+var hashRe = regexp.MustCompile(`^` + HashKind + `[0-9a-f]{64}$`)
 
 var envRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

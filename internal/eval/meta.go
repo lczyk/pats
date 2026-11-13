@@ -47,8 +47,8 @@ type pairMeta struct {
 	// where the harness's definition is from (default, machine or project),
 	// and a digest of it: the name alone can mean another definition on
 	// another machine or pats release.
-	HarnessFrom   string `json:"harness_from,omitempty"`
-	HarnessSHA256 string `json:"harness_sha256,omitempty"`
+	HarnessFrom string `json:"harness_from,omitempty"`
+	HarnessHash string `json:"harness_hash,omitempty"`
 	// the model and effort the agent ran with: the agent id alone can be
 	// pointed at another model between runs (the dry run's estimate matches
 	// on them).
@@ -86,7 +86,7 @@ type pairMeta struct {
 	// the harness versions inside the image, as pats init stamped them.
 	Components map[string]string `json:"components,omitempty"`
 	// what init placed of each harness cli in the image: its version, its
-	// artefact's sha256 and its tree's id.
+	// artefact's hash and its tree's id.
 	Placed map[string]map[string]string `json:"placed,omitempty"`
 	// a judge's sample: the pair it graded, and which sample it is.
 	Judged *judged `json:"judged,omitempty"`

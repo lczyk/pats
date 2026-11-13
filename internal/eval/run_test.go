@@ -1101,7 +1101,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.That(t, pm.Synced != nil && !*pm.Synced, "a pair that never started synced nothing")
 	// its record still says which definition it was asked to run.
 	assert.Equal(t, pm.HarnessFrom, "default")
-	assert.Equal(t, pm.HarnessSHA256, hd("opencode-openrouter").Digest())
+	assert.Equal(t, pm.HarnessHash, hd("opencode-openrouter").Digest())
 	assert.ContainsString(t, out.String(), "1 error")
 	assert.Equal(t, judgeRowOf(filepath.Join(runDir, "axx", "txx")), rowNA)
 }
@@ -1297,9 +1297,9 @@ sux: {kind: suite, items: {sux: {agents: ags, tasks: txx}}}
 	changed, added := readMeta(t, runDir, "axx", "txx"), readMeta(t, runDir, "mxx", "txx")
 	assert.Equal(t, changed.HarnessFrom, "machine")
 	assert.Equal(t, added.HarnessFrom, "machine")
-	assert.Equal(t, changed.HarnessSHA256, cfg.Harnesses.Harness("codex-cli-keyless").Digest())
-	assert.That(t, changed.HarnessSHA256 != hd("codex-cli-keyless").Digest(), "the digest of a changed default is the default's")
-	assert.Equal(t, len(added.HarnessSHA256), 64)
+	assert.Equal(t, changed.HarnessHash, cfg.Harnesses.Harness("codex-cli-keyless").Digest())
+	assert.That(t, changed.HarnessHash != hd("codex-cli-keyless").Digest(), "the digest of a changed default is the default's")
+	assert.That(t, strings.HasPrefix(added.HarnessHash, "sha256:") && len(added.HarnessHash) == 71, "the digest %q", added.HarnessHash)
 
 	// with no machine file a default is a default, and nothing is said.
 	plain := parseCfg(t, `
@@ -1316,7 +1316,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.Equal(t, strings.Contains(out.String(), "machine config"), false)
 	m := readMeta(t, runDir, "axx", "txx")
 	assert.Equal(t, m.HarnessFrom, "default")
-	assert.Equal(t, m.HarnessSHA256, hd("codex-cli-keyless").Digest())
+	assert.Equal(t, m.HarnessHash, hd("codex-cli-keyless").Digest())
 
 	var list bytes.Buffer
 	require.NoError(t, ListHarnesses(cfg, &list))
@@ -1430,7 +1430,7 @@ clis:
     artefacts:
       `+srv.URL+`/tool-${version}.tgz:
         arch: [amd64, arm64]
-        sha256: `+hex.EncodeToString(sum[:])+`
+        hash: sha256:`+hex.EncodeToString(sum[:])+`
         bin: package/tool
 harnesses:
   tool-run: {cli: tool, run: tool --version > said.txt}
@@ -1448,7 +1448,7 @@ harnesses:
 	require.NotNil(t, e)
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", e.Image.ID).Run() })
 	assert.EqualMaps(t, e.Components, map[string]string{"tool": "1.2.3"})
-	assert.Equal(t, e.Harnesses["tool"]["sha256"], hex.EncodeToString(sum[:]))
+	assert.Equal(t, e.Harnesses["tool"]["hash"], "sha256:"+hex.EncodeToString(sum[:]))
 
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err, "%s", out.String())

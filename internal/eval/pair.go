@@ -315,7 +315,7 @@ func runPair(
 	}
 
 	meta := pairMeta{
-		Agent: job.agentName, Harness: a.Harness, HarnessFrom: hd.From, HarnessSHA256: hd.Digest(),
+		Agent: job.agentName, Harness: a.Harness, HarnessFrom: hd.From, HarnessHash: hd.Digest(),
 		Model: a.Model, Effort: a.Effort, Task: t.Name,
 		Sandbox: sbID, Driver: sb.Driver, SandNotBoxed: sandbox.TraitsOf(sb.Driver).Unboxed, Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, Synced: &synced,
@@ -404,7 +404,7 @@ func pairFailed(ctx context.Context, cfg *config.Config, job pairJob, sandboxes 
 		PatsVersion: version.Info.Version,
 	}
 	if hd := cfg.HarnessOf(a); hd != nil {
-		meta.HarnessFrom, meta.HarnessSHA256 = hd.From, hd.Digest()
+		meta.HarnessFrom, meta.HarnessHash = hd.From, hd.Digest()
 	}
 	if ctx.Err() != nil {
 		meta.Error = "interrupted"

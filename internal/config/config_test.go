@@ -746,12 +746,12 @@ hv:
   items:
     claude-cli-keyless:
       version: 9.9.9
-      sha256: {amd64: ` + shaA + `, arm64: ` + shaB + `}
+      hash: {amd64: sha256:` + shaA + `, arm64: sha256:` + shaB + `}
     claude-old:
       cli: claude
       run: claude -p x
       version: 1.1.1
-      sha256: {amd64: ` + shaB + `}
+      hash: {amd64: sha256:` + shaB + `}
 axx:
   kind: agent
   defaults: {model: m}
@@ -772,7 +772,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	url, a, ok := pinned.ArtefactFor("arm64", "")
 	require.That(t, ok, "no artefact for arm64")
 	assert.ContainsString(t, url, "9.9.9")
-	assert.Equal(t, a.SHA256, shaB)
+	assert.Equal(t, a.SHA256(), shaB)
 	def := machine.Defaults().CLIs["claude"]
 	_, da, _ := def.ArtefactFor("arm64", "")
 	assert.Equal(t, a.Bin, da.Bin)                          // how it is placed stays the machine's
@@ -809,12 +809,13 @@ func TestHarnessVectorErrors(t *testing.T) {
 		"new, no run":         {base + "hv: {kind: harness, items: {mine: {cli: claude}}}\n", "line 3: harnesses.mine: run is required"},
 		"run in defaults":     {base + "hv: {kind: harness, defaults: {cli: claude}, items: {mine: ~}}\n", "harnesses.mine: run is required"},
 		"unknown field":       {base + "hv: {kind: harness, items: {mine: {run: a, hosts: [x]}}}\n", `harness "mine": unknown field "hosts"`},
-		"version, no sha":     {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9}}}\n", "line 3: harnesses.claude-cli-keyless: version and sha256 come together"},
-		"sha, no version":     {base + "hv: {kind: harness, items: {claude-cli-keyless: {sha256: {amd64: " + shaA + "}}}}\n", "harnesses.claude-cli-keyless: version and sha256 come together"},
-		"a pin, no cli":       {base + "hv: {kind: harness, items: {mine: {run: a, version: 1.0.0, sha256: {amd64: " + shaA + "}}}}\n", "harnesses.mine: version and sha256 pin a cli, and the harness has none"},
-		"a pin, an odd arch":  {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, sha256: {riscv64: " + shaA + "}}}}\n", `sha256: arch "riscv64" is not one of amd64, arm64`},
-		"a pin, a short sha":  {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, sha256: {amd64: abc}}}}\n", "sha256 amd64 is 64 lower-case hex digits"},
-		"a pin, sha a scalar": {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, sha256: " + shaA + "}}}\n", "harnesses.claude-cli-keyless"},
+		"version, no sha":     {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9}}}\n", "line 3: harnesses.claude-cli-keyless: version and hash come together"},
+		"sha, no version":     {base + "hv: {kind: harness, items: {claude-cli-keyless: {hash: {amd64: sha256:" + shaA + "}}}}\n", "harnesses.claude-cli-keyless: version and hash come together"},
+		"a pin, no cli":       {base + "hv: {kind: harness, items: {mine: {run: a, version: 1.0.0, hash: {amd64: sha256:" + shaA + "}}}}\n", "harnesses.mine: version and hash pin a cli, and the harness has none"},
+		"a pin, an odd arch":  {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, hash: {riscv64: sha256:" + shaA + "}}}}\n", `hash: arch "riscv64" is not one of amd64, arm64`},
+		"a pin, a short sha":  {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, hash: {amd64: sha256:abc}}}}\n", "hash amd64 is sha256: and 64 lower-case hex digits"},
+		"a pin, no kind":      {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, hash: {amd64: " + shaA + "}}}}\n", "hash amd64 is sha256: and 64 lower-case hex digits"},
+		"a pin, sha a scalar": {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, hash: sha256:" + shaA + "}}}\n", "harnesses.claude-cli-keyless"},
 		"unknown cli":         {base + "hv: {kind: harness, items: {mine: {run: a, cli: nope}}}\n", `harnesses.mine: cli "nope" is not in clis`},
 		"login, no file":      {base + "hv: {kind: harness, items: {mine: {run: a, cli: copilot, login: true}}}\n", "harnesses.mine: login needs a cli with a login-file"},
 		"a path in egress":    {base + "hv: {kind: harness, items: {mine: {run: a, egress: {allow: [x.com/v1/*]}}}}\n", "a harness takes hosts only"},

@@ -163,7 +163,7 @@ func TestDigest(t *testing.T) {
 	a, b := Defaults(), Defaults()
 	claude := a.Harness("claude-cli-keyless")
 	assert.Equal(t, claude.Digest(), b.Harness("claude-cli-keyless").Digest())
-	assert.Equal(t, len(claude.Digest()), 64)
+	assert.That(t, hashRe.MatchString(claude.Digest()), "the digest %q", claude.Digest())
 	assert.That(t, claude.Digest() != a.Harness("codex-cli-keyless").Digest(), "two harnesses, one digest")
 
 	was := claude.Digest()
@@ -192,14 +192,14 @@ clis:
     artefacts:
       https://mirror.example/codex-${version}.tgz:
         arch: [amd64, arm64]
-        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         bin: package/codex
   mine:
     version: 1.2.3
     artefacts:
       https://mine.example/mine-${version}:
         arch: [amd64]
-        sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        hash: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 harnesses:
   mine-h:
     cli: mine

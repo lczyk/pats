@@ -46,11 +46,11 @@ func artefactsFor(pins map[string]*machine.CLI, clis []string, arch string) ([]s
 		url, a, ok := c.ArtefactFor(arch, "")
 		switch {
 		case !ok && c.PinnedBy() != "":
-			return nil, fmt.Errorf("harness %s pins cli %s at %s with no sha256 for %s", c.PinnedBy(), name, c.Version, arch)
+			return nil, fmt.Errorf("harness %s pins cli %s at %s with no hash for %s", c.PinnedBy(), name, c.Version, arch)
 		case !ok:
 			return nil, fmt.Errorf("cli %s %s has no artefact for %s", name, c.Version, arch)
 		}
-		out = append(out, sandbox.Artefact{CLI: name, Version: c.Version, Arch: arch, URL: url, SHA256: a.SHA256, Bin: a.Bin})
+		out = append(out, sandbox.Artefact{CLI: name, Version: c.Version, Arch: arch, URL: url, SHA256: a.SHA256(), Bin: a.Bin})
 	}
 	return out, nil
 }
@@ -115,7 +115,7 @@ func fetchPlaced(ctx context.Context, arts []sandbox.Artefact, lg logw, sbName s
 			return nil, nil, err
 		}
 		placed = append(placed, sandbox.Placed{Artefact: a, File: file})
-		rec[a.CLI] = map[string]string{"version": a.Version, "sha256": a.SHA256, "tree": a.TreeID()}
+		rec[a.CLI] = map[string]string{"version": a.Version, "hash": machine.HashKind + a.SHA256, "tree": a.TreeID()}
 	}
 	return placed, rec, nil
 }

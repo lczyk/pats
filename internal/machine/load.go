@@ -124,7 +124,7 @@ func Overlay(over []byte, path string) (*Tables, error) {
 				// a pin is a version and its bytes: a version over the shas of
 				// the one before it would fail every fetch.
 				if table.Value == "clis" && mappingValue(entry, "version") != nil && mappingValue(entry, "artefacts") == nil && mappingValue(into, name.Value) != nil {
-					add(name.Line, "%s: version without artefacts: a pin is a version and each artefact's sha256 (pats harness pin %s <version> prints both)", id, name.Value)
+					add(name.Line, "%s: version without artefacts: a pin is a version and each artefact's hash (pats harness pin %s <version> prints both)", id, name.Value)
 					continue
 				}
 				// a machine's pin is its clis entry: one more on a harness
@@ -132,7 +132,7 @@ func Overlay(over []byte, path string) (*Tables, error) {
 				if table.Value == "harnesses" {
 					pinned := false
 					for k := 0; k+1 < len(entry.Content); k += 2 {
-						if key := deref(entry.Content[k]); key.Value == "version" || key.Value == "sha256" {
+						if key := deref(entry.Content[k]); key.Value == "version" || key.Value == "hash" {
 							add(key.Line, "%s: %s is a pats.yaml's key: a machine pins a cli in clis", id, key.Value)
 							pinned = true
 						}
@@ -348,7 +348,7 @@ func (t *Tables) Note() string {
 	return fmt.Sprintf("machine config %s: %s", t.Path, strings.Join(parts, "; "))
 }
 
-// Digest is a sha256 of the resolved entry and of what its cli fixes: the
+// Digest is a hash of the resolved entry and of what its cli fixes: the
 // definition a run asked for, whatever its name and wherever it was written.
 func (h *Harness) Digest() string {
 	d := struct {
@@ -371,7 +371,7 @@ func (h *Harness) Digest() string {
 		d.Version, d.LoginAt, d.HomeEnv = h.cli.Version, h.cli.LoginFile, h.cli.HomeEnv
 		for _, arch := range Arches {
 			if _, a, ok := h.cli.ArtefactFor(arch, ""); ok {
-				d.Files = append(d.Files, [3]string{arch, a.SHA256, a.Bin})
+				d.Files = append(d.Files, [3]string{arch, a.SHA256(), a.Bin})
 			}
 		}
 	}
@@ -380,7 +380,7 @@ func (h *Harness) Digest() string {
 		panic(err)
 	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return HashKind + hex.EncodeToString(sum[:])
 }
 
 func isNull(n *yaml.Node) bool {

@@ -113,15 +113,17 @@ func TestParseErrors(t *testing.T) {
 		"env is home":       {"clis: {x: {version: 1.0.0, home-env: {HOME: .x}}}", "clis.x: home-env HOME is pats's own to set"},
 		"env twice":         {"harnesses: {h: {run: a, auth-env: [K], pass-env: [K]}}", "harnesses.h: pass-env K is also in auth-env"},
 		"env in home-env":   {"harnesses: {h: {run: a, cli: x, auth-env: [X_HOME]}}\nclis: {x: {version: 1.0.0, home-env: {X_HOME: .x}}}", "harnesses.h: auth-env X_HOME is also in its cli's home-env"},
-		"artefact url":      {"clis: {x: {version: 1.0.0, artefacts: {'ftp://x/y': {arch: [amd64], sha256: " + zeros + "}}}}", "is not an http or https url"},
+		"artefact url":      {"clis: {x: {version: 1.0.0, artefacts: {'ftp://x/y': {arch: [amd64], hash: sha256:" + zeros + "}}}}", "is not an http or https url"},
 		"no artefacts":      {"clis: {x: {version: 1.0.0}}", "clis.x: at least one artefact is required"},
-		"url, no version":   {"clis: {x: {version: 1.0.0, artefacts: {'https://x/latest.tgz': {arch: [amd64], sha256: " + zeros + "}}}}", "the url has no ${version}"},
-		"artefact arch":     {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [riscv64], sha256: " + zeros + "}}}}", `arch "riscv64" is not one of amd64, arm64`},
-		"artefact no arch":  {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {sha256: " + zeros + "}}}}", "arch is required"},
-		"artefact sha":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: abc}}}}", "sha256 is 64 lower-case hex digits"},
-		"artefact bin":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: " + zeros + ", bin: ../x}}}}", "is not a path inside the artefact"},
-		"artefact key":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: " + zeros + ", exe: x}}}}", `artefacts https://x/y: unknown key "exe"`},
-		"two for one arch":  {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], sha256: " + zeros + "}, 'https://x/z': {arch: [amd64, arm64], sha256: " + zeros + "}}}}", "two artefacts are for amd64"},
+		"url, no version":   {"clis: {x: {version: 1.0.0, artefacts: {'https://x/latest.tgz': {arch: [amd64], hash: sha256:" + zeros + "}}}}", "the url has no ${version}"},
+		"artefact arch":     {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [riscv64], hash: sha256:" + zeros + "}}}}", `arch "riscv64" is not one of amd64, arm64`},
+		"artefact no arch":  {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {hash: sha256:" + zeros + "}}}}", "arch is required"},
+		"artefact hash":     {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], hash: sha256:abc}}}}", "hash is sha256: and 64 lower-case hex digits"},
+		"hash, no kind":     {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], hash: " + zeros + "}}}}", "hash is sha256: and 64 lower-case hex digits"},
+		"hash, a kind":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], hash: sha512:" + zeros + "}}}}", "hash is sha256: and 64 lower-case hex digits"},
+		"artefact bin":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], hash: sha256:" + zeros + ", bin: ../x}}}}", "is not a path inside the artefact"},
+		"artefact key":      {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], hash: sha256:" + zeros + ", exe: x}}}}", `artefacts https://x/y: unknown key "exe"`},
+		"two for one arch":  {"clis: {x: {version: 1.0.0, artefacts: {'https://x/y': {arch: [amd64], hash: sha256:" + zeros + "}, 'https://x/z': {arch: [amd64, arm64], hash: sha256:" + zeros + "}}}}", "two artefacts are for amd64"},
 		"login-file leaves": {"clis: {x: {version: 1.0.0, login-file: ../.ssh/id}}", "clis.x: login-file"},
 		"login-file abs":    {"clis: {x: {version: 1.0.0, login-file: /etc/passwd}}", "clis.x: login-file"},
 		"home-env leaves":   {"clis: {x: {version: 1.0.0, home-env: {X_HOME: ../x}}}", "clis.x: home-env X_HOME"},
@@ -142,7 +144,7 @@ clis:
     version: 1.0.0
     login-file: .x/login
     artefacts:
-      https://x.example/x-${version}.tgz: {arch: [amd64, arm64], sha256: "` + strings.Repeat("0", 64) + `"}
+      https://x.example/x-${version}.tgz: {arch: [amd64, arm64], hash: "sha256:` + strings.Repeat("0", 64) + `"}
 harnesses:
   bare: {run: "true"}
   full:
@@ -208,7 +210,7 @@ func TestProject(t *testing.T) {
 func TestArtefacts(t *testing.T) {
 	zeros, ones := strings.Repeat("0", 64), strings.Repeat("1", 64)
 	src := func(host, sha, bin string) string {
-		return "clis:\n  x:\n    version: 1.0.0\n    artefacts:\n      https://" + host + "/x-${version}-x64.tgz:\n        arch: [amd64]\n        sha256: " + sha + "\n        bin: " + bin + "\nharnesses: {h: {run: a, cli: x}}\n"
+		return "clis:\n  x:\n    version: 1.0.0\n    artefacts:\n      https://" + host + "/x-${version}-x64.tgz:\n        arch: [amd64]\n        hash: sha256:" + sha + "\n        bin: " + bin + "\nharnesses: {h: {run: a, cli: x}}\n"
 	}
 	tb, err := Parse([]byte(src("a.example", zeros, "package/x")))
 	require.NoError(t, err)
