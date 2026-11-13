@@ -148,7 +148,7 @@ func TestOverlayErrors(t *testing.T) {
 		"entry a scalar":   {"harnesses:\n  mine: 5", "machine.yaml:2: harnesses.mine is a mapping of keys"},
 		"unknown key":      {"harnesses:\n  claude-cli-keyless:\n    hosts: [x.com]", `machine.yaml:3: harnesses.claude-cli-keyless: unknown key "hosts"`},
 		"new, no run":      {"\nharnesses:\n  mine:\n    cli: claude", "machine.yaml:3: harnesses.mine: run is required"},
-		"unknown cli":      {"harnesses:\n  claude-cli-keyless:\n    cli: nope", `machine.yaml:2: harnesses.claude-cli-keyless: cli "nope" is not in clis`},
+		"a brought cli":    {"harnesses:\n  claude-cli-keyless:\n    cli: nope", "machine.yaml:2: harnesses.claude-cli-keyless: login needs a cli with a login-file"},
 		"bad parse":        {"harnesses:\n  mine:\n    run: a\n    parse: out.tool(nope)", "machine.yaml:2: harnesses.mine.parse:1:10: undefined: nope"},
 		"a path in allow":  {"harnesses:\n  mine:\n    run: a\n    egress: {allow: [x.com/v1/*]}", "machine.yaml:2: harnesses.mine: egress allow"},
 		"wrong type":       {"harnesses:\n  mine:\n    run: a\n    auth-env: 5", "machine.yaml:4: harnesses.mine: cannot unmarshal"},

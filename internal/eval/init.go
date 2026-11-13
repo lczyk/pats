@@ -746,7 +746,8 @@ func missingCLIs(cfg *config.Config, pairs []config.TestPair, name string, compo
 func cliPins(cfg *config.Config, name string) map[string]string {
 	out := map[string]string{}
 	for cli, c := range sandboxPins(cfg, name) {
-		if c != nil {
+		// a cli the image brings has no pin to differ from.
+		if c != nil && c.Version != "" {
 			out[cli] = c.Version
 		}
 	}

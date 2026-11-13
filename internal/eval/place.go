@@ -35,13 +35,17 @@ func places(sb config.Sandbox) bool {
 
 // artefactsFor is the artefact of each of clis for arch, in their order, by
 // the sandbox's pins. a cli with none for the arch is an error naming it,
-// and the harness whose own pin it is at.
+// and the harness whose own pin it is at. a cli the image brings has none
+// and is left out.
 func artefactsFor(pins map[string]*machine.CLI, clis []string, arch string) ([]sandbox.Artefact, error) {
 	var out []sandbox.Artefact
 	for _, name := range clis {
 		c := pins[name]
 		if c == nil {
 			return nil, fmt.Errorf("cli %q is not in the clis table", name)
+		}
+		if c.Brought() {
+			continue // the image brings it
 		}
 		url, a, ok := c.ArtefactFor(arch, "")
 		switch {

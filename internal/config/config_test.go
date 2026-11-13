@@ -816,7 +816,7 @@ func TestHarnessVectorErrors(t *testing.T) {
 		"a pin, a short sha":  {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, hash: {amd64: sha256:abc}}}}\n", "hash amd64 is sha256: and 64 lower-case hex digits"},
 		"a pin, no kind":      {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, hash: {amd64: " + shaA + "}}}}\n", "hash amd64 is sha256: and 64 lower-case hex digits"},
 		"a pin, sha a scalar": {base + "hv: {kind: harness, items: {claude-cli-keyless: {version: 9.9.9, hash: sha256:" + shaA + "}}}\n", "harnesses.claude-cli-keyless"},
-		"unknown cli":         {base + "hv: {kind: harness, items: {mine: {run: a, cli: nope}}}\n", `harnesses.mine: cli "nope" is not in clis`},
+		"brought cli, login":  {base + "hv: {kind: harness, items: {mine: {run: a, cli: nope, login: true}}}\n", "harnesses.mine: login needs a cli with a login-file"},
 		"login, no file":      {base + "hv: {kind: harness, items: {mine: {run: a, cli: copilot, login: true}}}\n", "harnesses.mine: login needs a cli with a login-file"},
 		"a path in egress":    {base + "hv: {kind: harness, items: {mine: {run: a, egress: {allow: [x.com/v1/*]}}}}\n", "a harness takes hosts only"},
 		"dir":                 {base + "hv: {kind: harness, dir: cases}\n", "dir is only supported on task vectors"},

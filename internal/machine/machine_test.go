@@ -99,7 +99,7 @@ func TestParseErrors(t *testing.T) {
 		"bad harness name":  {"harnesses: {H_1: {run: a}}", "harnesses.H_1: a name is"},
 		"bad cli name":      {"clis: {X: {version: 1.0.0}}", "clis.X: a name is"},
 		"no version":        {"clis: {x: {}}", "clis.x: version is required"},
-		"unknown cli":       {"harnesses: {h: {run: a, cli: y}}", `harnesses.h: cli "y" is not in clis`},
+		"an odd cli name":   {"harnesses: {h: {run: a, cli: 'y; rm'}}", `harnesses.h: cli "y; rm" is in no clis table and is not a name an image's cli could have`},
 		"login, no cli":     {"harnesses: {h: {run: a, login: true}}", "harnesses.h: login needs a cli with a login-file"},
 		"login, no file":    {"harnesses: {h: {run: a, cli: x, login: true}}\nclis: {x: {version: 1.0.0}}", "harnesses.h: login needs a cli with a login-file"},
 		"unknown catalogue": {"harnesses: {h: {run: a, models: nope}}", `harnesses.h: models "nope" is not a catalogue`},
@@ -191,12 +191,12 @@ func TestProject(t *testing.T) {
 		it   Item
 		want string
 	}{
-		"new, no run": {item("mine", "{cli: claude}"), "harnesses.mine: run is required"},
-		"unknown cli": {item("mine", "{run: a, cli: nope}"), `harnesses.mine: cli "nope" is not in clis`},
-		"bad name":    {item("Mine", "{run: a}"), "harnesses.Mine: a name is"},
-		"bad parse":   {item("mine", "{run: a, parse: 'out.tool('}"), "harnesses.mine.parse:"},
-		"wrong type":  {item("mine", "{run: a, auth-env: 5}"), "line 1: harnesses.mine: cannot unmarshal"},
-		"nested key":  {item("mine", "{run: a, egress: {alow: [x.com]}}"), `line 1: harnesses.mine: egress: unknown key "alow"`},
+		"new, no run":     {item("mine", "{cli: claude}"), "harnesses.mine: run is required"},
+		"brought, pinned": {item("mine", "{run: a, cli: nope, version: 1.0.0, hash: {amd64: sha256:"+strings.Repeat("0", 64)+"}}"), "harnesses.mine: version and hash pin a cli pats places, and no clis table has nope"},
+		"bad name":        {item("Mine", "{run: a}"), "harnesses.Mine: a name is"},
+		"bad parse":       {item("mine", "{run: a, parse: 'out.tool('}"), "harnesses.mine.parse:"},
+		"wrong type":      {item("mine", "{run: a, auth-env: 5}"), "line 1: harnesses.mine: cannot unmarshal"},
+		"nested key":      {item("mine", "{run: a, egress: {alow: [x.com]}}"), `line 1: harnesses.mine: egress: unknown key "alow"`},
 	} {
 		err := Defaults().Project([]Item{tc.it})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

@@ -508,6 +508,58 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	assert.ContainsString(t, out.String(), "cli opencode "+opencode.Version+" has no artefact for amd64")
 }
 
+// a harness's cli that no table has is one the image brings: init places
+// nothing for it, asks the image for its version as for any cli of the set,
+// and fails on an image that has none.
+func TestInitStampsABroughtCLI(t *testing.T) {
+	dir := t.TempDir()
+	const body = `
+sbx: {kind: sandbox, items: {dflt: {provision: "true"}}}
+hxx: {kind: harness, items: {mine: {cli: tool, run: tool "$PATS_PROMPT_FILE"}}}
+agx:
+  kind: agent
+  items:
+    oc: {harness: opencode-openrouter, model: m, sandbox: dflt}
+    mm: {harness: mine, sandbox: dflt}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
+`
+	cfg := parseCfg(t, body)
+	assert.Equal(t, cfg.Harnesses.Harness("mine").Cli().Brought(), true)
+	h := newFakeHost()
+	useHost(t, h)
+	useFakeSandbox(t, &fakeSandbox{})
+	var fetched []string
+	old := fetchArtefact
+	fetchArtefact = func(_ context.Context, a sandbox.Artefact, _ *http.Client) (string, error) {
+		fetched = append(fetched, a.CLI)
+		return "/cache/" + a.SHA256, nil
+	}
+	defer func() { fetchArtefact = old }()
+
+	var out bytes.Buffer
+	require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out}), "%s", out.String())
+	assert.EqualArrays(t, fetched, []string{"opencode"})
+	require.Len(t, h.builds, 1)
+	require.Len(t, h.builds[0].Harness, 1)
+
+	f, err := readPins(dir)
+	require.NoError(t, err)
+	e := f.entry("fake:host", "dflt")
+	require.NotNil(t, e)
+	assert.Equal(t, e.Components["tool"], "0.0.0") // what the fake image says of a cli it knows no pin for
+	assert.That(t, e.Components["opencode"] != "", "the placed cli has no stamp")
+	_, placed := e.Harnesses["tool"]
+	assert.Equal(t, placed, false)
+
+	// an image that has none of it on its PATH is no image for its agents.
+	h.stamped = map[string]string{"opencode": e.Components["opencode"]}
+	out.Reset()
+	err = Init(cfg, InitOptions{ConfigDir: dir, Out: &out, Force: true})
+	require.That(t, err != nil, "init passed on an image without the cli")
+	assert.ContainsString(t, out.String()+err.Error(), "its image has no tool on its PATH, which its agents run")
+}
+
 // a harness item's own pin is what init fetches and places for the sandboxes
 // its agents run in, and what a run compares the image's stamps with: not
 // the machine's pin of the cli. an arch the pin has no hash for fails

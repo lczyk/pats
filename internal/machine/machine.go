@@ -44,6 +44,10 @@ type CLI struct {
 	by string // the harness whose own pin this entry is at, "" for the table's
 }
 
+// Brought says the cli is in no clis table: the image brings it, so pats
+// stamps its version and places nothing.
+func (c *CLI) Brought() bool { return c.Version == "" && len(c.Artefacts) == 0 }
+
 // PinnedBy is the harness whose own pin the entry is at, "" for the cli as
 // the clis table has it.
 func (c *CLI) PinnedBy() string { return c.by }
@@ -375,7 +379,12 @@ func (t *Tables) check() error {
 		h.cli = nil
 		if h.CLI != "" {
 			if h.cli = t.CLIs[h.CLI]; h.cli == nil {
-				add("harnesses.%s: cli %q is not in clis", name, h.CLI)
+				// a cli no table has is one the image brings: stamped by
+				// its name, which goes into a shell, and never placed.
+				if !nameRe.MatchString(h.CLI) {
+					add("harnesses.%s: cli %q is in no clis table and is not a name an image's cli could have: lower-case letters, digits and hyphens", name, h.CLI)
+				}
+				h.cli = &CLI{Name: h.CLI}
 			}
 		}
 		// a harness is from the last place that set a key of it or of its cli.
@@ -396,6 +405,8 @@ func (t *Tables) check() error {
 			}
 			if h.CLI == "" {
 				bad("version and hash pin a cli, and the harness has none")
+			} else if h.cli != nil && h.cli.Brought() {
+				bad("version and hash pin a cli pats places, and no clis table has %s: its image brings it", h.CLI)
 			}
 			for _, arch := range sortedKeys(h.Hash) {
 				switch {
