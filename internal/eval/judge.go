@@ -608,6 +608,9 @@ func sampleVerdict(outDir string, hd *machine.Harness, v verdict) verdict {
 		return v
 	case m.Summary != nil && m.Summary.IsError:
 		v.Error = "the judge's harness reported an error"
+		if m.Summary.Error != "" {
+			v.Error += ": " + m.Summary.Error
+		}
 		return v
 	case m.Summary != nil && m.Summary.ParseErrors > 0:
 		// the line that failed may be the one that took a score back: an

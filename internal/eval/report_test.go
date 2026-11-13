@@ -29,7 +29,7 @@ func scoredRun(t *testing.T) (configDir, runDir string) {
 	}
 	meta("claude", "t1", `{"agent":"claude","harness":"claude-cli-keyless","task":"t1","status":"ok","duration_s":12.5,
 		"denied_egress":["evil.example"],
-		"summary":{"num_turns":4,"has_cost":true,"cost_usd":0.25,"input_tokens":10,"output_tokens":20,
+		"summary":{"turns":4,"has_cost":true,"cost_usd":0.25,"input_tokens":10,"output_tokens":20,
 		"cache_read_tokens":300,"tools":{"Bash":3}}}`)
 	meta("codex", "t1", `{"agent":"codex","harness":"codex-cli-keyless","task":"t1","status":"nonzero","duration_s":3,
 		"error":"exit 1","summary":{"has_cost":false,"input_tokens":7,"output_tokens":9,"reasoning_tokens":2}}`)
@@ -86,7 +86,7 @@ func TestReportJSON(t *testing.T) {
 	assert.Equal(t, p(1)["mean"], any(0.75))
 	assert.Equal(t, p(1)["turns"], any(float64(4)))
 	assert.Equal(t, p(1)["cost_usd"], any(0.25))
-	assert.Equal(t, p(1)["cache_creation_tokens"], any(nil))
+	assert.Equal(t, p(1)["cache_write_tokens"], any(nil))
 	assert.Equal(t, p(1)["error"], any(nil))
 	assert.EqualArrays(t, p(1)["denied_egress"].([]any), []any{"evil.example"})
 	assert.EqualArrays(t, p(1)["blocked_egress"].([]any), []any{}) // known empty: [], not null

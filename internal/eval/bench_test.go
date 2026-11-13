@@ -228,8 +228,8 @@ func reportTree(b *testing.B, configDir string, runs, agents, tasks int) {
 						Requests: 240 + k, BytesIn: 9_000_000, BytesOut: 120_000, Enforced: &yes,
 					},
 					Summary: &runSummary{
-						NumTurns: 20 + k%30, CostUSD: 0.2 + float64(k%7)/10, HasCost: true, InputTokens: 400 + k, OutputTokens: 9000 + 13*k,
-						CacheReadTokens: 2_700_000, CacheCreationTokens: 50_000, TTFTms: 3900, APIDurationMs: 159_000,
+						Turns: 20 + k%30, CostUSD: 0.2 + float64(k%7)/10, HasCost: true, InputTokens: 400 + k, OutputTokens: 9000 + 13*k,
+						CacheReadTokens: 2_700_000, CacheWriteTokens: 50_000, TTFTms: 3900, APIDurationMs: 159_000,
 						Tools: map[string]int{"Bash": 14 + k%9, "Read": 9, "Edit": 4, "Grep": 3},
 					},
 					Components: map[string]string{"claude": "2.1.319", "codex": "0.48.0"},
@@ -252,7 +252,7 @@ func reportTree(b *testing.B, configDir string, runs, agents, tasks int) {
 				write(filepath.Join(jd, "1", "metadata.json"), pairMeta{
 					Agent: "judge", Harness: "opencode-openrouter", Model: "openai/gpt-4o", Task: "rubric", Sandbox: "sandbox",
 					Driver: "docker", DurationS: 21, Status: "ok", Synced: &yes, PatsVersion: "1.0.0", Judged: &who, Sample: 1,
-					Summary: &runSummary{NumTurns: 3, CostUSD: 0.01, HasCost: true, InputTokens: 5000, OutputTokens: 300},
+					Summary: &runSummary{Turns: 3, CostUSD: 0.01, HasCost: true, InputTokens: 5000, OutputTokens: 300},
 				})
 			}
 		}

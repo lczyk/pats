@@ -24,9 +24,9 @@ func run(t *testing.T, src string, lines ...string) *Result {
 func TestUsage(t *testing.T) {
 	r := run(t, `
 if line == "add":
-    out.usage(turns = 1, cost_usd = 0.5, input = 10, output = 3, reasoning = 1, cache_read = 2, cache_write = 4)
+    out.usage(turns = 1, cost_usd = 0.5, input_tokens = 10, output_tokens = 3, reasoning_tokens = 1, cache_read_tokens = 2, cache_write_tokens = 4)
 elif line == "total":
-    out.usage(total = True, cost_usd = 2, input = 7, ttft_ms = 40, api_ms = 900, premium_requests = 3)
+    out.usage(total = True, cost_usd = 2, input_tokens = 7, ttft_ms = 40, api_duration_ms = 900, premium_requests = 3)
 `, "add", "add", "total")
 	assert.Equal(t, r.Turns, 2)   // not named by the total
 	assert.Equal(t, r.Output, 6)  // nor this
@@ -46,25 +46,25 @@ elif line == "total":
 // a cost of 0 is a cost: reported, not missing.
 func TestHasCost(t *testing.T) {
 	assert.Equal(t, run(t, `out.usage(cost_usd = 0)`, "x").HasCost, true)
-	assert.Equal(t, run(t, `out.usage(input = 1)`, "x").HasCost, false)
+	assert.Equal(t, run(t, `out.usage(input_tokens = 1)`, "x").HasCost, false)
 }
 
 // a number that is negative, not finite, fractional where a count is wanted,
 // or whose total would not fit is an error that changes no total.
 func TestUsageNumbers(t *testing.T) {
 	for name, call := range map[string]string{
-		"negative cost":    `out.usage(input = 5, cost_usd = -1)`,
-		"nan cost":         `out.usage(input = 5, cost_usd = float("nan"))`,
-		"infinite cost":    `out.usage(input = 5, cost_usd = float("inf"))`,
-		"negative count":   `out.usage(cost_usd = 1, input = 1 - 2)`,
-		"fractional count": `out.usage(cost_usd = 1, output = 1.5)`,
-		"count overflow":   `out.usage(cost_usd = 1, input = 1 << 62)`,
-		"cost overflow":    `out.usage(input = 5, cost_usd = 1e308)`,
-		"not a number":     `out.usage(input = "5")`,
+		"negative cost":    `out.usage(input_tokens = 5, cost_usd = -1)`,
+		"nan cost":         `out.usage(input_tokens = 5, cost_usd = float("nan"))`,
+		"infinite cost":    `out.usage(input_tokens = 5, cost_usd = float("inf"))`,
+		"negative count":   `out.usage(cost_usd = 1, input_tokens = 1 - 2)`,
+		"fractional count": `out.usage(cost_usd = 1, output_tokens = 1.5)`,
+		"count overflow":   `out.usage(cost_usd = 1, input_tokens = 1 << 62)`,
+		"cost overflow":    `out.usage(input_tokens = 5, cost_usd = 1e308)`,
+		"not a number":     `out.usage(input_tokens = "5")`,
 		"positional":       `out.usage(5)`,
 		"unknown keyword":  `out.usage(tokens = 5)`,
 	} {
-		r := run(t, "if line == \"ok\":\n    out.usage(input = 1 << 62, cost_usd = 1e308)\nelse:\n    "+call, "ok", "bad")
+		r := run(t, "if line == \"ok\":\n    out.usage(input_tokens = 1 << 62, cost_usd = 1e308)\nelse:\n    "+call, "ok", "bad")
 		assert.Equal(t, r.Errors, 1, name)
 		assert.Equal(t, r.FirstErrorLine, 2, name)
 		assert.Equal(t, r.Input, 1<<62, name)
@@ -72,7 +72,7 @@ func TestUsageNumbers(t *testing.T) {
 		assert.Equal(t, r.Output, 0, name)
 	}
 	// a whole float is a count.
-	assert.Equal(t, run(t, `out.usage(output = 4.0)`, "x").Output, 4)
+	assert.Equal(t, run(t, `out.usage(output_tokens = 4.0)`, "x").Output, 4)
 }
 
 func TestToolsAndError(t *testing.T) {
@@ -90,6 +90,14 @@ elif line == "ok":
 	assert.Equal(t, r.Tools["bash"], 2)
 	assert.Equal(t, r.IsError, true)
 	assert.Equal(t, run(t, `out.error(line == "e")`, "e", "ok").IsError, false) // the last call wins
+
+	// an error may say what it is, and no error says nothing.
+	said := run(t, `out.error(msg = "401: no such user")`, "x")
+	assert.Equal(t, said.IsError, true)
+	assert.Equal(t, said.ErrorMsg, "401: no such user")
+	assert.Equal(t, run(t, `out.error(True, "why")`, "x").ErrorMsg, "why")
+	assert.Equal(t, run(t, `out.error(line == "e", "why")`, "e", "ok").ErrorMsg, "")
+	assert.Equal(t, run(t, `out.error(msg = 5)`, "x").Errors, 1)
 }
 
 // the reply: final replaces the candidates before it, add keeps them, newest
@@ -205,7 +213,7 @@ for w in re.findall(r"tool=(\w+)", line):
 
 // two passes of one program do not share totals.
 func TestPasses(t *testing.T) {
-	p, err := Compile("test", `out.usage(input = 1)`)
+	p, err := Compile("test", `out.usage(input_tokens = 1)`)
 	require.NoError(t, err)
 	a, b := p.NewPass(), p.NewPass()
 	a.Line([]byte("x"))

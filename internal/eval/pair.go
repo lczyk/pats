@@ -383,8 +383,8 @@ func runPair(
 		if s.HasCost {
 			stats += fmt.Sprintf("  $%.2f", s.CostUSD)
 		}
-		if s.NumTurns > 0 {
-			stats += fmt.Sprintf("  %d turns", s.NumTurns)
+		if s.Turns > 0 {
+			stats += fmt.Sprintf("  %d turns", s.Turns)
 		}
 	}
 	lg.detail("%s %s", job.label, stats)

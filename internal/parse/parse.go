@@ -53,6 +53,7 @@ type Result struct {
 	CostUSD                                                float64
 	HasCost                                                bool // cost_usd was passed at all, 0 included
 	IsError                                                bool
+	ErrorMsg                                               string // what the harness said of its error, "" when it said nothing
 
 	// Said is whether a call that feeds the summary was made: without one,
 	// and with no failed line, the output was empty or not this format's.
@@ -159,11 +160,14 @@ func (ps *Pass) outTool(_ *starlark.Thread, b *starlark.Builtin, args starlark.T
 }
 
 func (ps *Pass) outError(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	v := true
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "v?", &v); err != nil {
+	v, msg := true, ""
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "v?", &v, "msg?", &msg); err != nil {
 		return nil, err
 	}
-	ps.res.IsError = v
+	if !v {
+		msg = "" // no error has no message
+	}
+	ps.res.IsError, ps.res.ErrorMsg = v, msg
 	ps.res.Said = true
 	return starlark.None, nil
 }
@@ -221,9 +225,9 @@ func (ps *Pass) outUsage(_ *starlark.Thread, b *starlark.Builtin, args starlark.
 		dst *int
 		v   starlark.Value
 	}{
-		{"turns", &r.Turns, nil}, {"input", &r.Input, nil}, {"output", &r.Output, nil},
-		{"reasoning", &r.Reasoning, nil}, {"cache_read", &r.CacheRead, nil}, {"cache_write", &r.CacheWrite, nil},
-		{"premium_requests", &r.PremiumRequests, nil}, {"ttft_ms", &r.TTFTms, nil}, {"api_ms", &r.APIms, nil},
+		{"turns", &r.Turns, nil}, {"input_tokens", &r.Input, nil}, {"output_tokens", &r.Output, nil},
+		{"reasoning_tokens", &r.Reasoning, nil}, {"cache_read_tokens", &r.CacheRead, nil}, {"cache_write_tokens", &r.CacheWrite, nil},
+		{"premium_requests", &r.PremiumRequests, nil}, {"ttft_ms", &r.TTFTms, nil}, {"api_duration_ms", &r.APIms, nil},
 	}
 	var cost starlark.Value
 	total := false

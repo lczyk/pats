@@ -68,6 +68,7 @@ type pairStat struct {
 	liveCost atomic.Uint64 // float64 bits: spend reported so far, for the bar
 	costSeen atomic.Bool   // the harness reported a cost at all, 0 included
 	failed   atomic.Bool   // the harness's stream says the run is in error, as it stands
+	failure  atomic.Value  // string: what it said of that error
 	// spend, when set, hears each step's cost as the harness reports it.
 	spend func(c float64)
 }
@@ -439,6 +440,7 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 		r := pass.Result()
 		atomic.StoreInt64(&s.tools, int64(r.ToolCalls))
 		s.failed.Store(r.IsError)
+		s.failure.Store(r.ErrorMsg)
 		if r.HasCost {
 			s.costSeen.Store(true)
 		}
@@ -453,23 +455,24 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 // runSummary is the post-run digest extracted from a harness's log, stored in
 // metadata.json. fields are per-harness best-effort -- zero/empty when absent, so
 // they carry the same meaning whichever harness produced them: InputTokens
-// never includes the cache-read half, NumTurns counts model round-trips (0 when
+// never includes the cache-read half, Turns counts model round-trips (0 when
 // the stream doesn't say), and HasCost tells the caller a zero CostUSD is a
 // real zero rather than an unreported one.
 type runSummary struct {
-	NumTurns            int            `json:"num_turns,omitempty"`
-	CostUSD             float64        `json:"cost_usd,omitempty"`
-	HasCost             bool           `json:"has_cost"` // false when the harness reports no dollar cost at all
-	InputTokens         int            `json:"input_tokens,omitempty"`
-	OutputTokens        int            `json:"output_tokens,omitempty"`
-	CacheReadTokens     int            `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens int            `json:"cache_creation_tokens,omitempty"`
-	ReasoningTokens     int            `json:"reasoning_tokens,omitempty"` // the reasoning part of OutputTokens, where the log splits it out
-	PremiumRequests     int            `json:"premium_requests,omitempty"` // copilot's billing unit -- its cost analog
-	TTFTms              int            `json:"ttft_ms,omitempty"`
-	APIDurationMs       int            `json:"api_duration_ms,omitempty"`
-	IsError             bool           `json:"is_error,omitempty"`
-	Tools               map[string]int `json:"tools,omitempty"` // tool_use counts by name
+	Turns            int            `json:"turns,omitempty"`
+	CostUSD          float64        `json:"cost_usd,omitempty"`
+	HasCost          bool           `json:"has_cost"` // false when the harness reports no dollar cost at all
+	InputTokens      int            `json:"input_tokens,omitempty"`
+	OutputTokens     int            `json:"output_tokens,omitempty"`
+	CacheReadTokens  int            `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int            `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int            `json:"reasoning_tokens,omitempty"` // the reasoning part of OutputTokens, where the log splits it out
+	PremiumRequests  int            `json:"premium_requests,omitempty"` // copilot's billing unit -- its cost analog
+	TTFTms           int            `json:"ttft_ms,omitempty"`
+	APIDurationMs    int            `json:"api_duration_ms,omitempty"`
+	IsError          bool           `json:"is_error,omitempty"`
+	Error            string         `json:"error,omitempty"` // what the harness said of its error
+	Tools            map[string]int `json:"tools,omitempty"` // tool_use counts by name
 	// ParseErrors counts the lines the harness's parse script failed on:
 	// above 0, the rest of the summary is what the other lines said.
 	ParseErrors int `json:"parse_errors,omitempty"`
@@ -538,10 +541,10 @@ func summaryOf(r *parse.Result) *runSummary {
 		return nil
 	}
 	sum := &runSummary{
-		NumTurns: r.Turns, CostUSD: r.CostUSD, HasCost: r.HasCost,
-		InputTokens: r.Input, OutputTokens: r.Output, CacheReadTokens: r.CacheRead, CacheCreationTokens: r.CacheWrite,
+		Turns: r.Turns, CostUSD: r.CostUSD, HasCost: r.HasCost,
+		InputTokens: r.Input, OutputTokens: r.Output, CacheReadTokens: r.CacheRead, CacheWriteTokens: r.CacheWrite,
 		ReasoningTokens: r.Reasoning, PremiumRequests: r.PremiumRequests,
-		TTFTms: r.TTFTms, APIDurationMs: r.APIms, IsError: r.IsError,
+		TTFTms: r.TTFTms, APIDurationMs: r.APIms, IsError: r.IsError, Error: r.ErrorMsg,
 		Tools: r.Tools, ParseErrors: r.Errors,
 	}
 	if r.Errors > 0 {

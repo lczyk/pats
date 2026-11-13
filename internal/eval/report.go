@@ -59,22 +59,22 @@ type reportAgent struct {
 // reportPair is one pair: its mean and what its metadata.json says of the
 // run. a field is null when unknown, never zero.
 type reportPair struct {
-	Agent               string   `json:"agent"`
-	Task                string   `json:"task"`
-	Mean                *float64 `json:"mean"`
-	Status              *string  `json:"status"`
-	Error               *string  `json:"error"`
-	DurationS           *float64 `json:"duration_s"`
-	Turns               *int     `json:"turns"`
-	InputTokens         *int     `json:"input_tokens"`
-	CacheReadTokens     *int     `json:"cache_read_tokens"`
-	CacheCreationTokens *int     `json:"cache_creation_tokens"`
-	OutputTokens        *int     `json:"output_tokens"`
-	ReasoningTokens     *int     `json:"reasoning_tokens"`
-	CostUSD             *float64 `json:"cost_usd"`
-	PremiumRequests     *int     `json:"premium_requests"`
-	DeniedEgress        []string `json:"denied_egress"`
-	BlockedEgress       []string `json:"blocked_egress"`
+	Agent            string   `json:"agent"`
+	Task             string   `json:"task"`
+	Mean             *float64 `json:"mean"`
+	Status           *string  `json:"status"`
+	Error            *string  `json:"error"`
+	DurationS        *float64 `json:"duration_s"`
+	Turns            *int     `json:"turns"`
+	InputTokens      *int     `json:"input_tokens"`
+	CacheReadTokens  *int     `json:"cache_read_tokens"`
+	CacheWriteTokens *int     `json:"cache_write_tokens"`
+	OutputTokens     *int     `json:"output_tokens"`
+	ReasoningTokens  *int     `json:"reasoning_tokens"`
+	CostUSD          *float64 `json:"cost_usd"`
+	PremiumRequests  *int     `json:"premium_requests"`
+	DeniedEgress     []string `json:"denied_egress"`
+	BlockedEgress    []string `json:"blocked_egress"`
 	// EgressEnforced is false when the pair's egress was advisory (the host
 	// driver), null when unknown or no policy ran.
 	EgressEnforced *bool `json:"egress_enforced"`
@@ -182,10 +182,10 @@ func (p *reportPair) summaryFields(pm *pairMeta) {
 	if s == nil {
 		return
 	}
-	p.Turns = known(s.NumTurns)
+	p.Turns = known(s.Turns)
 	p.InputTokens = known(s.InputTokens)
 	p.CacheReadTokens = known(s.CacheReadTokens)
-	p.CacheCreationTokens = known(s.CacheCreationTokens)
+	p.CacheWriteTokens = known(s.CacheWriteTokens)
 	p.OutputTokens = known(s.OutputTokens)
 	p.ReasoningTokens = known(s.ReasoningTokens)
 	p.PremiumRequests = known(s.PremiumRequests)

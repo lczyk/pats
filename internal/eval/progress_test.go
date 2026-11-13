@@ -262,7 +262,7 @@ func TestClaudeSummary(t *testing.T) {
 
 	s := summarize(hd("claude-cli-keyless"), p)
 	require.NotNil(t, s)
-	assert.Equal(t, s.NumTurns, 57)
+	assert.Equal(t, s.Turns, 57)
 	assert.Equal(t, s.OutputTokens, 9213)
 	assert.Equal(t, s.CacheReadTokens, 2743475)
 	assert.Equal(t, s.CostUSD, 0.42)
@@ -290,14 +290,14 @@ func TestOpencodeSummary(t *testing.T) {
 
 	s := summarize(hd("opencode-openrouter"), p)
 	require.NotNil(t, s)
-	assert.Equal(t, s.NumTurns, 2) // one per step_finish
+	assert.Equal(t, s.Turns, 2) // one per step_finish
 	assert.NearlyEqual(t, s.CostUSD, 0.03, 1e-9)
 	assert.Equal(t, s.HasCost, true)
 	assert.Equal(t, s.InputTokens, 300)
 	assert.Equal(t, s.OutputTokens, 225) // reasoning counted in output, as the other harnesses do
 	assert.Equal(t, s.ReasoningTokens, 25)
 	assert.Equal(t, s.CacheReadTokens, 3000)
-	assert.Equal(t, s.CacheCreationTokens, 30)
+	assert.Equal(t, s.CacheWriteTokens, 30)
 	assert.Equal(t, s.Tools["bash"], 2)
 	assert.Equal(t, s.Tools["read"], 1)
 	assert.Equal(t, s.IsError, false)
@@ -308,11 +308,15 @@ func TestOpencodeSummary(t *testing.T) {
 	se := summarize(hd("opencode-openrouter"), pe)
 	require.NotNil(t, se)
 	assert.Equal(t, se.IsError, true)
+	assert.Equal(t, se.Error, "APIError") // the name, when the event has no message
 
-	// prose/garbage -> nil.
+	// prose/garbage -> nil, and so is json that is no object: no line of
+	// either is a failed one, for any default.
 	pg := filepath.Join(dir, "garbage.log")
-	require.NoError(t, os.WriteFile(pg, []byte("just some prose\n"), 0o644))
-	assert.Nil(t, summarize(hd("opencode-openrouter"), pg))
+	require.NoError(t, os.WriteFile(pg, []byte("just some prose\n42\n\"text\"\nnull\n[1]\ntrue\n"), 0o644))
+	for _, name := range harnessNames() {
+		assert.Nil(t, summarize(hd(name), pg), name)
+	}
 }
 
 func TestScanOpencode(t *testing.T) {
@@ -341,7 +345,7 @@ func TestCodexSummary(t *testing.T) {
 
 	s := summarize(hd("codex-cli-keyless"), p)
 	require.NotNil(t, s)
-	assert.Equal(t, s.NumTurns, 0)     // `codex exec` is one turn; not a round-trip count
+	assert.Equal(t, s.Turns, 0)        // `codex exec` is one turn; not a round-trip count
 	assert.Equal(t, s.InputTokens, 25) // 100 total - 75 cached, matching the other kinds
 	assert.Equal(t, s.CacheReadTokens, 75)
 	assert.Equal(t, s.OutputTokens, 20)
@@ -395,7 +399,7 @@ func TestCopilotSummary(t *testing.T) {
 
 	s := summarize(hd("copilot-cli-keyless"), p)
 	require.NotNil(t, s)
-	assert.Equal(t, s.NumTurns, 2) // turn_end events are real round-trips
+	assert.Equal(t, s.Turns, 2) // turn_end events are real round-trips
 	assert.Equal(t, s.OutputTokens, 77)
 	assert.Equal(t, s.InputTokens, 0) // the stream reports no input/cache counts
 	assert.Equal(t, s.CostUSD, 0.0)
@@ -460,7 +464,7 @@ func TestPiSummary(t *testing.T) {
 
 	s := summarize(hd("pi-openrouter"), p)
 	require.NotNil(t, s)
-	assert.Equal(t, s.NumTurns, 3) // one per assistant message: a turn_end restates its message
+	assert.Equal(t, s.Turns, 3) // one per assistant message: a turn_end restates its message
 	assert.NearlyEqual(t, s.CostUSD, 0.00066844, 1e-12)
 	assert.Equal(t, s.HasCost, true)
 	assert.Equal(t, s.InputTokens, 1212)
@@ -477,10 +481,14 @@ func TestPiSummary(t *testing.T) {
 
 	failed := filepath.Join(dir, "failed.log")
 	require.NoError(t, os.WriteFile(failed, []byte(piFailed), 0o644))
-	assert.Equal(t, summarize(hd("pi-openrouter"), failed).IsError, true)
+	sf := summarize(hd("pi-openrouter"), failed)
+	assert.Equal(t, sf.IsError, true)
+	assert.Equal(t, sf.Error, `401: {"message":"User not found.","code":401}`)
 	// a retry that worked is no error.
 	require.NoError(t, os.WriteFile(failed, []byte(piFailed+piLog), 0o644))
-	assert.Equal(t, summarize(hd("pi-openrouter"), failed).IsError, false)
+	sf = summarize(hd("pi-openrouter"), failed)
+	assert.Equal(t, sf.IsError, false)
+	assert.Equal(t, sf.Error, "")
 }
 
 // a format that states its totals at the end reports its cost live then: the
@@ -582,7 +590,7 @@ func TestParseLog(t *testing.T) {
 	log := `{"type":"result","result":"first","total_cost_usd":1}` + "\n" + `{"type":"result","result":"second","total_cost_usd":-2}` + "\n" + `{"type":"result","result":"third","total_cost_usd":2,"num_turns":3}` + "\n"
 	require.NoError(t, ParseLog(hd("claude-cli-keyless"), strings.NewReader(log), &out))
 	assert.Equal(t, out.String(), `line 2: out.usage: cost_usd: -2 is not a finite number of at least 0
-summary: {"num_turns":3,"cost_usd":2,"has_cost":true,"parse_errors":1}
+summary: {"turns":3,"cost_usd":2,"has_cost":true,"parse_errors":1}
 reply (the newest of 2 candidates):
 third
 `)
