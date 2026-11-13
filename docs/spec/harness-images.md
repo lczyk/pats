@@ -68,7 +68,7 @@ vendor that repacked its release) without changing what any project runs: the wr
 a sandbox's harness set is the clis of every agent in the config that resolves to it (`ResolveSandbox`), judges
 included, since a judge is an agent. it is taken from the whole config, not from a command's `-S` / `-a` / `-t`: an
 init or a run of part of the matrix sees the same image. a harness with no `cli`
-(`harness-registry.md`) adds nothing. a sandbox no agent runs in (a step sandbox) has an empty set.
+(`harness-registry.md`) adds nothing, and one whose `cli` no table has adds a name to stamp and nothing to place. a sandbox no agent runs in (a step sandbox) has an empty set.
 
 there is no key for it. an agent that names a harness is the statement that its sandbox needs it.
 

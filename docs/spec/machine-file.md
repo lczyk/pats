@@ -109,7 +109,8 @@ with a line holding an `x.y.z` version, as the four do. the keys:
 
 a `harnesses` entry is one way of running an agent:
 
-- **`cli`**: a `clis` entry. without it the harness has no cli: nothing is placed, stamped or looked for on a host.
+- **`cli`**: a `clis` entry, or the name of an executable the image brings (`harness-registry.md`): stamped and
+  looked for, never placed. without it the harness has no cli: nothing is placed, stamped or looked for on a host.
 - **`run`**: the one-shot command, a script under the rule of `steps.md`, with the agent's `PATS_*` variables. the
   one required key.
 - **`egress`**: what the harness itself needs of the network, as a task says it: `allow` and `deny`, joined to the

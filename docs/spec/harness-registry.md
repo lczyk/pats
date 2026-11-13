@@ -123,6 +123,12 @@ what follows from an entry's keys, wherever the entry is from:
   answer a prompt cheaply exits 0 on it.
 - **no `cli`.** the host driver looks for none, and nothing is placed: what `run` needs comes from the sandbox's
   `provision`, its `base:`, or an `image:`.
+- **a `cli` no `clis` table has** is one the image brings. nothing is fetched or placed for it, as with no `cli`,
+  and the rest is as for any cli: it is in its sandbox's set, so `pats init` asks the image for its version
+  (`<cli> --version`), records it in `components` and fails on an image with none on its PATH, and the host
+  driver looks for it on the machine's PATH. it has no pin: no drift warning, and `version` and `hash` on such a
+  harness are a load error. its name is lower-case letters, digits and hyphens. a tool that cannot say its
+  version leaves `cli` out.
 - **`egress`** is the harness's part of a pair's policy, beside the sandbox's and the task's (`egress-1x.md`), and
   works as `RequiredHosts` does now:
   - under a sandbox that allowlists, `allow` joins the sandbox's and the task's. under `default: allow` it has
