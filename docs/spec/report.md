@@ -63,7 +63,8 @@ small nor quite parsable:
 - **unknown is `null`, never zero.** the summary (`runSummary`, `progress.go`) keeps a count its log did not carry
   at 0: codex never reports turns, copilot never input tokens, and a run cut short may stop before the event that
   carries them. so the report reads a 0 turn, token or premium-request count as `null`. a real 0 is lost with it,
-  which a finished agent run never has. `cost_usd` follows `has_cost`, and every count is `null` when the pair has no
+  which a finished agent run never has. `cost_usd` follows `has_cost`, with `cost_estimated` true when pats priced the pair's tokens itself (`budget.md`),
+  and the cost row of the table then starts `~`. every count is `null` when the pair has no
   summary. a summary parser whose scan stopped early (`sc.Err()`: a line over the 8MiB cap, a read error) returns no
   summary, since a count over part of the stream is an undercount that looks whole.
 - **tokens** -- one meaning across harnesses, whatever each log calls them:

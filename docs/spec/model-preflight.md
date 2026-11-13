@@ -1,6 +1,7 @@
 # model preflight
 
-status: implemented, but for the provider pins check, which waits on `provider-pinning.md`.
+status: implemented, but for the provider pins check, which waits on `provider-pinning.md`. the catalogue this
+check fetches is also where a pair's cost comes from when its harness reports tokens and no cost (`budget.md`).
 
 ## problem
 

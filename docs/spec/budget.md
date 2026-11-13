@@ -38,6 +38,15 @@ cost is whatever a harness's parse script reports (`harness-parse.md`), as it re
   still runs: a per-agent cap stops a claude pair at its end, with its work done, and marks it `budget`. (a
   keyless, subscription-billed run's cost is notional anyway.)
 - **codex-cli-keyless, copilot-cli-keyless**: no dollar cost (`has_cost: false`). they count as zero.
+- **a harness that reports tokens and no cost**, on a model of the openrouter catalogue (`models: openrouter`), is
+  priced by pats: its tokens at the prices the catalogue lists for the model, read from the same fetch as the
+  model check (`model-preflight.md`). input, output, cache reads and cache writes each have their price, and a
+  cache price the catalogue leaves out is the prompt's. the amount is the pair's cost wherever a cost is read:
+  it joins the spend as the tokens are reported, a `budget` and `--budget` stop on it, and the summary holds it as
+  `cost_usd` with `cost_estimated: true`. it is an estimate: the list price is that of openrouter's default route,
+  and the provider that served a call may charge another. a cost the harness itself reports is never replaced.
+  with `--offline`, or a catalogue that could not be read, there are no prices and such a pair has no cost, as
+  before.
 - **validation**: `budget` loads on every agent: pats cannot know what a script will report. an agent whose
   preflight reported no cost, and that has a `budget` or runs under `--budget`, is warned about once: `WARN
   agent X reports no cost: its budget has nothing to check`. with preflight skipped nothing warns.

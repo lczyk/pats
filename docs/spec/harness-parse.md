@@ -216,7 +216,8 @@ prints an event, so its script passes none and the end of the output is what sho
 ## limits
 
 - **cost is as good as the script.** a script that reports none leaves a cap with nothing to check, and says so
-  only through the warnings above.
+  only through the warnings above. the one case pats fills in: tokens with no cost, on a model of the openrouter
+  catalogue, are priced at its list prices and marked `cost_estimated` (`budget.md`).
 - **a script cannot keep state.** a format whose meaning needs more than the reply rules and the totals give is not
   readable yet. `out.state`, a dict, would be the additive way in.
 - **the whole script runs per line.** constants and helpers at its top are made again each time: nothing next to
