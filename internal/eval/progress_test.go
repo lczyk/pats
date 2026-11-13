@@ -271,6 +271,13 @@ func TestClaudeSummary(t *testing.T) {
 	assert.Equal(t, s.Tools["Read"], 1)
 
 	assert.Nil(t, summarize(hd("codex-cli"), p)) // no parser for the kind -> nil
+
+	// a failed result says what went wrong where its answer would be.
+	pf := filepath.Join(dir, "failed.log")
+	require.NoError(t, os.WriteFile(pf, []byte(`{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Failed to authenticate: OAuth session expired and could not be refreshed"}`+"\n"), 0o644))
+	sf := summarize(hd("claude-cli-keyless"), pf)
+	assert.Equal(t, sf.IsError, true)
+	assert.Equal(t, sf.Error, "Failed to authenticate: OAuth session expired and could not be refreshed")
 }
 
 func TestOpencodeSummary(t *testing.T) {
@@ -309,6 +316,8 @@ func TestOpencodeSummary(t *testing.T) {
 	require.NotNil(t, se)
 	assert.Equal(t, se.IsError, true)
 	assert.Equal(t, se.Error, "APIError") // the name, when the event has no message
+	require.NoError(t, os.WriteFile(pe, []byte(`{"type":"error","error":{"name":"APIError","data":{"message":"User not found.","statusCode":401}}}`+"\n"), 0o644))
+	assert.Equal(t, summarize(hd("opencode-openrouter"), pe).Error, "User not found.")
 
 	// prose/garbage -> nil, and so is json that is no object: no line of
 	// either is a failed one, for any default.
@@ -357,8 +366,11 @@ func TestCodexSummary(t *testing.T) {
 	assert.Equal(t, s.Tools["mcp:github/get_issue"], 1)
 
 	failed := filepath.Join(dir, "failed.log")
-	require.NoError(t, os.WriteFile(failed, []byte(`{"type":"turn.failed"}`+"\n"), 0o644))
-	assert.Equal(t, summarize(hd("codex-cli-keyless"), failed).IsError, true)
+	require.NoError(t, os.WriteFile(failed, []byte(`{"type":"error","message":"unexpected status 401 Unauthorized"}`+"\n"+
+		`{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Incorrect API key provided"}}`+"\n"), 0o644))
+	sf := summarize(hd("codex-cli-keyless"), failed)
+	assert.Equal(t, sf.IsError, true)
+	assert.Equal(t, sf.Error, "unexpected status 401 Unauthorized: Incorrect API key provided")
 
 	garbage := filepath.Join(dir, "garbage.log")
 	require.NoError(t, os.WriteFile(garbage, []byte("not json\n"), 0o644))

@@ -145,16 +145,16 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	if r.err != nil {
 		return fmt.Errorf("%w\n%s", r.err, tail(buf.String(), 600))
 	}
+	// what the harness said of its error, or failing that the end of its output.
+	said, _ := stat.failure.Load().(string)
+	if said == "" {
+		said = tail(buf.String(), 600)
+	}
 	if r.code != 0 {
-		return fmt.Errorf("harness exited %d (likely bad/expired creds)\n%s", r.code, tail(buf.String(), 600))
+		return fmt.Errorf("harness exited %d (likely bad/expired creds)\n%s", r.code, said)
 	}
 	// some harnesses exit 0 on a reply that failed, and say so in their stream.
 	if stat.failed.Load() {
-		// what the harness said of it, or failing that the end of its output.
-		said, _ := stat.failure.Load().(string)
-		if said == "" {
-			said = tail(buf.String(), 600)
-		}
 		return fmt.Errorf("harness reported an error (likely bad/expired creds)\n%s", said)
 	}
 	// a cap is checked against the cost a harness reports: one that reported

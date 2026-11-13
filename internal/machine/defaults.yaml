@@ -163,7 +163,8 @@ harnesses:
               reasoning_tokens = u.get("reasoning_output_tokens", 0),
           )
       elif t in ("turn.failed", "error"):
-          out.error()
+          # a failed turn holds its message in an error, an error event its own.
+          out.error(msg = ev.get("error", {}).get("message") or ev.get("message") or "")
 
   copilot-cli-keyless:
     cli: copilot

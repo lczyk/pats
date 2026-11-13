@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 type deadlineBox struct {
 	start, exec time.Duration
 	say         string
+	code        int // the agent's exit
 }
 
 func (b *deadlineBox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -44,7 +46,7 @@ func (s *deadlineSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, std
 	d, _ := ctx.Deadline()
 	s.b.exec = time.Until(d)
 	_, _ = io.WriteString(stdout, s.b.say)
-	return 0, nil
+	return s.b.code, nil
 }
 
 // the sandbox gets a pair's setup budget to come up (a cold lxd server takes
@@ -84,4 +86,12 @@ func TestPreflightHearsAnError(t *testing.T) {
 
 	box.say = piLog
 	require.NoError(t, Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}}))
+
+	// a non-zero exit shows what the harness said too, in place of the end
+	// of its output.
+	box.say, box.code = piFailed, 1
+	err = Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}})
+	assert.Error(t, err, "harness exited 1")
+	assert.Error(t, err, "\n401: {")
+	assert.That(t, !strings.Contains(err.Error(), "stopReason"), "the raw output is in the error: %v", err)
 }
