@@ -194,7 +194,7 @@ two installs are two clients, and the lxd server's lease is the one judge both s
 ## distribution
 
 - **name:** `pats`, registered.
-- **channels:** track `latest`. a push to `1.x` goes to `edge` (a dev build, `VERSION+git<sha7>`), a
+- **channels:** track `latest`. a push to `main` goes to `edge` (a dev build, `VERSION+git<sha7>`), a
   `v1.0.0-beta.N` tag to `beta`. `candidate` and `stable` are released by hand, and `stable` starts with
   1.0. 0.x is not snapped.
 - **store requests** (plugs, above) are separate from publishing: a strict snap releases without them, with manual
@@ -202,10 +202,10 @@ two installs are two clients, and the lxd server's lease is the one judge both s
 - **publishing:** the `publish` job, once the smoke tests and the pairs pass, with a store credential limited to
   `pats` on `edge` and `beta` in the repo's `SNAPCRAFT_STORE_CREDENTIALS`. every snap, a dev build on edge too,
   pins the images of its `VERSION` (`src/sandbox/images.go` decides by the version string alone), so the job waits
-  until `sandbox:v$VERSION` and `egress-proxy:v$VERSION` are in the registry: a release commit reaches `1.x` before
+  until `sandbox:v$VERSION` and `egress-proxy:v$VERSION` are in the registry: a release commit reaches `main` before
   its tag, and its images come only with the tag's `publish_images`. a snap never reaches users before its images.
   one publish job per channel runs at a time, across runs and release tags, and releases both arches in turn. right
-  before it releases it checks it is the newest: for edge, no commit that starts a run has reached `1.x` since its
+  before it releases it checks it is the newest: for edge, no commit that starts a run has reached `main` since its
   own (one touching only markdown does not, so a run whose push ends in one counts from the last that does); for
   beta, no other release tag sits on a descendant of its commit (no version ordering needed). otherwise it releases nothing, since
   github does not start runs in push order and a re-run keeps its run's commit: the newer run releases. a newer run

@@ -150,7 +150,7 @@ a sandbox can also declare an `egress` policy. absent, the network is open, and 
 
 pats is a single go binary. you need go 1.26+ to build it, and docker to run the sandboxes.
 
-this is the 1.x line, released as `1.0.0-beta.N` pre-releases from the `1.x` branch until 1.0. `main` carries 0.x, and `@latest` resolves to it until 1.0 ships, so name the beta explicitly. 1.x reads a different `pats.yaml` shape from 0.x (see [`pats.example.yaml`](./pats.example.yaml)).
+releases are tags on `main`, and a `1.0.0-beta.N` tag is a pre-release of 1.0. `@latest` resolves to 0.x until 1.0 ships, so name the version explicitly. 1.x reads a different `pats.yaml` shape from 0.x (see [`pats.example.yaml`](./pats.example.yaml)).
 
 put it on your PATH with `go install`:
 
@@ -177,7 +177,7 @@ sudo snap connect pats:lxd lxd:lxd                     # lxd
 from a clone, `make install` builds the binary (upx-compressed if `upx` is on PATH) and symlinks it into `~/.local/bin`:
 
 ```sh
-git clone -b 1.x https://github.com/lczyk/pats && cd pats
+git clone https://github.com/lczyk/pats && cd pats
 make install
 ```
 
