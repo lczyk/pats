@@ -117,7 +117,7 @@ what follows from an entry's keys, wherever the entry is from:
   `PATS_MODEL` is then empty, `metadata.json` leaves `model` out and the report shows `-`. a `run` that is a script
   file reading the variable inside is not seen, and guards itself. the dry run's cost history takes a pair with no
   model as any other: the guard that skips one today goes.
-- **`effort`** reaches every `run` as `PATS_EFFORT`. **`max-cost`** is accepted on every agent and checked against
+- **`effort`** reaches every `run` as `PATS_EFFORT`. **`budget`** is accepted on every agent and checked against
   what `parse` reports (`harness-parse.md`).
 - **preflight** runs every harness on the preflight prompt and exports `PATS_PREFLIGHT=1`, so a harness that cannot
   answer a prompt cheaply exits 0 on it.

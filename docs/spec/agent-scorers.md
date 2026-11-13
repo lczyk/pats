@@ -19,7 +19,7 @@ a judge call is a normal agent call with a synthesised task. an agent scorer is 
 has a task's fields and steps, and differs only in what it is given (a copy of the judged pair) and what it returns
 (a verdict line). so whatever pats does for an agent call, it does for a judge, through the same code: the sandbox and
 its egress, the env on stdin, the harness home and its credentials, the leases and clean, the model check, the
-credential preflight, the agent's `max-cost`, the cost and token summary, provider pinning when it lands. a rule
+credential preflight, the agent's `budget`, the cost and token summary, provider pinning when it lands. a rule
 below that reads as special to judges is one of the few places they differ: what the judge sees, where its files go,
 and how its reply becomes a score. anything else that differs is a bug in this spec.
 
@@ -237,7 +237,7 @@ tasks, and `pats score` runs script scorers and never spends money. the workflow
 
 ```
 pats judge [-r <run> | --runs <n>] [-a <agent>]... [-t <task>]... [-s <scorer>]... [-S <suite>]...
-           [-j <n>] [-N <n>] [--max-cost <usd>] [--offline]
+           [-j <n>] [-N <n>] [--budget <usd>] [--offline]
 ```
 
 - `-r` picks one run, the latest by default, as `pats score -r` does; `--runs n` (long only) the latest n runs, as
@@ -247,7 +247,7 @@ pats judge [-r <run> | --runs <n>] [-a <agent>]... [-t <task>]... [-s <scorer>].
   named there is an error.
 - `-j` is the judge jobs' pool, its own: a judge sandbox's `max-parallel` caps its judges inside it, as it caps
   pairs. `-1` is auto, as for `pats run`.
-- `--max-cost` and `--offline`: below.
+- `--budget` and `--offline`: below.
 - `pats score` loses `--judge` and `-J`, and runs script scorers only. it reads the stored verdicts, so a plain
   `pats score` keeps every agent score `pats judge` made (below).
 
@@ -310,7 +310,7 @@ repeats task agents.
   ran: m, numeric: k, failed: f, sd, footer_version, judge, scorer, judged: {agent, task}}`, `sd` the samples' sample standard
   deviation (null below two). each sample dir holds what a judge dir holds, its own `verdict.json` included.
 - `-N 1`, the default, is one sample, in `<i>` = `1`: one layout for every judgement.
-- `--max-cost` counts every sample.
+- `--budget` counts every sample.
 
 ### the command's life
 
@@ -391,7 +391,7 @@ repeats task agents.
 
 judges spend as task agents do, and the budget works the same way (`budget.md`):
 
-- **`pats judge --max-cost <usd>`** caps one invocation's judging, with its own ledger, apart from any run's. its unit
+- **`pats judge --budget <usd>`** caps one invocation's judging, with its own ledger, apart from any run's. its unit
   is a sample (one agent call; `samples` above). it is
   validated as `pats run`'s is (a finite number above 0, at most 1e6; 0, negative, inf and nan are errors before
   anything runs). one ledger per invocation, shared by every judge job and sample of every run, under the same
@@ -399,10 +399,10 @@ judges spend as task agents do, and the budget works the same way (`budget.md`):
   judge job starts and running ones finish. every run judged still gets its `scores.json` (the scores whose judging
   did not start are left as they were, a stored verdict included), and the invocation then warns how many judge jobs
   did not start and exits non-zero.
-- **a judge agent's `max-cost:`** stops one judge job as it stops one task pair: the judge is stopped, its status is
+- **a judge agent's `budget:`** stops one judge job as it stops one task pair: the judge is stopped, its status is
   `budget`, and the sample is a failed one, with its `verdict.json` saying so.
 - the same values and rules as for runs (`budget.md`): `opencode-openrouter` reports cost as it goes, and a claude
-  judge's spend arrives with its `result`, where its agent's `max-cost` stops it.
+  judge's spend arrives with its `result`, where its agent's `budget` stops it.
 - under `--runs n` the cap spans every run judged, as `pats run -N`'s spans every repeat.
 
 ## reporting

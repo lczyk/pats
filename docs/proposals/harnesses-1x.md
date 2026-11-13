@@ -22,7 +22,7 @@ sizes: S is under a day, M a few days, L a week or more.
    the existing tests are the check. everything below builds on it.
 2. **`parse`** (M). starlark with `json` and `re`, `out` and its rules, the two passes, the per-line errors, `pats
    harness parse`, and the four readers as scripts in the defaults, each behind the recorded-run tests of the go
-   reader it replaces. the go readers and the step-1 key go. `max-cost` loads on every agent, with its
+   reader it replaces. the go readers and the step-1 key go. `budget` loads on every agent, with its
    warning. one new dependency.
 3. **the machine's file** (S-M). where it is, the overlay and its errors, `pats config`, the note, `harness_from`
    and `harness_hash`, the snap's `XDG_CONFIG_HOME`. the `harnesses` table only: a `clis` table in a machine's
@@ -57,7 +57,7 @@ gains its `clis`, in the release that places them.
 - `images/harness-versions` goes (step 6). the pins are the `clis` of the defaults.
 - a `provision` that installed its own harness version to override a pin now sits over a cli pats placed; the pin
   moves to an item instead (step 7).
-- `max-cost` on an agent whose harness reports no cost as it runs is no longer a load error (step 2). it loads, and
+- `budget` on an agent whose harness reports no cost as it runs is no longer a load error (step 2). it loads, and
   warns.
 - nothing in a `pats.yaml` that uses only the defaults, the default image or `provision:` changes. mason's is such
   a config.

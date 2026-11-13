@@ -1,7 +1,7 @@
 # parse: a harness's output read by a script
 
 status: implemented. it fills the `parse` key of a harness entry (`machine-config.md`, `harness-registry.md`) and
-changes `budget.md` (the load error for `max-cost` becomes a warning), `agent-scorers.md` (a judge's reply is read
+changes `budget.md` (the load error for `budget` becomes a warning), `agent-scorers.md` (a judge's reply is read
 by the script) and `run-dry-run.md` (a harness with no cost reads as no history).
 
 ## problem
@@ -111,7 +111,7 @@ the rules:
 
 twice over the same lines, as the go readers do now, each time from a fresh `out`:
 
-- **as the pair runs**, on the tee: the tool count in the progress line, and the cost `max-cost` and `--max-cost`
+- **as the pair runs**, on the tee: the tool count in the progress line, and the cost `budget` and `--budget`
   are checked against.
 - **after it**, over `stdout.log`: the summary in `metadata.json` and a judge's reply. so both are a function of the
   log and the script, and can be made again from them.
@@ -150,14 +150,14 @@ how a script is written against a recorded log, and how a changed format is diag
 
 pats cannot know what a script will report, so nothing about cost is declared and nothing is checked at load:
 
-- `max-cost` on an agent is accepted for every harness. it is checked on every report of cost while the pair
+- `budget` on an agent is accepted for every harness. it is checked on every report of cost while the pair
   runs, and a pair whose reported cost passes it is stopped and has the status `budget`, as now. a format that
   reports as it goes (opencode, per step) is stopped mid-run. one that reports once at its end (claude) is stopped
   there, with its work done: the cap then marks the pair and saves nothing.
-- the load error of `budget.md` ("`max-cost` on an agent whose harness reports no live cost") goes, with
+- the load error of `budget.md` ("`budget` on an agent whose harness reports no live cost") goes, with
   `LiveCostHarnesses` and `noCostHarnesses`. one warning stands in for it: after preflight, for each agent whose
-  preflight reported no cost and that has a `max-cost`, or is run under `--max-cost`: `WARN agent X reports no
-  cost: max-cost has nothing to check`. this is also the start-of-run warning `--max-cost` has now.
+  preflight reported no cost and that has a `budget`, or is run under `--budget`: `WARN agent X reports no
+  cost: its budget has nothing to check`. this is also the start-of-run warning `--budget` has now.
 - the dry run's estimate stays what past runs' summaries say, and is unknown for an agent with none that has a
   cost.
 
@@ -252,7 +252,7 @@ prints an event, so its script passes none and the end of the output is what sho
 - hermetic: a script cannot name `load`, open a file or read the environment; a name set on one line is not there
   on the next.
 - no `parse`: no summary, the whole stdout as a judge's reply.
-- budget: `max-cost` on a claude agent loads, and a claude pair over it is `budget` at its `result`; the warning
+- budget: `budget` on a claude agent loads, and a claude pair over it is `budget` at its `result`; the warning
   after a preflight with no cost; an opencode pair is still stopped mid-run.
 - numbers: a negative, a `nan` and a fractional count are each an error that changes no total.
 - `pats harness parse` over a recorded log prints the summary and the reply, and names a failed line.

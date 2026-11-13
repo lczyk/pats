@@ -34,11 +34,11 @@ a task with a step sandbox (`docs/spec/step-sandbox.md`) shows it after the sand
   ```json
   {"agent": "haiku", "task": "curl", "sandbox": "docker", "estimate_usd": 0.04, "samples": 6, "unknown": null, "repeat": 1, "estimate_total_usd": 0.04}
   {"agent": "sonnet", "task": "curl", "sandbox": "docker", "estimate_usd": null, "samples": 0, "unknown": "no history", "repeat": 1, "estimate_total_usd": null}
-  {"total": true, "pairs": 3, "executions": 3, "known_usd": 0.04, "unknown_pairs": 2, "max_cost_usd": null, "fits": null}
+  {"total": true, "pairs": 3, "executions": 3, "known_usd": 0.04, "unknown_pairs": 2, "budget_usd": null, "fits": null}
   ```
 
   `pairs` counts distinct pairs, `executions` pairs times repeats, `unknown_pairs` distinct pairs without an estimate.
-  `fits` is whether `known_usd` is under `--max-cost`, null without one.
+  `fits` is whether `known_usd` is under `--budget`, null without one.
 - **the estimate** is the median `summary.cost_usd` of past pairs that match, with `has_cost: true`, whatever their
   status. `samples` is how many there were. none: `unknown`, with the reason `no history`. a harness
   that reports no cost leaves no history, and reads the same.
@@ -54,8 +54,8 @@ a task with a step sandbox (`docs/spec/step-sandbox.md`) shows it after the sand
   the dry run with that path.
 - **with `--repeat n`** (`repeats.md`) each pair's `repeat` is n and its total is the estimate times n; the text lines
   say `est $0.04 x5 = $0.20`.
-- **with `--max-cost`** (`budget.md`) the total says whether the known part fits: `est $14.20 + 3 unknown, under
-  --max-cost $20`.
+- **with `--budget`** (`budget.md`) the total says whether the known part fits: `est $14.20 + 3 unknown, under
+  --budget $20`.
 
 ## not doing
 
