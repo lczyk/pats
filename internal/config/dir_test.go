@@ -157,7 +157,7 @@ func TestLoadResolvesDirFromConfigFile(t *testing.T) {
 		"pats.yaml":           "vxx:\n  kind: task\n  dir: cases\n",
 		"cases/axx/task.yaml": "prompt: a\n",
 	})
-	c, err := Load(filepath.Join(root, "pats.yaml"))
+	c, err := Load(filepath.Join(root, "pats.yaml"), "")
 	require.NoError(t, err)
 	require.Len(t, c.Tasks, 1)
 	assert.Equal(t, c.Tasks[0].Dir, filepath.Join("cases", "axx"))

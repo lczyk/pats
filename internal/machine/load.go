@@ -24,37 +24,42 @@ const (
 	FromProject = "project"
 )
 
-// ConfigPath is where the machine's file is looked for:
-// $XDG_CONFIG_HOME/pats/config.yaml when that is set and absolute (a relative
-// one is ignored, as the xdg spec says), else ~/.config/pats/config.yaml, on
-// every os.
-func ConfigPath() (string, error) {
+// FilePath is where the machine's file is looked for:
+// $XDG_CONFIG_HOME/pats/machine.yaml when that is set and absolute (a
+// relative one is ignored, as the xdg spec says), else
+// ~/.config/pats/machine.yaml, on every os.
+func FilePath() (string, error) {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" && filepath.IsAbs(x) {
-		return filepath.Join(x, "pats", "config.yaml"), nil
+		return filepath.Join(x, "pats", "machine.yaml"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".config", "pats", "config.yaml"), nil
+	return filepath.Join(home, ".config", "pats", "machine.yaml"), nil
 }
 
 // Load is the tables pats runs with on this machine: the defaults, with the
-// machine's file laid over them when there is one. the file is optional, and
-// one that is there and wrong is an error, never half applied.
-func Load() (*Tables, error) {
-	path, err := ConfigPath()
-	if err != nil {
-		return nil, err
+// machine's file laid over them when there is one. the file is optional
+// where it is looked for, and one that is there and wrong is an error, never
+// half applied. file names another to read in its place, which has to be
+// there; "" is the machine's own.
+func Load(file string) (*Tables, error) {
+	path, named := file, file != ""
+	if !named {
+		var err error
+		if path, err = FilePath(); err != nil {
+			return nil, err
+		}
 	}
 	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) && !named {
 		t := Defaults()
 		t.Path = path
 		return t, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("machine config: %w", err)
+		return nil, fmt.Errorf("machine file: %w", err)
 	}
 	t, err := Overlay(data, path)
 	if err != nil {
@@ -345,7 +350,7 @@ func (t *Tables) Note() string {
 	if len(t.Adds) > 0 {
 		parts = append(parts, "adds "+strings.Join(t.Adds, ", "))
 	}
-	return fmt.Sprintf("machine config %s: %s", t.Path, strings.Join(parts, "; "))
+	return fmt.Sprintf("machine file %s: %s", t.Path, strings.Join(parts, "; "))
 }
 
 // Digest is a hash of the resolved entry and of what its cli fixes: the
@@ -460,9 +465,9 @@ func DefaultsYAML() []byte { return defaultsYAML }
 func (t *Tables) Print(w io.Writer) error {
 	switch {
 	case !t.Found:
-		fmt.Fprintf(w, "# machine config: %s (not there: these are the defaults)\n", t.Path)
+		fmt.Fprintf(w, "# machine file: %s (not there: these are the defaults)\n", t.Path)
 	case len(t.Changes)+len(t.Adds) == 0:
-		fmt.Fprintf(w, "# machine config: %s (changes nothing: these are the defaults)\n", t.Path)
+		fmt.Fprintf(w, "# machine file: %s (changes nothing: these are the defaults)\n", t.Path)
 	default:
 		fmt.Fprintf(w, "# %s\n", t.Note())
 	}

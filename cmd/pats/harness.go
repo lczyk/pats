@@ -72,7 +72,7 @@ func (c *HarnessParseCommand) Execute(args []string) error {
 // there the machine's.
 func harnessTables() (*machine.Tables, error) {
 	if _, err := os.Stat(opts.Config); errors.Is(err, fs.ErrNotExist) {
-		return machine.Load()
+		return machine.Load(opts.MachineFile)
 	}
 	cfg, err := load(opts.Config)
 	if err != nil {

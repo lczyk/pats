@@ -49,7 +49,7 @@ func PinCLI(ctx context.Context, tables *machine.Tables, cli, version string, cl
 
 	fmt.Fprintf(out, "# %s %s, as its source served it just now: trust on first use. check each hash against the vendor's\n", cli, version)
 	fmt.Fprintf(out, "# own where there is one (npm: the package's dist.integrity; a github release: its digests).\n\n")
-	fmt.Fprintf(out, "# a clis entry, for a machine's config.yaml or the defaults:\nclis:\n  %s:\n    version: %s\n    artefacts:\n", cli, version)
+	fmt.Fprintf(out, "# a clis entry, for a machine's machine.yaml or the defaults:\nclis:\n  %s:\n    version: %s\n    artefacts:\n", cli, version)
 	for _, key := range keys {
 		a := c.Artefacts[key]
 		fmt.Fprintf(out, "      %s:\n        arch: [%s]\n        hash: sha256:%s\n", key, strings.Join(a.Arch, ", "), byKey[key])

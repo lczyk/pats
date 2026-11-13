@@ -19,7 +19,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv("XDG_CACHE_HOME", dir)
-	// nor does a test read the user's machine config.
+	// nor does a test read the user's machine file.
 	os.Setenv("XDG_CONFIG_HOME", dir)
 	// no test fetches a harness cli: the artefact is where the cache would
 	// have it, unread.

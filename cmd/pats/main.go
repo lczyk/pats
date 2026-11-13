@@ -28,8 +28,9 @@ import (
 // global (`pats -c <path> <command>`); go-flags also accepts it after the
 // command name.
 type Options struct {
-	Config  string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
-	Verbose []bool `long:"verbose" short:"v" description:"init, run and score: more detail (build steps, stats, each score); twice also streams builds, host scripts, the agent's stderr and scorers"`
+	Config      string `long:"config" short:"c" default:"pats.yaml" description:"path to pats.yaml"`
+	MachineFile string `long:"machine" value-name:"<path>" description:"read this machine file in place of the machine's own (~/.config/pats/machine.yaml)"`
+	Verbose     []bool `long:"verbose" short:"v" description:"init, run and score: more detail (build steps, stats, each score); twice also streams builds, host scripts, the agent's stderr and scorers"`
 
 	Init    InitCommand    `command:"init" description:"make and pin the images the suites' sandboxes need"`
 	Run     RunCommand     `command:"run" description:"run the suites (agents x tasks)"`
@@ -329,7 +330,7 @@ func (c *ListRunsCommand) Execute(args []string) error {
 }
 
 func load(path string) (*config.Config, error) {
-	cfg, err := config.Load(path)
+	cfg, err := config.Load(path, opts.MachineFile)
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", path, err)
 	}

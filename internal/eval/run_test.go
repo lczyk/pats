@@ -1289,7 +1289,7 @@ sux: {kind: suite, items: {sux: {agents: ags, tasks: txx}}}
 	var out bytes.Buffer
 	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
 	require.NoError(t, err, "%s", out.String())
-	assert.ContainsString(t, out.String(), "INFO machine config "+cfg.Harnesses.Path+": changes harnesses.codex-cli-keyless.pass-env; adds harnesses.mine\n")
+	assert.ContainsString(t, out.String(), "INFO machine file "+cfg.Harnesses.Path+": changes harnesses.codex-cli-keyless.pass-env; adds harnesses.mine\n")
 
 	// a harness that names no way of logging in is not warned about one.
 	assert.Equal(t, strings.Contains(out.String(), "mxx/txx no creds forwarded"), false)
@@ -1313,7 +1313,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	out.Reset()
 	runDir, err = Run(plain, Options{ConfigDir: dir2, Now: time.Now(), Out: &out})
 	require.NoError(t, err, "%s", out.String())
-	assert.Equal(t, strings.Contains(out.String(), "machine config"), false)
+	assert.Equal(t, strings.Contains(out.String(), "machine file"), false)
 	m := readMeta(t, runDir, "axx", "txx")
 	assert.Equal(t, m.HarnessFrom, "default")
 	assert.Equal(t, m.HarnessHash, hd("codex-cli-keyless").Digest())

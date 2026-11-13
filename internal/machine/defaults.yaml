@@ -1,4 +1,4 @@
-# what this pats knows about the harnesses it ships: docs/spec/machine-config.md.
+# what this pats knows about the harnesses it ships: docs/spec/machine-file.md.
 
 clis:
   claude:

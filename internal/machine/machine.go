@@ -1,6 +1,6 @@
 // Package machine holds what pats knows about the harnesses it drives: the
 // tables of them and of their clis, read from the embedded defaults
-// (docs/spec/machine-config.md).
+// (docs/spec/machine-file.md).
 package machine
 
 import (

@@ -13,7 +13,7 @@ var builtHostSteps = hostSteps
 // the nohost rule put the build's own answer back.
 func TestMain(m *testing.M) {
 	AllowHostStepsInTests()
-	// Load reads the machine's config: never the developer's own.
+	// Load reads the machine's file: never the developer's own.
 	dir, err := os.MkdirTemp("", "pats-config-test-")
 	if err != nil {
 		panic(err)

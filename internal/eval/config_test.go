@@ -29,10 +29,10 @@ func loadCfg(t *testing.T, src, machineFile string) *config.Config {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	require.NoError(t, os.MkdirAll(filepath.Join(xdg, "pats"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(xdg, "pats", "config.yaml"), []byte(machineFile), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(xdg, "pats", "machine.yaml"), []byte(machineFile), 0o644))
 	path := filepath.Join(t.TempDir(), "pats.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
-	cfg, err := config.Load(path)
+	cfg, err := config.Load(path, "")
 	require.NoError(t, err)
 	require.NoError(t, cfg.Validate())
 	return cfg

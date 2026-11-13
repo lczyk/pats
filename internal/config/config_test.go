@@ -20,7 +20,7 @@ import (
 // the committed example must load, validate, and expand to the matrices its
 // comments describe -- a regression guard on both the parser and the example.
 func TestExampleConfig(t *testing.T) {
-	c, err := Load("../../pats.example.yaml")
+	c, err := Load("../../pats.example.yaml", "")
 	require.NoError(t, err)
 	require.NoError(t, c.Validate())
 
@@ -631,7 +631,7 @@ func TestBadName(t *testing.T) {
 	}
 }
 
-// Load reads the machine's config before the pats.yaml: an agent may name a
+// Load reads the machine's file before the pats.yaml: an agent may name a
 // harness the machine's file adds, and a file that is wrong stops the load.
 // Parse stays on the defaults.
 func TestLoadReadsMachineConfig(t *testing.T) {
@@ -647,14 +647,14 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 
 	// no machine file: the harness is unknown.
-	c, err := Load(path)
+	c, err := Load(path, "")
 	require.NoError(t, err)
 	assert.Error(t, c.Validate(), `unknown harness "mine"`)
 
-	machineFile := filepath.Join(xdg, "pats", "config.yaml")
+	machineFile := filepath.Join(xdg, "pats", "machine.yaml")
 	require.NoError(t, os.MkdirAll(filepath.Dir(machineFile), 0o755))
 	require.NoError(t, os.WriteFile(machineFile, []byte("harnesses:\n  mine:\n    run: mine --go\n"), 0o644))
-	c, err = Load(path)
+	c, err = Load(path, "")
 	require.NoError(t, err)
 	require.NoError(t, c.Validate())
 	assert.Equal(t, c.HarnessOf(c.Agents[0]).Run, "mine --go")
@@ -665,8 +665,8 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.Error(t, p.Validate(), `unknown harness "mine"`)
 
 	require.NoError(t, os.WriteFile(machineFile, []byte("harnesses:\n  mine:\n    rum: x\n"), 0o644))
-	_, err = Load(path)
-	assert.Error(t, err, `config.yaml:3: harnesses.mine: unknown key "rum"`)
+	_, err = Load(path, "")
+	assert.Error(t, err, `machine.yaml:3: harnesses.mine: unknown key "rum"`)
 }
 
 // a vector of kind harness: an item named as a default changes it key by

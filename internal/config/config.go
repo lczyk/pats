@@ -338,10 +338,11 @@ type Suite struct {
 type StrList []string
 
 // Load reads + parses a pats.yaml; `dir` vectors resolve against its
-// directory. the machine's config is read first: its harnesses are the ones
-// the pats.yaml names (docs/spec/machine-config.md). it does not Validate.
-func Load(path string) (*Config, error) {
-	tables, err := machine.Load()
+// directory. the machine's file is read first, or machineFile in its place
+// when that is not "": its harnesses are the ones the pats.yaml names
+// (docs/spec/machine-file.md). it does not Validate.
+func Load(path, machineFile string) (*Config, error) {
+	tables, err := machine.Load(machineFile)
 	if err != nil {
 		return nil, err
 	}
