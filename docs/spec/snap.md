@@ -195,8 +195,8 @@ two installs are two clients, and the lxd server's lease is the one judge both s
 
 - **name:** `pats`, registered.
 - **channels:** track `latest`. a push to `main` goes to `edge` (a dev build, `VERSION+git<sha7>`), a
-  `v1.0.0-beta.N` tag to `beta`. `candidate` and `stable` are released by hand, and `stable` starts with
-  1.0. 0.x is not snapped.
+  release tag to `beta`, a pre-release (`v1.1.0-beta.N`) and a release (`v1.0.0`) alike. `candidate` and `stable`
+  are released by hand, and start with 1.0. 0.x is not snapped.
 - **store requests** (plugs, above) are separate from publishing: a strict snap releases without them, with manual
   connects.
 - **publishing:** the `publish` job, once the smoke tests and the pairs pass, with a store credential limited to
