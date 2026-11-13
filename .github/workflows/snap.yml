@@ -2,18 +2,18 @@ name: snap
 
 # pack the strict snap (docs/spec/snap.md) on each arch it ships for, then
 # install it on the ubuntu releases a user runs and smoke-test it. a push to
-# 1.x releases it to edge, a release tag to beta. candidate and stable are
+# main releases it to edge, a release tag to beta. candidate and stable are
 # released by hand.
 
 on:
   push:
-    branches: [ "main", "1.x" ]
+    branches: [ "main" ]
     # paths-ignore does not apply to a tag push.
     tags: [ "v*" ]
     paths-ignore:
       - '**/*.md'
   pull_request:
-    branches: [ "main", "1.x" ]
+    branches: [ "main" ]
     paths-ignore:
       - '**/*.md'
   workflow_dispatch:
@@ -152,17 +152,17 @@ jobs:
 
   # every snap, a dev build on edge too, pins the images of its VERSION
   # (src/sandbox/images.go), so none is released before they are in the
-  # registry: a release commit reaches 1.x before its tag, and its images come
+  # registry: a release commit reaches main before its tag, and its images come
   # only with the tag's publish_images. one job per channel at a time, across
   # runs and tags, releases both arches; it releases nothing once a newer
-  # commit is on 1.x (edge) or a newer release tag (beta), whose run releases
+  # commit is on main (edge) or a newer release tag (beta), whose run releases
   # instead: github does not start runs in push order, and a re-run keeps its
   # run's commit.
   publish:
     needs: [smoke-test, pair]
     if: >-
       github.event_name == 'push' &&
-      (github.ref == 'refs/heads/1.x' || startsWith(github.ref, 'refs/tags/v'))
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     concurrency:
@@ -213,16 +213,16 @@ jobs:
       - name: Check this run is the newest
         id: fresh
         run: |
-          git fetch --quiet --force --tags origin 1.x
+          git fetch --quiet --force --tags origin main
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             newer=$(git tag --list 'v*' --contains "$GITHUB_SHA" | grep -vxF "$GITHUB_REF_NAME" || true)
           else
-            # the newest commit that starts a run, on 1.x and in this run:
+            # the newest commit that starts a run, on main and in this run:
             # paths-ignore above leaves out one that only touches markdown,
             # and a push that ends in one still runs, at that commit.
             tip=$(git log -1 --format=%H FETCH_HEAD -- . ':(glob,exclude)**/*.md')
             mine=$(git log -1 --format=%H "$GITHUB_SHA" -- . ':(glob,exclude)**/*.md')
-            newer=$([ "$tip" = "$mine" ] || echo "1.x at $tip")
+            newer=$([ "$tip" = "$mine" ] || echo "main at $tip")
           fi
           if [ -n "$newer" ]; then
             echo "not released, a newer one is out: $newer"
