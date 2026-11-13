@@ -155,14 +155,14 @@ releases are tags on `main`, and a `-beta.N` tag is a pre-release. 1.x reads a d
 put it on your PATH with `go install`:
 
 ```sh
-go install github.com/lczyk/pats/cmd/pats@v1.0.0    # installs into $(go env GOBIN)
+go install github.com/lczyk/pats/cmd/pats@v1.0.1    # installs into $(go env GOBIN)
 ```
 
 or run it without installing at all:
 
 ```sh
-go run github.com/lczyk/pats/cmd/pats@v1.0.0 run
-go run github.com/lczyk/pats/cmd/pats@v1.0.0 score
+go run github.com/lczyk/pats/cmd/pats@v1.0.1 run
+go run github.com/lczyk/pats/cmd/pats@v1.0.1 score
 ```
 
 on linux there is also a snap, which needs no go. it is strictly confined, so it runs agents and steps in docker or local lxd sandboxes only: no host driver, bwrap or podman. connect it to the engine you use:
