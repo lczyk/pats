@@ -115,6 +115,25 @@ else:
 	assert.Equal(t, strings.Join(run(t, final, "f one", "a two", "a three").Replies(), "|"), "three|two|one")
 	assert.Equal(t, strings.Join(run(t, final, "text", "f one").Replies(), "|"), "one") // a final outranks text
 
+	// a reply that streams a token at a time joins with no newline.
+	assert.Equal(t, strings.Join(run(t, `out.text(line, sep = "")`, "The", " cat", " sat").Replies(), "|"), "The cat sat")
+	assert.Equal(t, strings.Join(run(t, `out.text(line, sep = "" if line.startswith(" ") else "\n")`, "a", " b", "c").Replies(), "|"), "a b\nc")
+
+	// a final with no reply keeps the text so far as one, and spends it: the
+	// lines after it are no part of the reply. with no text it keeps nothing.
+	span := `
+if line == "BEGIN":
+    out.clear()
+elif line == "END":
+    out.final()
+else:
+    out.text(line)
+`
+	assert.Equal(t, strings.Join(run(t, span, "noise", "BEGIN", "one", "two", "END", "trailer").Replies(), "|"), "one\ntwo")
+	assert.Equal(t, strings.Join(run(t, span, "BEGIN", "one", "END", "BEGIN", "two", "END").Replies(), "|"), "two")
+	assert.Equal(t, strings.Join(run(t, span, "BEGIN", "one", "END", "END").Replies(), "|"), "one")
+	assert.Equal(t, run(t, `out.final(5)`, "x").Errors, 1)
+
 	text := `
 if line == "clear":
     out.clear()

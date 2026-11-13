@@ -173,14 +173,20 @@ func (ps *Pass) outError(_ *starlark.Thread, b *starlark.Builtin, args starlark.
 }
 
 func (ps *Pass) outText(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var s string
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "s", &s); err != nil {
+	s, sep := "", "\n"
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "s", &s, "sep?", &sep); err != nil {
 		return nil, err
 	}
 	if ps.res.clearNext {
 		ps.res.texts, ps.res.clearNext = nil, false
 	}
-	ps.res.texts = append(ps.res.texts, s)
+	// the pieces join by newlines. another sep joins this one to the piece
+	// before it instead: "" for a reply that streams a token at a time.
+	if n := len(ps.res.texts); sep != "\n" && n > 0 {
+		ps.res.texts[n-1] += sep + s
+	} else {
+		ps.res.texts = append(ps.res.texts, s)
+	}
 	return starlark.None, nil
 }
 
@@ -200,15 +206,30 @@ func (ps *Pass) outClear(_ *starlark.Thread, b *starlark.Builtin, args starlark.
 }
 
 func (ps *Pass) outFinal(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var s string
+	var s starlark.Value = starlark.None
 	add := false
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "s", &s, "add?", &add); err != nil {
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "s?", &s, "add?", &add); err != nil {
 		return nil, err
+	}
+	var reply string
+	switch v := s.(type) {
+	case starlark.String:
+		reply = string(v)
+	case starlark.NoneType:
+		// no reply given: the pieces of text so far are it, and are spent.
+		// with none there is nothing to keep.
+		if len(ps.res.texts) == 0 {
+			return starlark.None, nil
+		}
+		reply = strings.Join(ps.res.texts, "\n")
+		ps.res.texts, ps.res.clearNext = nil, false
+	default:
+		return nil, fmt.Errorf("%s: for parameter s: got %s, want string", b.Name(), s.Type())
 	}
 	if !add {
 		ps.res.finals = nil
 	}
-	ps.res.finals = append(ps.res.finals, s)
+	ps.res.finals = append(ps.res.finals, reply)
 	return starlark.None, nil
 }
 
