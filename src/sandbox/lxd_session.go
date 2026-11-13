@@ -130,7 +130,12 @@ func (s *lxdSession) waitReady(ctx context.Context, network bool) error {
 		case err != nil:
 			last = fmt.Errorf("%w %s", err, strings.TrimSpace(out.String()))
 		case network:
+			// what the probe said goes along: an image with no ip(8) has no
+			// route to show either, and says so.
 			last = errNoRoute
+			if o := strings.TrimSpace(out.String()); o != "" {
+				last = fmt.Errorf("%w: %s", errNoRoute, o)
+			}
 		default:
 			last = fmt.Errorf("exit %d %s", code, strings.TrimSpace(out.String()))
 		}
@@ -152,16 +157,23 @@ func noRouteHint(err error, bridge string) error {
 	if !errors.Is(err, errNoRoute) {
 		return err
 	}
-	return fmt.Errorf("%w (no address from bridge %s. %s)", err, bridge, ufwBridgeHint)
+	return fmt.Errorf("%w (no address from bridge %s. %s)", err, bridge, ufwBridgeHint(bridge))
 }
 
 // ufwBridgeHint is what an admin does once on a host whose ufw drops dhcp and
-// dns on bridges it was not told about. ufw passes the + on to iptables.
-var ufwBridgeHint = "on a host running ufw, its default INPUT and FORWARD drop stop dhcp, dns and forwarding on bridges it was not told about. an admin lets pats's bridges through once with\n" +
-	"  ufw allow in on patsbr+\n" +
-	"  ufw route allow in on patsbr+\n" +
-	"  ufw route allow out on patsbr+\n" +
-	"  (and the same three for " + lxdUplink + ")"
+// dns on bridges it was not told about: for pats's own bridges all of them at
+// once (ufw passes the + on to iptables), for a bridge of the user's
+// (PATS_LXD_UPLINK) that one.
+func ufwBridgeHint(bridge string) string {
+	const why = "on a host running ufw, its default INPUT and FORWARD drop stop dhcp, dns and forwarding on bridges it was not told about. an admin lets "
+	rules := func(br string) string {
+		return "  ufw allow in on " + br + "\n  ufw route allow in on " + br + "\n  ufw route allow out on " + br
+	}
+	if bridge != lxdUplink && !strings.HasPrefix(bridge, "patsbr") {
+		return why + "it through once with\n" + rules(bridge)
+	}
+	return why + "pats's bridges through once with\n" + rules("patsbr+") + "\n  (and the same three for " + lxdUplink + ")"
+}
 
 // reachesInternet is the open sandbox's self-test: its bridge must forward.
 // a server that also runs docker drops bridged traffic from bridges docker was

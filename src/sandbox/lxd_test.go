@@ -143,6 +143,33 @@ func TestLXDStartNoRoute(t *testing.T) {
 	assert.That(t, !strings.Contains(err.Error(), "<nil>"), "a nil error printed: %v", err)
 }
 
+// what the route probe said goes with the error (an image with no ip has no
+// route to show), and a bridge of the user's is the one the hint names.
+func TestNoRouteHint(t *testing.T) {
+	l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "pats-img-x"})
+	l.p.t.ready = 20 * time.Millisecond
+	l.r = runFunc(func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+		if strings.Contains(strings.Join(args, " "), "ip -4 route show default") {
+			f.record(args)
+			io.WriteString(stderr, "sh: 1: ip: not found\n")
+			return exitStatus(127)
+		}
+		return f.run(ctx, stdin, stdout, stderr, args...)
+	})
+	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir()})
+	require.Error(t, err, "no default route: sh: 1: ip: not found")
+	assert.ErrorIs(t, err, errNoRoute)
+
+	own := noRouteHint(errNoRoute, "patsbr0a1b2c3d").Error()
+	assert.ContainsString(t, own, "ufw allow in on patsbr+")
+	assert.ContainsString(t, own, "the same three for "+lxdUplink)
+	assert.ContainsString(t, noRouteHint(errNoRoute, lxdUplink).Error(), "ufw allow in on patsbr+")
+	theirs := noRouteHint(errNoRoute, "lxdbr0").Error()
+	assert.ContainsString(t, theirs, "ufw allow in on lxdbr0\n  ufw route allow in on lxdbr0\n  ufw route allow out on lxdbr0")
+	assert.That(t, !strings.Contains(theirs, "patsbr") && !strings.Contains(theirs, lxdUplink), "a hint for bridges not in use: %s", theirs)
+	assert.Equal(t, noRouteHint(io.EOF, "lxdbr0"), io.EOF)
+}
+
 // a nic a profile adds is refused, and so is raw config, before anything
 // starts; under egress none the instance gets no nic at all.
 func TestLXDStartRefusesForeignNic(t *testing.T) {
