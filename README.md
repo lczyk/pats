@@ -155,14 +155,14 @@ this is the 1.x line, released as `1.0.0-beta.N` pre-releases from the `1.x` bra
 put it on your PATH with `go install`:
 
 ```sh
-go install github.com/lczyk/pats/cmd/pats@v1.0.0-beta.14    # installs into $(go env GOBIN)
+go install github.com/lczyk/pats/cmd/pats@v1.0.0-beta.15    # installs into $(go env GOBIN)
 ```
 
 or run it without installing at all:
 
 ```sh
-go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.14 run
-go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.14 score
+go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.15 run
+go run github.com/lczyk/pats/cmd/pats@v1.0.0-beta.15 score
 ```
 
 on linux there is also a snap, which needs no go. it is strictly confined, so it runs agents and steps in docker or local lxd sandboxes only: no host driver, bwrap or podman. connect it to the engine you use:
