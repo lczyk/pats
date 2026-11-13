@@ -83,9 +83,9 @@ handed to it by name.
 | `out.tool(name)` | one tool call: the live count, and `tools[name]` in the summary |
 | `out.usage(...)` | adds its keywords to the totals, or with `total = True` replaces those totals |
 | `out.error(v = True, msg = "")` | sets `is_error`, and `error`: what the harness said of it |
-| `out.text(s)` | a piece of the reply |
+| `out.text(s, sep = "\n")` | a piece of the reply, joined to the one before it by `sep` |
 | `out.clear(next = False)` | drops the pieces so far, or with `next = True` once another arrives |
-| `out.final(s, add = False)` | the reply, whole: it replaces the candidates before it, or joins them |
+| `out.final(s = None, add = False)` | the reply, whole: it replaces the candidates before it, or joins them. with no `s`, the text so far |
 
 the rules:
 
@@ -100,6 +100,11 @@ the rules:
   would take spend back, and a `nan` or an infinity cannot be written to `metadata.json`.
 - **the totals mean what `runSummary` says they mean**, for every harness: `input_tokens` leaves out
   cache reads, `output_tokens` includes `reasoning_tokens`, `turns` are model round trips. the script does the arithmetic its format needs.
+- **`text`** pieces join by newlines, which suits a format that prints a part at a time. `sep` joins a piece to
+  the one before it by something else: `sep = ""` for a reply that streams a token an event.
+- **`final()`** with no reply keeps the text so far as a candidate and spends it, so what `text` hears next is no
+  part of it: for a text format whose reply is the lines between two markers. with no text so far it does
+  nothing.
 - **`has_cost`** is true once `cost_usd` was passed at all, 0 included: a real zero, not an unreported one.
 - **the reply** a judge is read from (`agent-scorers.md`) is the `final` candidates, newest first, when there are
   any, and else the pieces of `text` joined by newlines. with neither there is no reply.

@@ -95,7 +95,9 @@ with a line holding an `x.y.z` version, as the four do. the keys:
   under a url:
   - **`arch`**: the arches the file is for, a list of `amd64` and `arm64`. no two artefacts of a cli name one arch.
   - **`hash`**: the file's, as `sha256:<64 hex>`. the part before the colon is what the bytes are hashed with, and
-    `sha256` is the one kind there is: any other is a load error. with `version` it is the pin.
+    `sha256` is the one kind there is: any other is a load error. with `version` it is the pin. an artefact
+    written without one loads, so that `pats harness pin` can print it, and nothing places the cli until then:
+    `pats init` says which cli has no hash and which command prints it.
   - **`bin`**: the path of the executable inside the file, which is then a gzipped tar. without `bin` the file is
     the executable itself.
 - **`login-file`**: where the cli keeps its login, as a path under the home. the host's copy is that path under the
