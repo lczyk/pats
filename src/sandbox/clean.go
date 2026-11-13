@@ -545,7 +545,15 @@ func (p *process) cleanTemp(listed, planned map[string]bool, olderThan time.Dura
 	if err != nil {
 		return err
 	}
-	_, err = p.cleanTempIn(dir, o, listed, olderThan, force)
+	// the docker snap's cli root too, whenever this client has one, whatever
+	// docker is on PATH now.
+	var roots []string
+	if owner := p.knownOwner(); owner != "" {
+		if root := p.cliRoot(owner); root != "" {
+			roots = append(roots, root)
+		}
+	}
+	_, err = p.cleanTempIn(dir, o, listed, olderThan, force, roots...)
 	errs := []error{err}
 	// an older pats's home: swept by the same rules, and never removed (an
 	// old binary may hold its lock), only pointed at once nothing else is in it.
@@ -593,17 +601,75 @@ func onlyClientID(dir string, gone map[string]bool) bool {
 }
 
 // cleanTempIn sweeps one home's temp root and lease files, and returns what
-// it removed, or would in a dry run.
-func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool, olderThan time.Duration, force bool) (map[string]bool, error) {
+// it removed, or would in a dry run. more are temp roots outside the home
+// whose dirs the home's leases cover: all are read before a lease goes, since
+// a lease stays while a temp dir names it.
+func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool, olderThan time.Duration, force bool, more ...string) (map[string]bool, error) {
 	dryRun := o.DryRun
-	root := filepath.Join(dir, "tmp")
 	now := p.clock.Now()
-	var errs []error
 	held := map[string]bool{} // runs a temp dir names
 	gone := map[string]bool{} // what this sweep takes: dirs, owner files, leases
-	ents, err := os.ReadDir(root)
-	if err != nil && !os.IsNotExist(err) {
+	errs, err := p.sweepTemps(filepath.Join(dir, "tmp"), o, olderThan, force, held, gone)
+	if err != nil {
 		return gone, err
+	}
+	for _, root := range more {
+		// a root that cannot be read is one that is not there: a strict snap
+		// reaches no other snap's data.
+		es, _ := p.sweepTemps(root, o, olderThan, force, held, gone)
+		errs = append(errs, es...)
+		if !dryRun {
+			_ = os.Remove(root) // once empty, as RemoveTemp leaves it
+		}
+	}
+	// what a driver's own crashed work left in the cache (a bwrap unpack's
+	// <id>.new).
+	for _, name := range Drivers() {
+		if sweep := drivers[name].sweep; sweep != nil {
+			sweep(dryRun, o.report)
+		}
+	}
+	if listed == nil && !force {
+		return gone, errors.Join(errs...)
+	}
+	leases, _ := filepath.Glob(filepath.Join(dir, leasePrefix+"*"+leaseSuffix))
+	for _, path := range leases {
+		token := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), leasePrefix), leaseSuffix)
+		// a listed run's lease is the run sweep's, forced or not.
+		if !isHex(token) || token == "" || listed[token] || (!force && held[token]) {
+			continue
+		}
+		l, ok, err := readLeaseAt(path)
+		if err != nil || !ok {
+			continue
+		}
+		if live, local := l.local(); !force && (live && local || !l.at.Before(now.Add(-p.t.leaseStale))) {
+			continue
+		}
+		if !dryRun {
+			if err := os.Remove(path); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		gone[path] = true
+		o.report(CleanEvent{Action: "remove", Kind: "lease", Name: path})
+	}
+	return gone, errors.Join(errs...)
+}
+
+// sweepTemps removes the dead runs' dirs of one temp root, adding the runs
+// its dirs name to held and what it takes to gone. errs are the removals
+// that failed, err a root that could not be read.
+func (p *process) sweepTemps(root string, o CleanOptions, olderThan time.Duration, force bool, held, gone map[string]bool) (errs []error, err error) {
+	dryRun := o.DryRun
+	now := p.clock.Now()
+	ents, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		return nil, err
 	}
 	for _, e := range ents {
 		path := filepath.Join(root, e.Name())
@@ -648,40 +714,7 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 		gone[path], gone[path+ownerSuffix] = true, true
 		o.report(CleanEvent{Action: "remove", Kind: "temp", Name: path})
 	}
-	// what a driver's own crashed work left in the cache (a bwrap unpack's
-	// <id>.new).
-	for _, name := range Drivers() {
-		if sweep := drivers[name].sweep; sweep != nil {
-			sweep(dryRun, o.report)
-		}
-	}
-	if listed == nil && !force {
-		return gone, errors.Join(errs...)
-	}
-	leases, _ := filepath.Glob(filepath.Join(dir, leasePrefix+"*"+leaseSuffix))
-	for _, path := range leases {
-		token := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), leasePrefix), leaseSuffix)
-		// a listed run's lease is the run sweep's, forced or not.
-		if !isHex(token) || token == "" || listed[token] || (!force && held[token]) {
-			continue
-		}
-		l, ok, err := readLeaseAt(path)
-		if err != nil || !ok {
-			continue
-		}
-		if live, local := l.local(); !force && (live && local || !l.at.Before(now.Add(-p.t.leaseStale))) {
-			continue
-		}
-		if !dryRun {
-			if err := os.Remove(path); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-		}
-		gone[path] = true
-		o.report(CleanEvent{Action: "remove", Kind: "lease", Name: path})
-	}
-	return gone, errors.Join(errs...)
+	return errs, nil
 }
 
 // tempAlive is the run a temp dir's owner file names, and whether that run

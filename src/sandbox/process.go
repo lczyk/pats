@@ -43,6 +43,10 @@ type process struct {
 	// knownOwner is the owner label as it stands, read only (clean judges by
 	// it); "" when this host has no client id yet.
 	knownOwner func() string
+	// dockerSnap says whether the docker on PATH is the docker snap's cli,
+	// and snapData is where its cli root goes (cliroot.go).
+	dockerSnap func() bool
+	snapData   func() string
 	lease      hostLease
 
 	slot atomic.Uint32 // the next egress subnet
@@ -106,6 +110,7 @@ func newProcess(c clock, t timings) *process {
 	_, _ = rand.Read(b)
 	return &process{token: hex.EncodeToString(b), owner: sync.OnceValue(hostOwner), clock: c, t: t, reg: defaultRegistry, home: cacheDir,
 		legacy: legacyCacheDir, knownOwner: knownOwner,
+		dockerSnap: sync.OnceValue(dockerSnapCLI), snapData: snapDockerData,
 		lxd: lxdProcess{servers: map[string]*lxdServer{}, proxyImages: map[string]string{}}}
 }
 

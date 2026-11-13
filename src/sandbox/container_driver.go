@@ -123,7 +123,7 @@ func (c *container) Build(ctx context.Context, spec BuildSpec, log io.Writer) (I
 	}
 	b := containerBuild{Dir: spec.Dir, Dockerfile: spec.Dockerfile, Force: spec.Force, Log: log, Progress: spec.Progress}
 	if spec.Dockerfile == "" {
-		gen, err := c.p.mkTemp("pats-build-")
+		gen, err := c.p.mkTempFor(c.driver, "pats-build-")
 		if err != nil {
 			return Image{}, "", false, err
 		}
@@ -193,7 +193,7 @@ func (c *container) harnessContexts(placed []Placed) (map[string]string, func(),
 	}
 	out := map[string]string{}
 	for _, p := range placed {
-		dir, err := c.p.mkTemp("pats-harness-")
+		dir, err := c.p.mkTempFor(c.driver, "pats-harness-")
 		if err != nil {
 			cleanup()
 			return nil, nil, err

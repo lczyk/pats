@@ -227,7 +227,7 @@ func openStepBoxOnce(ctx context.Context, p *stepPlace, mounts []sandbox.Mount, 
 	} else if remaps {
 		return nil, errors.New("its engine maps the host uid to another (rootless, or userns-remap), so a step could not write through its binds as the user")
 	}
-	staging, err := sandbox.MkTemp("pats-steps-")
+	staging, err := sandbox.MkTempFor(p.sb.Driver, "pats-steps-")
 	if err != nil {
 		return nil, err
 	}

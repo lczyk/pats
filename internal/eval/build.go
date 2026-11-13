@@ -104,7 +104,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, placed []sandbo
 		own := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "sandbox", Sandbox: sb.Name, Force: force,
 			Harness: placed, Stamp: clis}
 		if base == "" {
-			material, argv, err := stageMaterial(opts.ConfigDir, images.ProvisionSandbox, sandbox.ProvisionMount)
+			material, argv, err := stageMaterial(sb.Driver, opts.ConfigDir, images.ProvisionSandbox, sandbox.ProvisionMount)
 			if err != nil {
 				return img, nil, false, nil, err
 			}
@@ -122,7 +122,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, placed []sandbo
 	}
 	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.Name, Force: force, Stamp: clis}
 	if sb.Provision != "" {
-		material, argv, err := stageMaterial(opts.ConfigDir, sb.Provision, sandbox.ProvisionMount)
+		material, argv, err := stageMaterial(sb.Driver, opts.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 		if err != nil {
 			return img, nil, false, nil, err
 		}
@@ -176,6 +176,26 @@ func resolveBuildSpec(configDir, spec string) (ctxDir, dockerfile string, err er
 		return p, filepath.Join(p, "Dockerfile"), nil
 	}
 	return filepath.Dir(p), p, nil
+}
+
+// dockerSnapReach says why the docker snap's cli cannot read a build context
+// at dir, nil when it can: the cli is confined to the user's home, less the
+// hidden directories at its top and other snaps' data.
+func dockerSnapReach(dir, home string) error {
+	why := ""
+	rel, err := filepath.Rel(resolved(home), resolved(dir))
+	top, _, _ := strings.Cut(rel, string(filepath.Separator))
+	switch {
+	case home == "" || err != nil || rel == ".." || strings.HasPrefix(rel, "../"):
+		why = "not under the home"
+	case strings.HasPrefix(top, ".") && top != ".":
+		why = "in a hidden directory at the top of the home"
+	case top == "snap" && !within(filepath.Join("snap", "docker"), rel):
+		why = "in another snap's data"
+	default:
+		return nil
+	}
+	return fmt.Errorf("the build context %s is %s, where the docker snap's cli cannot read it: keep it under the home and not in a hidden directory there", dir, why)
 }
 
 // proxyImageID names the sidecar image a proxy-mode sandbox ran: its registry

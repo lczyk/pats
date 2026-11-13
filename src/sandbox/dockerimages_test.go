@@ -271,6 +271,12 @@ func (f *fakeDaemon) build(stderr io.Writer, args []string) error {
 			i++
 			dockerfile = args[i]
 		case "--no-cache":
+		case "--build-context":
+			i++
+			name, dir, _ := strings.Cut(args[i], "=")
+			if _, err := os.Stat(dir); err != nil {
+				return dockerFail(stderr, "unable to read the context %s", name)
+			}
 		case "--build-arg":
 			i++
 			key = append(key, args[i])

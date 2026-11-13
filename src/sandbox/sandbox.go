@@ -353,12 +353,14 @@ func (c *container) Start(ctx context.Context, spec Spec) (Session, error) {
 	// daemon made it, so a failed or cancelled start removes it.
 	// a private dir: in a shared one another user could plant the file, and
 	// a failed start would then remove a container of their choosing.
-	cidDir, err := os.MkdirTemp("", "pats-cid-")
+	// under the cli root: the cli writes it, and the docker snap's cannot
+	// write under /tmp.
+	cidDir, err := c.p.mkTempFor(c.driver, "pats-cid-")
 	if err != nil {
 		teardown()
 		return nil, fmt.Errorf("%w: %w", ErrLaunch, err)
 	}
-	defer os.RemoveAll(cidDir)
+	defer RemoveTemp(cidDir)
 	cid := filepath.Join(cidDir, "cid")
 	args = append(args, "--cidfile", cid)
 	args = append(args, "--entrypoint", "sleep", c.image, "infinity")

@@ -145,7 +145,7 @@ const baseArg = "PATS_SANDBOX"
 // hash is stamped onto the image (see hashLabel) so the next run can find it;
 // a non-empty base is handed to the build as PATS_SANDBOX (see baseArg).
 func buildImage(ctx context.Context, p *process, r runner, driver, ctxDir, dockerfile, hash, base string, noCache bool, named map[string]string, log io.Writer) (string, error) {
-	iid, err := p.mkTemp("pats-iid-")
+	iid, err := p.mkTempFor(driver, "pats-iid-")
 	if err != nil {
 		return "", err
 	}

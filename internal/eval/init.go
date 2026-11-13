@@ -367,7 +367,7 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, pins m
 	case provisions(sb) || len(placed) > 0:
 		spec := sandbox.BuildSpec{Base: sb.Base, SandboxImage: base, Force: opts.Force, Progress: progress, Harness: placed}
 		if sb.Provision != "" {
-			material, argv, err := stageMaterial(ro.ConfigDir, sb.Provision, sandbox.ProvisionMount)
+			material, argv, err := stageMaterial(sb.Driver, ro.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 			if err != nil {
 				return err
 			}
@@ -383,6 +383,11 @@ func initContainer(ctx context.Context, sb config.Sandbox, clis []string, pins m
 		ctxDir, dockerfile, err := resolveBuildSpec(ro.ConfigDir, sb.Build)
 		if err != nil {
 			return err
+		}
+		if sb.Driver == "docker" && sandbox.DockerSnapCLI() {
+			if err := dockerSnapReach(ctxDir, realHome()); err != nil {
+				return fmt.Errorf("sandbox %q: %w", sb.Name, err)
+			}
 		}
 		img, _, _, err := h.Build(ctx, sandbox.BuildSpec{Dir: ctxDir, Dockerfile: dockerfile, SandboxImage: base, Force: opts.Force, Progress: progress}, log)
 		if err != nil {

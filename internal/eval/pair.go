@@ -197,7 +197,7 @@ func runPair(
 			if t.Prepare != "" {
 				env := prepareEnv(job, filepath.Base(runDir), h.paths)
 				if err := runLogged(filepath.Join(outDir, "prepare.log"), opts.stream(), func(w io.Writer) error {
-					return runPrepare(sctx, sess, opts.ConfigDir, taskDir, t, env, h.paths.Prepare, w)
+					return runPrepare(sctx, sess, sb.Driver, opts.ConfigDir, taskDir, t, env, h.paths.Prepare, w)
 				}); err != nil {
 					setupErr = fmt.Errorf("prepare: %w", err)
 				}

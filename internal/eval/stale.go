@@ -22,7 +22,7 @@ func localInputs(sb config.Sandbox, configDir string) (map[string]string, error)
 	in := map[string]string{}
 	switch {
 	case sb.Provision != "":
-		material, argv, err := stageMaterial(configDir, sb.Provision, sandbox.ProvisionMount)
+		material, argv, err := stageMaterial("", configDir, sb.Provision, sandbox.ProvisionMount)
 		if err != nil {
 			return nil, err
 		}

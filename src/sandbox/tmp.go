@@ -12,7 +12,12 @@ import (
 // NOT the system /tmp: a confined docker daemon (notably the docker snap) runs
 // in its own mount namespace and can't see the host /tmp, so a `-v /tmp/...`
 // silently mounts an empty dir instead of the files we staged. CacheDir
-// lives under $HOME, which such daemons do share. the caller removes the dir.
+// lives under $HOME, which such daemons do share, hidden dirs included. the
+// caller removes the dir.
+//
+// that is the daemon's view. the docker snap's cli sees less: no hidden dir
+// at the top of the home, so not the cache. a dir the cli itself opens (a
+// cidfile, a build context, a docker cp source) comes from MkTempFor.
 //
 // NOTE: if XDG_CACHE_HOME points outside $HOME this breaks the same way -- the
 // fix then is to unset it. a fully remote daemon (no shared fs at all) can't be
@@ -53,6 +58,10 @@ func (p *process) mkTemp(prefix string) (string, error) {
 func RemoveTemp(dir string) error {
 	err := removeTree(dir)
 	_ = os.Remove(dir + ownerSuffix)
+	if inCLIRoot(dir) {
+		// the client's dir in the docker snap's data goes once empty.
+		_ = os.Remove(filepath.Dir(dir))
+	}
 	return err
 }
 

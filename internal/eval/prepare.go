@@ -48,9 +48,9 @@ func prepareEnv(job pairJob, runID string, paths sandbox.Paths) map[string]strin
 // stageMaterial stages a step that runs inside a sandbox or a builder: the
 // pats root's bin/ and the script, in a fresh temp dir; argv runs it once the
 // dir is at mount (by its #! line, else under /bin/sh -e). the caller removes
-// dir.
-func stageMaterial(root, script, mount string) (material string, argv []string, err error) {
-	material, err = sandbox.MkTemp("pats-material-")
+// dir. driver is the sandbox's: its cli may be the one that reads the dir.
+func stageMaterial(driver, root, script, mount string) (material string, argv []string, err error) {
+	material, err = sandbox.MkTempFor(driver, "pats-material-")
 	if err != nil {
 		return "", nil, err
 	}
@@ -85,8 +85,8 @@ func inPath(mount string, argv []string) []string {
 // runPrepare runs the task's prepare inside the started sandbox as root: its
 // material is pushed to mount, run with mount/bin first on PATH and the
 // workdir as cwd, then removed. output goes to log.
-func runPrepare(ctx context.Context, sess sandbox.Session, root, taskDir string, t config.Task, env map[string]string, prepareMount string, log io.Writer) error {
-	material, argv, err := stageMaterial(root, t.Prepare, prepareMount)
+func runPrepare(ctx context.Context, sess sandbox.Session, driver, root, taskDir string, t config.Task, env map[string]string, prepareMount string, log io.Writer) error {
+	material, argv, err := stageMaterial(driver, root, t.Prepare, prepareMount)
 	if err != nil {
 		return err
 	}

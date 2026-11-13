@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,6 +101,10 @@ func testProcess(t *testing.T) *process {
 	// another's, and leaves it.
 	p.owner = func() string { return testOwner }
 	p.knownOwner = func() string { return p.owner() }
+	// no docker snap, whatever this machine has: a test that wants one says so.
+	p.dockerSnap = func() bool { return false }
+	snap := filepath.Join(t.TempDir(), cliRootName)
+	p.snapData = func() string { return snap }
 	t.Cleanup(p.shutdown)
 	return p
 }
