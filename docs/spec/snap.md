@@ -101,9 +101,9 @@ a project that needs any of these runs a native build.
 - **its own state:** `$SNAP_USER_COMMON` (`~/snap/pats/common`). the snap sets `XDG_CACHE_HOME` to
   `$SNAP_USER_COMMON/cache`, and `CacheDir` appends `pats` (`src/sandbox/cachedir.go`), so the cache
   (`docs/spec/cache-dir.md`) is `~/snap/pats/common/cache/pats`, not in the per-revision `$SNAP_USER_DATA` that a
-  refresh copies. it survives refreshes. the machine config (`docs/spec/machine-config.md`) is beside it for the
+  refresh copies. it survives refreshes. the machine file (`docs/spec/machine-file.md`) is beside it for the
   same reason: the snap sets `XDG_CONFIG_HOME` to `$SNAP_USER_COMMON/config`, so the file is
-  `~/snap/pats/common/config/pats/config.yaml`. the shipped clients are not moved by it: `lxc` reads
+  `~/snap/pats/common/config/pats/machine.yaml`. the shipped clients are not moved by it: `lxc` reads
   `$HOME/.config/lxc` whatever `XDG_CONFIG_HOME` says, and the docker cli reads `DOCKER_CONFIG`.
 - **projects:** under the real home (`$SNAP_REAL_HOME`) and not in a hidden directory, through `home`. the runs dir
   sits in the project (`.pats/runs`), which `home` reaches since only hidden directories at the top of the home are

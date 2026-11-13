@@ -1,6 +1,6 @@
 # parse: a harness's output read by a script
 
-status: implemented. it fills the `parse` key of a harness entry (`machine-config.md`, `harness-registry.md`) and
+status: implemented. it fills the `parse` key of a harness entry (`machine-file.md`, `harness-registry.md`) and
 changes `budget.md` (the load error for `budget` becomes a warning), `agent-scorers.md` (a judge's reply is read
 by the script) and `run-dry-run.md` (a harness with no cost reads as no history).
 

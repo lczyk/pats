@@ -1,9 +1,9 @@
 # harnesses are placed in images at init
 
 status: implemented (`harnesses-1x.md`, steps 5 to 7); "as built" at the end says where the code differs. it changes `harness-pins.md` (a pin
-gains a sha256 per arch, and lives in the machine config's defaults, not in a file a script reads), `init.md` (a
+gains a sha256 per arch, and lives in the machine file's defaults, not in a file a script reads), `init.md` (a
 default sandbox is built, not only pulled; the pin entry gains what init placed) and `bwrap.md` (a harness is a lower
-dir of its own). `machine-config.md` holds the `clis` table this spec fetches from. `harness-registry.md` is what a
+dir of its own). `machine-file.md` holds the `clis` table this spec fetches from. `harness-registry.md` is what a
 harness is, and where a config names one.
 
 ## problem
@@ -32,7 +32,7 @@ sandbox image holds no harness. which clis an image gets follows from the config
 
 ### artefacts and pins
 
-both are keys of a cli's entry in the `clis` table (`machine-config.md`), whose defaults pats embeds:
+both are keys of a cli's entry in the `clis` table (`machine-file.md`), whose defaults pats embeds:
 
 - **an artefact** is one file, an entry of the cli's `artefacts` keyed by its url (the vendor's own per-arch
   package, with `${version}` for the version). under the url: the `arch` it is for, its `hash`, and how it is
@@ -192,7 +192,7 @@ this breaks, and the release notes say so:
   before its version. a pair's home is fresh, so that is once a pair. measured on 1.0.107; the other three run as
   they are. placement has to settle it: the stamp must not take that first line for the version.
 - **the source can go away.** a vendor that removes a version makes it unfetchable; a machine that has it cached
-  keeps working. one that moved it is a url to change in the machine config, with no pats release.
+  keeps working. one that moved it is a url to change in the machine file, with no pats release.
 
 ## a worked case: mason
 
@@ -209,7 +209,7 @@ this breaks, and the release notes say so:
 
 ## tests
 
-- the defaults' `clis`: `machine-config.md`.
+- the defaults' `clis`: `machine-file.md`.
 - fetch, against a local http server: a match is cached and renamed into place; a mismatch names both shas and
   leaves no file; a cached file that was changed is refetched once; a redirect is followed; an oversized response is
   refused; a full cache needs no server.

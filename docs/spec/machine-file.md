@@ -1,4 +1,4 @@
-# the machine config: what pats knows about its tools, as a file
+# the machine file: what pats knows about its tools, as a file
 
 status: implemented, both tables: a machine's `clis` opened with placement (`harnesses-1x.md`, step 6).
 `harness-registry.md` is what a harness is and how a `pats.yaml` names and changes one, `harness-parse.md` the `parse`
@@ -24,7 +24,7 @@ entry of the defaults and nothing else: no go code names one.
 
 ### the rule for what goes in
 
-the machine config holds what pats knows about the tools it drives: what a pats release would otherwise carry, the
+the machine file holds what pats knows about the tools it drives: what a pats release would otherwise carry, the
 same for every project on the machine. the test for a key is that a pats release could have shipped the value.
 
 it never holds:
@@ -33,19 +33,21 @@ it never holds:
 - a credential.
 - a switch for pats's own behaviour: a default driver, parallelism, an output format.
 
-a `pats.yaml` stays the whole statement of an experiment. the machine config is not a second place for a project's
+a `pats.yaml` stays the whole statement of an experiment. the machine file is not a second place for a project's
 keys, and nothing in it is a default for one.
 
 ### where
 
-- `$XDG_CONFIG_HOME/pats/config.yaml` when `XDG_CONFIG_HOME` is set and absolute, else `~/.config/pats/config.yaml`,
+- `$XDG_CONFIG_HOME/pats/machine.yaml` when `XDG_CONFIG_HOME` is set and absolute, else `~/.config/pats/machine.yaml`,
   on every os, as the cache dir is resolved (`cache-dir.md`). not `os.UserConfigDir`, which is another directory on
   macos.
 - the file is optional. with none, pats runs on the defaults alone, as a fresh install does.
-- there is no flag and no variable of pats's own that names another file, and no project-local one.
-  `XDG_CONFIG_HOME` is what a test or a ci job sets.
+- `--machine <path>` reads another file in its place, for the one invocation: to try a file before it is the
+  machine's, and for a test or a ci job. a file named so has to be there. it is laid over the defaults as the
+  machine's own is, and the machine's own is then not read. there is no variable of pats's own for it and no
+  project-local file: a `pats.yaml` cannot name one.
 - **the snap** sets `XDG_CONFIG_HOME` to `$SNAP_USER_COMMON/config`, beside the cache (`snap.md`), so the file is
-  `~/snap/pats/common/config/pats/config.yaml`, kept across refreshes and edited in place. the `home` plug cannot
+  `~/snap/pats/common/config/pats/machine.yaml`, kept across refreshes and edited in place. the `home` plug cannot
   read `~/.config`, and no plug is added for it.
 
 ### the file
@@ -159,7 +161,7 @@ a cli has no artefact for is an error only at an init that needs it. names are l
 variable in `auth-env`, `pass-env` or `home-env` is a variable's name, not `HOME` or a `PATS_` one (pats sets those),
 and named once across the three; a `bin` stays inside its artefact; a `login-file` and a `home-env` path stay under the
 home. an unknown key, in either table or at the top, is an error. each error names the file, the line and the entry, and
-stops every command that reads the file: a machine config that is wrong is never half applied.
+stops every command that reads the file: a machine file that is wrong is never half applied.
 
 it is read by every command that reads a `pats.yaml`, before it, and by the three that need the tables with no
 project: `pats config`, `pats harness pin` and `pats harness parse`. no other command reads it.
@@ -172,7 +174,7 @@ machine's. so a project can pin a cli (`version` and `hash`, on a harness item) 
 (`login: true`), and cannot say where bytes come from or which file leaves the user's home.
 
 an agent whose `harness` is found in neither file is a load error that says where it looked: not a default of this
-pats, not in the machine config (its path), not an item of a harness vector. a project that names a harness from
+pats, not in the machine file (its path), not an item of a harness vector. a project that names a harness from
 one machine's file runs only on machines that have it.
 
 ### seeing it
@@ -182,7 +184,7 @@ a file outside the repository now changes what a run does, so it shows:
 - **`pats config`** prints the effective tables as yaml, under a comment that names the file and says whether it
   is there. `pats config --defaults` prints the defaults: the text to copy an entry from.
 - **`pats init` and `pats run`** print one line when the file changes or adds anything, naming each:
-  `INFO machine config ~/.config/pats/config.yaml: changes clis.codex.artefacts,
+  `INFO machine file ~/.config/pats/machine.yaml: changes clis.codex.artefacts,
   harnesses.claude-cli-keyless.egress; adds harnesses.pi-openrouter`.
 - **`metadata.json`** of a pair gains `harness_from` (`default`, `machine` or `project`: the last place that set a
   key of the harness or of its cli) and `harness_hash`, a digest (`sha256:<hex>`) of the resolved harness entry and of its cli's
@@ -233,6 +235,7 @@ this file or the defaults, and the `version` and `hash` of a project's item.
 - the defaults pass their test (above), and with no machine file the harnesses, their commands, hosts and
   variables are today's: the existing tests of each run unchanged.
 - where: an absolute, a relative and no `XDG_CONFIG_HOME`; no file; an unreadable file is an error, not a skip.
+  `--machine` reads the file it names and not the machine's own, and one that is not there is an error.
 - the overlay: a key replaced whole, a key left out kept, a key unset by a null, `login: false` over `true`; a new
   entry missing `run`; a `cli` or `models` that names nothing; a `parse` that does not compile; an `egress` entry
   with a path; two artefacts for one arch; `version` set without `artefacts`; `login` on a cli with no
@@ -244,7 +247,7 @@ this file or the defaults, and the `version` and `hash` of a project's item.
   with the cli's sha, and not with an artefact's url.
 - a machine entry end to end, on the fake engine: a harness with a new cli is fetched from a local server, placed,
   stamped and run, and its `parse` fills the summary.
-- the snap: `pats config` names `~/snap/pats/common/config/pats/config.yaml`, and the shipped `lxc` and docker
+- the snap: `pats config` names `~/snap/pats/common/config/pats/machine.yaml`, and the shipped `lxc` and docker
   clients find their own config as before with `XDG_CONFIG_HOME` set.
 
 ## decided, open to change
@@ -255,7 +258,7 @@ this file or the defaults, and the `version` and `hash` of a project's item.
   on the cli a project never names a path under the home.
 - **a pin on the cli in the machine's file, on the harness in a project.** the machine has the `clis` table; a
   project has none, and pins through the harness its agent names.
-- **the name is `config.yaml`, printed by `pats config`.** the docs call it the machine config, and a `pats.yaml`
+- **the name is `machine.yaml`, printed by `pats config`.** the docs call it the machine file, and a `pats.yaml`
   the project's, so the two are not mistaken for each other.
 - **`effort` and `cost` are not keys.** all four harnesses take an effort, and a harness that does not ignores a
   variable. cost is what `parse` reports.

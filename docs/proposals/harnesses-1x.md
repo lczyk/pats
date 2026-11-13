@@ -1,6 +1,6 @@
 # proposal: harnesses on 1.x
 
-status: implemented. four specs: `docs/spec/machine-config.md` (the file pats reads its harnesses and clis from),
+status: implemented. four specs: `docs/spec/machine-file.md` (the file pats reads its harnesses and clis from),
 `docs/spec/harness-registry.md` (what a harness is, and `kind: harness` in a `pats.yaml`),
 `docs/spec/harness-parse.md` (a harness's output read by a script) and `docs/spec/harness-images.md` (how a
 harness's cli gets into an image, and its pin). this is the order they land in and what each step costs.
@@ -8,7 +8,7 @@ harness's cli gets into an image, and its pin). this is the order they land in a
 ## why before 1.0
 
 each of these is part of what 1.0 promises to keep: the harness names, the keys of an entry and of a `kind: harness`
-item, the calls of a `parse` script, where the machine config is, what the published sandbox image holds, and what
+item, the calls of a `parse` script, where the machine file is, what the published sandbox image holds, and what
 a pin is. after 1.0 these are breaks. what is only additive (a new default, a third table) can wait.
 
 ## steps
@@ -70,6 +70,6 @@ gains its `clis`, in the release that places them.
   mechanism for lxd, and gives nothing the checked fetch does not.
 - an install script per harness, run in the image build. see `harness-images.md`, "decided".
 - a pins file of its own, and a url on a project's pin. the pin is a `clis` entry's, and where a version comes
-  from is the machine's to say (`machine-config.md`).
+  from is the machine's to say (`machine-file.md`).
 - one harness starting from another by name. an entry changes the one of its name or is a copy
   (`harness-registry.md`).

@@ -1,6 +1,6 @@
 # harnesses: entries in a table, and a kind in the config
 
-status: implemented. `machine-config.md` is where the table lives, what an entry's keys are and the rule for laying
+status: implemented. `machine-file.md` is where the table lives, what an entry's keys are and the rule for laying
 one table over another. `harness-parse.md` is the `parse` key. `harness-images.md` is how a harness's cli gets into
 an image, and its pin.
 
@@ -22,8 +22,8 @@ an image, and its pin.
 
 ### one table, read from a file
 
-everything pats knows about a harness is one entry of the `harnesses` table of the machine config
-(`machine-config.md`), with its cli's entry in `clis`, and the builtins are the entries of the defaults pats
+everything pats knows about a harness is one entry of the `harnesses` table of the machine file
+(`machine-file.md`), with its cli's entry in `clis`, and the builtins are the entries of the defaults pats
 embeds. no go code names a harness: every switch and map above reads the entry.
 
 | key | replaces |
@@ -86,7 +86,7 @@ opencode:                           # two more ways of running one cli
 the rules:
 
 - an item is first filled from its vector's `defaults`, as any item is. the result is then laid over the machine's
-  harnesses by the one overlay rule (`machine-config.md`): **named as a harness the machine has**, it changes that
+  harnesses by the one overlay rule (`machine-file.md`): **named as a harness the machine has**, it changes that
   one key by key; **with a new name**, it is a harness of its own, written whole, and needs a `run`.
 - absent means keep and a null means unset, through both steps: a key an item nulls is filled neither by its
   vector's `defaults` nor by the machine's harness. the two are laid over as written, before anything is decoded,
@@ -95,7 +95,7 @@ the rules:
   several variants share goes in their vector's `defaults`.
 - a copy is the project's from then on. a release that corrects the default it was copied from (a host, a line of
   `parse`) does not reach it.
-- a project has no `clis` (`machine-config.md`): an item's `cli` names one the machine has, `login: true` asks for
+- a project has no `clis` (`machine-file.md`): an item's `cli` names one the machine has, `login: true` asks for
   that cli's login file, and `version` and `hash` pin that cli for the sandboxes its agents run in. the pin needs
   a `cli`, and its two keys come together.
 - `parse` is a promise about what `run` prints, and pats checks it only as it runs (`harness-parse.md`): a
@@ -104,7 +104,7 @@ the rules:
   `models: ~`, and the error of a model the catalogue lacks names that key.
 - two items of one name, in one vector or two, are a load error, as for any kind.
 
-`metadata.json` says where the harness a pair ran is from and carries a digest of it (`machine-config.md`,
+`metadata.json` says where the harness a pair ran is from and carries a digest of it (`machine-file.md`,
 `harness_from`, `harness_hash`), so a default's name that means something else in one project shows in that
 project's records.
 
@@ -184,7 +184,7 @@ provider.
 
 ## later
 
-- **`clis` in a project** (`machine-config.md`, later): until then a project's harness on a cli no machine has gets
+- **`clis` in a project** (`machine-file.md`, later): until then a project's harness on a cli no machine has gets
   its files from `provision`.
 
 ## not doing
@@ -197,7 +197,7 @@ provider.
 
 ## tests
 
-- the defaults: `machine-config.md`. with no machine file every existing harness test passes unchanged.
+- the defaults: `machine-file.md`. with no machine file every existing harness test passes unchanged.
 - load: a new-named item with no `run`, in its own fields or its vector's `defaults`; `harness:` naming a vector;
   two items of one name; a harness with no `allow` under `egress: none`, and one with an `allow` refused there; a
   path, a method and a regexp in a harness's `egress`; `version`
