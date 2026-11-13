@@ -123,6 +123,13 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	}
 }
 
+// an amount under a cent is not printed as none.
+func TestUSD(t *testing.T) {
+	for x, want := range map[float64]string{0: "$0.00", 2.5: "$2.50", 0.01: "$0.01", 0.000633: "$0.00063", 0.0005: "$0.00050", 0.0042: "$0.0042"} {
+		assert.Equal(t, usd(x), want)
+	}
+}
+
 // with --budget no pair starts once the spend reached it: the rest are
 // not started, and the run says so and errors.
 func TestRunMaxCost(t *testing.T) {

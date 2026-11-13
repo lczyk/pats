@@ -2,6 +2,8 @@ package eval
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 )
 
@@ -110,4 +112,13 @@ func (l *ledger) totals() (spent float64, notStarted int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.spentLocked(), l.notStarted
+}
+
+// usd prints a dollar amount to the cent, and one under a cent to its first
+// two digits: a cap of a tenth of a cent is not $0.00.
+func usd(x float64) string {
+	if x <= 0 || x >= 0.01 {
+		return fmt.Sprintf("$%.2f", x)
+	}
+	return fmt.Sprintf("$%.*f", 1-int(math.Floor(math.Log10(x))), x)
 }

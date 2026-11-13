@@ -251,7 +251,7 @@ func runPair(
 		// an interrupt of the run wins over whatever else ended the agent.
 		status, errStr = "error", "interrupted"
 	case budget:
-		status, errStr = "budget", fmt.Sprintf("cost $%.2f passed its budget $%.2f", stat.spent(), *a.Budget)
+		status, errStr = "budget", fmt.Sprintf("cost %s passed its budget %s", usd(stat.spent()), usd(*a.Budget))
 		if syncErr != nil {
 			errStr += fmt.Sprintf("; sync: %v", syncErr)
 		}
