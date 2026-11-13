@@ -35,6 +35,29 @@ func TestSnapCLI(t *testing.T) {
 	assert.That(t, snapCLI("/snap/bin/docker", noLink), "in /snap/bin and no link")
 	assert.That(t, !snapCLI(apt, os.Readlink), "an apt docker")
 	assert.That(t, !snapCLI(elsewhere, os.Readlink), "a link to another docker")
+
+	// a link of the user's to the snap's docker, by one step or two, absolute
+	// or relative; a link that goes round ends the walk.
+	chain := map[string]string{
+		"/usr/local/bin/docker":          "/snap/bin/docker",
+		"/opt/bin/docker":                "../../usr/local/bin/docker",
+		"/opt/bin/snapd-docker":          "/var/lib/snapd/snap/bin/docker",
+		"/var/lib/snapd/snap/bin/docker": "/usr/bin/snap",
+		"/opt/bin/apt-docker":            "/usr/bin/docker",
+		"/opt/bin/loop":                  "/opt/bin/loop",
+	}
+	walk := func(p string) (string, error) {
+		if t, ok := chain[p]; ok {
+			return t, nil
+		}
+		return "", errors.New("not a link")
+	}
+	for _, p := range []string{"/usr/local/bin/docker", "/opt/bin/docker", "/opt/bin/snapd-docker"} {
+		assert.That(t, snapCLI(p, walk), "%s leads to the snap's docker", p)
+	}
+	for _, p := range []string{"/opt/bin/apt-docker", "/opt/bin/loop"} {
+		assert.That(t, !snapCLI(p, walk), "%s does not", p)
+	}
 }
 
 // snapProcess is a test process whose docker is the docker snap's cli.

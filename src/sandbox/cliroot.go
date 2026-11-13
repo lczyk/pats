@@ -40,10 +40,11 @@ func (p *process) mkTempFor(driver, prefix string) (string, error) {
 	if err := p.holdLease(); err != nil {
 		return "", err
 	}
-	// a RemoveTemp that emptied the root takes it: made again, at most twice.
+	// a RemoveTemp that emptied the root takes it between the two calls:
+	// made again. it takes that many removals in a row to run out of tries.
 	var dir string
 	var err error
-	for try := 0; try < 3; try++ {
+	for try := 0; try < 20; try++ {
 		if err = os.MkdirAll(root, 0o700); err != nil {
 			return "", err
 		}
@@ -116,12 +117,25 @@ func dockerSnapCLI() bool {
 
 // snapCLI says whether the binary at path is a snap's: a link to
 // /usr/bin/snap, as snapd makes them (in /snap/bin, or /var/lib/snapd/snap/bin
-// on a distro with no /snap), or anything in /snap/bin. the link is read one
-// step and not resolved, since /usr/bin/snap may itself be a link.
+// on a distro with no /snap), or anything in /snap/bin, itself or through
+// links to it (a /usr/local/bin/docker that points at the snap's). a link to
+// /usr/bin/snap ends the walk, since that may itself be a link.
 func snapCLI(path string, readlink func(string) (string, error)) bool {
-	if filepath.Dir(path) == "/snap/bin" {
-		return true
+	for range 8 {
+		if filepath.Dir(path) == "/snap/bin" {
+			return true
+		}
+		target, err := readlink(path)
+		if err != nil {
+			return false
+		}
+		if target == "/usr/bin/snap" {
+			return true
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = target
 	}
-	target, err := readlink(path)
-	return err == nil && target == "/usr/bin/snap"
+	return false
 }
