@@ -8,6 +8,7 @@ set -e
 
 PATS="${PATS:-pats}"
 FIXTURE="$(cd "$(dirname "$0")/project" && pwd)"
+STAMP="$(dirname "$0")/stamp"
 
 _fail() {
     printf 'FAIL  %s\n' "$1" >&2
@@ -26,12 +27,16 @@ main() {
     cp -R "${FIXTURE}/." "${dir}"
     cd "${dir}"
     git init -q .
+    "${STAMP}" "pair ${engine}: init agent and steps"
     "${PATS}" init --sandbox agent --sandbox "steps-${engine}" || _fail "${engine}: init"
     # a cli fetched into pats's cache and placed in an image pats composes:
     # its stamp in the pin is the cli run inside that image.
+    "${STAMP}" "pair ${engine}: init placed"
     "${PATS}" init --sandbox "placed-${engine}" || _fail "${engine}: init of a placed cli"
     grep -qE '"pi": "[0-9]+\.[0-9]+' .pats/images.json || _fail "${engine}: the placed cli has no stamp"
+    "${STAMP}" "pair ${engine}: run"
     OPENROUTER_API_KEY=fake-key-for-spread "${PATS}" run -S "${engine}" -v --offline || _fail "${engine}: run"
+    "${STAMP}" "pair ${engine}: score and clean"
     pair=".pats/runs/latest/stub/t-${engine}"
     [ -d "${pair}" ] || _fail "${engine}: no pair dir"
     grep -qx 'home=/tmp/pats-step-home' "${pair}/stage.log" || _fail "${engine}: stage.log: $(cat "${pair}/stage.log")"
@@ -53,6 +58,7 @@ main() {
     [ -z "${out}" ] || _fail "${engine}: left behind: ${out}"
     cd - > /dev/null
     rm -rf "${dir}"
+    "${STAMP}" "pair ${engine}: done"
     printf 'ok    %s pair\n' "${engine}"
 }
 

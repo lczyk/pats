@@ -9,4 +9,7 @@ if [ -z "$name" ]; then
     printf 'no pats-spread container at %s\n' "$SPREAD_SYSTEM_ADDRESS" >&2
     exit 1
 fi
+# the tasks' steps, timed (tests/spread/lib/stamp).
+mkdir -p .spread/stamps
+lxc file pull "$name/var/tmp/spread-stamps" ".spread/stamps/$name.log" > /dev/null 2>&1 || true
 lxc delete --force "$name"

@@ -82,5 +82,10 @@ suites:
       apt-get install -y -q --no-install-recommends git binutils > /dev/null
       useradd --create-home --shell /bin/bash tester
       snap install --dangerous /var/tmp/pats.snap
+      # stamped as root and as the tester.
+      install -m 0666 /dev/null /var/tmp/spread-stamps
+    prepare-each: |
+      stamp "== $SPREAD_JOB"
     restore-each: |
+      stamp "reset"
       reset-system

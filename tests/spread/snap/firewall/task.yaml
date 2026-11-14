@@ -32,9 +32,11 @@ execute: |
 
   as-tester cp -R "$SPREAD_PATH/tests/spread/snap/firewall/." "$PROJ"
   cd "$PROJ"
+  stamp "firewall: init"
   as-tester "$PATS" init
 
   # through a pipe: the snap printed nothing into a file opened for it.
+  stamp "firewall: run behind it"
   { as-tester "$PATS" run -v --offline 2>&1 && echo "pats run passed"; } | tee run.log
   if grep -qx "pats run passed" run.log; then
       echo "the pair passed behind the firewall"
@@ -48,4 +50,6 @@ execute: |
       ${rule//patsbr+/patsup}
   done < fix
 
+  stamp "firewall: run with the fix"
   as-tester "$PATS" run -v --offline || { echo "the pair failed with the fix applied"; exit 1; }
+  stamp "firewall: done"
