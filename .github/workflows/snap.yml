@@ -118,6 +118,11 @@ jobs:
           RELEASE: ${{ matrix.release }}
         run: make spread "SYSTEMS=lxd:ubuntu-$RELEASE" ARGS=-v
 
+      # when each task reached each step, per system (tests/spread/lib/stamp).
+      - name: Step times
+        if: always()
+        run: tail -n +1 .spread/stamps/*.log || true
+
   # every snap, a dev build on edge too, pins the images of its VERSION
   # (src/sandbox/images.go), so none is released before they are in the
   # registry: a release commit reaches main before its tag, and its images come
