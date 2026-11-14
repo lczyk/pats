@@ -156,6 +156,33 @@ jobs:
         PATS: ${{ github.workspace }}/bin/pats
         PAIR_ONLY: "1"
 
+  # the spread system tests (spread.yaml): pats from this tree in bread
+  # containers on the runner's docker, per native arch.
+  spread:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Go
+      uses: actions/setup-go@v7.0.0
+      with:
+        go-version: '1.26'
+
+    - name: Install spread
+      run: |
+        go install github.com/canonical/spread/cmd/spread@v0.0.0-20260330203909-9fdce848027b
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Spread
+      run: make spread ARGS=-v
+
   # the workflows themselves only run on a push or a tag, so lint them here.
   actionlint:
     runs-on: ubuntu-latest
