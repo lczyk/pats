@@ -71,7 +71,8 @@ project.
 
 `make spread` runs the bread suite on the host's arch; `SYSTEMS=..` narrows it (`bread:ubuntu-26.04-arm64`,
 `lxd:`), `ARGS=..` passes flags (`-v`, `-reuse`, `-debug`). the lxd suite needs a local lxd and the snap in
-`.spread/` (`snapcraft pack`), which ci takes from the build job.
+`.spread/` (`snapcraft pack`), which ci takes from the build job. ci runs each release on its own runner
+(`SYSTEMS=lxd:ubuntu-24.04`), since nested engines on one runner slow each other down.
 
 ## later
 
