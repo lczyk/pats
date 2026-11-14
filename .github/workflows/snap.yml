@@ -63,6 +63,8 @@ jobs:
 
   # spread's lxd suites (spread.yaml): the snap's own checks, and pairs through
   # it with the engines it drives, nested in an lxd container of each ubuntu.
+  # a runner per release, since their nested engines on one runner slow each
+  # other's tasks down.
   spread:
     needs: build
     strategy:
@@ -73,6 +75,8 @@ jobs:
             os: ubuntu-24.04
           - arch: arm64
             os: ubuntu-24.04-arm
+        release: [ "22.04", "24.04", "26.04" ]
+    name: spread (${{ matrix.runner.arch }}, ${{ matrix.release }})
     runs-on: ${{ matrix.runner.os }}
     timeout-minutes: 60
     steps:
@@ -110,7 +114,9 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Spread
-        run: make spread 'SYSTEMS=lxd:' ARGS=-v
+        env:
+          RELEASE: ${{ matrix.release }}
+        run: make spread "SYSTEMS=lxd:ubuntu-$RELEASE" ARGS=-v
 
   # every snap, a dev build on edge too, pins the images of its VERSION
   # (src/sandbox/images.go), so none is released before they are in the
