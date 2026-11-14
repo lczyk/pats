@@ -110,8 +110,9 @@ jobs:
     - name: bwrap e2e
       run: PATS_BWRAP_E2E=1 go test ./src/sandbox/ -run 'TestBwrapE2E|TestBwrapStartPreflight' -v -timeout 30m
 
-  # a pats that is not the snap against the docker snap, whose cli opens no
-  # file under /tmp or a hidden dir of the home (docs/spec/docker-snap-paths.md).
+  # the tests against the docker snap, whose cli opens no file under /tmp or a
+  # hidden dir of the home (docs/spec/docker-snap-paths.md). a pair of a pats
+  # that is not the snap against it is spread's snap/docker:native.
   # the runner's own docker is stopped so the snap's daemon has the socket,
   # and /snap/bin goes first on PATH so `docker` is the snap's cli.
   docker-snap:
@@ -149,12 +150,6 @@ jobs:
       run: |
         mkdir -p "$HOME/pats-tmp"
         TMPDIR="$HOME/pats-tmp" make test
-
-    - name: Docker pair
-      run: hack/snap_smoke.sh docker
-      env:
-        PATS: ${{ github.workspace }}/bin/pats
-        PAIR_ONLY: "1"
 
   # the spread system tests (spread.yaml): pats from this tree in bread
   # containers on the runner's docker, per native arch.
