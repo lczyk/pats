@@ -51,15 +51,17 @@ a project that needs any of these runs a native build.
 - **tags:** `nohost`, `nobwrap`, `nopodman`, passed by the part's own build. `pats --version` names the tags
   a build was made with.
 - **static**, as before: under lxd, `proxyBinary` (`src/sandbox/lxd_egress.go`) copies `os.Executable()` into the
-  proxy instance, and a dynamic binary would fail there. the part fails when `readelf -l` finds an `INTERP` header.
+  proxy instance, and a dynamic binary would fail there. the smoke test (`hack/snap_smoke.sh`) fails when
+  `readelf -l` finds an `INTERP` header in the installed binary.
 - **no upx.** the snap builds with `go install` in the go plugin's environment, not `make`. the plugin's own build
   is not used: it runs `go mod download all` first, which adds lines to `go.sum`, and the toolchain then stamps a
-  clean commit as modified, so `pats --version` and the pins would say `dirty`. the part fails when a tree that was
-  clean before the build is stamped as modified.
+  clean commit as modified, so `pats --version` and the pins would say `dirty`. the smoke test fails when the
+  installed binary is stamped as modified, or when its commit is not the one the snap's version names (none, for a
+  release).
 - **the clients the snap ships**, so pats keeps driving engines through their clis (`cliRunner`,
   `src/sandbox/process.go`) and gains no second way to drive one:
-  - `lxc`: built from a pinned `canonical/lxd` tag, `CGO_ENABLED=0 go build ./lxc`. the go plugin builds `./...`,
-    daemon and cgo included, so this part overrides the build.
+  - `lxc`: built from a pinned `canonical/lxd` tag by the go plugin, with `CGO_ENABLED=0`. the plugin builds
+    `./...`, daemon and cgo included, so the part's `source-subdir` is `lxc`: `./...` from there is the client alone.
   - `docker`: the docker cli from a pinned `docker/cli` tag, static. it has no plain `go.mod`, so if the go plugin
     cannot build it, the part dumps docker's published static tarball for the arch instead.
   - `docker-buildx`: the buildx plugin from a pinned `docker/buildx` release, static. pats runs `docker build`
@@ -69,8 +71,9 @@ a project that needs any of these runs a native build.
     `$SNAP_USER_COMMON/docker`, and a command-chain script links the revision's buildx there on every launch.
     a private-registry login made with the host's `docker login` (`~/.docker/config.json`) is not seen (limits).
   - both clients land in the snap's `bin/`, first on `PATH`. their versions are pinned in `snapcraft.yaml` and bumped by
-    hand. the docker cli tarball and the buildx binary are checked against a sha256 per arch in the part's own pull
-    (`source-checksum` cannot vary by arch), so a bump changes the hashes with the version.
+    hand. the docker cli tarball and the buildx binary come from one part, `docker`, and are checked against a
+    sha256 per arch in its own pull (`source-checksum` cannot vary by arch), so a bump changes the hashes with the
+    version.
 - **version and grade:** unchanged from the classic design. a clean tree whose HEAD is the tag `v$VERSION` (asked of
   the tag itself, so another tag on the same commit does not hide it) builds with
   `-buildvcs=false` and is that release, keyed like a `go install` of it in `releaseBuild`
