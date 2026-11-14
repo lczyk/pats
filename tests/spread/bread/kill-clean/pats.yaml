@@ -1,0 +1,36 @@
+# one pair whose agent never ends: the task kills pats under it and wants
+# pats clean to remove what it left.
+sandbox:
+  kind: sandbox
+  items:
+    agent:
+      driver: docker
+      build: agentimg
+
+agents:
+  kind: agent
+  items:
+    stub:
+      harness: opencode-openrouter
+      model: anthropic/claude-haiku-4.5
+      sandbox: agent
+
+tasks:
+  kind: task
+  items:
+    forever:
+      prompt: say hi
+
+scorers:
+  kind: scorer
+  items:
+    ok:
+      score: echo 1
+
+suites:
+  kind: suite
+  items:
+    kill:
+      agents: stub
+      tasks: forever
+      scorers: ok

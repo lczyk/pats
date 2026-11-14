@@ -1,0 +1,44 @@
+summary: pats killed mid-pair leaves its sandbox, and pats clean removes it
+
+# the sandbox is a sibling on the host daemon, so it outlives pats. what is
+# ours carries an owner label headed by this system's hostname.
+environment:
+  PROJ: $SHARED/kill-clean
+
+prepare: |
+  rm -rf "$PROJ"
+  cp -R . "$PROJ"
+  git -C "$PROJ" init -q
+  cd "$PROJ" && pats init
+
+execute: |
+  owned() {
+      docker "$@" --filter label=pats.owner --format '{{.ID}} {{.Label "pats.owner"}}' |
+          awk -v p="$(hostname)/" 'index($2, p) == 1 { print $1 }'
+  }
+
+  cd "$PROJ"
+  OPENROUTER_API_KEY=fake-key-for-spread pats run --offline > run.log 2>&1 &
+  pid=$!
+
+  started=""
+  for _ in $(seq 120); do
+      if [ -n "$(find "$HOME" -name pats-spread-started -print -quit)" ]; then
+          started=1
+          break
+      fi
+      kill -0 "$pid" 2> /dev/null || { cat run.log; exit 1; }
+      sleep 1
+  done
+  [ -n "$started" ] || { cat run.log; echo "the agent never started"; exit 1; }
+
+  kill -9 "$pid"
+  wait "$pid" || true
+  [ -n "$(owned ps -a)" ] || { echo "killing pats took its sandbox with it"; exit 1; }
+
+  pats clean
+  left="$(owned ps -a)$(owned network ls)"
+  [ -z "$left" ] || { echo "pats clean left: $left"; exit 1; }
+
+restore: |
+  rm -rf "$PROJ"

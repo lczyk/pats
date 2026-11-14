@@ -59,6 +59,21 @@ cover:  ## Show test coverage per function in the CLI
 	@out=$$(mktemp); trap 'rm -f "$$out"' EXIT; \
 	go test -coverprofile="$$out" ./... && go tool cover -func="$$out"
 
+SPREAD_ARCHES := amd64 arm64
+SPREAD_BINS   := $(addprefix .spread/pats-linux-,$(SPREAD_ARCHES))
+# the host's arch on both ubuntus; any other is emulated, and slow.
+SYSTEMS ?= $(foreach v,24.04 26.04,bread:ubuntu-$(v)-$(shell go env GOARCH))
+
+# static, so it runs in any bread release.
+.spread/pats-linux-%: $(SRCS) $(EMBEDS) makefile go.mod go.sum
+	@mkdir -p .spread
+	CGO_ENABLED=0 GOOS=linux GOARCH=$* go build -o $@ ./cmd/pats
+
+.PHONY: spread
+spread: $(SPREAD_BINS)  ## Run the spread system tests in bread containers on docker (narrow via SYSTEMS=.., flags via ARGS=..)
+	@if ! command -v spread >/dev/null 2>&1; then echo "spread not found (go install github.com/canonical/spread/cmd/spread@latest)"; exit 1; fi
+	spread $(ARGS) $(SYSTEMS)
+
 FUZZTIME ?= 10s
 
 # go test takes one fuzz target per run, so each Fuzz* func in the tree gets its own.

@@ -1,0 +1,57 @@
+# system tests, run by `make spread`. two backends:
+#   bread: pats built from this tree in a bread container
+#          (github.com/lczyk/spread-bread) on the host's docker. cheap.
+#   lxd:   an ubuntu system container on the local lxd, with systemd and
+#          snapd, for the snap and the engines it drives nested inside.
+# hack/spread/ is how each makes and removes a system.
+project: pats
+
+path: /pats
+
+exclude:
+  - .git
+  - .github
+  - .spread
+  - .spread-reuse.yaml
+  - .pats
+  - .stamp
+  - .cache
+  - docs/spec/fizz/out
+
+repack: source hack/spread/repack.sh
+
+backends:
+  bread:
+    type: adhoc
+    allocate: source hack/spread/allocate.sh
+    discard: source hack/spread/discard.sh
+    systems:
+      - ubuntu-24.04-amd64:
+          password: bread
+      - ubuntu-24.04-arm64:
+          password: bread
+      - ubuntu-26.04-amd64:
+          password: bread
+      - ubuntu-26.04-arm64:
+          password: bread
+
+kill-timeout: 20m
+
+suites:
+  tests/spread/bread/:
+    summary: pats from this tree on docker
+    backends: [bread]
+    environment:
+      # the host dir bound at the same path in the system (allocate.sh): pats's
+      # state and projects live there, so the host daemon can bind them.
+      SHARED: $(cat /etc/pats-spread-dir)
+      HOME: $SHARED/home
+      PATS: /usr/local/bin/pats
+    prepare: |
+      # bread is ubuntu and sshd: the pair's fixture is a git repo, and pats
+      # fetches harness clis over https.
+      apt-get update -q
+      apt-get install -y -q --no-install-recommends git ca-certificates
+      mkdir -p "$HOME"
+      docker version
+      pats --version
