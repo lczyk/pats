@@ -83,4 +83,4 @@ suites:
       useradd --create-home --shell /bin/bash tester
       snap install --dangerous /var/tmp/pats.snap
     restore-each: |
-      reset
+      reset-system
