@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# check an installed pats snap: the build tags it was packed with, and the
-# load errors a reduced build gives a config it cannot run. with an engine
+# check an installed pats snap: the build tags it was packed with, that its
+# binary is static and stamped as the snap's version says, and the load
+# errors a reduced build gives a config it cannot run. with an engine
 # named (docker, lxd) it also runs and scores a pair of the project in
 # hack/snap-smoke, its steps in a step sandbox of that engine, and makes an
 # image of that engine with a harness cli placed in it: that takes the
@@ -13,6 +14,7 @@
 set -e
 
 PATS="${PATS:-pats}"
+SNAP_DIR="${SNAP_DIR:-/snap/pats/current}"
 TAGS="nohost,nobwrap,nopodman"
 FIXTURE="$(cd "$(dirname "$0")/snap-smoke" && pwd)"
 
@@ -70,6 +72,28 @@ _pair() {
     printf 'ok    %s pair\n' "${engine}"
 }
 
+# _stamp <version line> checks the installed binary against the snap's own
+# version: a dev build (+git<sha7>) carries that commit, a release none, and
+# neither is stamped as modified.
+_stamp() {
+    local version="$1" snap sha
+    snap="$(grep '^version:' "${SNAP_DIR}/meta/snap.yaml")" || _fail "stamp: no version in the snap's meta"
+    case "${snap}" in
+        (*+git*)
+            sha="${snap##*+git}"
+            sha="${sha%%[!0-9a-f]*}"
+            # the version line shows seven characters, whatever git needed.
+            sha="${sha:0:7}"
+            printf '%s\n' "${version}" | grep -qF " @ ${sha} " || _fail "stamp: ${snap} is not the commit of ${version}"
+            ;;
+        (*)
+            printf '%s\n' "${version}" | grep -qF ' @ ' && _fail "stamp: ${snap} is a release, but carries a commit: ${version}"
+            ;;
+    esac
+    printf '%s\n' "${version}" | grep -qF dirty && _fail "stamp: stamped as modified: ${version}"
+    printf 'ok    stamp\n'
+}
+
 main() {
     local version engine
     version="$("${PATS}" --version)"
@@ -81,6 +105,13 @@ main() {
     if [ -z "${PAIR_ONLY:-}" ]; then
         printf '%s\n' "${version}" | grep -qF "(tags: ${TAGS})" || _fail "tags: ${version}"
         printf 'ok    tags\n'
+
+        # static, so lxd can push this very binary into its proxy instance.
+        readelf -l "${SNAP_DIR}/bin/pats" > /dev/null || _fail "static: readelf cannot read ${SNAP_DIR}/bin/pats"
+        readelf -l "${SNAP_DIR}/bin/pats" | grep -q INTERP && _fail "static: pats is not a static binary"
+        printf 'ok    static\n'
+
+        _stamp "${version}"
 
         _load_error "no host driver" '
 sandbox: {kind: sandbox, items: {h: {driver: host, sand-not-boxed: true}}}
