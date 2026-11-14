@@ -5,7 +5,9 @@
 snap remove --purge docker > /dev/null 2>&1
 snap remove --purge lxd > /dev/null 2>&1
 apt-get purge -y -q docker.io containerd runc ufw > /dev/null 2>&1
-rm -rf /var/lib/docker /etc/docker /etc/ufw
+# the docker snap leaves its socket behind, which an apt docker's socket unit
+# then cannot bind.
+rm -rf /var/lib/docker /etc/docker /etc/ufw /run/docker /run/docker.sock /run/containerd
 systemctl reset-failed
 nft flush ruleset
 for link in $(ip -o link show type bridge | cut -d: -f2); do

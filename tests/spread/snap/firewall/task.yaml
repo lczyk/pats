@@ -31,14 +31,14 @@ execute: |
   cd "$PROJ"
   as-tester "$PATS" init
 
-  # the tester opens the log: the snap writes only to files its user owns.
-  if as-tester sh -c '"$PATS" run -v --offline > run.log 2>&1'; then
-      cat run.log
+  # through a pipe: the snap printed nothing into a file opened for it.
+  { as-tester "$PATS" run -v --offline 2>&1 && echo "pats run passed"; } | tee run.log
+  if grep -qx "pats run passed" run.log; then
       echo "the pair passed behind the firewall"
       exit 1
   fi
   grep -rhoE "$rules" run.log .pats/runs/ 2> /dev/null | sort -u > fix
-  [ -s fix ] || { cat run.log; echo "no fix in the error"; exit 1; }
+  [ -s fix ] || { echo "no fix in the error"; exit 1; }
   cat fix
   while read -r rule; do
       $rule
