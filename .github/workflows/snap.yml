@@ -1,9 +1,10 @@
 name: snap
 
 # pack the strict snap (docs/spec/snap.md) on each arch it ships for, then
-# install it on the ubuntu releases a user runs and smoke-test it. a push to
-# main releases it to edge, a release tag to beta. candidate and stable are
-# released by hand.
+# test it with spread on the ubuntu releases a user runs: the smoke jobs on
+# every change, the whole suite on a release tag, a pull request that changes
+# VERSION, weekly and by hand. a push to main releases it to edge, a release
+# tag to beta. candidate and stable are released by hand.
 
 on:
   push:
@@ -16,6 +17,8 @@ on:
     branches: [ "main" ]
     paths-ignore:
       - '**/*.md'
+  schedule:
+    - cron: '23 4 * * 1'
   workflow_dispatch:
 
 # a superseded pull request run is cancelled; a push run is not, since its
@@ -61,12 +64,46 @@ jobs:
           path: ${{ steps.snapcraft.outputs.snap }}
           if-no-files-found: error
 
+  # the whole suite, a release per runner, or its smoke jobs (make
+  # spread-smoke). a release pull request changes VERSION, and a red suite is
+  # cheaper there than on its tag, which has to be VERSION.
+  select:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runs: ${{ steps.select.outputs.runs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Select
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          full=false
+          case "$EVENT" in
+              (schedule|workflow_dispatch) full=true ;;
+              (push) [ "$REF_TYPE" != tag ] || full=true ;;
+              (pull_request) git diff --quiet "$BASE" HEAD -- VERSION || full=true ;;
+          esac
+          if [ "$full" = true ]; then
+              echo 'runs=["22.04", "24.04", "26.04"]' >> "$GITHUB_OUTPUT"
+          else
+              echo 'runs=["smoke"]' >> "$GITHUB_OUTPUT"
+          fi
+
   # spread's lxd suites (spread.yaml): the snap's own checks, and pairs through
   # it with the engines it drives, nested in an lxd container of each ubuntu.
   # a runner per release, since their nested engines on one runner slow each
   # other's tasks down.
   spread:
-    needs: build
+    needs: [ build, select ]
     strategy:
       fail-fast: false
       matrix:
@@ -75,8 +112,8 @@ jobs:
             os: ubuntu-24.04
           - arch: arm64
             os: ubuntu-24.04-arm
-        release: [ "22.04", "24.04", "26.04" ]
-    name: spread (${{ matrix.runner.arch }}, ${{ matrix.release }})
+        run: ${{ fromJSON(needs.select.outputs.runs) }}
+    name: spread (${{ matrix.runner.arch }}, ${{ matrix.run }})
     runs-on: ${{ matrix.runner.os }}
     timeout-minutes: 60
     steps:
@@ -115,8 +152,13 @@ jobs:
 
       - name: Spread
         env:
-          RELEASE: ${{ matrix.release }}
-        run: make spread "SYSTEMS=lxd:ubuntu-$RELEASE" ARGS=-v
+          RUN: ${{ matrix.run }}
+        run: |
+          if [ "$RUN" = smoke ]; then
+              make spread-smoke ARGS=-v
+          else
+              make spread "SYSTEMS=lxd:ubuntu-$RUN" ARGS=-v
+          fi
 
       # when each task reached each step, per system (tests/spread/lib/stamp).
       - name: Step times
