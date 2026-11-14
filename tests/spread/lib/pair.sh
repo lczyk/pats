@@ -45,8 +45,11 @@ main() {
     out="$("${PATS}" score -S "${engine}" 2>&1)" || _fail "${engine}: score: ${out}"
     printf '%s\n' "${out}" | grep -qE "^t-${engine} +1\.00" || _fail "${engine}: score: ${out}"
     out="$("${PATS}" clean -n 2>&1)" || _fail "${engine}: clean: ${out}"
-    # an engine this system lacks is skipped with a warning, not left behind.
-    out="$(printf '%s\n' "${out}" | grep -v '^WARN [a-z]*: skipped (' || true)"
+    # an engine this system lacks is skipped with a warning, and another
+    # system's runs on a shared daemon are another machine's: neither is
+    # left behind.
+    out="$(printf '%s\n' "${out}" |
+        grep -v -e '^WARN [a-z]*: skipped (' -e '^INFO [a-z]*: left [0-9]* run(s) this clean cannot judge' || true)"
     [ -z "${out}" ] || _fail "${engine}: left behind: ${out}"
     cd - > /dev/null
     rm -rf "${dir}"
