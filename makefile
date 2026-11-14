@@ -1,12 +1,17 @@
 .SUFFIXES:
 
-SRCS   := $(shell find ./cmd ./internal ./src ./images -name '*.go') ./version.go
+GO_DIRS  := ./cmd ./internal ./src ./images
+GO_PATHS := $(GO_DIRS) ./version.go
+SRCS     := $(shell find $(GO_DIRS) -name '*.go') ./version.go
 # go:embed inputs: the version string, what images/embed.go bakes in, and
 # the default clis and harnesses
 EMBEDS := ./VERSION ./images/provision-sandbox.sh ./internal/machine/defaults.yaml
 
+.PHONY: help
 help:  ## Show this help
-	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "} {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@awk 'BEGIN {FS = ":.*?## "} /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} /^[a-zA-Z_.\/-]+:.*?## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+##@ build
 
 .PHONY: build
 build: ./bin/pats  ## Build the pats binary into ./bin (upx-compressed if available)
@@ -23,26 +28,51 @@ install: ./bin/pats  ## Symlink the binary into ~/.local/bin
 	mkdir -p $(HOME)/.local/bin
 	ln -sf "$(PWD)/bin/pats" "$(HOME)/.local/bin/pats"
 
-.PHONY: test
-test:  ## Run the test suite with the race detector
-	go test -race ./...
+.PHONY: clean
+clean:  ## Remove the binary and the image stamps (forces an image rebuild next run)
+	rm -f ./bin/pats
+	rm -rf .stamp
+
+##@ checks
+
+.PHONY: verify
+verify: lint test  ## Aggregate gate: lint + test
 
 .PHONY: lint
 lint:  ## go vet + gofmt check (no writes)
 	go vet ./...
-	@out=$$(gofmt -s -l ./cmd ./internal ./src ./images version.go); \
+	@out=$$(gofmt -s -l $(GO_PATHS)); \
 	if [ -n "$$out" ]; then \
 		echo "unformatted files:"; echo "$$out"; exit 1; \
 	fi
 
 .PHONY: format
 format:  ## gofmt the tree in place
-	gofmt -s -w ./cmd ./internal ./src ./images version.go
+	gofmt -s -w $(GO_PATHS)
+
+.PHONY: test
+test:  ## Run the test suite with the race detector
+	go test -race ./...
 
 .PHONY: cover
 cover:  ## Show test coverage per function in the CLI
-	go test -coverprofile=/tmp/pats-cover.out ./...
-	go tool cover -func=/tmp/pats-cover.out
+	@out=$$(mktemp); trap 'rm -f "$$out"' EXIT; \
+	go test -coverprofile="$$out" ./... && go tool cover -func="$$out"
+
+FUZZTIME ?= 10s
+
+# go test takes one fuzz target per run, so each Fuzz* func in the tree gets its own.
+.PHONY: fuzz
+fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
+	@for t in $$(grep -roE --include='*_test.go' '^func Fuzz[A-Za-z0-9_]+' $(GO_DIRS) | sed -E 's|/[^/]*:func |:|' | sort); do \
+		echo "go test $${t%%:*} -fuzz $${t##*:}"; \
+		go test "$${t%%:*}" -run - -fuzz "^$${t##*:}\$$" -fuzztime $(FUZZTIME) || failed="$$failed $${t##*:}"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "failed:$$failed"; exit 1; fi
+
+.PHONY: bench
+bench:  ## Run all benchmarks
+	go test ./... -run - -bench . -benchmem
 
 # every model in docs/spec/fizz must pass as written. publish.fizz also keeps the designs it rejects:
 # snapshot and selfres must still fail R2 (the race the aliases job exists for).
@@ -58,59 +88,13 @@ fizz:  ## Model-check the fizzbee specs in docs/spec/fizz
 		timeout -k 10 300 fizz --preinit-hook "DESIGN = \"$$d\"" publish.fizz 2>&1 | grep -E '^FAILED' || { echo "passed, expected to fail"; exit 1; }; \
 	done
 
-FUZZTIME ?= 10s
-
-.PHONY: fuzz
-fuzz:  ## Run all fuzz targets (narrow via FUZZTIME=..)
-	@for t in \
-		./internal/config:FuzzParse \
-		./internal/config:FuzzCheckTemplates \
-		./internal/eval:FuzzParseScore \
-		./internal/eval:FuzzParseVerdict \
-		./internal/eval:FuzzFinalTexts \
-		./internal/eval:FuzzStatTap \
-		./internal/eval:FuzzSummarize \
-		./internal/eval:FuzzEgressAudit \
-		./internal/eval:FuzzReadPins \
-		./internal/eval:FuzzCheckOpenrouterModels \
-		./src/sandbox:FuzzReadTar \
-		./src/sandbox:FuzzUnpackLayer \
-		./src/sandbox:FuzzFromRefs \
-		./src/sandbox:FuzzNormalizeRef \
-		./src/sandbox:FuzzEnvScript \
-		./src/sandbox:FuzzBuildSteps \
-		./src/sandbox:FuzzParseStamps \
-		./src/sandbox:FuzzIgnore \
-		./src/sandbox/proxy:FuzzDecide \
-		./src/sandbox/proxy:FuzzDecideAllow \
-		./src/sandbox/proxy:FuzzSpelledQuery \
-		./src/sandbox/proxy:FuzzNormalizeHost \
-		./src/sandbox/proxy:FuzzParseEntry \
-		./src/sandbox/proxy:FuzzParseClientHello \
-		./src/sandbox/proxy:FuzzPeekHello \
-	; do \
-		echo "go test $${t%%:*} -fuzz $${t##*:}"; \
-		go test "$${t%%:*}" -run - -fuzz "^$${t##*:}\$$" -fuzztime $(FUZZTIME) || failed="$$failed $${t##*:}"; \
-	done; \
-	if [ -n "$$failed" ]; then echo "failed:$$failed"; exit 1; fi
-
-.PHONY: bench
-bench:  ## Run all benchmarks
-	go test ./... -run - -bench . -benchmem
-
-.PHONY: verify
-verify: lint test  ## Aggregate gate: lint + test
-
 # needs a logged-in gh, or GH_TOKEN. ci verifies with this same version.
 .PHONY: actions-lock
 actions-lock:  ## Re-pin the workflows' actions in .github/workflows/actions.lock (flags via ARGS=.., e.g. --verify, --relock)
 	go run github.com/github/gh-actions-lock/cmd/gh-actions-lock@v0.4.1 $(ARGS)
 
-.PHONY: clean
-clean:  ## Remove build artifacts
-	rm -f ./bin/pats
+##@ images
 
-# ----- sandbox images -----
 # matrix machinery kept so it scales, but only 26.04 is wired for now.
 DOCKER   ?= docker
 REGISTRY ?= ghcr.io/lczyk/pats
@@ -141,11 +125,6 @@ images: $(SANDBOX_STAMPS)  ## Build sandbox images locally, tagged :v<version>, 
 .stamp/sandbox-%: FORCE | .stamp
 	@hack/build_image.sh sandbox-$*
 
-.PHONY: clean-images
-clean-images:  ## Remove image stamps (forces rebuild next run)
-	rm -rf .stamp
-
-# ----- egress proxy image -----
 # build the egress proxy from this checkout, tagged both :latest and the version
 # pin pats resolves to (:v<version>), so a pats installed from this clone finds
 # it locally and skips the ghcr pull. needed when the checkout's version has no
