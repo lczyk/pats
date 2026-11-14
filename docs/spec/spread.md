@@ -45,8 +45,12 @@ under test (`.spread/pats_<arch>.snap`) and pats from this tree, and opens root 
 
 - **as a user would:** the suite installs the snap and makes a `tester` user; each engine is installed as an admin
   would and the tester put in its group (`tests/spread/lib/engine`), and pats runs as the tester (`as-tester`).
-- **tasks share a system:** `restore-each` (`lib/reset-system`) purges the engines and ufw, flushes netfilter,
-  deletes the bridges and turns forwarding off, since one task's firewall rules would decide the next one's.
+- **tasks share a system:** `restore-each` (`lib/reset-system`) removes the engine snaps and ufw, stops the apt
+  docker and drops its state, flushes netfilter, deletes the bridges and turns forwarding off, since one task's
+  firewall rules would decide the next one's. the apt docker stays installed: purged and installed again, it never
+  gets its socket unit back.
+- **firewall preconditions:** docker 28 and later drop forwarded traffic only when they turn forwarding on themselves,
+  so the docker variant turns it off before docker starts.
 - **local lxd only:** a remote's containers sit on the server's bridge, out of reach of the machine running spread.
 
 ## suites
