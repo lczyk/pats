@@ -4,7 +4,9 @@
 # the lxd snap's channel.
 case "$1" in
     (docker-apt)
-        apt-get install -y -q docker.io > /dev/null
+        # installed once per system, then stopped and started (reset-system).
+        command -v dockerd > /dev/null || apt-get install -y -q docker.io > /dev/null
+        systemctl enable --now containerd.service docker.socket docker.service
         usermod -aG docker tester
         ;;
     (docker-snap)
@@ -33,11 +35,11 @@ case "$1" in
         for i in $(seq 60); do
             docker info > /dev/null 2>&1 && exit 0
             # a daemon that failed its first start gets one more.
-            [ "$i" != 30 ] || systemctl restart docker snap.docker.dockerd 2> /dev/null || true
+            [ "$i" != 30 ] || systemctl restart docker.socket docker snap.docker.dockerd 2> /dev/null || true
             sleep 1
         done
-        systemctl --no-pager status docker snap.docker.dockerd 2>&1 | tail -n 40
-        journalctl --no-pager -n 40 -u docker -u snap.docker.dockerd
+        systemctl --no-pager status docker.socket docker snap.docker.dockerd 2>&1 | tail -n 40
+        journalctl --no-pager -n 40 -u docker.socket -u docker -u snap.docker.dockerd
         docker info
         ;;
 esac

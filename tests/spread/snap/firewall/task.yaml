@@ -20,6 +20,9 @@ execute: |
           rules='ufw (route )?allow (in|out) on patsbr[+]'
           ;;
       (docker)
+          # docker 28 and later drop forwarded traffic only when they turn
+          # forwarding on themselves.
+          sysctl -q -w net.ipv4.ip_forward=0
           engine docker-apt
           rules='iptables -I DOCKER-USER -[io] patsbr[+]( -m conntrack --ctstate RELATED,ESTABLISHED)? -j ACCEPT'
           ;;

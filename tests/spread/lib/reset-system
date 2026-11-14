@@ -1,13 +1,17 @@
 #!/bin/sh
 # reset-system takes the system back to how the snap suite left it after
-# prepare: no engine, no firewall, nothing in the tester's home. tasks share
-# a system, and an engine's firewall rules would decide the next task's.
+# prepare: no engine running, no firewall, nothing in the tester's home.
+# tasks share a system, and an engine's firewall rules would decide the next
+# task's.
 snap remove --purge docker > /dev/null 2>&1
 snap remove --purge lxd > /dev/null 2>&1
-apt-get purge -y -q docker.io containerd runc ufw > /dev/null 2>&1
+# an apt docker purged and installed again never gets its socket unit back,
+# so it stays installed, stopped, with no state.
+systemctl disable --now docker.socket docker.service containerd.service > /dev/null 2>&1
+apt-get purge -y -q ufw > /dev/null 2>&1
 # the docker snap leaves its socket behind, which an apt docker's socket unit
 # then cannot bind.
-rm -rf /var/lib/docker /etc/docker /etc/ufw /run/docker /run/docker.sock /run/containerd
+rm -rf /var/lib/docker /var/lib/containerd /etc/ufw /run/docker /run/docker.sock /run/containerd
 systemctl reset-failed
 nft flush ruleset
 for link in $(ip -o link show type bridge | cut -d: -f2); do
