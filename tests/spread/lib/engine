@@ -30,10 +30,14 @@ case "$1" in
 esac
 case "$1" in
     (docker-*)
-        for _ in $(seq 30); do
+        for i in $(seq 60); do
             docker info > /dev/null 2>&1 && exit 0
+            # a daemon that failed its first start gets one more.
+            [ "$i" != 30 ] || systemctl restart docker snap.docker.dockerd 2> /dev/null || true
             sleep 1
         done
+        systemctl --no-pager status docker snap.docker.dockerd 2>&1 | tail -n 40
+        journalctl --no-pager -n 40 -u docker -u snap.docker.dockerd
         docker info
         ;;
 esac

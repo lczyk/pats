@@ -6,6 +6,7 @@ snap remove --purge docker > /dev/null 2>&1
 snap remove --purge lxd > /dev/null 2>&1
 apt-get purge -y -q docker.io containerd runc ufw > /dev/null 2>&1
 rm -rf /var/lib/docker /etc/docker /etc/ufw
+systemctl reset-failed
 nft flush ruleset
 for link in $(ip -o link show type bridge | cut -d: -f2); do
     ip link delete "${link%@*}"

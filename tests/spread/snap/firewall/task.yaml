@@ -31,12 +31,13 @@ execute: |
   cd "$PROJ"
   as-tester "$PATS" init
 
-  if as-tester "$PATS" run --offline > run.log 2>&1; then
+  # the tester opens the log: the snap writes only to files its user owns.
+  if as-tester sh -c '"$PATS" run -v --offline > run.log 2>&1'; then
       cat run.log
       echo "the pair passed behind the firewall"
       exit 1
   fi
-  grep -rhoE "$rules" run.log .pats/runs/ | sort -u > fix
+  grep -rhoE "$rules" run.log .pats/runs/ 2> /dev/null | sort -u > fix
   [ -s fix ] || { cat run.log; echo "no fix in the error"; exit 1; }
   cat fix
   while read -r rule; do
@@ -44,4 +45,4 @@ execute: |
       ${rule//patsbr+/patsup}
   done < fix
 
-  as-tester "$PATS" run --offline || { echo "the pair failed with the fix applied"; exit 1; }
+  as-tester "$PATS" run -v --offline || { echo "the pair failed with the fix applied"; exit 1; }
