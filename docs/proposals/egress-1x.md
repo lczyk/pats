@@ -39,7 +39,7 @@ sandbox:
     deny:
       - github.com/*/some-answer-repo*
     deny-response: 403         # 403 | 404 | reset | timeout
-    image: ghcr.io/...         # the sidecar image, docker only. was proxy-image.
+    image: ghcr.io/...         # the sidecar image, a container driver only (docker, podman). was proxy-image.
 ```
 
 - `mode` goes. a mapping means the proxy; the scalar `none` means no network (a custom `UnmarshalYAML` on `Egress`,
@@ -73,8 +73,8 @@ sandbox:
   pool (section 2), where nothing legitimate lives and which is the cross-pair escape.
 - validation that stays: a url entry's host is a literal or a suffix, never a bare `*`. a bare host in `allow` under
   `default: allow` can never matter and is an error. a method on a bare host entry is an error that says to write
-  `GET host/*`. `image` under a driver other than docker is an error. `none` under an agent whose harness has
-  `RequiredHosts` is an error naming the agent, the harness and the sandbox.
+  `GET host/*`. `image` under a driver other than a container driver (docker, podman) is an error. `none` under an
+  agent whose harness has `RequiredHosts` is an error naming the agent, the harness and the sandbox.
 - validation that goes: "needs mode mitm-proxy", "deny is ignored under default deny".
 - validation that is temporary: until tier 5 lands, `methods` and a method prefix on an entry are rejected at load
   with "not implemented yet", the way an agent scorer is today. a field that is accepted and forwarded but not

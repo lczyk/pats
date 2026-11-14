@@ -56,7 +56,7 @@ small nor quite parsable:
   is listed with `mean: null`, and a scored pair whose metadata is gone (a run that died mid-pair) with `status:
   null`. the run fields come from its `metadata.json` as it is at report time. a `metadata.json` that cannot be read
   or parsed counts as missing: the pair is still listed, its run fields `null`, and a warning naming the file goes to
-  stderr, so a report never fails on one bad pair and never drops one silently. the human stats table lists it, and
+  stderr, so a report never fails on one bad pair and never drops one silently. the human report's pivot lists it, and
   a scored pair with no `metadata.json`, with status `?`. the pair dirs are listed, not globbed, since a run dir's
   path may hold glob metacharacters, and a dir that cannot be listed is warned about too. `writeJSON` writes through a temp file in the same dir and a rename, so a write cut short leaves the
   old file or none.

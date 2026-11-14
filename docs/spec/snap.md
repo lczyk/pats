@@ -62,18 +62,17 @@ a project that needs any of these runs a native build.
   `src/sandbox/process.go`) and gains no second way to drive one:
   - `lxc`: built from a pinned `canonical/lxd` tag by the go plugin, with `CGO_ENABLED=0`. the plugin builds
     `./...`, daemon and cgo included, so the part's `source-subdir` is `lxc`: `./...` from there is the client alone.
-  - `docker`: the docker cli from a pinned `docker/cli` tag, static. it has no plain `go.mod`, so if the go plugin
-    cannot build it, the part dumps docker's published static tarball for the arch instead.
+  - `docker`: the docker cli, not built: docker's published static tarball for the arch, checked against a sha256.
   - `docker-buildx`: the buildx plugin from a pinned `docker/buildx` release, static. pats runs `docker build`
     (`src/sandbox/build.go`), and without buildx the docker cli falls back to the deprecated legacy builder, which
     rejects buildkit-only dockerfiles (`RUN --mount`). a host's buildx is out of the snap's reach, so the snap ships
     its own. the cli finds plugins under `$DOCKER_CONFIG/cli-plugins`. the snap sets `DOCKER_CONFIG` to
     `$SNAP_USER_COMMON/docker`, and a command-chain script links the revision's buildx there on every launch.
     a private-registry login made with the host's `docker login` (`~/.docker/config.json`) is not seen (limits).
-  - both clients land in the snap's `bin/`, first on `PATH`. their versions are pinned in `snapcraft.yaml` and bumped by
-    hand. the docker cli tarball and the buildx binary come from one part, `docker`, and are checked against a
-    sha256 per arch in its own pull (`source-checksum` cannot vary by arch), so a bump changes the hashes with the
-    version.
+  - `lxc` and `docker` land in the snap's `bin/`, first on `PATH`. buildx stays under `lib/`, linked as above. their
+    versions are pinned in `snapcraft.yaml` and bumped by hand. the docker cli tarball and the buildx binary come from
+    one part, `docker`, and are checked against a sha256 per arch in its own pull (`source-checksum` cannot vary by
+    arch), so a bump changes the hashes with the version.
 - **version and grade:** unchanged from the classic design. a clean tree whose HEAD is the tag `v$VERSION` (asked of
   the tag itself, so another tag on the same commit does not hide it) builds with
   `-buildvcs=false` and is that release, keyed like a `go install` of it in `releaseBuild`
@@ -97,7 +96,6 @@ a project that needs any of these runs a native build.
 - **store requests:** auto-connect for `docker` and `lxd`, each a forum request, far smaller than a classic review.
   until then the snap works with the manual connects. keyless harnesses need no plug (below).
 - a run whose engine plug is not connected fails at the engine's first call with the socket's permission error.
-  preflight names the plug to connect instead.
 
 ## what pats can read and write
 
@@ -136,9 +134,10 @@ strict snap cannot read either: both sit in hidden directories, which `home` den
   `~/pats-auth/codex.json`, `0600`. a symlink to the dotfile does not help, since apparmor checks the link's target,
   which is hidden.
 - **claude has a second way in already:** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) is forwarded to
-  `claude-cli-keyless` (`credKeys`, `internal/agent/agent.go`), which keeps it keyless. it needs no file, so it
-  suits the snap and ci best. `PATS_CLAUDE_AUTH_PATH` is there for parity with codex, whose subscription login has
-  no environment form: `CODEX_API_KEY` and `OPENAI_API_KEY` would turn it into api billing.
+  `claude-cli-keyless` (its `auth-env` in `internal/machine/defaults.yaml`, forwarded by `agent.CredEnv`), which
+  keeps it keyless. it needs no file, so it suits the snap and ci best. `PATS_CLAUDE_AUTH_PATH` is there for parity
+  with codex, whose subscription login has no environment form: `CODEX_API_KEY` and `OPENAI_API_KEY` would turn it
+  into api billing.
 - **a copy goes stale.** the host's claude or codex refreshes its own login and can rotate the refresh token, after
   which a copied file stops working. keeping it fresh is the user's: re-copy, or in ci write it from the secret on
   every run.

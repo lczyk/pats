@@ -1,6 +1,7 @@
 # proposal: task directories
 
-status: implemented on the 1.x line.
+status: implemented on the 1.x line. since then the `-cmd` forms of prepare, collect and score are gone, `prompt-cmd` is
+a shell script run after stage, and prepare runs inside the sandbox. see `docs/spec/steps.md`.
 scope: `pats.yaml` task vectors, how run fields (prompt, prepare, collect, score) are written and run, `internal/config`
 and `internal/eval`.
 
@@ -66,7 +67,7 @@ value.
   own directory; items from `pats.yaml` run in the pats root.
 - `<pats root>/bin/` is prepended to `PATH` for every host script, inline or `-cmd`. shared helpers live there and are
   called by name, so a task never encodes where they live.
-- `PATS_TASK_DIR` (absolute) is exported to a task's scripts and to the scorers that score it.
+- `PATS_TASK_DIR` (absolute) is exported to a task's host scripts; a scorer gets `PATS_SCORED_TASK_DIR` instead.
 
 ## task env
 

@@ -1,8 +1,8 @@
 # sandbox drivers: one way to put them together
 
-status: implemented for docker, podman and lxd: the rule, the shared pieces, the timings, and the tests (shared
+status: implemented for docker, podman, lxd and bwrap: the rule, the shared pieces, the timings, and the tests (shared
 fakes, a state-tracking fake per daemon, the cross-driver tables, the sweeps). the shape every sandbox driver
-(docker, podman, lxd; bwrap and nerdctl to come) is built in, so each one is tested the same way and without its
+(docker, podman, lxd, bwrap; nerdctl to come) is built in, so each one is tested the same way and without its
 daemon. `lxd-testing.md` is the lxd plan this grew out of; its seams 1 to 3a are this design applied to lxd, and its
 fake server and fault sweep (seams 4 and 5) sit on top of it.
 
@@ -34,7 +34,7 @@ runs `exec.Command`. what stays outside the three, on purpose:
 - the registry: `fetchImageFile` (lxd's proxy binary) uses `http.DefaultClient`. an injected client and base url is
   `lxd-testing.md` seam 7, and applies to any driver that fetches from a registry.
 
-`New(o)` builds the production driver from `defaultProcess`, the cli's runner and `o`. the unexported constructors
+`Open(o)` builds the production driver from `defaultProcess`, the cli's runner and `o`. the unexported constructors
 (`newLXD(p, r, o)`, `newContainer(p, r, o)`) are what tests use.
 
 ## the shared pieces
@@ -125,19 +125,19 @@ contract.
 ## drivers
 
 status: implemented (as built, below). sessions have one shape (the rule above); everything else pats does with a daemon
-or a server has none, and it grew two ways:
+or a server has none, and before the move it grew two ways:
 
-- lxd-specific exports in `src/sandbox`, which `internal/eval` picks by driver name: `LXDImage`, `LXDFingerprint`,
+- lxd-specific exports in `src/sandbox`, which `internal/eval` picked by driver name: `LXDImage`, `LXDFingerprint`,
   `LXDCopyImage`, `LXDRemote`, `LXDProxyImage`, `LXDRemoteFingerprint`, `LXDImageStamps`, `LXDImageUsage`,
-  `LXDDeleteImage`, `LXDInfo`, `ServerCPUs`, `CleanLXD`, `ShutdownLXD`. each builds a driver on `defaultProcess`
-  inside, so a caller cannot hand it a process of its own.
+  `LXDDeleteImage`, `LXDInfo`, `ServerCPUs`, `CleanLXD`, `ShutdownLXD`. each built a driver on `defaultProcess`
+  inside, so a caller could not hand it a process of its own.
 - docker and podman argv in `internal/eval`, through `exec.Command`: `hosts.go`'s `containerHost` (`context show`,
   `system connection list`, `info`, `image inspect` in two formats, `images -a`, `pull`, `rmi` from `remove.go`),
   `clean.go`'s sweep, `build.go`'s `proxyImageID`, `run.go`'s `docker info` for `-j auto`; plus the exported
-  `BuildContainerImage` and `ContainerStamps`, which take a driver name.
+  `BuildContainerImage` and `ContainerStamps`, which took a driver name.
 
-so eval knows docker's cli and which lxd functions exist, the docker half of image handling and clean has no argv
-test, and a new driver means another set of exports and another switch in eval.
+so eval knew docker's cli and which lxd functions existed, the docker half of image handling and clean had no argv
+test, and a new driver meant another set of exports and another switch in eval.
 
 ### the shape
 
@@ -159,9 +159,10 @@ type Driver interface {
 	Pull(ctx context.Context, ref string, force bool, log io.Writer) (img Image, fetched bool, err error)
 	Build(ctx context.Context, spec BuildSpec, log io.Writer) (img Image, base string, built bool, err error)
 	ProxyImage(ctx context.Context, ref string, force bool, log io.Writer) (img Image, fetched bool, err error)
-	Stamps(ctx context.Context, id string) (map[string]string, error)
+	Stamps(ctx context.Context, id string, clis []string) (map[string]string, error)
 	RemoveImage(ctx context.Context, id string) error
 	Upstream(ctx context.Context, ref string) (string, error) // the source's current id or digest, for staleness
+	Arch(ctx context.Context, base string) (string, error)    // the arch harness clis are placed for, on base
 
 	// sandboxes
 	Sandbox(o SandboxOptions) (Sandbox, error) // today's Sandbox and Session, unchanged

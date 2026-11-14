@@ -175,7 +175,7 @@ on what the limits below exclude.
   host path and which is read-only.
 - **`PATH`** is the image's own, with the pats root's `bin/` first. the prepending happens inside the box, so a
   provisioned tool in `/usr/local/bin` is found.
-- **`HOME`** is a fresh directory made in the box at its start, by a root exec, owned by the step user. it is not a
+- **`HOME`** is a fresh directory made in the box at its start, by an exec as the step user. it is not a
   bind, so nothing syncs back from it. tools that write caches or config work on any image. what a step leaves there
   stays until the box closes, so a later step in the same box sees it (below).
 - **the environment**, later entries winning:
@@ -396,9 +396,10 @@ down with the result.
     by the lxd push). mounts keep their order, parents first.
   - lxd pushes read-only mounts root-owned, with the modes above (no group or other write, read for all, execute
     where the owner has it, no setuid or setgid), and pushes a symlinked source from its resolved path. `Start`
-    chowns only the writable binds to the agent user, where it chowns every bind today (`chownAgent` over
-    `paths(false)`, `src/sandbox/lxd.go`), and `HandOver` leaves read-only ones alone. agent sessions' read-only
-    mounts get the same, which only tightens them.
+    gives each bind its owner, the writable ones to the agent user and the read-only ones to root (`bindOwners`,
+    `src/sandbox/lxd_session.go`). `HandOver` chowns what root left under the writable mounts `sandbox.run` passes
+    (`chownAgent`), and read-only ones stay root's. agent sessions' read-only mounts get the same, which only
+    tightens them.
   - the container keepalive runs as root explicitly.
   - the reserved in-box paths are one exported list, checked before a box starts.
   - lxd empties a bind's in-box destination, and the masked paths in it, before pushing, gives existing parents

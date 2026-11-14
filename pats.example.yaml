@@ -10,7 +10,7 @@ sandbox:
   items:
     docker:
       # with neither `image:` nor `build:`, the published pats sandbox pinned to this pats version (ghcr.io/lczyk/pats/sandbox:v<version>).
-      # `build: <dir or Dockerfile>` builds a context at run start, with that image passed in as the PATS_SANDBOX build arg.
+      # `build: <dir or Dockerfile>` builds a context in `pats init`, with that image passed in as the PATS_SANDBOX build arg.
       # egress is the outbound network policy. absent: open, unfiltered (the host and its lan too). `egress: none`:
       # no network. a mapping: a filtering proxy the sandbox can only reach the net through; `{default: allow}` passes
       # every host but private, link-local (metadata), multicast and cgnat addresses (a global-numbered lan still passes). deny always wins, then allow, then `default` (deny).
@@ -30,7 +30,7 @@ sandbox:
       #   npm:    registry.npmjs.org
       #   crates: crates.io, static.crates.io, index.crates.io
       #   go:     proxy.golang.org, sum.golang.org, storage.googleapis.com
-      # `base:` + `provision:` make the image instead (any driver): the script runs once per image, as root, with bin/ on PATH.
+      # `base:` + `provision:` make the image instead (docker, podman or lxd): the script runs once per image, as root, with bin/ on PATH.
       # `limits: {cpu: 4, memory: 8GiB}` caps resources; `max-parallel: 2` caps this sandbox's concurrent pairs.
     # an lxd sandbox: a system container (or `vm: true`) on the server an lxc remote names. with no `base` it is
     # provisioned with the pats sandbox's tools; `sudo: true` lets the agent sudo, `config:` and `profiles:` pass through.

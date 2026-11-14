@@ -169,9 +169,9 @@ func (c *EgressCACommand) Execute(args []string) error {
 	return nil
 }
 
-// EgressRunCommand serves the proxy. every flag has an env fallback (the
-// sidecar is configured over env, since `docker run -d` has no stdin); a flag
-// wins over its env.
+// EgressRunCommand serves the proxy. every flag but --sandbox, --task and
+// --agent has an env fallback (the sidecar is configured over env, since
+// `docker run -d` has no stdin); a flag wins over its env.
 type EgressRunCommand struct {
 	Policy  string   `long:"policy" description:"policy file: a sandbox's egress block, verbatim (env PATS_EGRESS_POLICY holds the yaml itself)"`
 	Sandbox string   `long:"sandbox" description:"serve this sandbox's policy out of pats.yaml instead of --policy"`

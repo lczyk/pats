@@ -104,7 +104,7 @@ so the egress proxy sets it on the wire:
 - **one path for preflight and pairs.** the credential preflight runs through the same proxy, so its request is
   pinned as the pairs' are.
 
-to verify on the pinned opencode (`OPENCODE_VERSION` in `images/harness-versions`) before building: that its
+to verify on the pinned opencode (`version` of `opencode` in `internal/machine/defaults.yaml`) before building: that its
 openrouter requests are json `POST`s with a `model` key on `openrouter.ai`, and that it sends no other `POST`s there
 that the refusal would break. the proxy's own tests cover the rewrite with a recording
 upstream.

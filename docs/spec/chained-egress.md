@@ -1,6 +1,6 @@
 # chained egress
 
-status: implemented, for docker, podman and lxd. the host driver and bwrap pick it up as they land.
+status: implemented, for docker, podman, lxd, bwrap and the host driver.
 
 ## problem
 
@@ -13,8 +13,7 @@ chained egress makes pats work behind a proxy: pats's own proxy reaches the inte
 open sandbox's agent is handed the machine's proxy. pats's policy still applies first: behind a proxy a sandbox is
 held to pats's rules, then to the machine's. chaining changes the route, not the decisions.
 
-v1 covers the drivers that exist: docker, podman, lxd. the host driver (`host-driver.md`) and bwrap pick it up when
-they land, reusing this.
+v1 covers every driver: docker, podman, lxd, bwrap and the host driver (`host-driver.md`).
 
 ## the contract
 
@@ -41,9 +40,8 @@ directly, as today):
 - **tunnels and tls inspection**: the dial connects to the upstream and sends `CONNECT host:port`, with
   `Proxy-Authorization` when the url has credentials. a 2xx hands the connection back as if dialled directly, so the
   tunnel splice, the sni binding check and the mitm transport's tls to the origin work unchanged. any other status is
-  a failed upstream, audited with the reason `upstream: <status>`, and `readEgressAudit` (`meta.go`), which counts only
-  `dial` and `revoked` as failures today, counts `upstream:` reasons too, so they land in `failed_egress`, apart from
-  pats's own denials. there is no fallback to a direct dial.
+  a failed upstream, audited with the reason `upstream: <status>`. `readEgressAudit` (`meta.go`) counts these in
+  `failed_egress` with `dial` and `revoked`, apart from pats's own denials. there is no fallback to a direct dial.
 - **plain http**: forwarded to the upstream in absolute form (`GET http://host/path`), not by CONNECT, since proxies
   commonly refuse CONNECT to port 80.
 - **the dial guard**: it still checks literal destination addresses, and every direct dial `NO_PROXY` selects. a
@@ -109,7 +107,6 @@ with no `SSL_CERT_FILE`, trust is today's, and an inspecting upstream fails veri
 - pats's own fetches (the lxd proxy binary, the openrouter model check, docker and podman's upstream image checks)
   use go's default transport, which already reads the same env. lxd's image checks go through `lxc`
   (`remoteFingerprint`), which follows its own proxy settings.
-- the host driver's refusal of `egress` behind a proxy goes when it implements this.
 
 ## later
 

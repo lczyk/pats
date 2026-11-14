@@ -65,7 +65,7 @@ there are none, and its `Runs` lists nothing. a session is a set of host dirs an
   and, with `egress`, starts the proxy (below). the workdir and the harness home are the temp dirs pats already makes
   under its cache for every pair; nothing is bound.
 - **exec** runs argv as a host process in its workdir, in a process group of its own, through the runner host steps
-  use (`runGroup`, `steps.md`, extracted where both can share it): the group is killed when the context ends and when
+  use (`RunGroup`, `steps.md`, extracted where both can share it): the group is killed when the context ends and when
   the command returns, and output draining is bounded. what leaves the group (`setsid`, a daemon, a nested tool's
   own groups) is out of reach, as for a host step. a context cancelled before the process started is a launch error
   (`ErrLaunch`); one that killed a started process returns the killed result (exit -1, no error), as the container

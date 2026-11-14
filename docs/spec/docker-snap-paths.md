@@ -38,7 +38,8 @@ with `TMPDIR` and `XDG_CACHE_HOME` both moved to non-hidden dirs under the home,
 project's docker pair end to end, so these are the only blockers on the docker side.
 
 the comment on `MkTemp` (`src/sandbox/tmp.go`) and `docs/spec/cache-dir.md` say a confined daemon sees `$HOME`, so
-a temp root under the cache is safe. that holds for the daemon's bind mounts. neither says the cli sees less.
+a temp root under the cache is safe. that holds for the daemon's bind mounts. resolved: both now say the cli
+sees less, and `tmp.go` names `MkTempFor` for the dirs it opens. `cache-dir.md` points here.
 
 the pats snap is not affected: it ships its own docker client (`snap/snapcraft.yaml`), which runs in the pats snap's
 mount namespace and talks to the docker snap's daemon over the socket, so the docker snap's cli is never in the path.

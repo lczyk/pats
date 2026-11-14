@@ -49,7 +49,7 @@ a run made by hand in between is one of the latest n. `pats list runs` shows wha
   is scored in turn, as `-r all` does: a run with nothing to score under the filters is skipped with a note, any other
   error stops.
 - **report**: every one of the n runs must be scored by this pats. a run without `scores.json` is an error (`run 004
-  is not scored; pats score -N 3`), and so is one whose `scores.json` is of another version or does not parse, each
+  is not scored (pats score -N 3)`), and so is one whose `scores.json` is of another version or does not parse, each
   named. `-N 1` is the latest run, exactly as with no flag, errors included.
 
 ## report: the numbers

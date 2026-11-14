@@ -1,11 +1,11 @@
 # pats init: build once, run many
 
-status: implemented for docker, podman and lxd, the engine table included. nerdctl (an entry in that table and a ci
-job) and bwrap come with those drivers.
+status: implemented for docker, podman, lxd and bwrap, the engine table included. nerdctl (an entry in that table and a
+ci job) comes with its driver.
 
 pats gets three stages: `pats init` makes everything the project's sandboxes need, `pats run` uses
 it, `pats score` scores. `report`, `list`, `egress` and `clean` stay as tools around them. this applies to every
-driver: docker and podman today, lxd, and bwrap and nerdctl when they come. `lxd.md` is the lxd driver's design;
+driver: docker, podman, lxd and bwrap today, and nerdctl when it comes. `lxd.md` is the lxd driver's design;
 `lxd-testing.md` is how its tests get their seams.
 
 ## problem
@@ -96,7 +96,7 @@ resolved at init so a later change of default does not silently move a pin:
   colima or a remote daemon all change which daemon answers; a run whose daemon id differs from the pin's treats its
   images as missing, rather than trusting a pin made against another daemon.
 - lxd: the resolved remote (`lxd:armstrong`); a config with no `remote:` pins under the default as resolved at init.
-- bwrap: `bwrap:local`, pinning the host tools' versions.
+- bwrap: `bwrap:<hostname>`, pinning the host tools' versions.
 
 ```json
 {
@@ -199,12 +199,11 @@ too, as `pats.component.<cli>` properties its builder reads before publishing (`
 them, so every pats-made layer has them); init reads them back. a docker image cannot take a label once built, so
 init runs the stamp in a throwaway container of the image and the pin is where they live.
 
-today the harnesses install at `@latest` unless `CLAUDE_CLI_VERSION` and friends are set, so two images of one pats
-version built a week apart carry different harnesses, and the published docker image and an lxd image provisioned from
-the same script disagree. proposed (`harness-pins.md`): each pats release pins its harness versions in one file both
-the dockerfile and the provision script read, bumped at each release. then "same pats version" means the same
-harnesses, the stamps confirm it, and a newer harness arrives with a newer pats. a project wanting another harness
-version sets it in its `provision` layer, and the stamp records what it got.
+each pats release pins its harness clis in the machine file's defaults (`internal/machine/defaults.yaml`), each with a
+sha256 per arch, and pats places them in the sandbox's image at init, so the published docker image and an lxd image
+carry the same harnesses. then "same pats version" means the same harnesses, the stamps confirm it, and a newer harness
+arrives with a newer pats. how the clis are fetched and placed is in `harness-images.md`. a project wanting another
+harness version sets it in its `provision` layer, and the stamp records what it got.
 
 a run warns when a pinned image's stamps differ from what this pats release pins (an image built by an older pats,
 or a provision layer that changed a harness): same warning, same going on.

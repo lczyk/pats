@@ -71,7 +71,8 @@ an `opencode-openrouter` agent names an openrouter model id (`model: openai/gpt-
 
 - the base url comes from `PATS_OPENROUTER_URL` (default `https://openrouter.ai/api/v1`), so tests point it at an
   `httptest` server.
-- `checkOpenrouterModels(ctx, agents, client) (warnings []string, err error)`, called from `Run` and the dry run.
+- `checkOpenrouterModels(ctx, agents, client) (prices map[string]*modelPrice, warnings []string, err error)`, called
+  from `Run` and the dry run.
 
 ## tests
 

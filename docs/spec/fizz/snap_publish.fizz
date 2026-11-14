@@ -17,9 +17,9 @@ action_options:
 #      (gate, tagedge likewise; oldreruns is --preinit-hook 'OLD_RERUNS = True', and
 #      nofresh fails with it: --preinit-hook 'OLD_RERUNS = True' plus a line DESIGN = "nofresh")
 #
-# what it models: commits pushed to 1.x in order, each starting a snap run in
-# the 1.x concurrency group (one running, one waiting, a newer run replacing a
-# waiting one); a release tag on the release commit, starting a snap run in its
+# what it models: commits pushed to main in order, each starting a snap run in
+# the group for pushes to main (one running, one waiting, a newer run
+# replacing a waiting one); a release tag on the release commit, starting a snap run in its
 # own group and a publish_images run, which may fail and be re-run. a snap run
 # builds, then runs one publish job, which releases amd64, then arm64, and may
 # fail at either. publish jobs share one group per channel across runs, so one
@@ -43,22 +43,22 @@ action_options:
 #     what edge held for that arch.
 # R4: WHEN no run is pending or running, publish_images is not running and no
 #     job is left failed, both arches SHALL hold the same snap on edge, and on
-#     beta, and edge SHALL hold the tip of 1.x.
+#     beta, and edge SHALL hold the tip of main.
 # R5: the release SHALL be able to reach beta, and the release commit edge, on
 #     both arches.
 #
 # designs:
 # written  -- the workflow as written: every publish waits for its VERSION's
-#             images, and releases only while its commit is the tip of 1.x (a
+#             images, and releases only while its commit is the tip of main (a
 #             tag: while no newer release tag is on a descendant). passes.
 # nowait   -- an edge publish does not wait. fails R2: the release commit
-#             reaches 1.x before its tag, and edge pins images not yet built.
+#             reaches main before its tag, and edge pins images not yet built.
 # gate     -- an edge publish whose images are missing skips edge. fails R4:
 #             the release commit's run skips, and edge stays behind the tip
 #             with nothing failed.
 # tagedge  -- as gate, and the tag's snap goes to edge too. fails R4 as gate
 #             does. without the freshness check it also failed R3 (a slower
-#             1.x run of an older commit landing after it); the check keeps
+#             main run of an older commit landing after it); the check keeps
 #             an older commit off edge.
 # nofresh  -- written without the freshness check. passes alone; fails R3 once
 #             an older run may be re-run (OLD_RERUNS): it releases its older
@@ -84,8 +84,8 @@ action_options:
 # re-run of the tip's run. also not modelled: store review holds and failures
 # after the upload, a tag that is not v$VERSION (the job refuses it), the
 # aliases job and :latest, registry eventual consistency, a tag pushed before
-# its commit reaches 1.x, more than one release in flight (the freshness check
-# and the channel group cover it as for 1.x).
+# its commit reaches main, more than one release in flight (the freshness check
+# and the channel group cover it as for main).
 
 ARCHES = ["amd", "arm"]
 VERSION_OF = {1: 1, 2: 1, 3: 2}
@@ -93,7 +93,7 @@ DESIGN = "written"
 OLD_RERUNS = False       # a re-run may be of any finished run, not the latest
 
 action Init:
-    pushed = [1]            # commits on 1.x; 1 is already there
+    pushed = [1]            # commits on main; 1 is already there
     tagged = False
     images = [1]            # versions whose images are published
     pi = "none"             # publish_images on the tag: none, running, ok, fail
@@ -102,7 +102,7 @@ action Init:
     beta = {"amd": 1, "arm": 1}
     failed_left = 0         # jobs failed and not re-run
 
-# the environment: the next commit is pushed to 1.x.
+# the environment: the next commit is pushed to main.
 atomic action Push:
     c = len(pushed) + 1
     require c <= 3

@@ -14,9 +14,10 @@ deadlock_detection: true
 # pats clean vs a live run's lease, with clocks that disagree.
 #
 # models: src/sandbox/lxd.go setupServer / renew (the run's marker acl and its
-# user.pats.lease) and src/sandbox/lxd_clean.go clean (runDead). one run, one
-# cleaner. time is real time in ticks of 30s; each machine stamps with its own
-# clock, the cleaner's COFF ticks ahead. the lxc call that renews may fail
+# user.pats.lease), src/sandbox/lxd_clean.go Runs (the lease read) and
+# src/sandbox/clean.go clean (judge). one run, one cleaner. time is real time
+# in ticks of 30s; each machine stamps with its own clock, the cleaner's COFF
+# ticks ahead. the lxc call that renews may fail
 # (its error is ignored) or land late. a model, not the code.
 #
 # run: timeout -k 10 300 fizz lxd_lease.fizz
@@ -102,9 +103,9 @@ atomic action Crash:
     alive = False
     pending = None
 
-# runDead by the cleaner's clock, and removal straight after. with SLOW_RUNS
-# the query reads the lease in one step and the judge runs later, time passing
-# in between.
+# judge says dead by the cleaner's clock, and removal straight after. with
+# SLOW_RUNS the query reads the lease in one step and the judge runs later,
+# time passing in between.
 atomic action CleanRead:
     require SLOW_RUNS and cstate == "idle"
     seen = lease

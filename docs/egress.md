@@ -219,13 +219,13 @@ pats egress run --policy policy.yaml --listen 127.0.0.1:8080 \
 HTTPS_PROXY=http://127.0.0.1:8080 curl --cacert ./ca/ca.pem https://github.com/canonical/chisel
 ```
 
-the policy file is an `egress:` block verbatim; unknown keys are an error. every flag has an environment fallback,
-which is how the sidecar is configured: `PATS_EGRESS_POLICY` (the yaml itself), `PATS_EGRESS_LISTEN`,
-`PATS_EGRESS_AUDIT`, `PATS_EGRESS_CA_CERT` and `PATS_EGRESS_CA_KEY` (a pem file or the pem inline),
-`PATS_EGRESS_ROOTS` (the upstream trust bundle; default the system roots) and `PATS_EGRESS_REFUSE` (cidrs never
-dialled, comma-separated). a flag wins over its env. the proxy prints `listening <addr>` on stderr once the port is
-open; the audit goes to stdout unless `--audit` names a file. the image `ghcr.io/lczyk/pats/egress-proxy` is this
-binary with `pats egress run` as its entrypoint.
+the policy file is an `egress:` block verbatim; unknown keys are an error. every flag but `--sandbox`, `--task` and
+`--agent` has an environment fallback, which is how the sidecar is configured: `PATS_EGRESS_POLICY` (the yaml
+itself), `PATS_EGRESS_LISTEN`, `PATS_EGRESS_AUDIT`, `PATS_EGRESS_CA_CERT` and `PATS_EGRESS_CA_KEY` (a pem file or the
+pem inline), `PATS_EGRESS_ROOTS` (the upstream trust bundle; default the system roots) and `PATS_EGRESS_REFUSE`
+(cidrs never dialled, comma-separated). a flag wins over its env. the proxy prints `listening <addr>` on stderr once
+the port is open; the audit goes to stdout unless `--audit` names a file. the image `ghcr.io/lczyk/pats/egress-proxy`
+is this binary with `pats egress run` as its entrypoint.
 
 ## ceilings
 

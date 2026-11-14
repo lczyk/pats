@@ -134,10 +134,9 @@ the forwarder's binary present (below, "egress"), so a run never fetches.
     as the other drivers do.
 - **push** is a root exec that binds the host path read-only at a staging path and copies it to its path inside
   (`cp -a`), so what lands is an ordinary file of the overlay: `prepare` removes its material afterwards
-  (`rm -rf /pats-prepare`), which a bind would refuse. **pull** of
-  a path under a bind copies from the bind's host side, and of any other path is an error (only lxd's sessions pull
-  today). **handover** and **sync** are no-ops: ownership already follows the one uid, and every writable path is
-  bound.
+  (`rm -rf /pats-prepare`), which a bind would refuse. **pull** of a path under a bind copies from the bind's host
+  side, and of any other path is an error (the container, host and lxd sessions pull any path). **handover** and
+  **sync** are no-ops: ownership already follows the one uid, and every writable path is bound.
 - **close** kills a running exec, stops the proxy, releases the image's lock, and removes the session dir, making it
   writable first: the kernel leaves overlay's `work/work` mode 000. safe to call twice.
 
@@ -160,7 +159,7 @@ the forwarder's binary present (below, "egress"), so a run never fetches.
 - the agent can end the forwarder (it is in the agent's pid namespace and runs as the agent's uid); that only loses
   its egress.
 - **`egress: none`**: the net namespace and nothing in it.
-- **open** (no `egress`): the host's network namespace, with the host's `/etc/resolv.conf` bound over the image's.
+- **open** (no `egress`): the host's network namespace, with the host's `/etc/resolv.conf` copied over the image's.
   that includes the host's loopback: a service on the host's `127.0.0.1` is reachable from an open sandbox, as it is
   not from a container on a bridge. a limit the docs state; a policy closes it.
 - **chained egress** (`chained-egress.md`) works unchanged: the proxy runs on the host, so even a loopback upstream

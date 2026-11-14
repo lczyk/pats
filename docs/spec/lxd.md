@@ -52,10 +52,9 @@ lxd:
 - `base` + `provision` (a shell script, as every step is: `steps.md`) are the
   driver-neutral way to make an image. the script sees only itself and the host `bin/` on its `PATH`; anything bigger
   it downloads. `bin/` crosses machines (a mac driving an x86_64 server), so under lxd it may hold scripts and linux
-  binaries for the server's arch only: pats checks each file's header before the push and refuses anything else
-  early, rather than letting it fail inside. on docker it compiles to a generated dockerfile (`FROM <base>` + the
-  script). `build:` (a real dockerfile) stays as a docker / podman escape hatch. `image:` names a prebuilt image in
-  the driver's own namespace.
+  binaries for the server's arch only. pats doesn't check them, so a wrong one fails when run inside. on docker it
+  compiles to a generated dockerfile (`FROM <base>` + the script). `build:` (a real dockerfile) stays as a docker /
+  podman escape hatch. `image:` names a prebuilt image in the driver's own namespace.
 - no `base` means the pats sandbox image (ubuntu + the harness clis), and the sandbox's own `provision` runs on top:
   two cached images in a chain, the pats image's hash feeding the user's.
 - the published docker sandbox image keeps being published. its install steps move into
@@ -103,21 +102,27 @@ every driver becomes session-based, which in-sandbox `prepare`, lxd's push / pul
 
 ```go
 type Driver interface {
-    // once per run per sandbox: resolve or build the image, cached across runs.
-    Image(ctx context.Context, spec ImageSpec) (Image, error)
+    // makes sandboxes of one image here; the image methods are elided.
+    Sandbox(o SandboxOptions) (Sandbox, error)
+}
+
+type Sandbox interface {
     // once per pair.
-    Start(ctx context.Context, img Image, spec Spec) (Session, error)
+    Start(ctx context.Context, spec Spec) (Session, error)
+    Run(ctx context.Context, spec Spec, stdout, stderr io.Writer) (int, error)
 }
 
 type Session interface {
-    Push(ctx context.Context, hostDir, path string) error
+    Push(ctx context.Context, hostPath, path string) error
     Pull(ctx context.Context, path, hostDir string) error
     Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer) (int, error) // as root or the agent user
+    HandOver(ctx context.Context, paths ...string) error
+    Sync(ctx context.Context) error
     Close() error
 }
 ```
 
-- the docker driver absorbs `buildImages`, `buildContextHash` and `cachedImageID` from `internal/eval/build.go`. it
+- the docker driver absorbs `buildContainerImage`, `buildContextHash` and `cachedImageID` (`src/sandbox/build.go`). it
   starts the container idle (`sleep infinity`), keeps its bind mounts (`Push` / `Pull` are no-ops for bound paths),
   and `docker exec`s prepare and the agent. a timed-out agent is stopped by `docker rm -f` on the container, since
   stopping a `docker exec` client doesn't kill the process inside.

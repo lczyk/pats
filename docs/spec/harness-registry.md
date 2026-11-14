@@ -178,9 +178,9 @@ checked against release 1.5.2:
 
 the same entry in a machine's file is pi on a pats that does not ship it yet.
 
-omp and hermes are not defaults. each is a harness item in `pats.example.yaml`, installed by the sandbox's
-`provision`: a default is a pin to bump at every release and a script to keep in step with its output, and both
-move fast. they are also the first users of the path a project's harness takes.
+hermes is not a default. it is a harness item in `pats.example.yaml`, installed by the sandbox's
+`provision`: a default is a pin to bump at every release and a script to keep in step with its output, and it
+moves fast. it is also the first user of the path a project's harness takes.
 
 ### names
 

@@ -135,9 +135,8 @@ agent's `effort` as `PATS_EFFORT`; what it means is the command's.
 ### the defaults
 
 the defaults are a file of this format in the source tree, embedded in the binary. they hold the four harnesses of
-today and their clis (and `pi-openrouter`, `harness-registry.md`), with the values `internal/agent/agent.go`,
-`images/harness-versions` and the readers of `internal/eval` hold now. the per-release bump of `harness-pins.md`
-edits its `clis`.
+today and their clis (and `pi-openrouter`, `harness-registry.md`), with the values `internal/machine/defaults.yaml`
+holds. the per-release bump of `harness-pins.md` edits its `clis`.
 
 a test holds, for the defaults: every harness has a `cli`; every cli has a version and, for each of the two arches,
 an artefact; every `parse` compiles; every `models` names a catalogue pats has.
@@ -157,7 +156,7 @@ harnesses over the result (`harness-registry.md`).
 
 the result, checked as a whole, is what pats runs with: every harness has a `run`; its `cli` and `models`, where set,
 name something that exists; its `parse` compiles; its `egress` entries are hosts the proxy's parser takes; `login` has a
-cli with a `login-file`. every cli has a version and at least one artefact, each with an `arch` and a `hash`. an arch
+cli with a `login-file`. every cli has a version and at least one artefact, each with an `arch`. an arch
 a cli has no artefact for is an error only at an init that needs it. names are lower-case letters, digits and `-`; a
 variable in `auth-env`, `pass-env` or `home-env` is a variable's name, not `HOME` or a `PATS_` one (pats sets those),
 and named once across the three; a `bin` stays inside its artefact; a `login-file` and a `home-env` path stay under the
@@ -174,9 +173,9 @@ a `pats.yaml` lays its `kind: harness` items over the machine's harnesses by the
 machine's. so a project can pin a cli (`version` and `hash`, on a harness item) and can ask for a cli's login
 (`login: true`), and cannot say where bytes come from or which file leaves the user's home.
 
-an agent whose `harness` is found in neither file is a load error that says where it looked: not a default of this
-pats, not in the machine file (its path), not an item of a harness vector. a project that names a harness from
-one machine's file runs only on machines that have it.
+an agent whose `harness` is not a default of this pats, not in the machine file and not an item of a harness vector is
+a load error: `agent "<name>": unknown harness "<harness>"`. a project that names a harness from one machine's file
+runs only on machines that have it.
 
 ### seeing it
 
@@ -242,7 +241,7 @@ this file or the defaults, and the `version` and `hash` of a project's item.
   with a path; two artefacts for one arch; `version` set without `artefacts`; `login` on a cli with no
   `login-file`; a harness with no `cli`, allowed; an unknown key; a bad name; a `bin` that leaves its artefact and
   a `login-file` that leaves the home. each error names file, line and entry.
-- an agent on a harness found nowhere, with the three places in the message.
+- an agent on a harness found nowhere, with the message `agent "<name>": unknown harness "<harness>"`.
 - seeing it: `pats machine` with and without a file; the note names a changed key and an added entry, and is absent
   with no file and with an empty one; `harness_from` for each of the three; `harness_hash` moves with `run` and
   with the cli's sha, and not with an artefact's url.

@@ -308,7 +308,7 @@ repeats task agents.
   numeric sample the score is `na` if any sample said `na` and none failed, else a failed score.
 - the score's own `verdict.json`, beside the sample dirs, holds the outcome: `{ok, score | na, error, samples: n,
   ran: m, numeric: k, failed: f, sd, footer_version, judge, scorer, judged: {agent, task}}`, `sd` the samples' sample standard
-  deviation (null below two). each sample dir holds what a judge dir holds, its own `verdict.json` included.
+  deviation (absent below two). each sample dir holds what a judge dir holds, its own `verdict.json` included.
 - `-N 1`, the default, is one sample, in `<i>` = `1`: one layout for every judgement.
 - `--budget` counts every sample.
 

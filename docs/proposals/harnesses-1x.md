@@ -30,7 +30,7 @@ sizes: S is under a day, M a few days, L a week or more.
    machine can now correct a default's command, hosts or script, and add a harness whose files a `provision`
    brings.
 4. **`kind: harness`** (M). items laid over the machine's harnesses, `model` optional where `run` does not name
-   `PATS_MODEL`, `PATS_PREFLIGHT`, `pats list`. `pats.example.yaml` gains omp, hermes and a no-op baseline.
+   `PATS_MODEL`, `PATS_PREFLIGHT`, `pats list`. `pats.example.yaml` gains hermes and a no-op baseline (no omp).
 5. **artefacts and the cache** (M). `artefacts` on a `clis` entry, the checked fetch, the tree,
    `pats harness pin`. nothing uses the trees yet: the images still hold their clis and still build from
    `images/harness-versions`, which stays until step 6. so this can land and be tried (`pats harness pin` against

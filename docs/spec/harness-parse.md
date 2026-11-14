@@ -135,8 +135,8 @@ the script runs in pats, on the host, under every driver. `stdout.log` stays wha
   defaults: a test compiles each.
 - **on a line:** an error in a run (a key that is not there, a wrong type, a bad pattern, the step budget) ends
   that run and nothing else. what the run said before it failed stands. pats counts them, warns once per pair
-  with the first one (`WARN <pair>: parse: line 412: key "cost" not in dict (3 lines failed)`), and the summary
-  carries `parse_errors`.
+  with the first one (`WARN <pair>: parse: line 412: key "cost" not in dict (3 line(s) failed)`), and
+  the summary carries `parse_errors`.
 - **for a judge** a failed line fails the sample: its verdict is an error, whatever reply was read. the line that
   failed may be the one that took a score back or reported the harness's own error, and an earlier candidate is
   not to be trusted over it. a task's pair keeps its partial summary.

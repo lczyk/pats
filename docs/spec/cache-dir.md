@@ -19,7 +19,7 @@ so on a mac half of pats's state is in `~/Library/Caches/pats` and half in `~/.c
 
 - **one root, every os.** `sandbox.CacheDir()` is `$XDG_CACHE_HOME/pats` when `XDG_CACHE_HOME` is set and absolute,
   else `~/.cache/pats`. a relative `XDG_CACHE_HOME` is ignored, as the xdg spec says. `TempRoot`, `cacheDir` and
-  `projectsFile` all derive from it, and `os.UserCacheDir` is no longer used.
+  `projectsFile` all derive from it, and `os.UserCacheDir` is only used to find the legacy root.
 - it stays under `$HOME`, which the bind mounts need: docker desktop and podman machine share `$HOME` with their vm,
   and the docker snap's daemon sees `$HOME` only. the `XDG_CACHE_HOME`-outside-`$HOME` caveat in `tmp.go` stays.
   the docker snap's cli sees less, no hidden dir at the home's top and so not the cache: what it opens itself is
@@ -60,8 +60,8 @@ what the new pats does with the legacy root:
   as a new one is. the events carry full paths, so the output shows which root a line is about.
 - **the legacy root stays.** clean never removes the legacy client id, its lock or the root: an old binary may hold
   the lock or be about to write the id, and removing them safely would need its cooperation. when the legacy root
-  holds nothing but those and an empty `tmp/`, clean says so once: `INFO legacy cache dir ~/Library/Caches/pats holds
-  only an old client id; remove it once no older pats is installed`. the legacy root is looked at on every clean.
+  holds nothing but those and an empty `tmp/`, clean says so once: `left legacy cache dir ~/Library/Caches/pats: it
+  holds only an old client id; remove it once no older pats is installed`. the legacy root is looked at on every clean.
 - **clean reads identity, never writes it.** judging a run calls `p.owner()`, which today goes through
   `loadClientID` and may publish a fresh id. clean, dry run or not, uses a read-only lookup instead: the new root's
   id, else the legacy root's, else none, with no writes and no repair of a malformed file. a run with no id to

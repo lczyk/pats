@@ -27,7 +27,7 @@ so each step is one field, a shell script, and nothing in `pats.yaml` or a `task
   under `/bin/sh -e`. a one-liner is a script too: `stage: ./stage.sh --fast` runs `./stage.sh` from the step's
   directory with `--fast`, and `score: scorers/scorer_$PATS_SCORER_NAME.py` expands the name, both by the shell.
 - **the `-cmd` forms go:** `stage-cmd`, `prepare-cmd`, `collect-cmd`, `score-cmd`, `provision-cmd`. a config that
-  sets one is a load error naming the field to use instead. 1.x is unreleased, so there is no alias.
+  sets one is a load error naming the field to use instead, so no alias is needed.
 - **the prompt keeps three forms**, since they differ in kind, not in how they run: `prompt` (the text),
   `prompt-file` (a file pats reads, relative to the task's directory), `prompt-cmd` (a script whose stdout is the
   prompt, run on the host after `stage`). `prompt-cmd` is a script under the rule above, where today it is split into

@@ -1,7 +1,9 @@
 # proposal: a pats.yaml of vectors
 
 status: implemented on the 1.x line. run fields (`prompt-file`, `prepare-cmd`, ...), task `dir` vectors and the scorer
-`agent` rename came after it -- see `task-dirs.md`; the examples here use the current keys.
+`agent` rename came after it -- see `task-dirs.md`. since then the step `-cmd` keys (`prepare-cmd`, ...) are gone and
+`pats.yaml` is not templated (`${task}` and the rest are refused), so the examples here do not load as written. see
+`docs/spec/steps.md`.
 scope: `pats.yaml` shape (1.x, no backwards compatibility), `internal/config`,
 the `internal/eval` sites that index the config.
 
@@ -93,7 +95,7 @@ mason drops to ~95 lines before comments, 30 of them the egress lists.
 
 ### vector
 
-- `kind` -- required, singular: `sandbox`, `agent`, `task`, `scorer`, `suite`.
+- `kind` -- required, singular: `sandbox`, `agent`, `task`, `scorer`, `suite`, `harness`.
 - `defaults` -- optional. a mapping of that kind's item fields. every item
   inherits each field it does not set.
 - `items` -- required, non-empty. a mapping from item id to a mapping of
@@ -215,7 +217,7 @@ the line it came from:
 ## go side
 
 `Config` is the resolved config: flat `[]Sandbox` / `[]Agent` / `[]Task` /
-`[]Scorer` / `[]Suite` in file order, each item carrying `ID` and `Vector`,
+`[]Scorer` / `[]Suite` in file order, each item carrying `Name` and `Vector`,
 every field already merged and interpolated. eval indexes those slices and
 nothing else; the lazy `Resolved*` helpers are gone.
 
