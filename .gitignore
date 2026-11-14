@@ -6,3 +6,5 @@
 .stamp/
 .cache/
 .pats/
+.spread/
+.spread-reuse.yaml

@@ -92,9 +92,9 @@ parts:
       esac
     # built by hand: the plugin's own build runs `go mod download all` first,
     # which adds to go.sum, and the toolchain then stamps a clean commit as
-    # modified. hack/snap_smoke.sh checks the installed binary: static, so lxd
-    # can push it into its proxy instance, and stamped as the snap's version
-    # says.
+    # modified. spread's snap/basics checks the installed binary: static, so
+    # lxd can push it into its proxy instance, and stamped as the snap's
+    # version says.
     override-build: |
       set -eu
       export GOFLAGS="-trimpath -buildvcs=$(cat "$CRAFT_PART_SRC/../buildvcs")"

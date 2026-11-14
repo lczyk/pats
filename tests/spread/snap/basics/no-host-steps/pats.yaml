@@ -1,0 +1,4 @@
+sandbox: {kind: sandbox, items: {dd: {driver: docker, image: docker.io/library/ubuntu:24.04}}}
+agents: {kind: agent, items: {aa: {harness: opencode-openrouter, model: m, sandbox: dd}}}
+tasks: {kind: task, items: {tt: {prompt: p, stage: echo hi}}}
+suites: {kind: suite, items: {ss: {agents: aa, tasks: tt}}}

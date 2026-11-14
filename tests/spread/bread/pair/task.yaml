@@ -1,0 +1,4 @@
+summary: init, run, score and clean one pair of the smoke project on docker
+
+execute: |
+  "$SPREAD_PATH/tests/spread/lib/pair.sh" docker

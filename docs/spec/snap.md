@@ -2,8 +2,8 @@
 
 status: implemented and smoke-tested in a vm (testing, below). strict confinement, on the build-tag seams
 (`docs/spec/build-tags.md`) and the step sandbox (`docs/spec/step-sandbox.md`). ci packs it for amd64 and arm64,
-smoke-tests it on ubuntu 22.04 and 24.04, runs a pair through it with docker and with lxd step sandboxes, and releases
-it to the store (`.github/workflows/snap.yml`, distribution below).
+checks it in lxd containers of ubuntu 22.04, 24.04 and 26.04, runs pairs through it with docker and with lxd step
+sandboxes, and releases it to the store (`.github/workflows/snap.yml`, distribution below).
 
 ## purpose and limits
 
@@ -51,11 +51,11 @@ a project that needs any of these runs a native build.
 - **tags:** `nohost`, `nobwrap`, `nopodman`, passed by the part's own build. `pats --version` names the tags
   a build was made with.
 - **static**, as before: under lxd, `proxyBinary` (`src/sandbox/lxd_egress.go`) copies `os.Executable()` into the
-  proxy instance, and a dynamic binary would fail there. the smoke test (`hack/snap_smoke.sh`) fails when
-  `readelf -l` finds an `INTERP` header in the installed binary.
+  proxy instance, and a dynamic binary would fail there. spread's `snap/basics` task
+  (`docs/spec/spread.md`) fails when `readelf -l` finds an `INTERP` header in the installed binary.
 - **no upx.** the snap builds with `go install` in the go plugin's environment, not `make`. the plugin's own build
   is not used: it runs `go mod download all` first, which adds lines to `go.sum`, and the toolchain then stamps a
-  clean commit as modified, so `pats --version` and the pins would say `dirty`. the smoke test fails when the
+  clean commit as modified, so `pats --version` and the pins would say `dirty`. `snap/basics` fails when the
   installed binary is stamped as modified, or when its commit is not the one the snap's version names (none, for a
   release).
 - **the clients the snap ships**, so pats keeps driving engines through their clis (`cliRunner`,
@@ -201,7 +201,7 @@ two installs are two clients, and the lxd server's lease is the one judge both s
   are released by hand, and start with 1.0. 0.x is not snapped.
 - **store requests** (plugs, above) are separate from publishing: a strict snap releases without them, with manual
   connects.
-- **publishing:** the `publish` job, once the smoke tests and the pairs pass, with a store credential limited to
+- **publishing:** the `publish` job, once spread's snap suites pass, with a store credential limited to
   `pats` on `edge` and `beta` in the repo's `SNAPCRAFT_STORE_CREDENTIALS`. every snap, a dev build on edge too,
   pins the images of its `VERSION` (`src/sandbox/images.go` decides by the version string alone), so the job waits
   until `sandbox:v$VERSION` and `egress-proxy:v$VERSION` are in the registry: a release commit reaches `main` before
@@ -239,8 +239,8 @@ a smoke test of a built snap, in an ephemeral ubuntu 26.04 lxd vm, through pats 
 - **clean:** `pats clean -n` after the runs had nothing left to take.
 
 the credential preflight of a real harness needs a real key, so the pair's agent was a stub; keyless logins through
-`PATS_*_AUTH_PATH` are covered by unit tests, not by this run. ci runs the apt docker and lxd halves of it on each
-arch (`hack/snap_smoke.sh` on the project in `hack/snap-smoke`).
+`PATS_*_AUTH_PATH` are covered by unit tests, not by this run. ci runs all of it but the ca store on each arch, as
+spread's snap suites (`docs/spec/spread.md`).
 
 ## to decide later
 
