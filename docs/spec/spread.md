@@ -71,8 +71,19 @@ project.
 
 `make spread` runs the bread suite on the host's arch; `SYSTEMS=..` narrows it (`bread:ubuntu-26.04-arm64`,
 `lxd:`), `ARGS=..` passes flags (`-v`, `-reuse`, `-debug`). the lxd suite needs a local lxd and the snap in
-`.spread/` (`snapcraft pack`), which ci takes from the build job. ci runs each release on its own runner
-(`SYSTEMS=lxd:ubuntu-24.04`), since nested engines on one runner slow each other down.
+`.spread/` (`snapcraft pack`), which ci takes from the build job. `make spread-smoke` runs the snap suite's smoke
+jobs (`SPREAD_SMOKE`: `basics` everywhere, docker pairs on the newest ubuntu).
+
+in `snap.yml`, `publish` waits on the snap suite:
+
+- **smoke:** on every pull request and push to main, so edge ships on it. no lxd pair: one takes ~8m nested, most of
+  it pats composing and pulling lxd images, and the lxd e2e tests cover the driver on every change.
+- **whole:** on a release tag, so beta ships on it, on a pull request that changes `VERSION` (the release's, so a red
+  suite is found before the tag, which has to be `VERSION`), weekly and by hand. each release on its own runner
+  (`SYSTEMS=lxd:ubuntu-24.04`), since nested engines on one runner slow each other down.
+
+spread shows a passing task's output to no one, so the snap suite stamps its steps' times (`tests/spread/lib/stamp`),
+the lxd discard pulls them into `.spread/stamps/`, and ci prints them.
 
 ## later
 
