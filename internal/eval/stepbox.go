@@ -73,10 +73,15 @@ func realHome() string {
 
 // resolved is p with links resolved as far as it exists.
 func resolved(p string) string {
+	p = filepath.Clean(p)
 	if r, err := filepath.EvalSymlinks(p); err == nil {
 		return r
 	}
-	return filepath.Clean(p)
+	dir, base := filepath.Split(p)
+	if dir = filepath.Clean(dir); dir == p {
+		return p
+	}
+	return filepath.Join(resolved(dir), base)
 }
 
 // within says whether p is dir or under it.
