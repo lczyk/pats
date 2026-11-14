@@ -45,6 +45,8 @@ apps:
   # to a private registry pats pulls or builds from.
   docker:
     command: bin/docker
+    command-chain:
+      - bin/docker-plugins
     environment:
       DOCKER_CONFIG: $SNAP_USER_COMMON/docker
     plugs:
