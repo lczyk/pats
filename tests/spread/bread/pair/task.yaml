@@ -1,5 +1,4 @@
 summary: init, run, score and clean one pair of the smoke project on docker
 
-# the snap's smoke test, pairs alone, against this tree's build.
 execute: |
-  PAIR_ONLY=1 "$SPREAD_PATH/hack/snap_smoke.sh" docker
+  "$SPREAD_PATH/tests/spread/lib/pair.sh" docker

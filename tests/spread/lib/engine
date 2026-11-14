@@ -1,0 +1,39 @@
+#!/bin/sh -e
+# engine <docker-apt|docker-snap|lxd> installs that engine and gives the
+# tester its group, as an admin sets one up for a user. LXD_CHANNEL picks
+# the lxd snap's channel.
+case "$1" in
+    (docker-apt)
+        apt-get install -y -q docker.io > /dev/null
+        usermod -aG docker tester
+        ;;
+    (docker-snap)
+        # the snap's daemon gives its socket to a docker group that exists
+        # when it starts.
+        groupadd -f --system docker
+        usermod -aG docker tester
+        snap install docker
+        ;;
+    (lxd)
+        # likewise its socket's group.
+        groupadd -f --system lxd
+        usermod -aG lxd tester
+        snap install lxd --channel="${LXD_CHANNEL:-latest/stable}" 2> /dev/null ||
+            snap refresh lxd --channel="${LXD_CHANNEL:-latest/stable}"
+        lxd waitready
+        lxd init --auto
+        ;;
+    (*)
+        printf 'unknown engine: %s\n' "$1" >&2
+        exit 1
+        ;;
+esac
+case "$1" in
+    (docker-*)
+        for _ in $(seq 30); do
+            docker info > /dev/null 2>&1 && exit 0
+            sleep 1
+        done
+        docker info
+        ;;
+esac

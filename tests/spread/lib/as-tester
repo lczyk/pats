@@ -1,0 +1,8 @@
+#!/bin/sh -e
+# as-tester <cmd...> runs cmd as the unprivileged user the snap suite made,
+# with its groups (docker, lxd) and none of root's environment but $PATS.
+exec runuser -u tester -- env -i \
+    HOME=/home/tester \
+    PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin \
+    PATS="${PATS}" \
+    "$@"

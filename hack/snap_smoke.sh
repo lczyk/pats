@@ -16,7 +16,7 @@ set -e
 PATS="${PATS:-pats}"
 SNAP_DIR="${SNAP_DIR:-/snap/pats/current}"
 TAGS="nohost,nobwrap,nopodman"
-FIXTURE="$(cd "$(dirname "$0")/snap-smoke" && pwd)"
+FIXTURE="$(cd "$(dirname "$0")/../tests/spread/lib/project" && pwd)"
 
 _fail() {
     printf 'FAIL  %s\n' "$1" >&2

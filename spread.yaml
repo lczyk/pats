@@ -23,8 +23,8 @@ repack: source hack/spread/repack.sh
 backends:
   bread:
     type: adhoc
-    allocate: source hack/spread/allocate.sh
-    discard: source hack/spread/discard.sh
+    allocate: source hack/spread/bread_allocate.sh
+    discard: source hack/spread/bread_discard.sh
     systems:
       - ubuntu-24.04-amd64:
           password: bread
@@ -34,6 +34,20 @@ backends:
           password: bread
       - ubuntu-26.04-arm64:
           password: bread
+  # the host's arch only.
+  lxd:
+    type: adhoc
+    allocate: source hack/spread/lxd_allocate.sh
+    discard: source hack/spread/lxd_discard.sh
+    systems:
+      - ubuntu-22.04:
+          password: pats-spread
+      - ubuntu-24.04:
+          password: pats-spread
+          workers: 2
+      - ubuntu-26.04:
+          password: pats-spread
+          workers: 2
 
 kill-timeout: 20m
 
@@ -42,7 +56,7 @@ suites:
     summary: pats from this tree on docker
     backends: [bread]
     environment:
-      # the host dir bound at the same path in the system (allocate.sh): pats's
+      # the host dir bound at the same path in the system (bread_allocate.sh): pats's
       # state and projects live there, so the host daemon can bind them.
       SHARED: $(cat /etc/pats-spread-dir)
       HOME: $SHARED/home
@@ -55,3 +69,18 @@ suites:
       mkdir -p "$HOME"
       docker version
       pats --version
+
+  tests/spread/snap/:
+    summary: the snap, and the engines it drives, nested in an lxd container
+    backends: [lxd]
+    environment:
+      PATS: /snap/bin/pats
+      SNAP_DIR: /snap/pats/current
+      PATH: $PATH:$SPREAD_PATH/tests/spread/lib
+    prepare: |
+      apt-get update -q
+      apt-get install -y -q --no-install-recommends git binutils > /dev/null
+      useradd --create-home --shell /bin/bash tester
+      snap install --dangerous /var/tmp/pats.snap
+    restore-each: |
+      reset

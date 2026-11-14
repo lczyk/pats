@@ -1,0 +1,15 @@
+#!/bin/sh
+# reset takes the system back to how the snap suite left it after prepare:
+# no engine, no firewall, nothing in the tester's home. tasks share a
+# system, and an engine's firewall rules would decide the next task's.
+snap remove --purge docker > /dev/null 2>&1
+snap remove --purge lxd > /dev/null 2>&1
+apt-get purge -y -q docker.io containerd runc ufw > /dev/null 2>&1
+rm -rf /var/lib/docker /etc/docker /etc/ufw
+nft flush ruleset
+for link in $(ip -o link show type bridge | cut -d: -f2); do
+    ip link delete "${link%@*}"
+done
+sysctl -q -w net.ipv4.ip_forward=0
+find /home/tester -mindepth 1 -delete
+exit 0

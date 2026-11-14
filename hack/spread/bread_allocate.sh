@@ -43,6 +43,10 @@ shared="${PATS_SPREAD_SHARED:-${TMPDIR:-/tmp}/pats-spread}"
 shared="${shared%/}/$name"
 mkdir -p "$shared"
 
+# a failed allocation is never handed to discard: undo it here, until ADDRESS.
+cli="$name-cli"
+trap 'docker rm -f "$name" "$cli" > /dev/null 2>&1; rm -rf "$shared"' EXIT
+
 docker run \
     --rm \
     --platform "linux/$arch" \
@@ -71,11 +75,9 @@ for ((i = 0; i < 60; i++)); do
 done
 if [ -z "$sshd_up" ]; then
     docker logs "$name" >&2 2>&1 || true
-    docker rm -f "$name" > /dev/null 2>&1 || true
     FATAL "sshd did not come up in $name after 60s"
 fi
 
-cli="$name-cli"
 docker create --platform "linux/$arch" --name "$cli" "$DOCKER_CLI_IMAGE" > /dev/null
 docker exec "$name" mkdir -p /usr/local/libexec/docker/cli-plugins
 docker cp "$cli:/usr/local/bin/docker" - | docker cp - "$name:/usr/local/bin/"
@@ -88,7 +90,9 @@ docker exec "$name" sh -c "printf '%s\n' '$shared' > /etc/pats-spread-dir"
 if [ "$mode" = publish ]; then
     port=$(docker port "$name" 22 | head -n1 | cut -d: -f2)
     [ -n "$port" ] || FATAL "no published sshd port for $name"
-    ADDRESS "127.0.0.1:$port"
+    address="127.0.0.1:$port"
 else
-    ADDRESS "$(docker inspect "$name" --format '{{.NetworkSettings.Networks.bridge.IPAddress}}')"
+    address=$(docker inspect "$name" --format '{{.NetworkSettings.Networks.bridge.IPAddress}}')
 fi
+trap - EXIT
+ADDRESS "$address"

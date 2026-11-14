@@ -1,0 +1,47 @@
+summary: a firewall that drops pats's lxd bridges fails the pair with the fix, and the fix works
+
+systems: [ubuntu-24.04, ubuntu-26.04]
+
+# ufw: its default INPUT and FORWARD drop. docker: its FORWARD policy, set when
+# it turns forwarding on itself. each hint's rules are applied as printed, for
+# patsbr+, and for patsup as it says ("the same ... for patsup").
+environment:
+  FIREWALL/ufw: ufw
+  FIREWALL/docker: docker
+  PROJ: /home/tester/firewall
+
+execute: |
+  case "$FIREWALL" in
+      (ufw)
+          apt-get install -y -q ufw > /dev/null
+          # spread's own way in.
+          ufw allow 22/tcp
+          ufw --force enable
+          rules='ufw (route )?allow (in|out) on patsbr[+]'
+          ;;
+      (docker)
+          engine docker-apt
+          rules='iptables -I DOCKER-USER -[io] patsbr[+]( -m conntrack --ctstate RELATED,ESTABLISHED)? -j ACCEPT'
+          ;;
+  esac
+  engine lxd
+  snap connect pats:lxd lxd:lxd
+
+  as-tester cp -R "$SPREAD_PATH/tests/spread/snap/firewall/." "$PROJ"
+  cd "$PROJ"
+  as-tester "$PATS" init
+
+  if as-tester "$PATS" run --offline > run.log 2>&1; then
+      cat run.log
+      echo "the pair passed behind the firewall"
+      exit 1
+  fi
+  grep -rhoE "$rules" run.log .pats/runs/ | sort -u > fix
+  [ -s fix ] || { cat run.log; echo "no fix in the error"; exit 1; }
+  cat fix
+  while read -r rule; do
+      $rule
+      ${rule//patsbr+/patsup}
+  done < fix
+
+  as-tester "$PATS" run --offline || { echo "the pair failed with the fix applied"; exit 1; }

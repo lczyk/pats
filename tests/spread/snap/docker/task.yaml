@@ -1,0 +1,19 @@
+summary: a docker pair through the snap's plug, on an apt docker and the docker snap
+
+systems: [ubuntu-24.04, ubuntu-26.04]
+
+# native: a pats that is not the snap against the docker snap, whose cli opens
+# no file under /tmp or a hidden dir of the home (docs/spec/docker-snap-paths.md).
+environment:
+  ENGINE/apt: docker-apt
+  ENGINE/snap: docker-snap
+  ENGINE/native: docker-snap
+  PATS/native: /usr/local/bin/pats
+
+execute: |
+  engine "$ENGINE"
+  case "$SPREAD_VARIANT" in
+      (apt) snap connect pats:docker ;;
+      (snap) snap connect pats:docker docker:docker-daemon ;;
+  esac
+  as-tester "$SPREAD_PATH/tests/spread/lib/pair.sh" docker

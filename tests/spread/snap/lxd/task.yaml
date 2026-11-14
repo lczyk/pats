@@ -1,0 +1,23 @@
+summary: an lxd pair through the snap's plug, behind an egress policy
+
+systems: [ubuntu-24.04, ubuntu-26.04]
+
+# the current lts and the latest: the rest api is additive, but the behaviours
+# the driver works around may not be.
+environment:
+  LXD_CHANNEL/lts: 5.21/stable
+  LXD_CHANNEL/latest: latest/stable
+
+execute: |
+  # the pair's agent runs under docker, and docker drops traffic on bridges it
+  # was not told about: lxd comes after it, and pats's bridges get the rules
+  # an admin adds on such a server (its hint, in the firewall task).
+  engine docker-apt
+  engine lxd
+  for br in patsbr+ patsup; do
+      iptables -I DOCKER-USER -i "$br" -j ACCEPT
+      iptables -I DOCKER-USER -o "$br" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  done
+  snap connect pats:docker
+  snap connect pats:lxd lxd:lxd
+  as-tester "$SPREAD_PATH/tests/spread/lib/pair.sh" lxd
