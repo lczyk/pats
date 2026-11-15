@@ -1,0 +1,72 @@
+name: measure
+
+# scratch: lxd on the runner against lxd nested in an lxd container, as the
+# spread lxd backend makes it, with dir and with btrfs storage.
+
+on:
+  push:
+    branches: [ "measure/nested-lxd" ]
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+        where: [host, nested-dir, nested-btrfs]
+    name: bench (${{ matrix.runner.arch }}, ${{ matrix.where }})
+    runs-on: ${{ matrix.runner.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up LXD
+        uses: canonical/setup-lxd@v1
+
+      - name: Let lxd's bridge past docker
+        run: |
+          sudo iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT
+          sudo iptables -I DOCKER-USER -o lxdbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+      - name: Host
+        if: matrix.where == 'host'
+        run: hack/measure/lxd_bench.sh host
+
+      - name: Nested
+        if: matrix.where != 'host'
+        env:
+          WHERE: ${{ matrix.where }}
+        run: |
+          t0=$(date +%s)
+          lxc launch ubuntu:26.04 n \
+              -c security.nesting=true \
+              -c security.syscalls.intercept.mknod=true \
+              -c security.syscalls.intercept.setxattr=true
+          lxc exec n -- cloud-init status --wait > /dev/null || true
+          lxc exec n -- snap wait system seed.loaded
+          echo "container up: $(( $(date +%s) - t0 ))s"
+          t0=$(date +%s)
+          lxc exec n -- snap install lxd
+          lxc exec n -- lxd waitready
+          if [ "$WHERE" = nested-btrfs ]; then
+              lxc exec n -- lxd init --auto --storage-backend=btrfs || {
+                  echo "btrfs init failed, its pool:"
+                  lxc exec n -- lxc storage list || true
+                  exit 1
+              }
+          else
+              lxc exec n -- lxd init --auto
+          fi
+          echo "lxd up: $(( $(date +%s) - t0 ))s"
+          lxc file push --mode 0755 hack/measure/lxd_bench.sh n/root/lxd_bench.sh
+          lxc exec n -- /root/lxd_bench.sh "$WHERE"
