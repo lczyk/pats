@@ -20,7 +20,7 @@ jobs:
             os: ubuntu-24.04
           - arch: arm64
             os: ubuntu-24.04-arm
-        where: [host, nested-dir, nested-none]
+        where: [nested-dir, nested-nesting]
     name: bench (${{ matrix.runner.arch }}, ${{ matrix.where }})
     runs-on: ${{ matrix.runner.os }}
     timeout-minutes: 30
@@ -61,6 +61,7 @@ jobs:
           lxc exec n -- lxd init --auto
           echo "lxd up: $(( $(date +%s) - t0 ))s"
           lxc file push --mode 0755 hack/measure/lxd_bench.sh n/root/lxd_bench.sh
-          comp=""
-          [ "$WHERE" != nested-none ] || comp=none
-          lxc exec n --env COMPRESSION="$comp" -- /root/lxd_bench.sh "$WHERE"
+          nesting=""
+          [ "$WHERE" != nested-nesting ] || nesting=1
+          lxc exec n --env COMPRESSION=none --env NESTING="$nesting" -- /root/lxd_bench.sh "$WHERE"
+          lxc exec n -- sh -c 'snap logs lxd -n 200 | grep -iE "apparmor" | head -n 5' || true

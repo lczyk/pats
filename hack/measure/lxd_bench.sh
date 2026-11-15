@@ -17,6 +17,8 @@ t() {
 echo "== $1"
 echo "images.compression_algorithm=$(lxc config get images.compression_algorithm)"
 [ -z "${COMPRESSION:-}" ] || lxc config set images.compression_algorithm "$COMPRESSION"
+[ -z "${NESTING:-}" ] || lxc profile set default security.nesting=true
+lxc info | grep -iE 'apparmor' || true
 lxc storage list -f csv
 lxc info | grep -E '^ *(driver|driver_version|storage|storage_version|kernel_version):'
 lxc info | sed -n '/kernel_features:/,/^[a-z]/p' | grep -E 'idmapped|shiftfs|uevent|seccomp'
@@ -29,12 +31,11 @@ t lxc start b1
 t lxc exec b1 -- cloud-init status --wait
 echo "-- b1 boot"
 lxc exec b1 -- systemd-analyze blame | head -n 8
-lxc exec b1 -- systemd-analyze critical-chain | head -n 12
-lxc exec b1 -- cloud-init analyze blame | head -n 8
 lxc exec b1 -- systemctl --failed --no-legend
 lxc exec b1 -- networkctl --no-legend
 lxc exec b1 -- ip -br addr
-lxc exec b1 -- journalctl -b --no-pager -u systemd-networkd-wait-online | tail -n 5
+lxc exec b1 -- journalctl -b --no-pager -u apparmor -u snapd | grep -iE 'error|fail|denied|cannot' | head -n 8
+lxc exec b1 -- sh -c 'ls /sys/kernel/security/apparmor 2>&1 | head -n 3; cat /proc/self/attr/current 2>&1'
 t lxc stop b1
 t lxc publish b1 --alias bench-pub
 t lxc init bench b2
