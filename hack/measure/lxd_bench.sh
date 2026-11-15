@@ -15,6 +15,8 @@ t() {
 }
 
 echo "== $1"
+echo "images.compression_algorithm=$(lxc config get images.compression_algorithm)"
+[ -z "${COMPRESSION:-}" ] || lxc config set images.compression_algorithm "$COMPRESSION"
 lxc storage list -f csv
 lxc info | grep -E '^ *(driver|driver_version|storage|storage_version|kernel_version):'
 lxc info | sed -n '/kernel_features:/,/^[a-z]/p' | grep -E 'idmapped|shiftfs|uevent|seccomp'
@@ -25,6 +27,14 @@ t lxc image copy ubuntu:24.04 local: --alias bench
 t lxc init bench b1
 t lxc start b1
 t lxc exec b1 -- cloud-init status --wait
+echo "-- b1 boot"
+lxc exec b1 -- systemd-analyze blame | head -n 8
+lxc exec b1 -- systemd-analyze critical-chain | head -n 12
+lxc exec b1 -- cloud-init analyze blame | head -n 8
+lxc exec b1 -- systemctl --failed --no-legend
+lxc exec b1 -- networkctl --no-legend
+lxc exec b1 -- ip -br addr
+lxc exec b1 -- journalctl -b --no-pager -u systemd-networkd-wait-online | tail -n 5
 t lxc stop b1
 t lxc publish b1 --alias bench-pub
 t lxc init bench b2
