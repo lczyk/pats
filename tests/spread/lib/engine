@@ -25,6 +25,8 @@ case "$1" in
             snap refresh lxd --channel="${LXD_CHANNEL:-latest/stable}"
         lxd waitready
         lxd init --auto
+        # nested, gzip takes each publish ~30s (setup-lxd turns it off on the runner too).
+        lxc config set images.compression_algorithm none
         stamp "engine lxd ready"
         ;;
     (*)
