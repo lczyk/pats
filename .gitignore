@@ -3,6 +3,7 @@
 
 # build / run artifacts
 /bin/
+/dist/
 .stamp/
 .cache/
 .pats/

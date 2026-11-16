@@ -28,10 +28,26 @@ install: ./bin/pats  ## Symlink the binary into ~/.local/bin
 	mkdir -p $(HOME)/.local/bin
 	ln -sf "$(PWD)/bin/pats" "$(HOME)/.local/bin/pats"
 
+DIST_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
+# the tarballs a github release ships: the native build, every driver in.
+.PHONY: dist
+dist: $(SRCS) $(EMBEDS) makefile go.mod go.sum  ## Build release tarballs for every platform into ./dist, with checksums.txt
+	rm -rf ./dist
+	set -e; v=$$(cat VERSION); for p in $(DIST_PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; name="pats_$${v}_$${os}_$${arch}"; \
+		mkdir -p "./dist/$$name"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -o "./dist/$$name/pats" ./cmd/pats; \
+		cp LICENSE README.md "./dist/$$name/"; \
+		tar -C ./dist -czf "./dist/$$name.tar.gz" "$$name"; \
+		rm -rf "./dist/$$name"; \
+	done
+	cd ./dist && shasum -a 256 *.tar.gz > checksums.txt
+
 .PHONY: clean
-clean:  ## Remove the binary and the image stamps (forces an image rebuild next run)
+clean:  ## Remove the binary, the release tarballs and the image stamps (forces an image rebuild next run)
 	rm -f ./bin/pats
-	rm -rf .stamp
+	rm -rf ./dist .stamp
 
 ##@ checks
 
