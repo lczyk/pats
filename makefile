@@ -59,6 +59,33 @@ cover:  ## Show test coverage per function in the CLI
 	@out=$$(mktemp); trap 'rm -f "$$out"' EXIT; \
 	go test -coverprofile="$$out" ./... && go tool cover -func="$$out"
 
+SPREAD_ARCHES := amd64 arm64
+SPREAD_BINS   := $(addprefix .spread/pats-linux-,$(SPREAD_ARCHES))
+# bread on the host's arch, both ubuntus; any other arch is emulated, and
+# slow. SYSTEMS=lxd: runs the snap's suites, which take the snap packed into
+# .spread/pats_<arch>.snap and a local lxd.
+SYSTEMS ?= $(foreach v,24.04 26.04,bread:ubuntu-$(v)-$(shell go env GOARCH))
+# the snap suite's jobs ci runs on every change. the whole suite runs before a
+# beta, and by hand (snap.yml). an lxd pair takes ~8m nested, and the lxd e2e
+# tests cover the driver on every change.
+SPREAD_SMOKE := tests/spread/snap/basics \
+	lxd:ubuntu-26.04:tests/spread/snap/docker:apt \
+	lxd:ubuntu-26.04:tests/spread/snap/docker:snap
+
+# static, so it runs in any system of either backend.
+.spread/pats-linux-%: $(SRCS) $(EMBEDS) makefile go.mod go.sum
+	@mkdir -p .spread
+	CGO_ENABLED=0 GOOS=linux GOARCH=$* go build -o $@ ./cmd/pats
+
+.PHONY: spread
+spread: $(SPREAD_BINS)  ## Run the spread system tests, by default the bread ones on docker (narrow via SYSTEMS=.., flags via ARGS=..)
+	@if ! command -v spread >/dev/null 2>&1; then echo "spread not found (go install github.com/canonical/spread/cmd/spread@latest)"; exit 1; fi
+	spread $(ARGS) $(SYSTEMS)
+
+.PHONY: spread-smoke
+spread-smoke:  ## Run the smoke jobs of the snap's spread suite, as ci does on every change (flags via ARGS=..)
+	@$(MAKE) --no-print-directory spread SYSTEMS='$(SPREAD_SMOKE)'
+
 FUZZTIME ?= 10s
 
 # go test takes one fuzz target per run, so each Fuzz* func in the tree gets its own.

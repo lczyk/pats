@@ -1,0 +1,34 @@
+# one pair in an open lxd sandbox, with an agent that does nothing: what it
+# checks is that the sandbox's bridge works.
+sandbox:
+  kind: sandbox
+  items:
+    box:
+      driver: lxd
+      image: ubuntu:24.04
+
+harnesses:
+  kind: harness
+  items:
+    noop:
+      run: "true"
+
+agents:
+  kind: agent
+  items:
+    idle:
+      harness: noop
+      sandbox: box
+
+tasks:
+  kind: task
+  items:
+    hello:
+      prompt: say hi
+
+suites:
+  kind: suite
+  items:
+    fw:
+      agents: idle
+      tasks: hello

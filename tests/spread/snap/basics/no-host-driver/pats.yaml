@@ -1,0 +1,4 @@
+sandbox: {kind: sandbox, items: {hh: {driver: host, sand-not-boxed: true}}}
+agents: {kind: agent, items: {aa: {harness: opencode-openrouter, model: m, sandbox: hh}}}
+tasks: {kind: task, items: {tt: {prompt: p}}}
+suites: {kind: suite, items: {ss: {agents: aa, tasks: tt}}}

@@ -1,0 +1,48 @@
+summary: the snap's build tags, static binary, version stamp and load errors
+
+execute: |
+  fail() { echo "FAIL  $1"; exit 1; }
+
+  version="$(as-tester "$PATS" --version)"
+  echo "$version"
+  echo "$version" | grep -qF "(tags: nohost,nobwrap,nopodman)" || fail "tags: $version"
+
+  # static, so lxd can push this very binary into its proxy instance.
+  readelf -l "$SNAP_DIR/bin/pats" > /dev/null
+  if readelf -l "$SNAP_DIR/bin/pats" | grep -q INTERP; then
+      fail "static: pats is not a static binary"
+  fi
+
+  # a dev build (+git<sha7>) carries that commit, a release none, and
+  # neither is stamped as modified.
+  snap_version="$(grep '^version:' "$SNAP_DIR/meta/snap.yaml")"
+  case "$snap_version" in
+      (*+git*)
+          sha="${snap_version##*+git}"
+          sha="${sha%%[!0-9a-f]*}"
+          # the version line shows seven characters, whatever git needed.
+          echo "$version" | grep -qF " @ ${sha:0:7} " || fail "stamp: $snap_version is not the commit of $version"
+          ;;
+      (*)
+          if echo "$version" | grep -qF ' @ '; then
+              fail "stamp: $snap_version is a release, but carries a commit: $version"
+          fi
+          ;;
+  esac
+  if echo "$version" | grep -qF dirty; then
+      fail "stamp: stamped as modified: $version"
+  fi
+
+  # load_error <dir> <want>: pats run on that project fails, saying want.
+  load_error() {
+      local out rc=0
+      out="$(cd "$1" && as-tester "$PATS" run 2>&1)" || rc=$?
+      [ "$rc" -ne 0 ] || fail "$1: pats run passed"
+      echo "$out" | grep -qF "$2" || fail "$1: $out"
+  }
+  # under the home: a strict snap sees nothing of the host's /tmp.
+  for project in no-host-driver no-host-steps; do
+      as-tester cp -R "$SPREAD_PATH/tests/spread/snap/basics/$project" /home/tester/
+  done
+  load_error /home/tester/no-host-driver 'driver "host" is not in this build'
+  load_error /home/tester/no-host-steps 'this build runs no host steps'

@@ -43,8 +43,8 @@ sees less, and `tmp.go` names `MkTempFor` for the dirs it opens. `cache-dir.md` 
 
 the pats snap is not affected: it ships its own docker client (`snap/snapcraft.yaml`), which runs in the pats snap's
 mount namespace and talks to the docker snap's daemon over the socket, so the docker snap's cli is never in the path.
-hence `hack/snap_smoke.sh docker` passes with the docker snap. ci does not catch this case, since its runners have
-docker from the deb and no job runs a non-snap pats against the docker snap.
+hence the snap's docker pair passes with the docker snap. a pats that is not the snap against it is spread's
+`snap/docker:native` (`docs/spec/spread.md`).
 
 ## proposal
 
@@ -128,8 +128,8 @@ pair, its steps in a step sandbox, the scorer, `pats clean -n` with nothing left
 `make test` passes there with `TMPDIR` under the home.
 
 two things the implementation adds. the client's dir goes once its last temp dir does, so a run leaves an empty
-`pats-tmp` and no more, and the link in the temp root dangles until the next run. and `hack/snap_smoke.sh` takes
-`PAIR_ONLY=1`, the entry that skips its checks of a reduced build.
+`pats-tmp` and no more, and the link in the temp root dangles until the next run. and the pair of a pats that
+is not the snap runs as spread's `snap/docker:native`.
 
 not checked: the ci job, which has not run yet.
 
@@ -172,9 +172,8 @@ not checked: the ci job, which has not run yet.
   under `~/proj/.build`.
 - ci: one job installs the docker snap, checks that `docker` is the snap's and that `docker info` answers (a docker
   test skips when there is none), then runs `make test` with `TMPDIR` on a non-hidden dir under the home (the tests
-  bind and build from `t.TempDir()`) and the smoke project's docker pair with the clone's `bin/pats`.
-  `hack/snap_smoke.sh` refuses a pats without the snap's build tags, so the pair needs an entry that skips those
-  checks.
+  bind and build from `t.TempDir()`). the smoke project's docker pair with a pats that is not the snap is spread's
+  `snap/docker:native`.
 
 ## test-only fixes found alongside
 

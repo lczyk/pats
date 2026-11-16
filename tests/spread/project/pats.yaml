@@ -1,13 +1,13 @@
-# the snap's smoke-test project (hack/snap_smoke.sh): one pair with a stub
-# agent, its steps and scorer in a docker step sandbox (suite docker) or an
-# lxd one behind an egress policy (suite lxd). the placed sandboxes are only
+# the spread pairs' project (../bin/pair): one pair with a stub agent, its
+# steps and scorer in a docker step sandbox (suite docker) or an lxd one
+# behind an egress policy (suite lxd). the placed sandboxes are only
 # made, never run: each takes a harness cli pats fetches and places.
 sandbox:
   kind: sandbox
   items:
     agent:
       driver: docker
-      build: agentimg
+      build: Dockerfile
     steps-docker:
       driver: docker
       image: docker.io/library/ubuntu:24.04

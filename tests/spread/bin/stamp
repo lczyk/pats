@@ -1,0 +1,5 @@
+#!/bin/sh
+# stamp <what> notes the time a step was reached in /var/tmp/spread-stamps.
+# spread shows a passing task's output to no one, so the lxd backend's
+# discard pulls the file out into .spread/stamps/.
+printf '%s %s\n' "$(date +%T)" "$*" >> /var/tmp/spread-stamps 2> /dev/null || true
