@@ -152,7 +152,17 @@ pats is a single go binary. you need go 1.26+ to build it, and docker to run the
 
 releases are tags on `main`, and a `-beta.N` tag is a pre-release. 1.x reads a different `pats.yaml` shape from 0.x (see [`pats.example.yaml`](./pats.example.yaml)).
 
-put it on your PATH with `go install`:
+on macos or linux, install the release binary with homebrew. the tap is this repo, hence the url:
+
+```sh
+brew tap lczyk/pats https://github.com/lczyk/pats
+brew install lczyk/pats/pats
+brew upgrade lczyk/pats/pats    # later, to the newest stable release
+```
+
+the binaries are also on each [github release](https://github.com/lczyk/pats/releases), one tarball per platform with a `checksums.txt`.
+
+or put it on your PATH with `go install`:
 
 ```sh
 go install github.com/lczyk/pats/cmd/pats@v1.0.1    # installs into $(go env GOBIN)
