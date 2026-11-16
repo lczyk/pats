@@ -102,7 +102,7 @@ jobs:
   # it with the engines it drives, nested in an lxd container of each ubuntu.
   # a runner per release, since their nested engines on one runner slow each
   # other's tasks down.
-  spread:
+  spread-snap:
     needs: [ build, select ]
     strategy:
       fail-fast: false
@@ -113,7 +113,7 @@ jobs:
           - arch: arm64
             os: ubuntu-24.04-arm
         run: ${{ fromJSON(needs.select.outputs.runs) }}
-    name: spread (${{ matrix.runner.arch }}, ${{ matrix.run }})
+    name: spread-snap (${{ matrix.runner.arch }}, ${{ matrix.run }})
     runs-on: ${{ matrix.runner.os }}
     timeout-minutes: 60
     steps:
@@ -174,7 +174,7 @@ jobs:
   # instead: github does not start runs in push order, and a re-run keeps its
   # run's commit.
   publish:
-    needs: spread
+    needs: spread-snap
     if: >-
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))

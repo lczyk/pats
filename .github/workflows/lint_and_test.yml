@@ -3,15 +3,24 @@ name: lint_and_test
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '**/*.md'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**/*.md'
+
+# a superseded pull request run is cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v7.0.1
       with:
@@ -34,7 +43,7 @@ jobs:
   # the reduced build the strict snap ships (docs/spec/build-tags.md): the
   # drivers it leaves out must stay out cleanly, tests included.
   tagged:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v7.0.1
       with:
@@ -58,7 +67,7 @@ jobs:
   # the current lts and the next major: the rest api is additive, but the
   # behaviours the driver works around may not be.
   lxd-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -153,7 +162,7 @@ jobs:
 
   # the spread system tests (spread.yaml): pats from this tree in bread
   # containers on the runner's docker, per native arch.
-  spread:
+  spread-bread:
     strategy:
       fail-fast: false
       matrix:
@@ -180,7 +189,7 @@ jobs:
 
   # the workflows themselves only run on a push or a tag, so lint them here.
   actionlint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v7.0.1
       with:
@@ -192,7 +201,7 @@ jobs:
   # the security lint of the workflows: token scopes, injection through
   # templates, credentials left behind, actions the lockfile does not cover.
   zizmor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -208,7 +217,7 @@ jobs:
   # step with the workflows (re-run `make actions-lock`) or a pin no longer
   # verifies upstream.
   lockfile:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
