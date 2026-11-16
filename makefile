@@ -44,6 +44,11 @@ dist: $(SRCS) $(EMBEDS) makefile go.mod go.sum  ## Build release tarballs for ev
 	done
 	cd ./dist && shasum -a 256 *.tar.gz > checksums.txt
 
+# after a stable release is published. ci fails on main until it is committed.
+.PHONY: formula
+formula:  ## Write Formula/pats.rb for a published release (V=<version>, default VERSION)
+	./hack/formula.sh $(or $(V),$(shell cat VERSION))
+
 .PHONY: clean
 clean:  ## Remove the binary, the release tarballs and the image stamps (forces an image rebuild next run)
 	rm -f ./bin/pats
