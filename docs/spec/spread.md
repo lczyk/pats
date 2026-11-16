@@ -44,8 +44,8 @@ an ubuntu system container per release (22.04, 24.04, 26.04) on the local lxd, o
 under test (`.spread/pats_<arch>.snap`) and pats from this tree, and opens root logins by password for spread.
 
 - **as a user would:** the suite installs the snap and makes a `tester` user; each engine is installed as an admin
-  would and the tester put in its group (`tests/spread/lib/engine`), and pats runs as the tester (`as-tester`).
-- **tasks share a system:** `restore-each` (`lib/reset-system`) removes the engine snaps and ufw, stops the apt
+  would and the tester put in its group (`tests/spread/bin/engine`), and pats runs as the tester (`as-tester`).
+- **tasks share a system:** `restore-each` (`bin/reset-system`) removes the engine snaps and ufw, stops the apt
   docker and drops its state, flushes netfilter, deletes the bridges and turns forwarding off, since one task's
   firewall rules would decide the next one's. the apt docker stays installed: purged and installed again, it never
   gets its socket unit back.
@@ -55,9 +55,9 @@ under test (`.spread/pats_<arch>.snap`) and pats from this tree, and opens root 
 
 ## suites
 
-`tests/spread/lib/` holds what both use: `pair.sh <engine>` (the smoke project's pair, its steps in a step sandbox of
-that engine, its stub agent under docker, scored and cleaned, and an image with a harness cli placed in it) and that
-project.
+`tests/spread/bin/`, on both suites' `PATH`, holds the scripts the tasks share, among them `pair <engine>`: the pair of
+`tests/spread/project/`, its steps in a step sandbox of that engine, its stub agent under docker, scored and cleaned,
+and an image with a harness cli placed in it.
 
 - **bread:** `pair` (the docker pair) and `kill-clean` (pats killed mid-pair leaves its sandbox, a sibling on the
   daemon, and `pats clean` removes it).
@@ -82,7 +82,7 @@ in `snap.yml`, `publish` waits on the snap suite:
   suite is found before the tag, which has to be `VERSION`), weekly and by hand. each release on its own runner
   (`SYSTEMS=lxd:ubuntu-24.04`), since nested engines on one runner slow each other down.
 
-spread shows a passing task's output to no one, so the snap suite stamps its steps' times (`tests/spread/lib/stamp`),
+spread shows a passing task's output to no one, so the snap suite stamps its steps' times (`tests/spread/bin/stamp`),
 the lxd discard pulls them into `.spread/stamps/`, and ci prints them.
 
 ## later

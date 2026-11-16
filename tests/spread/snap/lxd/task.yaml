@@ -20,4 +20,4 @@ execute: |
   done
   snap connect pats:docker
   snap connect pats:lxd lxd:lxd
-  as-tester "$SPREAD_PATH/tests/spread/lib/pair.sh" lxd
+  as-tester pair lxd

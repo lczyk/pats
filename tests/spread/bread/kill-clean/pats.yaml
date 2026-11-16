@@ -5,7 +5,7 @@ sandbox:
   items:
     agent:
       driver: docker
-      build: agentimg
+      build: Dockerfile
 
 agents:
   kind: agent

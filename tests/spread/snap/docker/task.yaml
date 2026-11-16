@@ -16,4 +16,4 @@ execute: |
       (apt) snap connect pats:docker ;;
       (snap) snap connect pats:docker docker:docker-daemon ;;
   esac
-  as-tester "$SPREAD_PATH/tests/spread/lib/pair.sh" docker
+  as-tester pair docker

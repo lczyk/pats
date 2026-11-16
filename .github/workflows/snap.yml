@@ -160,7 +160,7 @@ jobs:
               make spread "SYSTEMS=lxd:ubuntu-$RUN" ARGS=-v
           fi
 
-      # when each task reached each step, per system (tests/spread/lib/stamp).
+      # when each task reached each step, per system (tests/spread/bin/stamp).
       - name: Step times
         if: always()
         run: tail -n +1 .spread/stamps/*.log || true

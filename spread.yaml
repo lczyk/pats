@@ -61,6 +61,7 @@ suites:
       SHARED: $(cat /etc/pats-spread-dir)
       HOME: $SHARED/home
       PATS: /usr/local/bin/pats
+      PATH: $PATH:$SPREAD_PATH/tests/spread/bin
     prepare: |
       # bread is ubuntu and sshd: the pair's fixture is a git repo, and pats
       # fetches harness clis over https.
@@ -76,7 +77,7 @@ suites:
     environment:
       PATS: /snap/bin/pats
       SNAP_DIR: /snap/pats/current
-      PATH: $PATH:$SPREAD_PATH/tests/spread/lib
+      PATH: $PATH:$SPREAD_PATH/tests/spread/bin
     prepare: |
       apt-get update -q
       apt-get install -y -q --no-install-recommends git binutils > /dev/null
