@@ -1,8 +1,7 @@
 # key proxy
 
-status: implemented. from `docs/proposals/placeholder-credentials.md` ("changed from the proposal" below says what
-moved). it reverses "keeping a credential out of the sandbox" under "not doing" in `harness-registry.md`, and "left
-out on purpose" in `docs/proposals/harnesses-1x.md`.
+status: implemented. it reverses "keeping a credential out of the sandbox" under "not doing" in
+`harness-registry.md`, and "left out on purpose" in `docs/proposals/harnesses-1x.md`.
 
 ## problem
 
@@ -243,17 +242,6 @@ what the pinned clis send, run as their harnesses run them, against a recording 
   `Accept-Encoding` exists for.
 - not covered: error and 401 paths, tool-call turns (the same endpoint), h2 (the recorder offered http/1.1, as the
   proxy does).
-
-## changed from the proposal
-
-- **opt-in** is a sandbox's `egress: {key-proxy: true}` in `pats.yaml`, not a run flag, under the threat
-  model above.
-- **bindings** are built in and fixed, with method prefixes; the proposal's harness-agnostic any-header substitution
-  is one `Authorization: Bearer` header.
-- **the placeholder** keeps the real key's prefix, length and alphabet, where the proposal had `pats-ph-<random>`.
-- **request bodies** are not scanned.
-- **docker inspect** exposure of the real value on the daemon is accepted, as for the CA key; the proposal hoped for
-  stdin, which a detached sidecar does not have.
 
 ## deployments
 
