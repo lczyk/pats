@@ -2,6 +2,8 @@ package eval
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -363,5 +365,133 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	require.NoError(t, err)
 	require.Len(t, names, 1)
 	_, err = os.Stat(filepath.Join(runs, names[0], "axx", "txx", "metadata.json"))
+	assert.NoError(t, err)
+}
+
+// pastRun writes a past run dir holding pairs of agent axx (opencode, model
+// m) that ran for the given seconds.
+func pastRun(t *testing.T, dir, name string, durs map[string]float64) {
+	for task, s := range durs {
+		pd := filepath.Join(dir, runsSubdir, name, "axx", task)
+		require.NoError(t, os.MkdirAll(pd, 0o755))
+		m := fmt.Sprintf(`{"agent":"axx","task":%q,"harness":"opencode-openrouter","model":"m","status":"ok","duration_s":%g}`, task, s)
+		require.NoError(t, os.WriteFile(filepath.Join(pd, "metadata.json"), []byte(m), 0o644))
+	}
+}
+
+// history ranks the pairs from the first: with two slots, both repeats of
+// the longest pair start before anything else, their run dirs in repeat
+// order, and the rest follow once they end.
+func TestRunLongestFirstFromHistory(t *testing.T) {
+	g := newGate(func(p string) bool { return p == "t1x" })
+	gatedSandbox(t, g)
+	dir := t.TempDir()
+	pastRun(t, dir, "001-20261101-old-run", map[string]float64{"t1x": 600, "t2x": 60, "t3x": 1})
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tvx: {kind: task, items: {t3x: {prompt: p-t3x}, t2x: {prompt: p-t2x}, t1x: {prompt: p-t1x}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	errc := make(chan error, 1)
+	go func() {
+		_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 2, Repeat: 2, Verbose: 1})
+		errc <- err
+	}()
+	waitFor(t, "two pairs", func() bool { s, _ := g.snapshot(); return len(s) == 2 })
+	time.Sleep(20 * time.Millisecond)
+	started, _ := g.snapshot()
+	assert.EqualArrays(t, started, []string{"t1x", "t1x"})
+	close(g.release)
+	require.NoError(t, <-errc)
+	started, _ = g.snapshot()
+	assert.Len(t, started, 6)
+	assert.ContainsString(t, out.String(), "history for 3 of 3 pair(s)")
+	runs, err := sortedRunNames(filepath.Join(dir, runsSubdir))
+	require.NoError(t, err)
+	require.Len(t, runs, 3) // the past one and both repeats
+	assert.ContainsString(t, out.String(), "INFO run 1/2: "+runs[1])
+	assert.ContainsString(t, out.String(), "INFO run 2/2: "+runs[2])
+}
+
+// a setup error names the pair's repeat; each repeat gets its own run dir,
+// and the same pair running in two at once sees its own run in stage.
+func TestRunRepeatLabelsAndRunEnv(t *testing.T) {
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{startErr: errors.New("no box")}, nil
+	}
+	t.Cleanup(func() { newSandbox = old })
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p-txx, stage: 'echo "$PATS_RUN_NAME"'}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 2, Repeat: 2})
+	require.NoError(t, err)
+	assert.ContainsString(t, out.String(), "ERROR axx/txx#1 ")
+	assert.ContainsString(t, out.String(), "ERROR axx/txx#2 ")
+	runs, err := sortedRunNames(filepath.Join(dir, runsSubdir))
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+	for _, r := range runs {
+		b, err := os.ReadFile(filepath.Join(dir, runsSubdir, r, "axx", "txx", "stage.log"))
+		require.NoError(t, err)
+		assert.Equal(t, strings.TrimSpace(string(b)), r)
+	}
+}
+
+// a run dir that cannot be made while an earlier repeat's pair runs: that
+// pair ends before the invocation returns, with the error.
+func TestDispatchRunDirFailsWhileRunning(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes through a read-only dir")
+	}
+	dir := t.TempDir()
+	runs := filepath.Join(dir, runsSubdir)
+	t.Cleanup(func() { _ = os.Chmod(runs, 0o755) })
+	g := newGate(func(p string) bool { return p == "slow" })
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{stdout: "fine\n", onRun: func(spec sandbox.Spec) {
+			if promptOf(spec) == "fast" {
+				require.NoError(t, os.Chmod(runs, 0o555))
+			}
+			g.onRun(spec)
+		}}, nil
+	}
+	t.Cleanup(func() { newSandbox = old })
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tvx: {kind: task, items: {slow: {prompt: p-slow}, fast: {prompt: p-fast}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	errc := make(chan error, 1)
+	go func() {
+		_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 2, Repeat: 2})
+		errc <- err
+	}()
+	waitFor(t, "both of repeat 1", func() bool { s, _ := g.snapshot(); return len(s) == 2 })
+	time.Sleep(50 * time.Millisecond) // the fast pair ends, and repeat 2's dir fails
+	select {
+	case err := <-errc:
+		t.Fatalf("returned with a pair running: %v", err)
+	default:
+	}
+	close(g.release)
+	assert.Error(t, <-errc, "permission denied")
+	names, err := sortedRunNames(runs)
+	require.NoError(t, err)
+	require.Len(t, names, 1)
+	_, err = os.Stat(filepath.Join(runs, names[0], "axx", "slow", "metadata.json"))
 	assert.NoError(t, err)
 }

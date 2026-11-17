@@ -191,7 +191,8 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	if ctx.Err() != nil {
 		return runDir, ErrInterrupted
 	}
-	if d.budgetStop {
+	// a run dir's error wins, but a cap reached is still said.
+	if d.budgetStop || (dirErr != nil && opts.ledger.reached()) {
 		lg.warn("%s: %s not started", opts.ledger.reachedAt(), d.notStartedText())
 	}
 	switch {
@@ -403,13 +404,22 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 				continue
 			}
 		}
-		running--
-		perSandbox[e.q.sandbox]--
-		d.est.end(e.q.key, e.start, e.stat.status, e.stat.agentDur)
-		rr := d.reps[e.q.rep-1]
-		rr.stats = append(rr.stats, e.stat)
-		rr.last = time.Now()
-		d.settle(e.q.rep)
+		// every pair that has ended by now is counted before the next
+		// pick, so one still waiting to say so does not rank as running.
+		for more := true; more; {
+			running--
+			perSandbox[e.q.sandbox]--
+			d.est.end(e.q.key, e.start, e.stat.status, e.stat.agentDur)
+			rr := d.reps[e.q.rep-1]
+			rr.stats = append(rr.stats, e.stat)
+			rr.last = time.Now()
+			d.settle(e.q.rep)
+			select {
+			case e = <-done:
+			default:
+				more = false
+			}
+		}
 	}
 	return d.lastDir, dirErr
 }
@@ -444,8 +454,14 @@ func (d *dispatch) runOne(ctx context.Context, q *queued, runDir string, stat *p
 		}
 	} else {
 		// one pair at a time writes straight out, beside the dispatcher's
-		// own lines (an interrupt's), so under the same lock.
+		// own lines (an interrupt's), so under the same lock. -vv's stream
+		// says which repeat when there are several.
 		po.Out = &lockedWriter{mu: &d.outMu, w: d.opts.Out}
+		if d.opts.Verbose >= 2 && d.n > 1 {
+			ls := liveStream(label, nil, d.opts.Out, &d.outMu)
+			defer ls.flush()
+			po.live = ls
+		}
 	}
 	a := d.agents[q.pair.Agent]
 	if d.bar != nil {
