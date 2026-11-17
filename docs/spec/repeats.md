@@ -46,7 +46,9 @@ repeat's pairs.
 
 ### dispatch order: longest first
 
-the dispatcher starts the pairs it expects to run longest first, so a long pair is not left to start last and run
+the ordering lives in `internal/sched`, a scheduler that knows nothing of pats and keeps no clock (its README says
+how to use it); the dispatcher times the pairs and hands it what they took. the dispatcher starts the pairs it expects
+to run longest first, so a long pair is not left to start last and run
 alone at the tail while the other slots sit idle. it keeps an estimate per pair, from past runs and from what this
 invocation has seen, and updates it as pairs start and end.
 
