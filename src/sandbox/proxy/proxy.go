@@ -346,9 +346,16 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, orig
 			}
 			if k := use.key; k != nil {
 				pr.Out.Header.Set("Authorization", bearer+k.real)
+			}
+			if len(use.scrub) > 0 {
 				// with none asked for, go's transport asks for gzip and
 				// undoes it, so the answer reads plain for the scrub.
 				pr.Out.Header.Del("Accept-Encoding")
+			}
+			// a request's trailers come after the decision on it, too late
+			// to look for a placeholder in: where keys are held, none go.
+			if len(p.keys) > 0 {
+				pr.Out.Trailer = nil
 			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
@@ -382,11 +389,14 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, orig
 			// client that hangs up early still cost the upstream bytes
 			// already read.
 			got.r, resp.Body = resp.Body, &got
-			if k := use.key; k != nil {
+			if len(use.scrub) > 0 {
 				if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
 					return errKeyScrub
 				}
+			}
+			for _, k := range use.scrub {
 				scrubHeader(resp.Header, k)
+				scrubHeader(resp.Trailer, k) // the names, announced before the body
 				resp.Body = newScrubBody(resp.Body, k, func() http.Header { return resp.Trailer })
 			}
 			return nil

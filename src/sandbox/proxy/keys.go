@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -155,62 +156,79 @@ func holdKeys(bindings []KeyBinding, values map[string]string) ([]heldKey, error
 }
 
 // keyUse is what a request does with the held keys: nothing, spend one in
-// its Authorization header, or misuse one.
+// its Authorization header, or misuse one. scrub are the keys bound on its
+// endpoint, whose real values its answer is scrubbed of.
 type keyUse struct {
 	key    *heldKey // the key spent, nil for none
 	misuse bool
-	bound  bool // the request is on a bound endpoint: its answer is scrubbed
+	scrub  []*heldKey
 }
 
 // bearer is the one shape a placeholder is spent in.
 const bearer = "Bearer "
 
 // useOf decides what req does with the keys: a placeholder anywhere but an
-// `Authorization: Bearer <placeholder>` on its binding, over tls, is a misuse,
-// as is an Authorization of another shape on a bound endpoint. tls is
-// whether the request came over a terminated connection.
+// `Authorization: Bearer <placeholder>` on its binding is a misuse, as is an
+// Authorization of another shape on a bound endpoint. a binding is on tls
+// (tls: the request came over a terminated connection) to port 443, with
+// the request's own Host naming that port.
 func (p *Proxy) useOf(req *http.Request, host string, port uint16, tls bool) keyUse {
 	if len(p.keys) == 0 {
 		return keyUse{}
 	}
 	var u keyUse
 	nhost, err := NormalizeHost(host)
-	for i := range p.keys {
-		k := &p.keys[i]
-		if err == nil && tls && k.binds(nhost, port, req) {
-			u.bound = true
-			auth := req.Header.Values("Authorization")
-			switch {
-			case len(auth) == 0:
-			case len(auth) == 1 && auth[0] == bearer+k.placeholder:
-				u.key = k
-			default:
-				u.misuse = true
+	_, hostPort := splitHostPort(req.Host, port)
+	if err == nil && tls && port == 443 && hostPort == port {
+		for i := range p.keys {
+			if k := &p.keys[i]; k.binds(nhost, port, req) {
+				u.scrub = append(u.scrub, k)
 			}
 		}
 	}
-	for i := range p.keys {
-		k := &p.keys[i]
-		if strings.Contains(req.URL.Path, k.placeholder) || strings.Contains(req.URL.RawPath, k.placeholder) ||
-			strings.Contains(req.URL.RawQuery, k.placeholder) || strings.Contains(req.URL.Opaque, k.placeholder) ||
-			strings.Contains(req.RequestURI, k.placeholder) {
+	if len(u.scrub) > 0 {
+		auth := req.Header.Values("Authorization")
+		switch {
+		case len(auth) == 0:
+		case len(auth) == 1:
+			for _, k := range u.scrub {
+				if auth[0] == bearer+k.placeholder {
+					u.key = k
+				}
+			}
+			u.misuse = u.key == nil
+		default:
 			u.misuse = true
 		}
+	}
+	// what the url says, decoded once more: a placeholder escaped in it is
+	// still in it.
+	where := []string{req.URL.Path, req.URL.RawPath, req.URL.RawQuery, req.URL.Opaque, req.RequestURI}
+	if q, err := url.QueryUnescape(req.URL.RawQuery); err == nil {
+		where = append(where, q)
+	}
+	if ep, err := url.PathUnescape(req.URL.Path); err == nil {
+		where = append(where, ep)
+	}
+	for i := range p.keys {
+		k := &p.keys[i]
+		if slices.ContainsFunc(where, func(s string) bool { return strings.Contains(s, k.placeholder) }) {
+			u.misuse = true
+		}
+		lower := strings.ToLower(k.placeholder)
 		for name, vals := range req.Header {
-			if strings.Contains(name, k.placeholder) {
+			// a header name comes canonicalised: compared without case.
+			if strings.Contains(strings.ToLower(name), lower) {
 				u.misuse = true
 			}
 			for _, v := range vals {
-				if !strings.Contains(v, k.placeholder) {
-					continue
-				}
-				if u.key != k || !strings.EqualFold(name, "Authorization") {
+				if strings.Contains(v, k.placeholder) && (u.key != k || !strings.EqualFold(name, "Authorization")) {
 					u.misuse = true
 				}
 			}
 		}
-		for name, vals := range req.Trailer {
-			if strings.Contains(name, k.placeholder) || slices.ContainsFunc(vals, func(v string) bool { return strings.Contains(v, k.placeholder) }) {
+		for name := range req.Trailer {
+			if strings.Contains(strings.ToLower(name), lower) {
 				u.misuse = true
 			}
 		}
@@ -222,11 +240,12 @@ func (p *Proxy) useOf(req *http.Request, host string, port uint16, tls bool) key
 }
 
 // binds says whether req, on host (normalised) and port, is on one of k's
-// endpoints. the path must read one way only: a path an origin could read
-// two ways is not one to spend a key on.
+// endpoints. the path must be spelled plainly and read one way only: a
+// path an origin could read two ways is not one to spend a key on.
 func (k *heldKey) binds(host string, port uint16, req *http.Request) bool {
 	path := req.URL.Path
-	if req.URL.Opaque != "" || !utf8.ValidString(path) || strings.ContainsFunc(path, isControl) || len(readings(path)) > 1 {
+	if req.URL.Opaque != "" || req.URL.RawPath != "" || strings.ContainsRune(req.RequestURI, '%') ||
+		!utf8.ValidString(path) || strings.ContainsFunc(path, isControl) || len(readings(path)) > 1 {
 		return false
 	}
 	for _, e := range k.bind {
@@ -278,15 +297,45 @@ func (p *Proxy) maskKeys(s string) string {
 // scrub: encoded in a way go's transport did not undo.
 var errKeyScrub = errors.New("an encoded answer on a bound endpoint")
 
-// scrubHeader writes the placeholder over the real value in h.
+// scrubbed is s with every real value in it written over by its
+// placeholder, again until none is left: a placeholder next to what follows
+// it can spell a real value anew. a value that keeps coming back is masked.
+func scrubbed(s string, k *heldKey) string {
+	for range 8 {
+		if !strings.Contains(s, k.real) {
+			return s
+		}
+		s = strings.ReplaceAll(s, k.real, k.placeholder)
+	}
+	return strings.ReplaceAll(s, k.real, strings.Repeat("*", len(k.real)))
+}
+
+// scrubbedName is a header name with the real value written over, its case
+// ignored: a name comes canonicalised ("X-Sk-Or-V1-...").
+func scrubbedName(name string, k *heldKey) string {
+	lower, real := strings.ToLower(name), strings.ToLower(k.real)
+	for range 8 {
+		i := strings.Index(lower, real)
+		if i < 0 {
+			return name
+		}
+		name = name[:i] + k.placeholder + name[i+len(real):]
+		lower = strings.ToLower(name)
+	}
+	return strings.Repeat("*", len(name))
+}
+
+// scrubHeader writes the placeholder over the real value in h, in names
+// (an announced trailer's among them) and values.
 func scrubHeader(h http.Header, k *heldKey) {
 	for name, vals := range h {
 		for i, v := range vals {
-			if strings.Contains(v, k.real) {
-				vals[i] = strings.ReplaceAll(v, k.real, k.placeholder)
-			}
+			vals[i] = scrubbed(v, k)
 		}
-		h[name] = vals
+		if n := scrubbedName(name, k); n != name {
+			delete(h, name)
+			h[n] = vals
+		}
 	}
 }
 
@@ -313,7 +362,7 @@ func (s *scrubBody) Read(p []byte) (int, error) {
 	for len(s.out) == 0 && s.err == nil {
 		n, err := s.r.Read(s.buf)
 		data := append(s.tail, s.buf[:n]...)
-		data = bytes.ReplaceAll(data, []byte(s.key.real), []byte(s.key.placeholder))
+		data = []byte(scrubbed(string(data), s.key))
 		hold := heldTail(data, s.key.real)
 		s.out, s.tail = data[:len(data)-hold], append([]byte(nil), data[len(data)-hold:]...)
 		switch {

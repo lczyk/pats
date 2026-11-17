@@ -83,6 +83,7 @@ func TestHoldKeys(t *testing.T) {
 // keyRig is a proxy holding one key bound to openrouter.test, in front of a
 // recording upstream that answers as handler says.
 type keyRig struct {
+	proxy    *Proxy
 	ph       string
 	client   *http.Client
 	audit    *auditBuf
@@ -141,6 +142,7 @@ func newKeyRig(t *testing.T, allow, deny []string, methods map[string]bool, hand
 		Audit: k.audit,
 		keys:  held,
 	}
+	k.proxy = p
 	srv := httptest.NewServer(p)
 	t.Cleanup(srv.Close)
 	proxyURL, _ := url.Parse(srv.URL)
@@ -202,21 +204,25 @@ func TestKeyMisuse(t *testing.T) {
 		method, url string
 		hdr         map[string]string
 	}{
-		"another header":    {"POST", chat, map[string]string{"Authorization": bearerPH, "X-Api-Key": k.ph}},
-		"in the query":      {"POST", chat + "?key=" + k.ph, nil},
-		"in the path":       {"POST", "https://openrouter.test/api/v1/" + k.ph, nil},
-		"another shape":     {"POST", chat, map[string]string{"Authorization": "Token " + k.ph}},
-		"bare placeholder":  {"POST", chat, map[string]string{"Authorization": k.ph}},
-		"other auth, bound": {"POST", chat, map[string]string{"Authorization": "Bearer " + orPrefix + "somethingelse0123456789"}},
-		"another host":      {"POST", "https://other.test/api/v1/chat/completions", map[string]string{"Authorization": bearerPH}},
-		"another method":    {"GET", chat, map[string]string{"Authorization": bearerPH}},
-		"another path":      {"POST", "https://openrouter.test/api/v1/models", map[string]string{"Authorization": bearerPH}},
-		"another port":      {"POST", "https://openrouter.test:8443/api/v1/chat/completions", map[string]string{"Authorization": bearerPH}},
-		"dot segments":      {"POST", "https://openrouter.test/api/v1/x/%2e%2e/chat/completions", map[string]string{"Authorization": bearerPH}},
-		"doubled slash":     {"POST", "https://openrouter.test/api/v1//chat/completions", map[string]string{"Authorization": bearerPH}},
-		"in the user agent": {"POST", chat, map[string]string{"User-Agent": "x " + k.ph}},
-		"plain http, bound": {"POST", "http://openrouter.test/api/v1/chat/completions", map[string]string{"Authorization": bearerPH}},
-		"plain http, other": {"GET", "http://other.test/", map[string]string{"X-Leak": k.ph}},
+		"another header":     {"POST", chat, map[string]string{"Authorization": bearerPH, "X-Api-Key": k.ph}},
+		"in the query":       {"POST", chat + "?key=" + k.ph, nil},
+		"in the path":        {"POST", "https://openrouter.test/api/v1/" + k.ph, nil},
+		"another shape":      {"POST", chat, map[string]string{"Authorization": "Token " + k.ph}},
+		"bare placeholder":   {"POST", chat, map[string]string{"Authorization": k.ph}},
+		"other auth, bound":  {"POST", chat, map[string]string{"Authorization": "Bearer " + orPrefix + "somethingelse0123456789"}},
+		"another host":       {"POST", "https://other.test/api/v1/chat/completions", map[string]string{"Authorization": bearerPH}},
+		"another method":     {"GET", chat, map[string]string{"Authorization": bearerPH}},
+		"another path":       {"POST", "https://openrouter.test/api/v1/models", map[string]string{"Authorization": bearerPH}},
+		"another port":       {"POST", "https://openrouter.test:8443/api/v1/chat/completions", map[string]string{"Authorization": bearerPH}},
+		"dot segments":       {"POST", "https://openrouter.test/api/v1/x/%2e%2e/chat/completions", map[string]string{"Authorization": bearerPH}},
+		"doubled slash":      {"POST", "https://openrouter.test/api/v1//chat/completions", map[string]string{"Authorization": bearerPH}},
+		"in the user agent":  {"POST", chat, map[string]string{"User-Agent": "x " + k.ph}},
+		"plain http, bound":  {"POST", "http://openrouter.test/api/v1/chat/completions", map[string]string{"Authorization": bearerPH}},
+		"plain http, other":  {"GET", "http://other.test/", map[string]string{"X-Leak": k.ph}},
+		"escaped slash":      {"POST", "https://openrouter.test/api/v1/chat%2fcompletions", map[string]string{"Authorization": bearerPH}},
+		"escaped in query":   {"POST", chat + "?k=" + strings.ReplaceAll(k.ph, "-", "%2D"), nil},
+		"tls on port 80":     {"POST", "https://openrouter.test:80/api/v1/chat/completions", map[string]string{"Authorization": bearerPH}},
+		"in a header's name": {"POST", chat, map[string]string{"X-" + k.ph: "1"}},
 	} {
 		before := len(k.got())
 		resp, body := k.do(t, c.method, c.url, c.hdr)
@@ -381,4 +387,98 @@ func TestPolicyKeysRoundTrip(t *testing.T) {
 	assert.Equal(t, m["ph"], "real")
 	_, err = ParseKeys(`["x"]`)
 	assert.Error(t, err, "json object")
+}
+
+// the request's own Host must name the port the tunnel was opened to.
+func TestKeyHostPort(t *testing.T) {
+	k := newKeyRig(t, []string{"openrouter.test", bindLine}, nil, nil, nil)
+	req, _ := http.NewRequest("POST", chat, strings.NewReader("{}"))
+	req.Host = "openrouter.test:8443"
+	req.Header.Set("Authorization", "Bearer "+k.ph)
+	resp, err := k.client.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, resp.StatusCode, http.StatusForbidden)
+	assert.Len(t, k.got(), 0)
+}
+
+// two keys bound on one endpoint: each placeholder spends its own key.
+func TestKeysShareAnEndpoint(t *testing.T) {
+	k := newKeyRig(t, []string{"openrouter.test", bindLine}, nil, nil, nil)
+	second := orPrefix + strings.Repeat("fedcba9876543210", 4)
+	ph2, err := Placeholder(second, nil)
+	require.NoError(t, err)
+	more, err := holdKeys([]KeyBinding{{Name: "B", Placeholder: ph2, Bind: []string{bindLine}}}, map[string]string{ph2: second})
+	require.NoError(t, err)
+	k.proxy.keys = append(k.proxy.keys, more...)
+	for ph, real := range map[string]string{k.ph: testReal, ph2: second} {
+		resp, _ := k.do(t, "POST", chat, map[string]string{"Authorization": "Bearer " + ph})
+		assert.Equal(t, resp.StatusCode, 200)
+		got := k.got()
+		assert.Equal(t, got[len(got)-1].Header.Get("Authorization"), "Bearer "+real)
+	}
+}
+
+// a bound endpoint's answer is scrubbed whether or not the request spent
+// the key, header names included.
+func TestKeyScrubUnspentAndNames(t *testing.T) {
+	k := newKeyRig(t, []string{"openrouter.test", bindLine}, nil, nil, func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["X-"+testReal] = []string{"1"}
+		io.WriteString(w, testReal)
+	})
+	resp, body := k.do(t, "POST", chat, nil)
+	assert.Equal(t, resp.StatusCode, 200)
+	assert.Equal(t, body, k.ph)
+	for name := range resp.Header {
+		assert.That(t, !strings.Contains(strings.ToLower(name), strings.ToLower(testReal)), "header name %s", name)
+	}
+}
+
+// a request's trailers come too late to check: where keys are held, they
+// do not go on.
+func TestKeyRequestTrailersDropped(t *testing.T) {
+	k := newKeyRig(t, []string{"openrouter.test", bindLine}, nil, nil, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		var names []string
+		for n := range r.Trailer {
+			names = append(names, n)
+		}
+		w.Header().Set("X-Trailers", strings.Join(names, ","))
+	})
+	tb := &trailerBody{r: strings.NewReader("{}")}
+	req, _ := http.NewRequest("POST", chat, tb)
+	req.ContentLength = -1
+	req.Trailer = http.Header{"X-Leak": nil}
+	tb.set = func() { req.Trailer.Set("X-Leak", k.ph) }
+	resp, err := k.client.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, resp.StatusCode, 200)
+	assert.Equal(t, resp.Header.Get("X-Trailers"), "")
+}
+
+type trailerBody struct {
+	r   io.Reader
+	set func()
+}
+
+func (b *trailerBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err == io.EOF && b.set != nil {
+		b.set()
+	}
+	return n, err
+}
+
+func (b *trailerBody) Close() error { return nil }
+
+// a placeholder written over the real value can spell it anew with what
+// follows: written over again, until none is left.
+func TestScrubSeam(t *testing.T) {
+	k := &heldKey{real: "0123456789abcdef", placeholder: "fedcba9876543210"}
+	in := k.real + "123456789abcdef"
+	assert.That(t, !strings.Contains(scrubbed(in, k), k.real), "scrubbed: %s", scrubbed(in, k))
+	out, err := io.ReadAll(newScrubBody(io.NopCloser(iotest.OneByteReader(strings.NewReader(in))), k, nil))
+	require.NoError(t, err)
+	assert.That(t, !strings.Contains(string(out), k.real), "streamed: %s", out)
 }
