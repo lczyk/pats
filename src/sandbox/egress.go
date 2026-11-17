@@ -271,6 +271,10 @@ func (c *container) startEgressProxy(ctx context.Context, spec Spec) ([]string, 
 	}
 	if err := logs.ready(c.p.clock, c.p.t.proxyReady); err != nil {
 		teardown()
+		if len(spec.Egress.Policy.Keys) > 0 {
+			// a sidecar from before the key proxy refuses the policy.
+			err = fmt.Errorf("%w (a key-proxy sandbox needs a proxy that knows held keys: set egress.image to one built from this pats, or use a release that has key-proxy)", err)
+		}
 		if up := c.o.Machine.chain(); up != nil {
 			return nil, nil, fmt.Errorf("egress: proxy %s, on the %s network, behind the upstream %s: %w",
 				proxyName, c.defaultNetwork(), up.Describe(), err)

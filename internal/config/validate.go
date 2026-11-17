@@ -701,34 +701,23 @@ func (c *Config) validateKeyProxy(add func(string, ...any)) {
 			stepEnv(fmt.Sprintf("scorer %q", sc.Name), sc.StepEnv)
 		}
 	}
-	seenTask, seenScorer := map[string]bool{}, map[string]bool{}
-	for _, s := range c.Suites {
-		pairs, err := c.ExpandTestPairs(s.Name)
-		if err != nil {
-			continue
-		}
-		reached := false
+	// a task one of these agents runs; a scorer is joined to a run's pairs by
+	// task, whichever suite named it, as score and judge select.
+	protected := map[string]bool{}
+	if pairs, err := c.ExpandTestPairs(); err == nil {
 		for _, p := range pairs {
-			if holding[p.Agent] == "" {
-				continue
-			}
-			reached = true
-			if !seenTask[p.Task] {
-				seenTask[p.Task] = true
+			if holding[p.Agent] != "" && !protected[p.Task] {
+				protected[p.Task] = true
 				stepEnv(fmt.Sprintf("task %q", p.Task), tasks[p.Task].StepEnv)
 			}
 		}
-		if !reached {
-			continue
-		}
-		// a suite's scorers grade its pairs.
-		sps, err := c.ExpandScorePairs(s.Name)
-		if err != nil {
-			continue
-		}
+	}
+	seen := map[string]bool{}
+	if sps, err := c.ExpandScorePairs(); err == nil {
 		for _, sp := range sps {
-			if sc := scorers[sp.Scorer]; !seenScorer[sc.Name] && !(sc.IsAgent() && holding[sc.Agent] != "") {
-				seenScorer[sc.Name] = true
+			sc := scorers[sp.Scorer]
+			if protected[sp.Task] && !seen[sc.Name] && !(sc.IsAgent() && holding[sc.Agent] != "") {
+				seen[sc.Name] = true
 				stepEnv(fmt.Sprintf("scorer %q", sc.Name), sc.StepEnv)
 			}
 		}

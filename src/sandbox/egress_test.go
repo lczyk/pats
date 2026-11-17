@@ -38,6 +38,7 @@ type fakeDocker struct {
 	out      []byte // what `--entrypoint cat` prints (the image trust bundle)
 	canary   string // what the canary run prints
 	reach    string // what the reachability probe prints; "" is a pass
+	dies     string // set: the proxy prints this and exits instead of listening
 }
 
 func newFakeDocker(t *testing.T) *fakeDocker {
@@ -55,6 +56,10 @@ func (f *fakeDocker) run(ctx context.Context, stdin io.Reader, stdout, stderr io
 		f.rmOnce.Do(func() { close(f.removed) })
 	}
 	if len(args) > 1 && args[0] == "logs" && args[1] == "-f" {
+		if f.dies != "" {
+			io.WriteString(stderr, f.dies+"\n")
+			return nil
+		}
 		io.WriteString(stderr, "listening [::]:8080\n")
 		select {
 		case <-f.removed:
@@ -577,4 +582,17 @@ func TestEgressKeysToProxyOnly(t *testing.T) {
 	defer teardown()
 	assert.ContainsString(t, strings.Join(fd.find("run -d"), " "), `PATS_EGRESS_KEYS={"ph-1":"real-1"}`)
 	assert.That(t, !strings.Contains(strings.Join(netArgs, " "), "real-1"), "the agent's args hold the key")
+}
+
+// a sidecar from before the key proxy refuses the policy; the error says
+// what to do about it.
+func TestEgressKeysOldSidecar(t *testing.T) {
+	fd := newFakeDocker(t)
+	fd.out = []byte("-----BEGIN CERTIFICATE-----\nsystemroots\n-----END CERTIFICATE-----")
+	fd.dies = "error: PATS_EGRESS_POLICY: field keys not found in type proxy.Policy"
+	eg := Egress{Set: true, Keys: map[string]string{"ph-1": "real-1"},
+		Policy: proxy.Policy{Keys: []proxy.KeyBinding{{Name: "K", Placeholder: "ph-1", Bind: []string{"POST a.test/x"}}}}}
+	_, _, err := fd.container().startEgressProxy(context.Background(), Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-o"), Egress: eg})
+	assert.Error(t, err, "field keys not found")
+	assert.Error(t, err, "egress.image")
 }

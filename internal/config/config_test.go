@@ -865,6 +865,12 @@ func TestKeyProxyValidation(t *testing.T) {
 			agent + suite, "egress keys are set by pats"},
 		"task step-env": {held + agent + "txx: {kind: task, items: {txx: {prompt: p, stage: x, step-sandbox: steps, step-env: [OPENROUTER_API_KEY]}}}\n" +
 			"sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n", `task "txx": step-env OPENROUTER_API_KEY`},
+		"scorer in another suite": {held + "boxes2: {kind: sandbox, items: {open: {image: i}}}\n" + agent +
+			"ayy: {kind: agent, items: {ayy: {harness: opencode-openrouter, model: m, sandbox: open}}}\n" +
+			"txx: {kind: task, items: {txx: {prompt: p}}}\n" +
+			"scx: {kind: scorer, items: {scx: {score: ./s.sh, step-sandbox: steps, step-env: [OPENROUTER_API_KEY]}}}\n" +
+			"sux: {kind: suite, items: {sua: {agents: axx, tasks: txx}, sub: {agents: ayy, tasks: txx, scorers: scx}}}\n",
+			`scorer "scx": step-env OPENROUTER_API_KEY`},
 		"scorer step-env": {held + agent + "txx: {kind: task, items: {txx: {prompt: p}}}\n" +
 			"scx: {kind: scorer, items: {scx: {score: ./s.sh, step-sandbox: steps, step-env: [OPENROUTER_API_KEY]}}}\n" +
 			"sux: {kind: suite, items: {sux: {agents: axx, tasks: txx, scorers: scx}}}\n", `scorer "scx": step-env OPENROUTER_API_KEY`},

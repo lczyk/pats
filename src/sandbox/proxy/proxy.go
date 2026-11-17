@@ -311,9 +311,6 @@ var forwarded = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-
 // stream is flushed as it comes, and a request body nobody read is the
 // serving connection's to settle.
 func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, origin *url.URL, use keyUse) {
-	if use.key != nil {
-		ev.Key = "substituted"
-	}
 	start := time.Now()
 	var sent, got countReader
 	defer func() {
@@ -372,6 +369,10 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, orig
 				return fmt.Errorf("the origin answered with status %d", resp.StatusCode)
 			}
 			ev.Allowed, ev.Status = true, resp.StatusCode
+			// the key went out once the origin answered it, not before.
+			if use.key != nil {
+				ev.Key = "substituted"
+			}
 			if origin != nil {
 				ev.Revocation = "unchecked"
 				if resp.TLS != nil {

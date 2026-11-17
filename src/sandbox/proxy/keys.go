@@ -254,7 +254,8 @@ func (p *Proxy) useOf(req *http.Request, host string, port uint16, tls bool) key
 // path an origin could read two ways is not one to spend a key on.
 func (k *heldKey) binds(host string, port uint16, req *http.Request) bool {
 	path := req.URL.Path
-	if req.URL.Opaque != "" || req.URL.RawPath != "" || strings.ContainsRune(req.RequestURI, '%') ||
+	target, _, _ := strings.Cut(req.RequestURI, "?")
+	if req.URL.Opaque != "" || req.URL.RawPath != "" || strings.ContainsRune(target, '%') ||
 		!utf8.ValidString(path) || strings.ContainsFunc(path, isControl) || len(readings(path)) > 1 {
 		return false
 	}

@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -41,6 +42,9 @@ type reportJudge struct {
 	// AdvisorySamples are the samples whose egress was advisory (the host
 	// driver).
 	AdvisorySamples int `json:"advisory_samples"`
+	// KeyMisuse are the urls a key proxy refused one of its samples'
+	// placeholders at.
+	KeyMisuse []string `json:"key_misuse,omitempty"`
 }
 
 type reportRun struct {
@@ -357,6 +361,11 @@ func readJudges(runDir string, warn io.Writer) []reportJudge {
 					if m.advisoryEgress() {
 						j.AdvisorySamples++
 					}
+					for _, u := range m.KeyMisuse {
+						if !slices.Contains(j.KeyMisuse, u) {
+							j.KeyMisuse = append(j.KeyMisuse, u)
+						}
+					}
 					if s := m.Summary; s != nil {
 						j.OutputTokens += s.OutputTokens
 						if s.HasCost {
@@ -665,5 +674,8 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 			line += fmt.Sprintf(", %d with advisory egress", j.AdvisorySamples)
 		}
 		fmt.Fprintln(w, line)
+		if len(j.KeyMisuse) > 0 {
+			fmt.Fprintf(w, "key misuse: judge %s tried to spend a held key at %s\n", j.Name, strings.Join(j.KeyMisuse, ", "))
+		}
 	}
 }

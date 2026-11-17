@@ -482,3 +482,17 @@ func TestScrubSeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.That(t, !strings.Contains(string(out), k.real), "streamed: %s", out)
 }
+
+// an escaped query leaves a plain path bound; a request whose upstream
+// never answered spent no key, and its line says none went out.
+func TestKeyQueryAndFailedUpstream(t *testing.T) {
+	k := newKeyRig(t, []string{"openrouter.test", bindLine}, nil, nil, nil)
+	resp, _ := k.do(t, "POST", chat+"?x=a%20b", map[string]string{"Authorization": "Bearer " + k.ph})
+	assert.Equal(t, resp.StatusCode, 200)
+	assert.Equal(t, k.got()[0].Header.Get("Authorization"), "Bearer "+testReal)
+
+	k.upstream.Close()
+	resp, _ = k.do(t, "POST", chat, map[string]string{"Authorization": "Bearer " + k.ph})
+	assert.Equal(t, resp.StatusCode, http.StatusBadGateway)
+	assert.Equal(t, k.audit.last(t).Key, "")
+}

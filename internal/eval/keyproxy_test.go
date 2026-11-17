@@ -75,9 +75,20 @@ func keyCfg(t *testing.T, stage string) *config.Config {
 	return parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {image: s, egress: {key-proxy: true, allow: [x.test]}}}}
 axx: {kind: agent, items: {axx: {harness: pi-openrouter, model: m, sandbox: sxx}}}
-txx: {kind: task, items: {txx: {prompt: p, stage: '`+stage+`'}}}
-sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+txx: {kind: task, items: {txx: {stage: '`+stage+`',
+  prompt-cmd: 'echo "p=${OPENROUTER_API_KEY:-none}" > "$PATS_OUTPUT_DIR/prompt-cmd.txt"; echo go',
+  collect: 'echo "c=${OPENROUTER_API_KEY:-none}" > "$PATS_OUTPUT_DIR/collect.txt"'}}}
+scx: {kind: scorer, items: {scx: {score: 'test -z "$OPENROUTER_API_KEY" && echo 1 || echo 0'}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx, scorers: scx}}}
 `)
+}
+
+// what a host step wrote of the key, in the pair's dir.
+func stepSaw(t *testing.T, pairDir, file string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(pairDir, file))
+	require.NoError(t, err)
+	return strings.TrimSpace(string(b))
 }
 
 // a key proxy's pair: the agent gets a placeholder of the key's shape, a
@@ -94,7 +105,7 @@ func TestKeyProxyPair(t *testing.T) {
 	cfg := keyCfg(t, `echo "k=${OPENROUTER_API_KEY:-none}"`)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
-	runDir, err := Run(cfg, Options{ConfigDir: dir, Out: &out})
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Out: &out, Verbose: 2})
 	require.NoError(t, err, out.String())
 
 	require.Len(t, box.specs, 2) // the preflight, then the pair
@@ -117,9 +128,13 @@ func TestKeyProxyPair(t *testing.T) {
 	assert.That(t, placeholders[0] != placeholders[1], "preflight and pair share a placeholder")
 
 	pairDir := filepath.Join(runDir, "axx", "txx")
-	stage, err := os.ReadFile(filepath.Join(pairDir, "stage.log"))
+	assert.Equal(t, stepSaw(t, pairDir, "stage.log"), "k=none")
+	assert.Equal(t, stepSaw(t, pairDir, "prompt-cmd.txt"), "p=none")
+	assert.Equal(t, stepSaw(t, pairDir, "collect.txt"), "c=none")
+	// a host scorer of the pair does not inherit the key either.
+	scored, err := Score(cfg, ScoreOptions{ConfigDir: dir, RunDir: runDir, Out: io.Discard})
 	require.NoError(t, err)
-	assert.Equal(t, strings.TrimSpace(string(stage)), "k=none")
+	assert.Equal(t, scored.PerPair["axx/txx"], 1.0)
 	meta, err := os.ReadFile(filepath.Join(pairDir, "metadata.json"))
 	require.NoError(t, err)
 	assert.That(t, !strings.Contains(string(meta), fixtureKey), "the key in metadata.json")
@@ -128,16 +143,21 @@ func TestKeyProxyPair(t *testing.T) {
 	require.NoError(t, json.Unmarshal(meta, &m))
 	assert.Equal(t, m.Egress.KeysSubstituted, 1)
 	assert.Equal(t, m.Egress.Policy.Keys[0].Placeholder, "<placeholder>")
-	assert.That(t, !strings.Contains(out.String(), fixtureKey), "the key in pats's output")
+	assert.That(t, !strings.Contains(out.String(), fixtureKey), "the key in pats's -vv output")
+	_ = filepath.WalkDir(runDir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			b, _ := os.ReadFile(p)
+			assert.That(t, !bytes.Contains(b, []byte(fixtureKey)), "the key in %s", p)
+		}
+		return nil
+	})
 
 	// without a key proxy the stage inherits the key, as before.
 	cfg.Sandboxes[0].Egress.KeyProxy = false
 	box.specs, box.envs = nil, nil
 	runDir, err = Run(cfg, Options{ConfigDir: dir, Out: &out})
 	require.NoError(t, err)
-	stage, err = os.ReadFile(filepath.Join(runDir, "axx", "txx", "stage.log"))
-	require.NoError(t, err)
-	assert.Equal(t, strings.TrimSpace(string(stage)), "k="+fixtureKey)
+	assert.Equal(t, stepSaw(t, filepath.Join(runDir, "axx", "txx"), "stage.log"), "k="+fixtureKey)
 	assert.Equal(t, box.envs[0]["OPENROUTER_API_KEY"], fixtureKey)
 }
 
