@@ -448,7 +448,8 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 }
 
 // a run dir that cannot be made while an earlier repeat's pair runs: that
-// pair ends before the invocation returns, with the error.
+// pair ends before the invocation returns, with the error, and a cap it
+// passes on the way out is still warned of.
 func TestDispatchRunDirFailsWhileRunning(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root writes through a read-only dir")
@@ -459,12 +460,16 @@ func TestDispatchRunDirFailsWhileRunning(t *testing.T) {
 	g := newGate(func(p string) bool { return p == "slow" })
 	old := newSandbox
 	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
-		return &fakeSandbox{stdout: "fine\n", onRun: func(spec sandbox.Spec) {
+		f := &fakeSandbox{stdout: "fine\n"}
+		f.onRun = func(spec sandbox.Spec) {
 			if promptOf(spec) == "fast" {
 				require.NoError(t, os.Chmod(runs, 0o555))
+			} else {
+				f.preRun = steps(1, 1) // its cost lands as it is released
 			}
 			g.onRun(spec)
-		}}, nil
+		}
+		return f, nil
 	}
 	t.Cleanup(func() { newSandbox = old })
 	cfg := parseCfg(t, `
@@ -477,7 +482,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	var out bytes.Buffer
 	errc := make(chan error, 1)
 	go func() {
-		_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 2, Repeat: 2})
+		_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 2, Repeat: 2, Budget: config.Budget{Cost: 1}})
 		errc <- err
 	}()
 	waitFor(t, "both of repeat 1", func() bool { s, _ := g.snapshot(); return len(s) == 2 })
@@ -488,10 +493,53 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	default:
 	}
 	close(g.release)
+	// the dir's error wins; the cap the running pair passed is still said.
 	assert.Error(t, <-errc, "permission denied")
+	assert.ContainsString(t, out.String(), "WARN budget $1.00 reached at $1.00: 1 more run(s) not started")
 	names, err := sortedRunNames(runs)
 	require.NoError(t, err)
 	require.Len(t, names, 1)
 	_, err = os.Stat(filepath.Join(runs, names[0], "axx", "slow", "metadata.json"))
 	assert.NoError(t, err)
+}
+
+// a cap reached while several repeats are under way: nothing further
+// starts in any, a repeat not begun makes no run dir, each begun repeat's
+// totals come once its running pair ends, and the warning counts both.
+func TestRunBudgetAcrossRepeats(t *testing.T) {
+	g := newGate(func(p string) bool { return p == "long" })
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		return &fakeSandbox{preRun: steps(1, 1), onRun: g.onRun}, nil
+	}
+	t.Cleanup(func() { newSandbox = old })
+	dir := t.TempDir()
+	pastRun(t, dir, "001-20261101-old-run", map[string]float64{"long": 600, "short": 1})
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tvx: {kind: task, items: {long: {prompt: p-long}, short: {prompt: p-short}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	errc := make(chan error, 1)
+	go func() {
+		_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 2, Repeat: 3, Verbose: 1, Budget: config.Budget{Cost: 1}})
+		errc <- err
+	}()
+	waitFor(t, "both slots", func() bool { s, _ := g.snapshot(); return len(s) == 2 })
+	close(g.release)
+	assert.ErrorIs(t, <-errc, ErrBudget)
+	started, _ := g.snapshot()
+	assert.EqualArrays(t, started, []string{"long", "long"})
+	runs, err := sortedRunNames(filepath.Join(dir, runsSubdir))
+	require.NoError(t, err)
+	assert.Len(t, runs, 3) // the past one and repeats 1 and 2
+	o := out.String()
+	assert.ContainsString(t, o, "reached at $")
+	assert.ContainsString(t, o, ": 2 pair(s) of runs 1-2/3 and 1 more run(s) not started")
+	assert.ContainsString(t, o, "INFO run 1/3: 1 ok")
+	assert.ContainsString(t, o, "INFO run 2/3: 1 ok")
+	assert.That(t, !strings.Contains(o, "INFO run 3/3"), "repeat 3 logged:\n%s", o)
 }

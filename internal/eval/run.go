@@ -341,8 +341,31 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 		}
 		d.queue = nil
 	}
+	// back counts a pair that came back; drain does so for every pair that
+	// has ended by now, so one still waiting to say so does not rank as
+	// running at the next pick.
+	back := func(e ended) {
+		running--
+		perSandbox[e.q.sandbox]--
+		d.est.end(e.q.key, e.start, e.stat.status, e.stat.agentDur)
+		rr := d.reps[e.q.rep-1]
+		rr.stats = append(rr.stats, e.stat)
+		rr.last = time.Now()
+		d.settle(e.q.rep)
+	}
+	drain := func() {
+		for {
+			select {
+			case e := <-done:
+				back(e)
+			default:
+				return
+			}
+		}
+	}
 	for {
 		for !stopped && running < d.jobs && len(d.queue) > 0 {
+			drain()
 			if ctx.Err() != nil {
 				d.say(lvWarn, false, "interrupted -- stopping")
 				stop()
@@ -404,22 +427,7 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 				continue
 			}
 		}
-		// every pair that has ended by now is counted before the next
-		// pick, so one still waiting to say so does not rank as running.
-		for more := true; more; {
-			running--
-			perSandbox[e.q.sandbox]--
-			d.est.end(e.q.key, e.start, e.stat.status, e.stat.agentDur)
-			rr := d.reps[e.q.rep-1]
-			rr.stats = append(rr.stats, e.stat)
-			rr.last = time.Now()
-			d.settle(e.q.rep)
-			select {
-			case e = <-done:
-			default:
-				more = false
-			}
-		}
+		back(e)
 	}
 	return d.lastDir, dirErr
 }
