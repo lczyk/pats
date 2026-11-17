@@ -2,28 +2,28 @@
 class Pats < Formula
   desc "Score-based testing framework for agent tasks"
   homepage "https://github.com/lczyk/pats"
-  version "1.0.2"
+  version "1.1.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/lczyk/pats/releases/download/v1.0.2/pats_1.0.2_darwin_arm64.tar.gz"
-      sha256 "bd334d6fd719ac4f153436e964ae37f69cfff435001225949d43642430418336"
+      url "https://github.com/lczyk/pats/releases/download/v1.1.0/pats_1.1.0_darwin_arm64.tar.gz"
+      sha256 "fa0b6a5b14439b532c3db2572221c69d7e61763e20166f9df137742436144fe3"
     end
     on_intel do
-      url "https://github.com/lczyk/pats/releases/download/v1.0.2/pats_1.0.2_darwin_amd64.tar.gz"
-      sha256 "6cca1af9eb458fdaaa6d5a014b4021c3535001ac597d40714f86bbadb19138c4"
+      url "https://github.com/lczyk/pats/releases/download/v1.1.0/pats_1.1.0_darwin_amd64.tar.gz"
+      sha256 "361178cf418249d6f350fa241b45b1e8fad0d13dbc968c19944c8abd53f017ee"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/lczyk/pats/releases/download/v1.0.2/pats_1.0.2_linux_arm64.tar.gz"
-      sha256 "becc84119d2a9f2b9d2e0b0367e44cd234f1696ab5cd23b202cd90a68a89fc9d"
+      url "https://github.com/lczyk/pats/releases/download/v1.1.0/pats_1.1.0_linux_arm64.tar.gz"
+      sha256 "5d2b07d1e7f6bed71851b91cf4075bcc06dd740531761baf4c8179f365e6792f"
     end
     on_intel do
-      url "https://github.com/lczyk/pats/releases/download/v1.0.2/pats_1.0.2_linux_amd64.tar.gz"
-      sha256 "952b28d6cf3a63feca4dcf603671c9a4f71944809bbaa1047acb69124c90a37f"
+      url "https://github.com/lczyk/pats/releases/download/v1.1.0/pats_1.1.0_linux_amd64.tar.gz"
+      sha256 "0edc31104d3b605acfc5a73285c3f3e3c05017e333171a4d80305ee317025ff1"
     end
   end
 
