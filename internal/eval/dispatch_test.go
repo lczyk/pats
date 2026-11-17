@@ -20,103 +20,13 @@ import (
 
 func key(task string) historyKey { return historyKey{agent: "a", task: task} }
 
-func names(queue []*queued) []string {
-	var out []string
-	for _, q := range queue {
-		out = append(out, q.pair.Task+"#"+string(rune('0'+q.rep)))
-	}
-	return out
-}
-
-func queueOf(reps int, limit time.Duration, tasks ...string) []*queued {
-	var q []*queued
-	for r := 1; r <= reps; r++ {
-		for i, t := range tasks {
-			q = append(q, &queued{rep: r, idx: i, pair: config.TestPair{Agent: "a", Task: t}, key: key(t), limit: limit})
-		}
-	}
-	return q
-}
-
-// longest first: unknown, then the longest estimate, then the earlier
-// repeat, then the selection's order.
-func TestDispatchOrder(t *testing.T) {
-	t0 := time.Unix(1000, 0)
-	hist := map[historyKey]*pastPairs{
-		key("x"): {durations: []float64{600}},
-		key("y"): {durations: []float64{60, 50, 70}},
-	}
-
-	e := newEstimates(hist)
-	q := queueOf(1, 0, "x", "y", "z")
-	e.order(q, t0)
-	assert.EqualArrays(t, names(q), []string{"z#1", "x#1", "y#1"})
-
-	// a sample here replaces the history's median.
-	e.end(key("x"), t0, "ok", 10)
-	e.order(q, t0)
-	assert.EqualArrays(t, names(q), []string{"z#1", "y#1", "x#1"})
-
-	// an error is no sample.
-	e = newEstimates(hist)
-	e.end(key("x"), t0, "error", 1)
-	e.order(q, t0)
-	assert.EqualArrays(t, names(q), []string{"z#1", "x#1", "y#1"})
-
-	// a pair running past its estimate raises its siblings; a key whose only
-	// pair is running is no longer unknown.
-	e = newEstimates(hist)
-	e.start(key("y"), t0)
-	e.start(key("z"), t0.Add(30*time.Second))
-	q = queueOf(1, 0, "x", "y", "z")
-	e.order(q, t0.Add(20*time.Minute))
-	assert.EqualArrays(t, names(q), []string{"y#1", "z#1", "x#1"})
-	e.end(key("y"), t0, "ok", 1200)
-	e.order(q, t0.Add(20*time.Minute))
-	assert.EqualArrays(t, names(q), []string{"y#1", "z#1", "x#1"})
-
-	// capped at the timeout: x's 10m under a 5m timeout ties with y's 5m and
-	// keeps the selection's order; no timeout is no cap.
-	e = newEstimates(map[historyKey]*pastPairs{key("x"): {durations: []float64{600}}, key("y"): {durations: []float64{300}}})
-	q = queueOf(1, 5*time.Minute, "y", "x")
-	e.order(q, t0)
-	assert.EqualArrays(t, names(q), []string{"y#1", "x#1"})
-	q = queueOf(1, 0, "y", "x")
-	e.order(q, t0)
-	assert.EqualArrays(t, names(q), []string{"x#1", "y#1"})
-
-	// the agent's time under a timeout of 0 is the cap.
+// the agent's time under a timeout of 0 is the limit; neither is none.
+func TestEffectiveTimeout(t *testing.T) {
 	a := config.Agent{Budget: config.Budget{Time: time.Minute}}
 	assert.Equal(t, effectiveTimeout(a, config.Task{Timeout: "0"}), time.Minute)
 	assert.Equal(t, effectiveTimeout(config.Agent{}, config.Task{Timeout: "0"}), time.Duration(0))
 	assert.Equal(t, effectiveTimeout(a, config.Task{Timeout: "30s"}), 30*time.Second)
-
-	// the same estimate in every repeat: the earlier repeat first.
-	e = newEstimates(hist)
-	q = queueOf(2, 0, "y", "x")
-	e.order(q, t0)
-	assert.EqualArrays(t, names(q), []string{"x#1", "x#2", "y#1", "y#2"})
-}
-
-// with no history and one slot, repeat 1 goes in the selection's order,
-// then what was learned ranks the rest.
-func TestDispatchLearns(t *testing.T) {
-	durs := map[string]time.Duration{"x": 10 * time.Minute, "y": time.Minute}
-	e := newEstimates(nil)
-	q := queueOf(3, 0, "x", "y")
-	now := time.Unix(0, 0)
-	var started []string
-	for len(q) > 0 {
-		e.order(q, now)
-		next := q[0]
-		q = q[1:]
-		started = append(started, names([]*queued{next})[0])
-		e.start(next.key, now)
-		at := now
-		now = now.Add(durs[next.pair.Task])
-		e.end(next.key, at, "ok", durs[next.pair.Task].Seconds())
-	}
-	assert.EqualArrays(t, started, []string{"x#1", "y#1", "x#2", "x#3", "y#2", "y#3"})
+	assert.Equal(t, effectiveTimeout(a, config.Task{Timeout: "5m"}), time.Minute)
 }
 
 // a run reads what history it can: what cannot be read is left out without

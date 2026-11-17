@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/sched"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -54,6 +54,8 @@ type Options struct {
 	// prices is what the catalogue says each agent's model costs, for a
 	// harness that reports tokens and no cost; nil offline.
 	prices map[string]*modelPrice
+	// clock is what the dispatcher times pairs by; nil is time.Now.
+	clock func() time.Time
 }
 
 // Run executes every suite (agent, task) pair and returns the run dir it wrote to.
@@ -216,9 +218,17 @@ type repeatRun struct {
 	first, last time.Time
 }
 
-// dispatch runs every pair of every repeat through one queue, up to jobs at
-// a time, longest first (dispatch.go). one goroutine, run, starts every pair;
-// a single run is the same with one repeat.
+// repeatPair is a pair of one repeat: what the scheduler's tasks carry.
+type repeatPair struct {
+	rep  int // 1-based
+	pair config.TestPair
+}
+
+type pairTask = sched.Task[historyKey, repeatPair]
+
+// dispatch runs every pair of every repeat through one scheduler
+// (internal/sched), up to jobs at a time, longest first. one goroutine, run,
+// starts every pair; a single run is the same with one repeat.
 type dispatch struct {
 	cfg       *config.Config
 	opts      Options
@@ -227,11 +237,11 @@ type dispatch struct {
 	agents    map[string]config.Agent
 	tasks     map[string]config.Task
 	sandboxes map[string]config.Sandbox
-	caps      map[string]int // a sandbox's max_parallel, where it has one
 
-	queue   []*queued
+	s       *sched.Scheduler[historyKey, repeatPair]
+	now     func() time.Time
 	reps    []*repeatRun // index 0 is repeat 1
-	est     *estimates
+	labelW  int
 	bar     *progress
 	outMu   sync.Mutex
 	lastDir string
@@ -241,52 +251,70 @@ type dispatch struct {
 
 // ended is a started pair coming back to the dispatcher.
 type ended struct {
-	q     *queued
-	stat  *pairStat
-	start time.Time
+	t    *pairTask
+	stat *pairStat
 }
 
 func newDispatch(cfg *config.Config, opts Options, lg logw, pairs []config.TestPair, n, jobs int,
 	agents map[string]config.Agent, tasks map[string]config.Task, sandboxes map[string]config.Sandbox,
 	hist map[historyKey]*pastPairs,
 ) *dispatch {
-	d := &dispatch{
-		cfg: cfg, opts: opts, lg: lg, n: n, jobs: jobs,
-		agents: agents, tasks: tasks, sandboxes: sandboxes, caps: map[string]int{},
-		est: newEstimates(hist),
-	}
+	caps := map[string]int{}
 	for _, sb := range cfg.Sandboxes {
 		if sb.MaxParallel > 0 {
-			d.caps[sb.Name] = sb.MaxParallel
+			caps[sb.Name] = sb.MaxParallel
 		}
 	}
+	d := &dispatch{
+		cfg: cfg, opts: opts, lg: lg, n: n, jobs: jobs,
+		agents: agents, tasks: tasks, sandboxes: sandboxes,
+		s: sched.New[historyKey, repeatPair](sched.Options{Slots: jobs, Caps: caps}), now: opts.clock,
+	}
+	if d.now == nil {
+		d.now = time.Now
+	}
+	for k, h := range hist {
+		for _, sec := range h.durations {
+			d.s.Prime(k, time.Duration(sec*float64(time.Second)))
+		}
+	}
+	known := 0
 	for r := 1; r <= n; r++ {
 		d.reps = append(d.reps, &repeatRun{pending: len(pairs)})
 		for i, p := range pairs {
 			a := agents[p.Agent]
 			sb, _ := cfg.ResolveSandbox(a)
-			d.queue = append(d.queue, &queued{
-				rep: r, idx: i, pair: p, key: keyOf(p, a), sandbox: sb,
-				limit: effectiveTimeout(a, tasks[p.Task]),
-			})
-		}
-	}
-	known := 0
-	for _, p := range pairs {
-		if len(d.est.hist[keyOf(p, agents[p.Agent])]) > 0 {
-			known++
+			t := &pairTask{
+				Key: keyOf(p, a), Group: sb, Round: r, Index: i,
+				Limit: effectiveTimeout(a, tasks[p.Task]), Value: repeatPair{r, p},
+			}
+			d.s.Add(t)
+			d.labelW = max(d.labelW, len(d.label(t)))
+			if r == 1 && d.s.Primed(t.Key) {
+				known++
+			}
 		}
 	}
 	lg.detail("dispatch: longest first, history for %d of %d pair(s)", known, len(pairs))
 	return d
 }
 
+// effectiveTimeout is how long the agent may run: the task's timeout,
+// shortened by the agent's time budget; 0 is no limit.
+func effectiveTimeout(a config.Agent, t config.Task) time.Duration {
+	tt := t.TimeoutDuration()
+	if bt := a.Budget.Time; bt > 0 && (tt == 0 || bt < tt) {
+		return bt
+	}
+	return tt
+}
+
 // label is a pair's name in its log lines and on the bar: its repeat too
 // when there is more than one.
-func (d *dispatch) label(q *queued) string {
-	l := q.pair.Agent + "/" + q.pair.Task
+func (d *dispatch) label(t *pairTask) string {
+	l := t.Value.pair.Agent + "/" + t.Value.pair.Task
 	if d.n > 1 {
-		l += "#" + strconv.Itoa(q.rep)
+		l += "#" + strconv.Itoa(t.Value.rep)
 	}
 	return l
 }
@@ -313,45 +341,37 @@ func (d *dispatch) say(lv level, detail bool, format string, args ...any) {
 func (d *dispatch) run(ctx context.Context) (string, error) {
 	// on a tty, draw a sticky progress region (total bar + a live line per
 	// in-flight pair); otherwise (pipe/ci/tee) print plain per-pair lines.
-	if isProgressTTY(d.opts.Out) {
-		labelW := 0
-		for _, q := range d.queue {
-			labelW = max(labelW, len(d.label(q)))
-		}
-		d.bar = newProgress(d.opts.Out, len(d.queue), labelW)
+	if total := d.s.Queued(); isProgressTTY(d.opts.Out) {
+		d.bar = newProgress(d.opts.Out, total, d.labelW)
 		defer d.bar.close()
 	} else if d.jobs > 1 {
-		d.lg.detail("running %d pairs, up to %d in parallel", len(d.queue), d.jobs)
+		d.lg.detail("running %d pairs, up to %d in parallel", total, d.jobs)
 	}
 
 	done := make(chan ended)
-	running := 0
-	perSandbox := map[string]int{}
 	stopped := false
 	var dirErr error
 	stop := func() {
 		stopped = true
-		for _, q := range d.queue {
-			rr := d.reps[q.rep-1]
-			rr.notStarted++
-			d.settle(q.rep)
+		dropped := d.s.Drop(d.now())
+		for _, t := range dropped {
+			d.reps[t.Value.rep-1].notStarted++
+			d.settle(t.Value.rep)
 		}
 		if d.bar != nil {
-			d.bar.drop(len(d.queue))
+			d.bar.drop(len(dropped))
 		}
-		d.queue = nil
 	}
 	// back counts a pair that came back; drain does so for every pair that
 	// has ended by now, so one still waiting to say so does not rank as
 	// running at the next pick.
 	back := func(e ended) {
-		running--
-		perSandbox[e.q.sandbox]--
-		d.est.end(e.q.key, e.start, e.stat.status, e.stat.agentDur)
-		rr := d.reps[e.q.rep-1]
+		ok := e.stat.status != "" && e.stat.status != "error"
+		d.s.Done(e.t, time.Duration(e.stat.agentDur*float64(time.Second)), ok)
+		rr := d.reps[e.t.Value.rep-1]
 		rr.stats = append(rr.stats, e.stat)
-		rr.last = time.Now()
-		d.settle(e.q.rep)
+		rr.last = d.now()
+		d.settle(e.t.Value.rep)
 	}
 	drain := func() {
 		for {
@@ -364,30 +384,25 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 		}
 	}
 	for {
-		for !stopped && running < d.jobs && len(d.queue) > 0 {
+		for !stopped {
 			drain()
 			if ctx.Err() != nil {
 				d.say(lvWarn, false, "interrupted -- stopping")
 				stop()
 				break
 			}
-			now := time.Now()
-			d.est.order(d.queue, now)
-			i := slices.IndexFunc(d.queue, func(q *queued) bool {
-				c, capped := d.caps[q.sandbox]
-				return !capped || perSandbox[q.sandbox] < c
-			})
-			if i < 0 {
-				break // every queued pair waits on its sandbox's cap
+			t := d.s.Peek(d.now())
+			if t == nil {
+				break // no slot free, nothing queued, or all wait on a cap
 			}
-			q := d.queue[i]
 			stat := &pairStat{}
 			if !d.opts.ledger.admit(stat) {
 				d.budgetStop = true
 				stop()
 				break
 			}
-			rr := d.reps[q.rep-1]
+			rep := t.Value.rep
+			rr := d.reps[rep-1]
 			if rr.dir == "" {
 				dir, err := nextRunDir(filepath.Join(d.opts.ConfigDir, runsSubdir), d.opts.Now)
 				if err != nil {
@@ -396,23 +411,20 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 					stop()
 					break
 				}
-				rr.dir, rr.first, d.lastDir = dir, now, dir
+				rr.dir, rr.first, d.lastDir = dir, d.now(), dir
 				if d.n > 1 {
-					d.say(lvInfo, false, "run %d/%d: %s", q.rep, d.n, filepath.Base(dir))
+					d.say(lvInfo, false, "run %d/%d: %s", rep, d.n, filepath.Base(dir))
 				} else {
 					d.say(lvInfo, true, "run dir: %s", relToCwd(dir))
 				}
 			}
-			d.queue = slices.Delete(d.queue, i, i+1)
-			running++
-			perSandbox[q.sandbox]++
-			d.est.start(q.key, now)
+			d.s.Start(t, d.now())
 			go func() {
-				d.runOne(ctx, q, rr.dir, stat)
-				done <- ended{q, stat, now}
+				d.runOne(ctx, t, rr.dir, stat)
+				done <- ended{t, stat}
 			}()
 		}
-		if running == 0 {
+		if d.s.Running() == 0 {
 			break
 		}
 		var e ended
@@ -448,9 +460,9 @@ func (d *dispatch) settle(rep int) {
 }
 
 // runOne runs a started pair into its run dir.
-func (d *dispatch) runOne(ctx context.Context, q *queued, runDir string, stat *pairStat) {
+func (d *dispatch) runOne(ctx context.Context, t *pairTask, runDir string, stat *pairStat) {
 	defer d.opts.ledger.finish(stat)
-	label := d.label(q)
+	label, p := d.label(t), t.Value.pair
 	po := d.opts
 	var buf bytes.Buffer
 	if d.bar != nil || d.jobs > 1 {
@@ -471,12 +483,12 @@ func (d *dispatch) runOne(ctx context.Context, q *queued, runDir string, stat *p
 			po.live = ls
 		}
 	}
-	a := d.agents[q.pair.Agent]
+	a := d.agents[p.Agent]
 	if d.bar != nil {
-		egressPath := filepath.Join(runDir, q.pair.Agent, q.pair.Task, "egress.log")
+		egressPath := filepath.Join(runDir, p.Agent, p.Task, "egress.log")
 		d.bar.start(label, stat, egressPath, d.cfg.HarnessOf(a).Parser() != nil)
 	}
-	job := taskJob(runDir, q.pair, a, d.tasks[q.pair.Task])
+	job := taskJob(runDir, p, a, d.tasks[p.Task])
 	job.label = label
 	if err := runPair(ctx, d.cfg, po, runDir, job, d.sandboxes, stat); err != nil {
 		logw{po.Out, d.opts.Color, d.opts.Verbose}.error("%s %v", label, err)
