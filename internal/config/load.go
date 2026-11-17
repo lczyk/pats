@@ -384,6 +384,12 @@ func merge(proto any, kind string, defaults, own map[string]*yaml.Node) (any, er
 			}
 			layer[k] = env
 		case k == "budget" && layer["budget"] != nil:
+			// the item's null kinds go in the merge: check its keys first.
+			if over, err := mappingOf(budgetMapping(v), "budget"); err == nil {
+				if err := checkBudgetKinds(over); err != nil {
+					return nil, err
+				}
+			}
 			b, err := mergeKeys(budgetMapping(layer["budget"]), budgetMapping(v), "budget")
 			if err != nil {
 				return nil, err

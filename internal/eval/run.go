@@ -166,15 +166,14 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
 		return "", err
 	}
+	// the budget spans every repeat: the invocation's. its clock starts
+	// here, at the end of preflight.
+	opts.ledger = newLedger(opts.Budget)
 	for _, w := range <-upstream {
 		lg.warn("%s", w)
 	}
 
 	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
-
-	// the budget spans every repeat: the invocation's. its clock starts
-	// here, after preflight.
-	opts.ledger = newLedger(opts.Budget)
 
 	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
 	// run dir; what is above happens once for all of them.

@@ -508,3 +508,76 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	require.NoError(t, err, "%s", buf.String())
 	assert.ContainsString(t, buf.String(), "WARN agent axx reports no tool calls: its tools budget has nothing to check")
 }
+
+// an agent that never launched is an error, whatever its time budget did
+// meanwhile: nothing ran, so nothing is collected.
+func TestAgentTimeLaunchFailure(t *testing.T) {
+	box := &fakeSandbox{blockUntilDone: true, err: fmt.Errorf("start: %w", sandbox.ErrLaunch)}
+	m, _ := runOne(t, "opencode-openrouter", "budget: {time: 20ms}", "timeout: 1m", box, Options{})
+	assert.Equal(t, m.Status, "error")
+	assert.Equal(t, m.BudgetKind, "")
+}
+
+// tok reports the total tokens each line states.
+const totalTokens = `
+hxx:
+  kind: harness
+  items:
+    tok:
+      run: tok
+      parse: |
+        ev = json.decode(line, default = {})
+        out.usage(total = True, input_tokens = ev.get("t", 0))
+`
+
+// the stop says what the pair had when it passed its cap: a later line
+// restating the total lower does not change it.
+func TestAgentStopSnapshot(t *testing.T) {
+	old := newSandbox
+	box := &fakeSandbox{blockUntilDone: true, preRun: `{"t":110}` + "\n" + `{"t":90}` + "\n"}
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return box, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, totalTokens+`
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: tok, sandbox: sxx, budget: {tokens: 100}}}}
+txx: {kind: task, items: {txx: {prompt: p, timeout: 1m}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err, "%s", out.String())
+	m := readMeta(t, runDir, "axx", "txx")
+	assert.Equal(t, m.Status, "budget")
+	assert.Equal(t, m.Error, "tokens 110 passed its budget 100")
+	assert.Equal(t, m.Summary.InputTokens, 90)
+}
+
+// a last line with no newline is the summary's alone: a cap it passes
+// changes no status, and counts toward the run's cap from then on.
+func TestBudgetFromTheSummary(t *testing.T) {
+	old := newSandbox
+	box := &fakeSandbox{preRun: `{"t":50}` + "\n", stdout: `{"t":150}`, preflightOut: `{"t":1}` + "\n"}
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return box, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, totalTokens+`
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: tok, sandbox: sxx, budget: {tokens: 100}}}}
+tvx: {kind: task, items: {t1x: {prompt: p}, t2x: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, Budget: config.Budget{Tokens: 100}})
+	assert.ErrorIs(t, err, ErrBudget)
+	ran := "t1x" // -j 1 runs one pair, whichever takes the slot first
+	if _, err := os.Stat(filepath.Join(runDir, "axx", ran)); err != nil {
+		ran = "t2x"
+	}
+	m := readMeta(t, runDir, "axx", ran)
+	assert.Equal(t, m.Status, "ok")
+	assert.Equal(t, m.Summary.InputTokens, 150)
+	assert.ContainsString(t, out.String(), "WARN budget tokens 100 reached at 150: 1 pair(s) not started")
+}

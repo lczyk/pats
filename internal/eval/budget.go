@@ -18,8 +18,12 @@ import (
 var ErrBudget = errors.New("budget reached")
 
 // budgetStop cancels an agent whose pair passed a cap of its agent's
-// budget: kind is the cap.
-type budgetStop struct{ kind string }
+// budget: kind is the cap, at what the pair had reported then, so output
+// arriving as the agent stops does not change what the stop says.
+type budgetStop struct {
+	kind string
+	at   usage
+}
 
 func (b budgetStop) Error() string { return b.kind + " budget passed" }
 

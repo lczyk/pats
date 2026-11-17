@@ -137,3 +137,39 @@ func TestBudgetString(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, back, b)
 }
+
+// a cap's value may be an alias, and a budget may come in through a merge
+// key; a kind that is no kind fails even unset, with or without defaults.
+func TestParseBudgetAliasesAndUnknownKinds(t *testing.T) {
+	c := parseT(t, `
+wxx:
+  kind: agent
+  items:
+    wxx: {harness: opencode-openrouter, model: m, budget: &caps {cost: 2, tokens: 20k}}
+vxx:
+  kind: agent
+  defaults:
+    harness: opencode-openrouter
+    model: m
+    budget: {cost: &c 3, tokens: &k 2M, tools: &n 30, time: &d 5m}
+  items:
+    axx:
+      budget: {cost: *c, tokens: *k, tools: *n, time: *d}
+    bxx:
+      budget:
+        <<: *caps
+`)
+	assert.Equal(t, c.Agents[1].Budget, Budget{Cost: 3, Tokens: 2_000_000, Tools: 30, Time: 5 * time.Minute})
+	assert.Equal(t, c.Agents[2].Budget, Budget{Cost: 2, Tokens: 20_000, Tools: 30, Time: 5 * time.Minute})
+
+	for name, src := range map[string]string{
+		"no defaults":   "axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, budget: {toknes: ~}}}}\n",
+		"over defaults": "axx: {kind: agent, defaults: {budget: 2}, items: {axx: {harness: opencode-openrouter, model: m, budget: {toknes: ~}}}}\n",
+		"in defaults":   "axx: {kind: agent, defaults: {budget: {toknes: ~}}, items: {axx: {harness: opencode-openrouter, model: m}}}\n",
+		"by a merge":    "txx: {kind: task, items: {txx: {prompt: p, env: &nul {toknes: ~}}}}\naxx: {kind: agent, defaults: {budget: 2}, items: {axx: {harness: opencode-openrouter, model: m, budget: {<<: *nul}}}}\n",
+	} {
+		_, err := Parse([]byte(src))
+		require.That(t, err != nil, "%s: no error", name)
+		assert.ContainsString(t, err.Error(), `unknown kind "toknes"`)
+	}
+}

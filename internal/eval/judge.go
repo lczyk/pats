@@ -152,6 +152,7 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 		if err := judgeSetup(ctx, cfg, ro, judgePairs, judged, lg); err != nil {
 			return err
 		}
+		ro.ledger = newLedger(jo.Budget) // its clock starts at the end of preflight
 		var names []string
 		for _, p := range judgePairs {
 			names = append(names, p.Agent)
@@ -160,7 +161,9 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 		jobs = resolveJobs(jo.Jobs, func() int { return autoCPUs(ctx, cfg, judgePairs) })
 	}
 
-	ro.ledger = newLedger(jo.Budget)
+	if ro.ledger == nil {
+		ro.ledger = newLedger(jo.Budget)
+	}
 
 	for _, d := range runDirs {
 		if len(runDirs) > 1 {

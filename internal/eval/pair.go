@@ -182,6 +182,7 @@ func runPair(
 	var r harnessRun
 	var stopped bool      // the agent's budget or the deadline stopped it
 	var budgetKind string // the cap of its agent's budget that stopped it
+	var budgetAt usage    // what the pair had reported when it did
 	var sess sandbox.Session
 	// synced: the host copy of the agent's files is current, so collect
 	// can read it.
@@ -225,21 +226,25 @@ func runPair(
 		actx, acancel := context.WithCancelCause(ctx)
 		stat.use = func(d usage) {
 			opts.ledger.add(stat, d)
-			if kind := passed(a.Budget, stat.used()); kind != "" {
-				acancel(budgetStop{kind})
+			if u := stat.used(); passed(a.Budget, u) != "" {
+				acancel(budgetStop{passed(a.Budget, u), u})
 			}
 		}
 		// an agent's time below the task's timeout is a deadline of its own.
+		var timer *time.Timer
 		if bt, tt := a.Budget.Time, t.TimeoutDuration(); bt > 0 && (tt == 0 || bt < tt) {
-			timer := time.AfterFunc(bt, func() { acancel(budgetStop{"time"}) })
-			defer timer.Stop()
+			timer = time.AfterFunc(bt, func() { acancel(budgetStop{kind: "time"}) })
 		}
 		r = h.exec(actx, sess, stdoutW, stderrW, t.TimeoutDuration())
+		if timer != nil {
+			timer.Stop()
+		}
 		// the first cause wins: a deadline first is a timeout, a cap first
-		// a budget stop; an interrupt is neither.
+		// a budget stop; an interrupt is neither, and nor is an agent that
+		// never launched.
 		var bs budgetStop
-		if !r.timedOut && ctx.Err() == nil && errors.As(context.Cause(actx), &bs) {
-			budgetKind = bs.kind
+		if !r.timedOut && ctx.Err() == nil && !errors.Is(r.err, sandbox.ErrLaunch) && errors.As(context.Cause(actx), &bs) {
+			budgetKind, budgetAt = bs.kind, bs.at
 		}
 		acancel(nil)
 		stopped = r.timedOut || budgetKind != ""
@@ -262,7 +267,7 @@ func runPair(
 		// an interrupt of the run wins over whatever else ended the agent.
 		status, errStr = "error", "interrupted"
 	case budgetKind != "":
-		status, errStr = "budget", stopMessage(budgetKind, a.Budget, stat.used(), time.Duration(r.dur*float64(time.Second)))
+		status, errStr = "budget", stopMessage(budgetKind, a.Budget, budgetAt, time.Duration(r.dur*float64(time.Second)))
 		if syncErr != nil {
 			errStr += fmt.Sprintf("; sync: %v", syncErr)
 		}

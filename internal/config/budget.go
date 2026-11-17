@@ -182,10 +182,13 @@ func (b *Budget) UnmarshalYAML(node *yaml.Node) error {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	if err := checkBudgetKinds(m); err != nil {
+		return err
+	}
 	var out Budget
 	var errs errList
 	for _, k := range keys {
-		v := m[k]
+		v := resolved(m[k])
 		if isNull(v) {
 			continue
 		}
@@ -199,9 +202,6 @@ func (b *Budget) UnmarshalYAML(node *yaml.Node) error {
 			out.Tools, err = yamlCount(v)
 		case "time":
 			out.Time, err = yamlTime(v)
-		default:
-			errs.add("line %d: budget: unknown kind %q (kinds: %s)", v.Line, k, strings.Join(BudgetKinds, ", "))
-			continue
 		}
 		if err != nil {
 			errs.add("line %d: budget: %s: %v", v.Line, k, err)
@@ -212,6 +212,35 @@ func (b *Budget) UnmarshalYAML(node *yaml.Node) error {
 	}
 	*b = out
 	return nil
+}
+
+// checkBudgetKinds rejects a key that is no kind, a null one included:
+// a misspelt kind unset is still misspelt.
+func checkBudgetKinds(m map[string]*yaml.Node) error {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var errs errList
+	for _, k := range keys {
+		known := false
+		for _, kind := range BudgetKinds {
+			known = known || k == kind
+		}
+		if !known {
+			errs.add("line %d: budget: unknown kind %q (kinds: %s)", m[k].Line, k, strings.Join(BudgetKinds, ", "))
+		}
+	}
+	return errs.err()
+}
+
+// resolved is the node an alias stands for, or the node itself.
+func resolved(n *yaml.Node) *yaml.Node {
+	if n != nil && n.Kind == yaml.AliasNode {
+		return n.Alias
+	}
+	return n
 }
 
 func yamlCost(n *yaml.Node) (float64, error) {
@@ -246,9 +275,7 @@ func yamlTime(n *yaml.Node) (time.Duration, error) {
 // budgetMapping is a budget node as a mapping: a number is {cost: number},
 // so a default's other kinds survive an item's bare cost.
 func budgetMapping(n *yaml.Node) *yaml.Node {
-	if n.Kind == yaml.AliasNode {
-		n = n.Alias
-	}
+	n = resolved(n)
 	if n.Kind != yaml.ScalarNode {
 		return n
 	}
