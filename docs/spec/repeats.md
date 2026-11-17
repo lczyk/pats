@@ -1,7 +1,6 @@
 # repeats
 
-status: implemented. overlapping repeats ("run: the series" below) are proposed: until they land, each repeat
-waits for the one before it to end.
+status: implemented, overlapping repeats and the dispatch order included.
 
 ## problem
 
