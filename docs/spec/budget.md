@@ -83,9 +83,17 @@ the run keeps a ledger under one mutex: the finished spend, and the running pair
 
 ## the run cap and repeats
 
-under `--repeat` (`repeats.md`) the run cap is the budget of the whole invocation. once it is reached, no further
-pair starts in the current repeat, and no further repeat starts: no new run dir is made. the warning counts both:
-`budget $20.00 reached at $20.13: 14 pair(s) of run 3/5 and 2 more run(s) not started`.
+under `--repeat` (`repeats.md`) the run cap is the budget of the whole invocation. the repeats overlap in one
+queue, so when it is reached more than one repeat may be under way: no further pair starts in any of them, and a
+repeat none of whose pairs started makes no run dir. the warning counts both, naming the repeats begun that have
+pairs not started: `budget $20.00 reached at $20.13: 14 pair(s) of runs 3-4/5 and 1 more run(s) not started`
+(`of run 3/5` for one). since a pair never starts before its copy in an earlier repeat, those repeats are always
+consecutive.
+
+the dispatcher starts the pairs it expects to run longest first (`repeats.md`), and long pairs are often the costly
+ones. so under a cap the run may finish fewer pairs than it would in selection order, and the pairs not started are
+the short ones, spread over the repeats begun rather than all in the last. that is the price of a shorter wall clock,
+and `report -N` already takes a different n per pair.
 
 ## where it shows
 

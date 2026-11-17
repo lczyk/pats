@@ -1,6 +1,7 @@
 # repeats
 
-status: implemented.
+status: implemented. overlapping repeats ("run: the series" below) are proposed: until they land, each repeat
+waits for the one before it to end.
 
 ## problem
 
@@ -10,10 +11,9 @@ that is a shell loop, and nothing in pats reads several runs together.
 
 ## proposal
 
-- **`pats run -N/--repeat <n>`** is sugar for running the same `pats run` n times, one after another. each repeat is
-  an ordinary run: its own run dir, number and name. like any run it is unscored until `pats score` (or `pats score
-  -N n` for the series). spread has the same
-  flag (`-repeat`).
+- **`pats run -N/--repeat <n>`** runs the selection n times in one invocation. each repeat is an ordinary run: its
+  own run dir, number and name. like any run it is unscored until `pats score` (or `pats score -N n` for the series).
+  the repeats overlap: a pair of the next repeat may start while the last pairs of the one before are still running.
 - **`pats score -N/--runs <n>`** scores the latest n runs, each on its own, as `-r` does for one.
 - **`pats report -N/--runs <n>`** reports the latest n runs together.
 
@@ -21,23 +21,134 @@ n is a whole number of at least 1, checked before anything else happens. `-N` do
 
 ## run: the series
 
-`Run` today does its setup and its pairs in one function, with the signal context, the config lock and
-`sandbox.Shutdown` deferred inside it. a loop around it would shut the lease renewal down after the first repeat. so
-`Run` splits:
+`Run` splits its work in two:
 
 - **once per invocation**: the signal context, the config lock, `defer sandbox.Shutdown()`, loading and selecting,
-  `usePins`, the model check (`model-preflight.md`), the credential preflight and the upstream checks.
-- **once per repeat**: check the context and the budget (`budget.md`), then make the run dir, run the pairs, and log
-  the run's totals. the log says which repeat: `INFO run 2/5: 004-20261109-fluffy-bunny`.
+  `usePins`, the model check (`model-preflight.md`), the credential preflight, the upstream checks, the budget's ledger
+  and the worker count (`-j`, auto included, resolved once).
+- **once per repeat**: its run dir, its pairs, and its totals line.
 
-stopping:
+### one queue
 
-- ctrl-c ends the current repeat as an interrupt ends a run now, and no further repeat starts. the context is checked
-  after every repeat, the last included, and an interrupted invocation exits non-zero (130). this changes a single
-  `pats run` too, which today exits 0 after an interrupt.
-- a reached budget starts no further pair and no further repeat, and makes no further run dir (`budget.md`).
-- a repeat whose pairs fail does not stop the series. a repeat whose run dir cannot be made does, with that error.
-- `-n/--dry-run` with `-N` makes no runs and multiplies the estimates (`run-dry-run.md`).
+the invocation runs every pair of every repeat through one queue and one worker pool of `-j` slots. a repeat no longer
+waits for the one before it to end, so the slots a slow pair leaves idle at the tail of one repeat go to the next
+repeat's pairs.
+
+- **the next pair to start** is the first queued pair, in dispatch order (below), that can start now: a `-j` slot is
+  free and its sandbox's `max_parallel` has room. a pair held back by its sandbox's cap does not hold back a later
+  pair of another sandbox.
+- **`-j`** caps the invocation's running pairs, as it caps a run's today, and `max_parallel` caps a sandbox's across
+  every repeat.
+- **a single run** (`-N 1`, or no `-N`) is the same dispatcher, the same code, with one repeat queued: it dispatches
+  every pair and is done. there is no second path for it. where today its pairs start in whatever order their
+  goroutines win the slots, they now start in dispatch order.
+- **one dispatcher** owns the queue: it picks the next pair, admits it, makes its run dir and hands it to a worker, one
+  pair at a time. sharing today's blocking slot take between more goroutines would not keep any order.
+
+### dispatch order: longest first
+
+the dispatcher starts the pairs it expects to run longest first, so a long pair is not left to start last and run
+alone at the tail while the other slots sit idle. it keeps an estimate per pair, from past runs and from what this
+invocation has seen, and updates it as pairs start and end.
+
+- **the key** of an estimate is the dry run's history key (`run-dry-run.md`): the pair's agent and task with its
+  harness, model and effort, and its provider block once provider pinning (`provider-pinning.md`, proposed) adds it
+  there. every repeat of a pair shares one estimate, so the estimate never
+  depends on the repeat.
+- **what is measured** is a pair's `duration_s`: the agent's run, as `metadata.json` records it. a pair with status
+  `error` is no sample (an error is often immediate, and its duration is not the agent's), whatever else; `ok`,
+  `nonzero`, `timeout` and `budget` are, with a cost or without (the cost history's `has_cost` filter is the dry
+  run's, not this).
+- **from history**: the median `duration_s` of matching past pairs, read once per invocation from the numbered run dirs
+  under `.pats/runs/`, before the first pair starts. the reading is the dry run's, shared (one walk can gather cost
+  and duration). a run dir or metadata file that cannot be read or does not parse is skipped without a word, since the
+  dry run is where history is checked; no `.pats/runs/` is no history. a run never fails over its history.
+- **from this invocation**: once a pair of the key has ended here as a sample, the median of this invocation's
+  samples replaces the history's.
+- **a running pair** raises its key's estimate to at least the time since it started (setup included, a slight
+  over-estimate that only starts its siblings earlier): a pair still running at 15m is a pair of at least 15m, whatever
+  its history said.
+- **capped by the timeout**: no estimate is above the pair's effective agent timeout (the task's `timeout`, shortened
+  by the agent's `time` budget, `budget-kinds.md`), so history from a longer timeout does not overrank it. a task
+  `timeout: 0` with no agent `time` is no deadline and no cap; with an agent `time` that is the cap.
+- **unknown** is a key with no history sample, no sample here and no pair running. unknown ranks above every
+  estimate: it may be the longest, and starting it early learns its length soonest. once one of its pairs runs, the
+  key has the running pair's floor above, so the key's other repeats rank by that.
+
+the order is: unknown first, then the longest estimate, then the earlier repeat, then the selection's order. with no
+history at all, every key starts unknown and ties, so the first pairs started are repeat 1's in the selection's order,
+and from then on the running pairs' floors and the first samples rank the rest.
+
+two things follow from every repeat of a pair sharing one estimate, ties going to the earlier repeat:
+
+- a pair never starts before its copy in an earlier repeat. so a repeat's first started pair comes after the one
+  before's, and run dirs are made in repeat order.
+- at a stop, a repeat has at least as many pairs started as the one after it, and the repeats with pairs not started
+  are the last ones begun, consecutive.
+
+with `-v` the dispatcher says once, before the first pair, how many pairs it has an estimate for: `dispatch: longest
+first, history for 12 of 15 pair(s)`.
+
+### starting a pair
+
+the dispatcher starts a pair in three steps, in this order, and nothing else starts a pair:
+
+1. check the context. once it is cancelled, nothing further starts.
+2. ask the ledger to admit it (`budget.md`): this is where every run-wide cap, `time` included, is checked. a pair
+   refused is not started, and no other pair is after it.
+3. make its repeat's run dir if this is the repeat's first started pair.
+
+a pair admitted is started. a ctrl-c or a cap reached after step 2 does not take it back: it runs into the cancelled
+context, as a pair that started just before an interrupt does today, or runs to its end under a cap reached by
+others. if step 3 fails the admitted pair does not run: it leaves the ledger with nothing used, counts as not
+started, and the queue stops (below).
+
+### the same pair twice at once
+
+two repeats may now run the same agent and task at the same time, which no single run does. each has its own run
+dir, workdir, home and sandbox, so pats' own state does not meet. the task's own scripts are another matter: stage,
+prompt-cmd and collect run in the task's dir, shared by every pair of the task as they are today across agents, and
+a script that names a host resource (a file in the task dir, a port, a remote object) by agent and task alone can meet
+itself. such a script names it by `PATS_RUN_NAME` too, or `PATS_OUTPUT_DIR`. the readme's task-script notes say so.
+
+### run dirs
+
+a repeat's run dir is made when its first pair is about to start, after the budget admitted that pair (`budget.md`),
+and not before. so run dirs are made in repeat order, their numbers follow the repeats, and a repeat none of whose
+pairs started has no run dir. the log line `INFO run 2/5: 004-20261109-fluffy-bunny` comes when the dir is made, and
+`latest` points at the newest dir made, which may be a repeat still running beside earlier ones.
+
+a run dir that cannot be made stops the queue: no further pair starts, the running ones end as they would, and the
+invocation fails with that error. the error wins over a reached budget's `ErrBudget`, though the budget's warning is
+still logged when a cap was reached.
+
+### logs and the bar
+
+- **the label** of a pair carries its repeat when n > 1: `haiku/curl#2`, in all its log lines (status, warnings,
+  setup errors, `-v`'s detail, `-vv`'s stream) and on the bar. with n = 1 it stays `haiku/curl`. the sandbox and the pair's env
+  (`PATS_RUN_NAME`, `PATS_RUN_DIR`) are told the pair's own run, as today.
+- **the bar** is one for the invocation: its total is n times the pairs, and its live lines show the running pairs of
+  every repeat. a pair that will not start (refused by the budget, left in the queue at a stop) comes off the total,
+  so the bar reads what ended of what will run, and it reaches its total when the last running pair ends.
+- **a repeat's totals line** (`-v`) comes once, when every pair of the repeat has settled: ended, refused, or left in
+  the queue at a stop. so it comes after its last running pair's output is out and that pair has left the ledger, even
+  when siblings queued after it were refused earlier. it is prefixed with the repeat when n > 1:
+  `INFO run 2/5: 3 ok, 1 budget  9.2k tok  $0.41  21m3s`, and its wall time is from its first pair's start to its last
+  pair's end. repeats may settle out of order (repeat 2's line before repeat 1's), and a repeat never begun has no
+  totals line.
+
+### stopping
+
+- **ctrl-c** starts no further pair in any repeat. running pairs end as an interrupt ends them today, every repeat
+  begun keeps what it has, no further run dir is made, and the invocation exits non-zero (130).
+- **a reached budget** starts no further pair in any repeat and makes no further run dir (`budget.md`).
+- **failing pairs** do not stop the queue, in their repeat or any other.
+- **`-n/--dry-run`** with `-N` makes no runs and multiplies the estimates (`run-dry-run.md`).
+
+the invocation returns once every started pair has ended, its cleanup attempted, as a run returns today. a
+cleanup that fails warns and leaves what it could not remove to `pats clean`, as now.
+
+the readme's `-N` paragraph says the repeats overlap, where it says one run after another today.
 
 ## which runs "the latest n" are
 
@@ -100,15 +211,47 @@ computed across runs. `report.md` gets the version 2 shape beside version 1.
 ## not doing
 
 - **no series id, no series dir.** that would make a series a new kind of thing every reader has to know.
-- **no parallel repeats.** `-j` already runs pairs in parallel within a run.
+- **no repeats as separate invocations side by side.** the config lock stays one run per project dir, and one
+  invocation's queue already keeps the `-j` slots busy across repeats.
+- **no dispatch order by cost, no weighting by slots, no switch.** longest first is the one order. `-j 1` still runs
+  one pair at a time, in that order.
+- **no duration estimate in the dry run.** the dispatcher's estimate is for ordering, and the dry run stays about
+  cost.
 - **no confidence intervals or tests** in the report. mean, sd and n are enough to see whether two agents differ, and
   more belongs in the reader's own analysis of `report --json`.
 
 ## tests
 
 - `run -N 3` with a fake sandbox makes three run dirs, runs the credential preflight once, keeps the lease renewal
-  alive into the third, and stops after the current run on interrupt with no further run dir; an interrupt during
+  alive into the third, and on interrupt starts no further pair and makes no further run dir; an interrupt during
   the last repeat exits non-zero.
+- `run -N 2 -j 2` with one slow pair and one fast one: the fast pair of repeat 2 starts while the slow pair of repeat
+  1 is still running, and the invocation returns only after both slow pairs end.
+- the queue order, with a fake sandbox whose pairs end when the test says, a fake clock and injected history: with no
+  history and `-j 1`, selection `x, y` (x 10m, y 1m) and `-N 3` start `x1, y1, x2, x3, y2, y3`: repeat 1 in the
+  selection's order while both are unknown, then by what was learned; `a/x, a/y, b/z` with no history, `-j 2`
+  and sandbox `a` at `max_parallel: 1` start `a/x, b/z, a/y`; with `-j 2` and two pairs ending at once, the next two
+  started are the first two in dispatch order; with two sandboxes each at `max_parallel: 1`, a held-back pair lets a
+  later pair of the other sandbox start, the caps hold across repeats, and run dirs are still made in repeat order.
+- dispatch order: history `x` 10m, `y` 1m, `z` none starts `z, x, y`; a sample here replaces the history's median;
+  a pair still running past its estimate raises its siblings above a longer history; an estimate over the current
+  timeout ranks at the timeout, a task with `timeout: 0` is not capped, and one with `timeout: 0` and an agent `time`
+  is capped at that; an `error` sample is ignored; a key whose only pair is running is no longer unknown.
+  with `-N 3 -j 2`, pairs `long` (10m) and `short` (1m, 1m, ...): every `long` starts before the last `short`s, and the
+  invocation ends sooner than repeat by repeat would on the fake clock.
+- a history with an unreadable run dir and a metadata file that does not parse: the run starts, with no warning, and
+  ranks by the rest.
+- the same agent/task in two repeats at once gets two run dirs, two workdirs and `PATS_RUN_NAME`s of its own in
+  stage and collect.
+- a budget reached during repeat 2 of 3, with repeat 1's last pair still running: no third run dir, repeat 1's
+  totals line after that pair ends, the warning `of runs 1-2/3 and 1 more run(s)`, the bar's total dropped by the
+  refused pairs.
+- a ctrl-c and a `time` cap each arriving between admission and the run dir: the admitted pair is started (and ends
+  interrupted on ctrl-c), and nothing after it starts.
+- with n > 1 the label carries the repeat (`haiku/curl#2`) in a pair's log lines, setup errors included, and each
+  repeat's totals line comes once, repeat 2's before repeat 1's when it settles first.
+- a run dir that cannot be made for repeat 2: its admitted pair does not run and is not in the ledger, the queue
+  stops, repeat 1's running pairs end, and the invocation fails with that error.
 - a pair dir with no metadata whose scorers all failed is still an attempt in the multi-run report.
 - a pair with a missing metadata in one run shows the unknown mark, is counted non-ok, and its duration is left out
   of the average.
