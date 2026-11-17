@@ -18,8 +18,9 @@ a key's estimate is the median of the durations its tasks reported here, else of
 task of the key still running raises it to at least how long that task has run, and a task's limit caps it. every task
 of a key shares the estimate, so of two tasks differing only in round the lower always starts first.
 
-it also keeps count of what runs: at most `Slots` at once, and at most `Caps[group]` of a group. a task waiting on its
-group's cap does not hold back a later task of another group.
+it also keeps count of what runs: at most `Slots` at once, and at most `Caps[group]` of a group, which `Start`
+enforces. a task waiting on its group's cap does not hold back a later task of another group. a task added twice, or
+again while it runs, is queued once.
 
 ## what it does not do
 
@@ -34,15 +35,30 @@ s := sched.New[string, job](sched.Options{Slots: 4, Caps: map[string]int{"gpu": 
 s.Prime("build", 9*time.Minute, 11*time.Minute) // durations from before, if any
 s.Add(&sched.Task[string, job]{Key: "build", Group: "gpu", Round: 1, Index: 0, Limit: 20 * time.Minute, Value: j})
 
-for t := s.Peek(now()); t != nil; t = s.Peek(now()) {
-	s.Start(t, now())
-	go run(t) // which ends with s.Done(t, took, true)
+type result struct {
+	t    *sched.Task[string, job]
+	took time.Duration
+	ok   bool
+}
+done := make(chan result)
+for s.Queued() > 0 || s.Running() > 0 {
+	// start all it can; a full set of slots or a full group stops this,
+	// and the next task to end makes room.
+	for t := s.Peek(now()); t != nil && s.Start(t, now()); t = s.Peek(now()) {
+		go func() { took, ok := run(t); done <- result{t, took, ok} }()
+	}
+	if s.Running() == 0 {
+		break // what is left is in a group capped at 0
+	}
+	r := <-done
+	s.Done(r.t, r.took, r.ok)
 }
 ```
 
 - **`Peek(now)`** is the task to start next, nil when no slot is free, nothing is queued, or every queued task waits on
   its group's cap. it stays queued, so a caller that decides not to start it (a budget said no) just stops asking.
-- **`Start(t, at)`** takes it off the queue as running since `at`.
+- **`Start(t, at)`** takes it off the queue as running since `at`, and says whether it did: not when it is not
+  queued, or the slots or its group are full by now (another goroutine took the room). start the task only on true.
 - **`Done(t, took, ok)`** ends it. with `ok`, `took` is a duration of its key, and the key's durations from here replace
   what it was primed with. without, it only frees the slot (a task that failed before doing its work).
 - **`Drop(now)`** empties the queue and returns it in order, for a caller that stops.
