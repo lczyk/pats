@@ -141,18 +141,28 @@ func holdKeys(bindings []KeyBinding, values map[string]string) ([]heldKey, error
 		}
 		h := heldKey{name: b.Name, placeholder: b.Placeholder, real: real}
 		for _, line := range b.Bind {
-			e, err := ParseEntry(line, false)
-			if err != nil {
+			if err := CheckBinding(line); err != nil {
 				return nil, fmt.Errorf("key %s: bind %q: %w", b.Name, line, err)
 			}
-			if !e.URL() || e.methods == nil || e.ip.IsValid() || e.suffix {
-				return nil, fmt.Errorf("key %s: bind %q: a binding names a method, a host and a path", b.Name, line)
-			}
+			e, _ := ParseEntry(line, false)
 			h.bind = append(h.bind, e)
 		}
 		out = append(out, h)
 	}
 	return out, nil
+}
+
+// CheckBinding says whether line can bind a key: a url entry with a method,
+// on a host named in full (no suffix, no ip).
+func CheckBinding(line string) error {
+	e, err := ParseEntry(line, false)
+	if err != nil {
+		return err
+	}
+	if !e.URL() || e.methods == nil || e.ip.IsValid() || e.suffix {
+		return errors.New("a binding names a method, a host and a path")
+	}
+	return nil
 }
 
 // keyUse is what a request does with the held keys: nothing, spend one in

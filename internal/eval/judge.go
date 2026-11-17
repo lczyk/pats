@@ -524,7 +524,7 @@ func judgeSample(ctx context.Context, cfg *config.Config, ro Options, j *judgeme
 	var taskDir string
 	for _, x := range cfg.Agents {
 		if x.Name == j.agent {
-			info = agentInfo{model: x.Model, harness: x.Harness}
+			info = agentInfo{model: x.Model, harness: x.Harness, drop: keyDrop(cfg, x)}
 		}
 	}
 	for _, t := range cfg.Tasks {

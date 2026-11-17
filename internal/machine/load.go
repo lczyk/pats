@@ -140,6 +140,9 @@ func Overlay(over []byte, path string) (*Tables, error) {
 						if key := deref(entry.Content[k]); key.Value == "version" || key.Value == "hash" {
 							add(key.Line, "%s: %s is a pats.yaml's key: a machine pins a cli in clis", id, key.Value)
 							pinned = true
+						} else if key.Value == "auth-bind" {
+							add(key.Line, "%s: auth-bind is pats's own: only the built-in table binds a key", id)
+							pinned = true
 						}
 					}
 					if pinned {
@@ -357,21 +360,22 @@ func (t *Tables) Note() string {
 // definition a run asked for, whatever its name and wherever it was written.
 func (h *Harness) Digest() string {
 	d := struct {
-		CLI      string            `json:"cli"`
-		Run      string            `json:"run"`
-		Egress   Egress            `json:"egress"`
-		AuthEnv  []string          `json:"auth_env"`
-		Login    bool              `json:"login"`
-		AuthHint string            `json:"auth_hint"`
-		PassEnv  []string          `json:"pass_env"`
-		Models   string            `json:"models"`
-		Parse    string            `json:"parse"`
-		Version  string            `json:"version"`
-		LoginAt  string            `json:"login_file"`
-		HomeEnv  map[string]string `json:"home_env"`
-		Files    [][3]string       `json:"artefacts"` // arch, sha256, bin: what a tree holds, not where it is from
+		CLI      string              `json:"cli"`
+		Run      string              `json:"run"`
+		Egress   Egress              `json:"egress"`
+		AuthEnv  []string            `json:"auth_env"`
+		Login    bool                `json:"login"`
+		AuthHint string              `json:"auth_hint"`
+		PassEnv  []string            `json:"pass_env"`
+		AuthBind map[string][]string `json:"auth_bind,omitempty"`
+		Models   string              `json:"models"`
+		Parse    string              `json:"parse"`
+		Version  string              `json:"version"`
+		LoginAt  string              `json:"login_file"`
+		HomeEnv  map[string]string   `json:"home_env"`
+		Files    [][3]string         `json:"artefacts"` // arch, sha256, bin: what a tree holds, not where it is from
 	}{CLI: h.CLI, Run: h.Run, Egress: h.Egress, AuthEnv: h.AuthEnv, Login: h.Login, AuthHint: h.AuthHint,
-		PassEnv: h.PassEnv, Models: h.Models, Parse: h.Parse}
+		PassEnv: h.PassEnv, AuthBind: h.AuthBind, Models: h.Models, Parse: h.Parse}
 	if h.cli != nil {
 		d.Version, d.LoginAt, d.HomeEnv = h.cli.Version, h.cli.LoginFile, h.cli.HomeEnv
 		for _, arch := range Arches {

@@ -157,6 +157,7 @@ func TestOverlayErrors(t *testing.T) {
 		"an entry twice":   {"harnesses:\n  mine: {run: a}\n  mine: {run: b}", "machine.yaml:3: harnesses.mine is there twice"},
 		"a table twice":    {"harnesses: {}\nharnesses: {}", `machine.yaml:2: table "harnesses" is there twice`},
 		"login, no file":   {"harnesses:\n  copilot-cli-keyless:\n    login: true", "machine.yaml:2: harnesses.copilot-cli-keyless: login needs a cli with a login-file"},
+		"a binding":        {"harnesses:\n  opencode-openrouter:\n    auth-bind: {OPENROUTER_API_KEY: [POST evil.test/x]}", "machine.yaml:3: harnesses.opencode-openrouter: auth-bind is pats's own"},
 	} {
 		write(t, tc.in)
 		_, err := Load("")
@@ -271,5 +272,25 @@ func TestPrint(t *testing.T) {
 	assert.Equal(t, strings.Join(back.Names(), " "), strings.Join(tb.Names(), " "))
 	for _, n := range tb.Names() {
 		assert.Equal(t, back.Harness(n).Digest(), tb.Harness(n).Digest(), n)
+	}
+}
+
+// the built-in bindings check out, and a binding must name a key the
+// harness reads, a method, a host and a path.
+func TestAuthBind(t *testing.T) {
+	d := Defaults()
+	for _, name := range []string{"opencode-openrouter", "pi-openrouter"} {
+		assert.EqualArrays(t, d.Harnesses[name].AuthBind["OPENROUTER_API_KEY"], []string{"POST openrouter.ai/api/v1/chat/completions"})
+	}
+	for want, bind := range map[string]map[string][]string{
+		"is not in auth-env":     {"OTHER_KEY": {"POST a.test/x"}},
+		"binds nowhere":          {"OPENROUTER_API_KEY": {}},
+		"names a method":         {"OPENROUTER_API_KEY": {"a.test/x"}},
+		"names a method, a host": {"OPENROUTER_API_KEY": {"POST .a.test/x"}},
+	} {
+		d := Defaults()
+		d.Harnesses["pi-openrouter"].AuthBind = bind
+		err := d.check()
+		assert.Error(t, err, want)
 	}
 }

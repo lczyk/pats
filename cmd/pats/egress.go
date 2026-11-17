@@ -107,6 +107,11 @@ func (c *EgressCheckCommand) Execute(args []string) error {
 		if sb.Name == c.Args.Sandbox && sandbox.TraitsOf(sb.Driver).Unboxed {
 			fmt.Println("note: egress is advisory under the host driver; the verdict holds only for traffic that goes through the proxy")
 		}
+		if sb.Name == c.Args.Sandbox && sb.Egress.KeyProxy {
+			for _, line := range eval.KeyBindings(cfg, c.Agent) {
+				fmt.Println("key proxy: " + line)
+			}
+		}
 	}
 	if !allowed {
 		os.Exit(1)
@@ -214,6 +219,11 @@ func (c *EgressRunCommand) Execute(args []string) error {
 		cfg, err := load(opts.Config)
 		if err != nil {
 			return err
+		}
+		for _, sb := range cfg.Sandboxes {
+			if sb.Name == c.Sandbox && sb.Egress.KeyProxy {
+				return fmt.Errorf("sandbox %q holds keys (key-proxy: true): the standalone proxy has no real values to hold", c.Sandbox)
+			}
 		}
 		if o.Policy, err = eval.EffectivePolicy(cfg, c.Sandbox, c.Task, c.Agent); err != nil {
 			return err

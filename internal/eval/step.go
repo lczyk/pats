@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -23,6 +24,9 @@ const binDir = "bin"
 type step struct {
 	script string
 	dir    string
+	// drop are names the step does not inherit from pats's environment: a
+	// key proxy's keys (keyNames).
+	drop []string
 }
 
 func (s step) set() bool { return s.script != "" }
@@ -38,7 +42,7 @@ func (s step) set() bool { return s.script != "" }
 func (s step) command(ctx context.Context, root string, env map[string]string) (*exec.Cmd, func(), error) {
 	// PWD follows the dir the script runs in: the inherited one names pats's
 	// own cwd, and a shell trusts it when it resolves to the same place.
-	environ := append(hostEnviron(root, env), "PWD="+s.dir)
+	environ := append(hostEnviron(root, env, s.drop), "PWD="+s.dir)
 	f, err := os.CreateTemp("", "pats-script-")
 	if err != nil {
 		return nil, nil, err
@@ -118,10 +122,10 @@ var stepNames = map[string]bool{
 	"PATS_SCORED_TASK_DIR": true, "PATS_SCORED_MODEL": true, "PATS_SCORED_HARNESS": true,
 }
 
-// hostEnviron is the host environment for a script: os env less PWD and
-// stepNames, with root/bin prepended to PATH (when it exists), PATS_ROOT,
-// then env.
-func hostEnviron(root string, env map[string]string) []string {
+// hostEnviron is the host environment for a script: os env less PWD,
+// stepNames and drop, with root/bin prepended to PATH (when it exists),
+// PATS_ROOT, then env.
+func hostEnviron(root string, env map[string]string, drop []string) []string {
 	path := os.Getenv("PATH")
 	if fi, err := os.Stat(filepath.Join(root, binDir)); err == nil && fi.IsDir() {
 		path = filepath.Join(root, binDir) + string(os.PathListSeparator) + path
@@ -129,7 +133,7 @@ func hostEnviron(root string, env map[string]string) []string {
 	out := make([]string, 0, len(os.Environ())+len(env)+2)
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
-		if k != "PATH" && k != "PWD" && !stepNames[k] {
+		if k != "PATH" && k != "PWD" && !stepNames[k] && !slices.Contains(drop, k) {
 			out = append(out, kv)
 		}
 	}

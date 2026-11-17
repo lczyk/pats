@@ -122,7 +122,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
 	agents := map[string]agentInfo{}
 	for _, a := range cfg.Agents {
-		agents[a.Name] = agentInfo{model: a.Model, harness: a.Harness}
+		agents[a.Name] = agentInfo{model: a.Model, harness: a.Harness, drop: keyDrop(cfg, a)}
 	}
 	// task -> scorers to run on it.
 	byTask := map[string][]config.ScorePair{}
@@ -363,6 +363,9 @@ var errNothingToScore = errors.New("nothing to score")
 type agentInfo struct {
 	model   string
 	harness string
+	// drop are names a host scorer of the agent's pairs does not inherit:
+	// the keys, when the agent's sandbox has a key proxy.
+	drop []string
 }
 
 // runScorer runs one scorer over an output dir and returns its [0,1] score.
@@ -389,7 +392,7 @@ func runScorer(ctx context.Context, opts ScoreOptions, sc config.Scorer, runDir,
 		"PATS_SCORER_NAME":   sc.Name,
 		"PATS_SCORER_VECTOR": sc.Vector,
 	})
-	s := step{sc.Score, filepath.Join(opts.ConfigDir, sc.Dir)}
+	s := step{script: sc.Score, dir: filepath.Join(opts.ConfigDir, sc.Dir), drop: info.drop}
 	var out []byte
 	var err error
 	if sp != nil {

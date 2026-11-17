@@ -225,6 +225,10 @@ harnesses:
         - models.opencode.ai   # model catalogue, newer releases
         - registry.npmjs.org   # runtime plugin fetch
     auth-env: [OPENROUTER_API_KEY]
+    # where a key proxy spends the key: what opencode 1.19.5 was recorded
+    # sending it with (docs/spec/key-proxy.md, "recorded").
+    auth-bind:
+      OPENROUTER_API_KEY: [POST openrouter.ai/api/v1/chat/completions]
     models: openrouter
     # usage is per step, so the totals add up over step_finish. the reply is
     # the text of the last step: a step that ended stays the reply until a
@@ -272,6 +276,9 @@ harnesses:
       allow:
         - openrouter.ai   # inference
     auth-env: [OPENROUTER_API_KEY]
+    # what pi 1.5.2 was recorded sending the key with.
+    auth-bind:
+      OPENROUTER_API_KEY: [POST openrouter.ai/api/v1/chat/completions]
     models: openrouter
     # usage and the stop reason come on each assistant message as it ends. pi
     # exits 0 on a failed reply, so the stop reason is the one sign of it, and

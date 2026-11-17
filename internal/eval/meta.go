@@ -25,6 +25,8 @@ type egressRecord struct {
 	// Enforced is whether nothing but the proxy could reach out: false under
 	// the host driver, where egress is advisory. nil on a pair from before.
 	Enforced *bool `json:"enforced,omitempty"`
+	// KeysSubstituted counts the requests a key proxy put a real key in.
+	KeysSubstituted int `json:"keys_substituted,omitempty"`
 }
 
 // advisoryEgress says whether the pair's egress policy was advisory: what
@@ -80,10 +82,13 @@ type pairMeta struct {
 	// egress the proxy refused, by kind: denied is what no rule anticipated
 	// (the cheat signal), blocked is what the policy names, failed is upstream
 	// trouble. see readEgressAudit.
-	DeniedEgress  []string      `json:"denied_egress,omitempty"`
-	BlockedEgress []string      `json:"blocked_egress,omitempty"`
-	FailedEgress  []string      `json:"failed_egress,omitempty"`
-	Egress        *egressRecord `json:"egress,omitempty"`
+	DeniedEgress  []string `json:"denied_egress,omitempty"`
+	BlockedEgress []string `json:"blocked_egress,omitempty"`
+	FailedEgress  []string `json:"failed_egress,omitempty"`
+	// KeyMisuse are the urls a placeholder was refused at, off its binding
+	// (docs/spec/key-proxy.md): the agent tried to spend a held key elsewhere.
+	KeyMisuse []string      `json:"key_misuse,omitempty"`
+	Egress    *egressRecord `json:"egress,omitempty"`
 	// per-harness digest parsed from the log: cost, tokens, turns, tools.
 	Summary *runSummary `json:"summary,omitempty"`
 	// the harness versions inside the image, as pats init stamped them.
@@ -109,15 +114,18 @@ func (m *pairMeta) filesHome() bool {
 // three refusal lists, each a unique target (the url when the proxy saw one,
 // else the host), and the traffic totals.
 type egressAudit struct {
-	Denied   []string // rule: default -- nobody anticipated it; the cheat signal
-	Blocked  []string // a policy refusal the agent triggered
-	Failed   []string // upstream trouble: revoked certificate, dial failure, the machine's proxy refusing
-	Requests int      // open and req lines
-	In, Out  int64    // bytes from and to upstream
+	Denied      []string // rule: default -- nobody anticipated it; the cheat signal
+	Blocked     []string // a policy refusal the agent triggered
+	Failed      []string // upstream trouble: revoked certificate, dial failure, the machine's proxy refusing
+	KeyMisuse   []string // a held key's placeholder off its binding
+	Substituted int      // requests a held key went out in
+	Requests    int      // open and req lines
+	In, Out     int64    // bytes from and to upstream
 }
 
-// failedReasons are refusals the agent did not cause.
-var failedReasons = map[string]bool{"revoked": true, "dial": true}
+// failedReasons are refusals the agent did not cause: key-scrub is an answer
+// the key proxy could not read to scrub.
+var failedReasons = map[string]bool{"revoked": true, "dial": true, "key-scrub": true}
 
 // readEgressAudit folds an audit log; a missing file is the zero value (no
 // proxy ran). lines that are not json (there should be none) are skipped.
@@ -149,6 +157,9 @@ func readEgressAudit(auditPath string) egressAudit {
 		if e.Ev == "req" {
 			a.In += e.In
 			a.Out += e.Out
+			if e.Key == "substituted" {
+				a.Substituted++
+			}
 		}
 		if e.Allowed {
 			continue
@@ -159,6 +170,8 @@ func readEgressAudit(auditPath string) egressAudit {
 		}
 		var list *[]string
 		switch {
+		case e.Rule == "key" && e.Reason == "misuse":
+			list = &a.KeyMisuse
 		case failedReasons[e.Reason], strings.HasPrefix(e.Reason, "upstream: "):
 			list = &a.Failed
 		case e.Rule == "default" && e.Reason == "":
@@ -239,3 +252,17 @@ func writeJSON(path string, v any) error {
 }
 
 func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
+
+// maskedPolicy is a pair's policy as its metadata records it: a held key's
+// placeholder is the pair's own and worth nothing, but it is no record.
+func maskedPolicy(p proxy.Policy) proxy.Policy {
+	if len(p.Keys) == 0 {
+		return p
+	}
+	keys := make([]proxy.KeyBinding, len(p.Keys))
+	for i, k := range p.Keys {
+		keys[i] = proxy.KeyBinding{Name: k.Name, Placeholder: "<placeholder>", Bind: k.Bind}
+	}
+	p.Keys = keys
+	return p
+}

@@ -67,6 +67,27 @@ func EffectivePolicy(cfg *config.Config, sandboxID, taskID, agentID string) (pro
 	return egressFor(*sb, te, hd, "", false).Policy, nil
 }
 
+// KeyBindings are where a key proxy spends agentID's keys, one line each:
+// the env name and its entries, never a value. "" agent is none.
+func KeyBindings(cfg *config.Config, agentID string) []string {
+	var out []string
+	for _, a := range cfg.Agents {
+		if a.Name != agentID {
+			continue
+		}
+		hd := cfg.HarnessOf(a)
+		if hd == nil {
+			continue
+		}
+		for _, k := range hd.AuthEnv {
+			if bind := hd.AuthBind[k]; len(bind) > 0 {
+				out = append(out, k+" is held, spent on "+strings.Join(bind, ", "))
+			}
+		}
+	}
+	return out
+}
+
 // CheckURL prints the verdict a policy gives target -- a url, or a bare host
 // taken as https -- and the entry that decided it. merged says whether the
 // harness hosts are in the policy (an agent was named).

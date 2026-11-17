@@ -79,6 +79,8 @@ type reportPair struct {
 	PremiumRequests *int     `json:"premium_requests"`
 	DeniedEgress    []string `json:"denied_egress"`
 	BlockedEgress   []string `json:"blocked_egress"`
+	// KeyMisuse are the urls a key proxy refused a placeholder at.
+	KeyMisuse []string `json:"key_misuse,omitempty"`
 	// EgressEnforced is false when the pair's egress was advisory (the host
 	// driver), null when unknown or no policy ran.
 	EgressEnforced *bool `json:"egress_enforced"`
@@ -182,6 +184,7 @@ func (p *reportPair) summaryFields(pm *pairMeta) {
 	}
 	p.DeniedEgress = append([]string{}, pm.DeniedEgress...)
 	p.BlockedEgress = append([]string{}, pm.BlockedEgress...)
+	p.KeyMisuse = pm.KeyMisuse
 	if pm.Egress != nil && pm.Egress.Enforced != nil {
 		e := *pm.Egress.Enforced
 		p.EgressEnforced = &e
@@ -646,6 +649,11 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 	}
 	if len(advisory) > 0 {
 		fmt.Fprintf(w, "egress advisory (host driver, unsandboxed; an empty denied list is not clean): %s\n", strings.Join(advisory, ", "))
+	}
+	for _, p := range pairs {
+		if p.meta != nil && len(p.meta.KeyMisuse) > 0 {
+			fmt.Fprintf(w, "key misuse: %s/%s tried to spend a held key at %s\n", p.agent, p.task, strings.Join(p.meta.KeyMisuse, ", "))
+		}
 	}
 	for _, j := range readJudges(runDir, warn) {
 		line := fmt.Sprintf("judge %s: %d judged, %d failed, %d na, %d samples, %s tok, %s", j.Name,

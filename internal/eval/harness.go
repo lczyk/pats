@@ -3,16 +3,19 @@ package eval
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/lczyk/pats/internal/agent"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/machine"
 	"github.com/lczyk/pats/src/sandbox"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // harness is one agent invocation wired into a sandbox: the box, the spec
@@ -51,6 +54,15 @@ func newHarness(opts Options, a config.Agent, hd *machine.Harness, sb config.San
 	}
 	cenv, hasToken := agent.CredEnv(hd)
 	maps.Copy(env, cenv) // forward host creds to any task-running agent
+	// under a key proxy the agent gets a placeholder for each key, and the
+	// pair's proxy the real values.
+	var held []proxy.KeyBinding
+	var real map[string]string
+	if sb.Egress.KeyProxy {
+		if held, real, err = holdKeys(hd, env); err != nil {
+			return nil, err
+		}
+	}
 
 	var paths sandbox.Paths
 	hs, err := harnessHome(opts, label, hd, env, hasToken, func(dir string) string {
@@ -68,6 +80,7 @@ func newHarness(opts Options, a config.Agent, hd *machine.Harness, sb config.San
 	}
 	spec.Mounts = hs.mounts
 	spec.Egress = egressFor(sb, te, hd, auditPath, runID == "")
+	spec.Egress.Policy.Keys, spec.Egress.Keys = held, real
 	spec.Sudo = sb.Sudo
 	return &harness{box: box, spec: spec, homeDir: hs.dir, paths: paths, cleanup: hs.cleanup}, nil
 }
@@ -214,7 +227,72 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, hd *machine.Harness, aud
 	// the harness's hosts are exempt from the methods posture either way: its
 	// inference traffic is not the task's to inspect.
 	eg.Policy.Harness = mergeHosts(nil, hd.Egress.Allow)
+	// a key proxy's bindings are allow entries of their own: they terminate
+	// the bound host, and their method passes a methods posture.
+	if sb.Egress.KeyProxy {
+		for _, k := range slices.Sorted(maps.Keys(hd.AuthBind)) {
+			eg.Policy.Allow = mergeHosts(eg.Policy.Allow, hd.AuthBind[k])
+		}
+	}
 	return eg
+}
+
+// holdKeys swaps each key in env that hd binds for a placeholder of its
+// shape, and returns the bindings for the pair's policy and the real values,
+// by placeholder, for its proxy. an unset key gets none.
+func holdKeys(hd *machine.Harness, env map[string]string) ([]proxy.KeyBinding, map[string]string, error) {
+	if hd == nil {
+		return nil, nil, nil
+	}
+	var held []proxy.KeyBinding
+	real := map[string]string{}
+	for _, k := range hd.AuthEnv {
+		v, ok := env[k]
+		if !ok || v == "" {
+			continue
+		}
+		bind := hd.AuthBind[k]
+		if len(bind) == 0 {
+			return nil, nil, fmt.Errorf("key proxy: harness %s binds no endpoint for %s", hd.Name, k)
+		}
+		ph, err := proxy.Placeholder(v, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("key proxy: %s: %w", k, err)
+		}
+		env[k], real[ph] = ph, v
+		held = append(held, proxy.KeyBinding{Name: k, Placeholder: ph, Bind: bind})
+	}
+	return held, real, nil
+}
+
+// keyNames are the names any harness lists in auth-env: what a host step
+// beside a key proxy does not inherit.
+func keyNames(cfg *config.Config) []string {
+	var out []string
+	for _, h := range cfg.Tables().Harnesses {
+		for _, k := range h.AuthEnv {
+			if !slices.Contains(out, k) {
+				out = append(out, k)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// keyDrop is keyNames when agent a runs in a sandbox with a key proxy, else
+// nothing.
+func keyDrop(cfg *config.Config, a config.Agent) []string {
+	id, err := cfg.ResolveSandbox(a)
+	if err != nil {
+		return nil
+	}
+	for _, s := range cfg.Sandboxes {
+		if s.Name == id && s.Egress.KeyProxy {
+			return keyNames(cfg)
+		}
+	}
+	return nil
 }
 
 // mergeHosts appends extras not already in hosts (exact string match; overlap

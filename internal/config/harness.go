@@ -74,6 +74,11 @@ func (c *Config) loadHarnessVector(name string, fields map[string]*yaml.Node, no
 				continue
 			}
 		}
+		for _, layer := range []map[string]*yaml.Node{defaults, own} {
+			if n, ok := layer["auth-bind"]; ok {
+				errs.add("line %d: harness %q: auth-bind is pats's own: only the built-in table binds a key", n.Line, k.Value)
+			}
+		}
 		layer := map[string]*yaml.Node{}
 		for key, v := range defaults {
 			layer[key] = v

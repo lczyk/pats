@@ -3,9 +3,12 @@ package eval
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -111,9 +114,19 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	}
 	defer sandbox.RemoveTemp(workDir)
 
-	// same egress policy as real runs (no audit).
+	// same egress policy as real runs. no audit, but under a key proxy: its
+	// own, outside the workdir the sandbox sees, to show a key went out.
+	auditPath := ""
+	if sb.Egress.KeyProxy {
+		dir, err := sandbox.MkTemp("pats-preflight-audit-")
+		if err != nil {
+			return err
+		}
+		defer sandbox.RemoveTemp(dir)
+		auditPath = filepath.Join(dir, "egress.log")
+	}
 	hd := cfg.HarnessOf(a)
-	h, err := newHarness(opts, a, hd, sb, config.TaskEgress{}, workDir, "", "", a.Name+" x preflight")
+	h, err := newHarness(opts, a, hd, sb, config.TaskEgress{}, workDir, "", auditPath, a.Name+" x preflight")
 	if err != nil {
 		return err
 	}
@@ -157,6 +170,11 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	if stat.failed.Load() {
 		return fmt.Errorf("harness reported an error (likely bad/expired creds)\n%s", said)
 	}
+	if auditPath != "" {
+		if err := keyProxyChecked(sess, auditPath, len(h.spec.Egress.Policy.Keys) > 0); err != nil {
+			return err
+		}
+	}
 	// a cap is checked against what a harness reports: one that reported
 	// none of a kind here leaves a cap of it nothing to check. preflight
 	// asks for no tool call, so for tools only a harness with no parse
@@ -198,4 +216,25 @@ func tail(s string, n int) string {
 		return s
 	}
 	return "...(truncated)...\n" + s[len(s)-n:]
+}
+
+// keyProxyChecked reads a preflight's audit once its session is closed (the
+// proxy's log drained): a misuse fails it, as does, when a key was held, no
+// key going out at all, since a harness can exit 0 without having
+// authenticated.
+func keyProxyChecked(sess sandbox.Session, auditPath string, held bool) error {
+	if err := sess.Close(); err != nil {
+		return fmt.Errorf("key proxy: close: %w", err)
+	}
+	if _, err := os.Stat(auditPath); err != nil {
+		return fmt.Errorf("key proxy: the preflight's audit: %w", err)
+	}
+	ea := readEgressAudit(auditPath)
+	if len(ea.KeyMisuse) > 0 {
+		return fmt.Errorf("key proxy: a placeholder was refused off its binding at %s", strings.Join(ea.KeyMisuse, ", "))
+	}
+	if held && ea.Substituted == 0 {
+		return errors.New("key proxy: the preflight sent no request the proxy put a key in; the harness never authenticated through it")
+	}
+	return nil
 }

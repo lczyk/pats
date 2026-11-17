@@ -111,6 +111,9 @@ type Egress struct {
 	Set          bool `yaml:"-"` // a mapping was given: the proxy runs
 	proxy.Policy `yaml:",inline"`
 	Image        string `yaml:"image"` // sidecar image override, docker only
+	// KeyProxy makes the proxy hold the harness's keys: the agent gets a
+	// placeholder for each (docs/spec/key-proxy.md).
+	KeyProxy bool `yaml:"key-proxy"`
 }
 
 // Mode names the policy's shape: open | none | proxy.

@@ -28,6 +28,7 @@ func (c *Config) Validate() error {
 	c.validateSuites(add)
 	c.validateTaskEgress(add)
 	c.validateSteps(add)
+	c.validateKeyProxy(add)
 
 	// suite expansion doubles as referential validation (dangling refs,
 	// duplicate names after expansion).
@@ -273,6 +274,9 @@ func validateEgress(add func(string, ...any), s Sandbox) {
 	}
 	if len(s.Egress.Harness) > 0 {
 		add("sandbox %q: egress harness is set by pats, per agent", s.Name)
+	}
+	if len(s.Egress.Keys) > 0 {
+		add("sandbox %q: egress keys are set by pats, per pair (key-proxy: true asks for them)", s.Name)
 	}
 	r, err := s.Egress.Policy.Rule()
 	if err != nil {
@@ -627,6 +631,106 @@ func mark(m map[string]bool, xs StrList, sets map[string][]string) {
 	for _, x := range xs {
 		for _, name := range sets[x] {
 			m[name] = true
+		}
+	}
+}
+
+// validateKeyProxy checks each sandbox whose proxy holds the keys, and what
+// runs in it (docs/spec/key-proxy.md, "the setting"): a key never goes in
+// real where one was asked to be held.
+func (c *Config) validateKeyProxy(add func(string, ...any)) {
+	held := map[string]bool{}
+	for _, s := range c.Sandboxes {
+		if !s.Egress.KeyProxy {
+			continue
+		}
+		held[s.Name] = true
+		switch {
+		case s.Driver == "host":
+			add("sandbox %q: key-proxy is refused under the host driver: the agent runs beside its proxy, as you", s.Name)
+		case !s.Egress.Set:
+			add("sandbox %q: key-proxy needs an egress mapping: with egress %s there is no proxy to hold the keys", s.Name, s.Egress.Mode())
+		}
+	}
+	if len(held) == 0 {
+		return
+	}
+	bound := map[string]bool{}
+	for _, h := range c.Tables().Harnesses {
+		for k := range h.AuthBind {
+			bound[k] = true
+		}
+	}
+	holding := map[string]string{} // agent -> its key-proxy sandbox
+	for _, a := range c.Agents {
+		sbID, err := c.ResolveSandbox(a)
+		if err != nil || !held[sbID] {
+			continue
+		}
+		holding[a.Name] = sbID
+		h := c.HarnessOf(a)
+		if h == nil {
+			continue
+		}
+		for _, k := range h.AuthEnv {
+			if len(h.AuthBind[k]) == 0 {
+				add("agent %q: harness %q has no binding for its key %s, so sandbox %q's key proxy cannot hold it", a.Name, a.Harness, k, sbID)
+			}
+		}
+		for _, k := range h.PassEnv {
+			if bound[k] {
+				add("agent %q: harness %q passes %s through pass-env, so sandbox %q would get the key real", a.Name, a.Harness, k, sbID)
+			}
+		}
+	}
+	stepEnv := func(what string, names StrList) {
+		for _, n := range names {
+			if bound[n] {
+				add("%s: step-env %s is a key a key proxy holds: it would hand the real value to the step", what, n)
+			}
+		}
+	}
+	tasks := map[string]Task{}
+	for _, t := range c.Tasks {
+		tasks[t.Name] = t
+	}
+	scorers := map[string]Scorer{}
+	for _, sc := range c.Scorers {
+		scorers[sc.Name] = sc
+		if sc.IsAgent() && holding[sc.Agent] != "" {
+			stepEnv(fmt.Sprintf("scorer %q", sc.Name), sc.StepEnv)
+		}
+	}
+	seenTask, seenScorer := map[string]bool{}, map[string]bool{}
+	for _, s := range c.Suites {
+		pairs, err := c.ExpandTestPairs(s.Name)
+		if err != nil {
+			continue
+		}
+		reached := false
+		for _, p := range pairs {
+			if holding[p.Agent] == "" {
+				continue
+			}
+			reached = true
+			if !seenTask[p.Task] {
+				seenTask[p.Task] = true
+				stepEnv(fmt.Sprintf("task %q", p.Task), tasks[p.Task].StepEnv)
+			}
+		}
+		if !reached {
+			continue
+		}
+		// a suite's scorers grade its pairs.
+		sps, err := c.ExpandScorePairs(s.Name)
+		if err != nil {
+			continue
+		}
+		for _, sp := range sps {
+			if sc := scorers[sp.Scorer]; !seenScorer[sc.Name] && !(sc.IsAgent() && holding[sc.Agent] != "") {
+				seenScorer[sc.Name] = true
+				stepEnv(fmt.Sprintf("scorer %q", sc.Name), sc.StepEnv)
+			}
 		}
 	}
 }

@@ -840,3 +840,53 @@ func TestHarnessVectorErrors(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.Validate())
 }
+
+// a sandbox's proxy holds the keys only where it can: with an egress
+// mapping, off the host driver, and for agents whose every key is bound.
+func TestKeyProxyValidation(t *testing.T) {
+	const agent = "axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}\n"
+	const suite = "txx: {kind: task, items: {txx: {prompt: p}}}\nsux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n"
+	const held = "boxes: {kind: sandbox, items: {sxx: {image: i, egress: {key-proxy: true}}, steps: {image: i}}}\n"
+	ok := parseT(t, held+agent+suite)
+	require.NoError(t, ok.Validate())
+	for _, sb := range ok.Sandboxes {
+		assert.Equal(t, sb.Egress.KeyProxy, sb.Name == "sxx")
+	}
+
+	for name, c := range map[string]struct{ src, want string }{
+		"egress none": {"boxes: {kind: sandbox, items: {sxx: {image: i, egress: none}}}\n" + agent + suite, ""},
+		"host driver": {"boxes: {kind: sandbox, items: {sxx: {driver: host, sand-not-boxed: true, egress: {key-proxy: true}}}}\n" +
+			agent + suite, "host driver"},
+		"unbound key": {held + "axx: {kind: agent, items: {axx: {harness: claude-cli-keyless, model: m, sandbox: sxx}}}\n" + suite,
+			"no binding for its key ANTHROPIC_API_KEY"},
+		"pass-env": {held + "hxx: {kind: harness, items: {mine: {run: true, pass-env: [OPENROUTER_API_KEY]}}}\n" +
+			"axx: {kind: agent, items: {axx: {harness: mine, sandbox: sxx}}}\n" + suite, "passes OPENROUTER_API_KEY through pass-env"},
+		"keys by hand": {"boxes: {kind: sandbox, items: {sxx: {image: i, egress: {keys: [{name: K, placeholder: p, bind: [x]}]}}}}\n" +
+			agent + suite, "egress keys are set by pats"},
+		"task step-env": {held + agent + "txx: {kind: task, items: {txx: {prompt: p, stage: x, step-sandbox: steps, step-env: [OPENROUTER_API_KEY]}}}\n" +
+			"sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}\n", `task "txx": step-env OPENROUTER_API_KEY`},
+		"scorer step-env": {held + agent + "txx: {kind: task, items: {txx: {prompt: p}}}\n" +
+			"scx: {kind: scorer, items: {scx: {score: ./s.sh, step-sandbox: steps, step-env: [OPENROUTER_API_KEY]}}}\n" +
+			"sux: {kind: suite, items: {sux: {agents: axx, tasks: txx, scorers: scx}}}\n", `scorer "scx": step-env OPENROUTER_API_KEY`},
+	} {
+		cfg, err := Parse([]byte(c.src))
+		if name == "egress none" {
+			// egress: none takes no mapping, so the flag can only be on a
+			// mapping turned off by hand.
+			require.NoError(t, err)
+			cfg.Sandboxes[0].Egress.KeyProxy = true
+			c.want = "with egress none there is no proxy"
+		}
+		if err == nil {
+			err = cfg.Validate()
+		}
+		assert.Error(t, err, c.want, name)
+	}
+
+	// a binding is the built-in table's alone.
+	_, err := Parse([]byte("hxx: {kind: harness, items: {opencode-openrouter: {auth-bind: {OPENROUTER_API_KEY: [POST evil.test/x]}}}}\n"))
+	assert.Error(t, err, "auth-bind is pats's own")
+
+	// off, a harness's bindings are no error.
+	require.NoError(t, parseT(t, base).Validate())
+}

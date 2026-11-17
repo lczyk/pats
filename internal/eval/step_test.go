@@ -93,9 +93,9 @@ func TestHostEnvironWithoutBin(t *testing.T) {
 		return ""
 	}
 	root := t.TempDir()
-	assert.Equal(t, pathOf(hostEnviron(root, nil)), os.Getenv("PATH"))
+	assert.Equal(t, pathOf(hostEnviron(root, nil, nil)), os.Getenv("PATH"))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "bin"), 0o755))
-	assert.Equal(t, pathOf(hostEnviron(root, nil)), filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	assert.Equal(t, pathOf(hostEnviron(root, nil, nil)), filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // a step sees its own map's names only: a parent pats's step vars, inherited
@@ -104,7 +104,7 @@ func TestHostEnvironDropsInheritedStepNames(t *testing.T) {
 	t.Setenv("PATS_TASK_NAME", "parent-task")
 	t.Setenv("PATS_OUTPUT_DIR", "/parent/out")
 	t.Setenv("PATS_LXD_UPLINK", "keep")
-	env := hostEnviron(t.TempDir(), map[string]string{"PATS_SCORER_NAME": "own"})
+	env := hostEnviron(t.TempDir(), map[string]string{"PATS_SCORER_NAME": "own"}, nil)
 	got := map[string]string{}
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")

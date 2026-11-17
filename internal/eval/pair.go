@@ -127,6 +127,12 @@ func runPair(
 		hostEnv[k] = v
 	}
 
+	// a key proxy's keys stay out of the host steps' inherited env too.
+	var drop []string
+	if sb.Egress.KeyProxy {
+		drop = keyNames(cfg)
+	}
+
 	// where the host steps run: nil on the host, else a step sandbox,
 	// started for each phase that has one (docs/spec/step-sandbox.md).
 	sp, err := stepPlaceOf(cfg, sandboxes, t.StepSandbox, t.StepEnv)
@@ -140,7 +146,7 @@ func runPair(
 	var promptData []byte
 	if sp != nil && (t.Stage != "" || t.PromptCmd != "") {
 		promptData, setupErr = beforeBox(ctx, opts, sp, job, t, taskDir, []string{workDir, outDir, h.homeDir}, hostEnv)
-	} else if stage := (step{t.Stage, taskDir}); stage.set() {
+	} else if stage := (step{script: t.Stage, dir: taskDir, drop: drop}); stage.set() {
 		if err := runLogged(filepath.Join(outDir, "stage.log"), opts.stream(), func(w io.Writer) error {
 			return stage.run(ctx, opts.ConfigDir, hostEnv, w)
 		}); err != nil {
@@ -151,7 +157,7 @@ func runPair(
 	if setupErr == nil {
 		// a prompt-cmd that ran in the box has given the prompt, empty or not.
 		if sp == nil || t.PromptCmd == "" {
-			if promptData, err = taskPrompt(ctx, opts.ConfigDir, taskDir, t, hostEnv); err != nil {
+			if promptData, err = taskPrompt(ctx, opts.ConfigDir, taskDir, t, hostEnv, drop); err != nil {
 				return fmt.Errorf("prompt: %w", err)
 			}
 		}
@@ -297,7 +303,7 @@ func runPair(
 	// collect when the agent ran, left something to gather (it finished, or
 	// timed out mid-run) and its files are on the host. a launch failure left
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
-	if collect := (step{t.Collect, taskDir}); (r.err == nil || stopped) && synced && collect.set() {
+	if collect := (step{script: t.Collect, dir: taskDir, drop: drop}); (r.err == nil || stopped) && synced && collect.set() {
 		var err error
 		if sp != nil {
 			err = afterBox(ctx, opts, sp, job, collect, []string{workDir, outDir}, hostEnv)
@@ -319,6 +325,9 @@ func runPair(
 	if len(ea.Denied) > 0 {
 		lg.warn("%s egress denied (no rule): %s", job.label, strings.Join(ea.Denied, ", "))
 	}
+	if len(ea.KeyMisuse) > 0 {
+		lg.warn("%s key misuse: a placeholder was refused off its binding at %s", job.label, strings.Join(ea.KeyMisuse, ", "))
+	}
 	if sp != nil {
 		var denied []string
 		for _, f := range []string{"stage-egress.log", "collect-egress.log"} {
@@ -339,7 +348,7 @@ func runPair(
 		Sandbox: sbID, Driver: sb.Driver, SandNotBoxed: sandbox.TraitsOf(sb.Driver).Unboxed, Image: sb.Image, Sudo: h.spec.Sudo,
 		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, BudgetKind: budgetKind, Synced: &synced,
 		PatsVersion:  version.Info.Version,
-		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
+		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed, KeyMisuse: ea.KeyMisuse,
 		Summary:    summarize(hd, filepath.Join(outDir, "stdout.log")),
 		Components: sb.Components,
 		Placed:     sb.Placed,
@@ -353,10 +362,11 @@ func runPair(
 	if h.spec.Egress.Set {
 		enforced := !sandbox.TraitsOf(sb.Driver).Unboxed
 		meta.Egress = &egressRecord{
-			Policy:   h.spec.Egress.Policy,
+			Policy:   maskedPolicy(h.spec.Egress.Policy),
 			Image:    proxyImageID(ctx, sb),
 			Requests: ea.Requests, BytesIn: ea.In, BytesOut: ea.Out,
-			Enforced: &enforced,
+			Enforced:        &enforced,
+			KeysSubstituted: ea.Substituted,
 		}
 	}
 	// the ledger reads the summary's cost when the pair ends: set before
@@ -464,7 +474,7 @@ func runLogged(logPath string, tee io.Writer, f func(io.Writer) error) error {
 // taskPrompt is the prompt handed to the agent: the literal prompt, the
 // contents of prompt-file (resolved against the task's dir), or the stdout of
 // prompt-cmd, a script run after stage with the task's env.
-func taskPrompt(ctx context.Context, root, dir string, t config.Task, env map[string]string) ([]byte, error) {
+func taskPrompt(ctx context.Context, root, dir string, t config.Task, env map[string]string, drop []string) ([]byte, error) {
 	switch {
 	case t.PromptFile != "":
 		p := t.PromptFile
@@ -473,7 +483,7 @@ func taskPrompt(ctx context.Context, root, dir string, t config.Task, env map[st
 		}
 		return os.ReadFile(p)
 	case t.PromptCmd != "":
-		return step{script: t.PromptCmd, dir: dir}.output(ctx, root, env)
+		return step{script: t.PromptCmd, dir: dir, drop: drop}.output(ctx, root, env)
 	}
 	return []byte(t.Prompt), nil
 }
@@ -510,7 +520,7 @@ func beforeBox(ctx context.Context, opts Options, sp *stepPlace, job pairJob, t 
 			err = fmt.Errorf("stage: move the step logs in: %w", cerr)
 		}
 	}()
-	if stage := (step{t.Stage, taskDir}); stage.set() {
+	if stage := (step{script: t.Stage, dir: taskDir}); stage.set() {
 		if err := runLogged(filepath.Join(box.staging, "stage.log"), opts.stream(), func(w io.Writer) error {
 			return box.run(ctx, sp, stage, opts.ConfigDir, env, w, w)
 		}); err != nil {
