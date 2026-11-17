@@ -150,11 +150,17 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 	}
 	serveConn(tconn, idle, http.HandlerFunc(func(w http.ResponseWriter, inner *http.Request) {
 		ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "mitm",
-			Method: inner.Method, URL: auditURL(host, inner.URL), UA: inner.UserAgent()}
+			Method: inner.Method, URL: p.maskKeys(auditURL(host, inner.URL)), UA: p.maskKeys(inner.UserAgent())}
 		if innerHost, _ := splitHostPort(inner.Host, port); !sameHost(innerHost, want) {
 			ev.Rule, ev.Reason = "mitm", "host-mismatch"
 			ev.Status = p.refuse(w)
 			p.audit(ev)
+			return
+		}
+		// a placeholder out of place is refused before the policy is asked.
+		use := p.useOf(inner, host, port, true)
+		if use.misuse {
+			p.refuseKey(w, &ev)
 			return
 		}
 		v := p.Rule.Decide(host, port, inner.Method, inner.URL.Path, inner.URL.RawQuery)
@@ -168,7 +174,7 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 			p.audit(ev)
 			return
 		}
-		p.forward(w, inner, ev, origin)
+		p.forward(w, inner, ev, origin, use)
 	}))
 }
 

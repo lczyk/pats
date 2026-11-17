@@ -18,6 +18,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,8 @@ type Proxy struct {
 	// Idle is how long a terminated connection may sit between requests.
 	// zero: idleWait.
 	Idle time.Duration
+	// keys are the keys held for the sandbox (keys.go).
+	keys []heldKey
 
 	once sync.Once
 	mu   sync.Mutex
@@ -77,6 +80,7 @@ type Event struct {
 	Out        int64  `json:"out,omitempty"` // bytes sent upstream
 	MS         int64  `json:"ms,omitempty"`
 	Revocation string `json:"revocation,omitempty"` // mitm: good | unchecked
+	Key        string `json:"key,omitempty"`        // substituted: a held key went out in the request
 }
 
 func (p *Proxy) init() {
@@ -176,7 +180,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		p.audit(open)
 		return
 	}
-	if p.Signer != nil && p.Rule.MitmHost(host, port) {
+	if p.Signer != nil && (p.Rule.MitmHost(host, port) || p.keyHost(host, port)) {
 		p.handleMitm(w, req, host, port)
 		return
 	}
@@ -257,9 +261,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 // path is visible without mitm, so url entries apply directly.
 func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	host, port := splitHostPort(req.Host, 80)
+	ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "http",
+		Method: req.Method, URL: p.maskKeys(auditURL(host, req.URL)), UA: p.maskKeys(req.UserAgent())}
+	// a key is never spent in clear.
+	if use := p.useOf(req, host, port, false); use.misuse {
+		p.refuseKey(w, &ev)
+		return
+	}
 	v := p.Rule.Decide(host, port, req.Method, req.URL.Path, req.URL.RawQuery)
-	ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "http", Rule: v.Rule, Reason: v.Reason,
-		Method: req.Method, URL: auditURL(host, req.URL), UA: req.UserAgent()}
+	ev.Rule, ev.Reason = v.Rule, v.Reason
 	// decided as plain http to that host and path: another scheme would be
 	// dialled on its own port, and an opaque target has no path to decide on.
 	if v.Allowed && (req.URL.Scheme != "http" || req.URL.Opaque != "") {
@@ -270,7 +280,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 		p.audit(ev)
 		return
 	}
-	p.forward(w, req, ev, nil)
+	p.forward(w, req, ev, nil, keyUse{})
 }
 
 // auditURL is a request's url as the audit records it: the host the policy
@@ -300,7 +310,10 @@ var forwarded = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-
 // is net/http's reverse proxy: hop-by-hop headers stay on their hop, a
 // stream is flushed as it comes, and a request body nobody read is the
 // serving connection's to settle.
-func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, origin *url.URL) {
+func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, origin *url.URL, use keyUse) {
+	if use.key != nil {
+		ev.Key = "substituted"
+	}
 	start := time.Now()
 	var sent, got countReader
 	defer func() {
@@ -330,6 +343,12 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, orig
 			pr.Out.Header.Del("Connection")
 			if pr.Out.Body != nil {
 				sent.r, pr.Out.Body = pr.Out.Body, &sent
+			}
+			if k := use.key; k != nil {
+				pr.Out.Header.Set("Authorization", bearer+k.real)
+				// with none asked for, go's transport asks for gzip and
+				// undoes it, so the answer reads plain for the scrub.
+				pr.Out.Header.Del("Accept-Encoding")
 			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
@@ -363,6 +382,13 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, orig
 			// client that hangs up early still cost the upstream bytes
 			// already read.
 			got.r, resp.Body = resp.Body, &got
+			if k := use.key; k != nil {
+				if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
+					return errKeyScrub
+				}
+				scrubHeader(resp.Header, k)
+				resp.Body = newScrubBody(resp.Body, k, func() http.Header { return resp.Trailer })
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -372,6 +398,8 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, orig
 				ev.Reason = "upstream: 407"
 			case errors.Is(err, errSwitched):
 				ev.Reason = "upgrade"
+			case errors.Is(err, errKeyScrub):
+				ev.Reason = "key-scrub"
 			case req.Context().Err() != nil:
 				// the client hung up on a request it was allowed: not a
 				// refusal, and no failure of the way out.

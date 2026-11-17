@@ -32,6 +32,9 @@ type Policy struct {
 	// Harness lists the hosts pats merged in for the agent's harness. the
 	// methods posture never inspects them. pats sets it; pats.yaml cannot.
 	Harness []string `yaml:"harness,omitempty" json:"harness,omitempty"`
+	// Keys are the keys the proxy holds for the pair (keys.go), their real
+	// values in Options.Keys. pats sets them; pats.yaml cannot.
+	Keys []KeyBinding `yaml:"keys,omitempty" json:"keys,omitempty"`
 }
 
 // ParsePolicy reads a policy from yaml, refusing unknown keys: a typo in a
@@ -90,7 +93,7 @@ func (p Policy) NeedsCA() bool {
 	if err != nil {
 		return false
 	}
-	if r.Methods != nil {
+	if r.Methods != nil || len(p.Keys) > 0 {
 		return true
 	}
 	for _, list := range [][]Entry{r.Allow, r.Deny} {
@@ -118,6 +121,8 @@ type Options struct {
 	// Chain is the machine's proxy every upstream connection goes through;
 	// nil: direct.
 	Chain *Chain
+	// Keys are the real values of the policy's keys, by placeholder.
+	Keys  map[string]string
 	Audit io.Writer // one json line per request; nil: discard
 	Ready io.Writer // where "listening <addr>" goes once the port is open; nil: nowhere
 }
@@ -129,6 +134,9 @@ func New(o Options) (*Proxy, error) {
 		return nil, err
 	}
 	p := &Proxy{Rule: rule, DenyResponse: o.Policy.DenyResponse, Audit: o.Audit}
+	if p.keys, err = holdKeys(o.Policy.Keys, o.Keys); err != nil {
+		return nil, err
+	}
 	if o.Policy.NeedsCA() {
 		if o.CACert == "" || o.CAKey == "" {
 			return nil, errors.New("url entries need a CA (cert and key)")

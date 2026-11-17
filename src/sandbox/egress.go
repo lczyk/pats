@@ -444,6 +444,13 @@ func ProxyEnvOptions(getenv func(string) string) (proxy.Options, error) {
 		o.Policy = p
 	}
 	o.CACert, o.CAKey = getenv("PATS_EGRESS_CA_CERT"), getenv("PATS_EGRESS_CA_KEY")
+	if v := getenv("PATS_EGRESS_KEYS"); v != "" {
+		keys, err := proxy.ParseKeys(v)
+		if err != nil {
+			return o, fmt.Errorf("PATS_EGRESS_KEYS: %w", err)
+		}
+		o.Keys = keys
+	}
 	if roots := getenv("PATS_EGRESS_ROOTS"); roots != "" {
 		if strings.Contains(roots, "-----BEGIN") {
 			o.Roots = []byte(roots)

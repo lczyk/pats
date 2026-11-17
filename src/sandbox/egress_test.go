@@ -459,6 +459,15 @@ func TestProxyEnvOptions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, o.Chain.HTTPS.Host, "proxy.corp:3128")
 
+	env["PATS_EGRESS_KEYS"] = `{"ph":"real"}`
+	o, err = ProxyEnvOptions(func(k string) string { return env[k] })
+	require.NoError(t, err)
+	assert.Equal(t, o.Keys["ph"], "real")
+	env["PATS_EGRESS_KEYS"] = "nope"
+	_, err = ProxyEnvOptions(func(k string) string { return env[k] })
+	assert.Error(t, err, "PATS_EGRESS_KEYS")
+	delete(env, "PATS_EGRESS_KEYS")
+
 	env["PATS_EGRESS_POLICY"] = "default: [x"
 	_, err = ProxyEnvOptions(func(k string) string { return env[k] })
 	assert.Error(t, err, "PATS_EGRESS_POLICY")
