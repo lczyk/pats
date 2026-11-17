@@ -1,6 +1,6 @@
 # budget kinds
 
-status: proposed, for 1.1.0. extends `budget.md`, which stays the reference for the ledger, stopping a pair and
+status: implemented, in 1.1.0. extends `budget.md`, which stays the reference for the ledger, stopping a pair and
 repeats.
 
 ## problem
