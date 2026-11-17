@@ -1,8 +1,8 @@
 # key proxy
 
-status: proposed. from `docs/proposals/placeholder-credentials.md` ("changed from the proposal" below says what moved).
-it reverses "keeping a credential out of the sandbox" under "not doing" in `harness-registry.md`, and "left out on
-purpose" in `docs/proposals/harnesses-1x.md`.
+status: implemented. from `docs/proposals/placeholder-credentials.md` ("changed from the proposal" below says what
+moved). it reverses "keeping a credential out of the sandbox" under "not doing" in `harness-registry.md`, and "left
+out on purpose" in `docs/proposals/harnesses-1x.md`.
 
 ## problem
 
@@ -78,8 +78,9 @@ opencode-openrouter:
     OPENROUTER_API_KEY: [POST openrouter.ai/api/v1/chat/completions]
 ```
 
-- a map from an `auth-env` name to url entries in `docs/egress.md`'s syntax, each with a method prefix and a path. a
-  binding is on https, port 443, only.
+- a map from an `auth-env` name to url entries in `docs/egress.md`'s syntax, each with a method prefix and a path, on
+  a host named in full. a binding is on https to port 443 only, with the request's own `Host` naming that port, and
+  on a path spelled without percent escapes.
 - the defaults are what the pinned clis were seen to send the key with (recorded below): `pi-openrouter` binds the
   same single entry. a harness upgrade re-records it.
 - a binding matches as an `allow` url entry does (`admitsURL`): the host normalised, the path matched case-sensitively,
@@ -162,9 +163,10 @@ for each request the proxy sees in clear (on a mitm'd host, or plain http), in t
    - informational (1xx) responses are passed on unscrubbed, as `httputil.ReverseProxy` relays them before the
      response is in hand.
 
-request bodies are not scanned. the agent can read its own env, so the placeholder may sit in its conversation, and
-the conversation is the body it sends to the bound endpoint: a body check there would fail honest runs. elsewhere a
-body scan would need buffering for a signal the header and url checks mostly give.
+a request's trailers come after the decision on it, too late to look for a placeholder in, so where keys are held none
+go on. request bodies are not scanned. the agent can read its own env, so the placeholder may sit in its conversation,
+and the conversation is the body it sends to the bound endpoint: a body check there would fail honest runs. elsewhere
+a body scan would need buffering for a signal the header and url checks mostly give.
 
 the proxy follows no redirect: a `3xx` goes back to the client, whose next request is checked from step 1, so a
 redirect to another host carries the placeholder there and is refused, never the real value.
@@ -178,11 +180,12 @@ audited. it is worthless there; the misuse signal is partial, and the readme say
   placeholder in it is replaced by `<placeholder>`). `readEgressAudit` folds it into `metadata.json` as
   `key_misuse` (a list of urls, beside `denied_egress`), not into `blocked_egress`. a `key-scrub`
   refusal folds into `failed_egress`.
-- a substituted request's audit line carries `key: substituted`, and the pair's egress record counts them
+- a substituted request's audit line carries `key: substituted` once the origin answered it, and the pair's egress
+  record counts them
   (`egress.keys_substituted`), so a pair shows its key went out through the proxy.
-- a misuse does not change the pair's status. `pats report` prints a line per pair with a misuse, after the pivot, as
-  it prints the host driver's advisory line, and its json carries `key_misuse` per pair, judge samples
-  included.
+- a misuse does not change the pair's status. pats warns of it as the pair ends, `pats report` prints a line per pair
+  with one, after the pivot, as it prints the host driver's advisory line, and its json carries `key_misuse` per pair.
+  a judge sample's metadata carries it too.
 - the credential preflight writes its audit to a temp file of its own. after the agent ends it closes the session,
   which drains the proxy's log, then reads the file and removes it. it fails when the file is missing or unreadable,
   when it holds a misuse (naming the url), or when it holds no substituted request: a harness that exits 0 without
@@ -198,8 +201,8 @@ sandbox the current `pats.yaml` gives it). a judge's own host steps follow its o
 out of what a careless step prints; it does not stop a hostile one, which can read it from pats's own process, the
 proxy or the engine. other secrets in pats's environment stay visible to host steps, as today.
 
-the readme says "a step sees only the names pats sets for it". that is true of step sandboxes only; host steps
-inherit pats's environment. the readme is corrected.
+the readme's "a step sees only the names pats sets for it" is about the `PATS_*` names: a host step inherits the
+rest of pats's environment. the readme says so, and what a key proxy changes.
 
 ### commands
 

@@ -198,8 +198,8 @@ provider.
 - **`like`, or any way for one harness to start from another by name.** pats has no inheritance but a vector's
   `defaults`. it would need its own rules (how deep, what may change under it), and what it saves is a paste.
 - **keeping a credential out of the sandbox.** the agent's shell can read the key its harness holds, under every
-  harness. a proxy that puts the real key in on the way out would close that, and pats has the proxy for it. left
-  out: for an eval the key is the user's own and short-lived in a sandbox that is thrown away.
+  harness. left out here: for an eval the key is the user's own and short-lived in a sandbox that is thrown away.
+  `key-proxy.md` adds it since, as an opt-in, for a run whose agent reads untrusted input.
 
 ## tests
 

@@ -142,6 +142,33 @@ only `denied_egress` is warned about at the end of each pair, the other two are 
 records the effective policy, the sidecar image (its registry digest when pulled), and the requests and bytes that
 crossed the proxy.
 
+## key proxy
+
+`key-proxy: true` on a sandbox's egress mapping makes the proxy hold the harness's keys (`docs/spec/key-proxy.md` is
+the design). the agent's env gets a placeholder in place of each key its harness binds -- the real key's prefix, then
+random characters to its length -- drawn fresh for each pair, judge sample and preflight. the proxy gets the real
+values beside its policy (`PATS_EGRESS_KEYS`, on the channel the run CA's key takes) and the bindings, which pats
+merges into the allow list: for `opencode-openrouter` and `pi-openrouter` that is `OPENROUTER_API_KEY` on `POST
+openrouter.ai/api/v1/chat/completions`, set in the built-in harness table only.
+
+on a request the proxy sees in clear, an `Authorization: Bearer <placeholder>` on its binding -- over tls to port 443,
+the request's own `Host` naming that port, a path spelled without escapes that reads one way -- goes out with the real
+key. the placeholder anywhere else (another header or header name, the url or query, another host, path, method or
+port, plain http) refuses the request 403 before the policy is asked, audited `rule: key`, `reason: misuse`, and
+folded into `key_misuse` in `metadata.json`, which is warned about and printed by `pats report`. a request's trailers
+do not go on where keys are held. on a bound endpoint the client's `Accept-Encoding` is dropped, and the answer's
+headers, trailers and streamed body have the real key written over by the placeholder; an answer still encoded is
+refused, `reason: key-scrub`, into `failed_egress`. a substituted request the origin answered carries `key:
+substituted`, counted in the egress record as `keys_substituted`. request bodies are not looked at: the agent can
+quote its own placeholder there.
+
+a host the proxy only tunnels shows nothing, so a placeholder sent there is neither refused nor audited -- it is
+worthless there. the host driver cannot hold keys (the agent runs beside its proxy), a sandbox without an egress
+mapping has no proxy to hold them, and an agent whose harness reads a key it binds nowhere, or passes a bound one
+through `pass-env`, is a load error. `pats egress check --agent` names the bindings; `pats egress run --sandbox`
+refuses a key-proxy sandbox, having no real values. the credential preflight keeps an audit of its own and fails
+unless a key went out through the proxy.
+
 ## behind a proxy
 
 a machine that reaches the internet only through a proxy of its own says so the usual way, `HTTPS_PROXY` /
