@@ -97,7 +97,7 @@ type RunCommand struct {
 	DryRun  bool     `long:"dry-run" short:"n" description:"list the pairs with a cost estimate from past runs, and run nothing"`
 	JSON    bool     `long:"json" description:"with -n: the list as one json object a line on stdout, the log on stderr"`
 	Repeat  int      `long:"repeat" short:"N" default:"1" description:"run the selection this many times, one run after another, each its own run dir"`
-	Budget  float64  `long:"budget" value-name:"<usd>" description:"stop starting pairs once the reported spend reaches this many us dollars, across every repeat"`
+	Budget  string   `long:"budget" value-name:"<usd|kind=value,...>" description:"stop starting pairs once a cap is reached, across every repeat: a cost in us dollars, or cost=, tokens= (e.g. 50M), tools=, time= (e.g. 2h, after preflight)"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -107,10 +107,9 @@ func (r *RunCommand) Execute(args []string) error {
 	if r.Repeat < 1 {
 		return errors.New("--repeat must be at least 1")
 	}
-	if r.Budget != 0 || flagSet("run", "budget") {
-		if err := config.CheckCost(r.Budget); err != nil {
-			return fmt.Errorf("--budget: %w", err)
-		}
+	budget, err := parseBudget("run", r.Budget)
+	if err != nil {
+		return err
 	}
 	cfg, err := load(opts.Config)
 	if err != nil {
@@ -126,7 +125,7 @@ func (r *RunCommand) Execute(args []string) error {
 		Out:       out,
 		DryRun:    r.DryRun,
 		Repeat:    r.Repeat,
-		Budget:    r.Budget,
+		Budget:    budget,
 		JSON:      r.JSON,
 		JSONOut:   os.Stdout,
 		Jobs:      r.Jobs,
@@ -183,7 +182,7 @@ type JudgeCommand struct {
 	Tasks   []string `long:"task" short:"t" description:"only judge these tasks' pairs, or task vectors' (repeatable); default: all"`
 	Scorers []string `long:"scorer" short:"s" description:"only run these agent scorers or scorer vectors (repeatable); default: all"`
 	Suites  []string `long:"suite" short:"S" description:"only judge these suites or suite vectors (repeatable); default: all"`
-	Budget  float64  `long:"budget" value-name:"<usd>" description:"stop starting judge jobs once their reported spend reaches this many us dollars, across every run"`
+	Budget  string   `long:"budget" value-name:"<usd|kind=value,...>" description:"stop starting judge jobs once a cap is reached, across every run: a cost in us dollars, or cost=, tokens= (e.g. 50M), tools=, time= (e.g. 2h, after preflight)"`
 	Offline bool     `long:"offline" description:"skip checking for newer upstream images and the openrouter model check"`
 }
 
@@ -194,10 +193,9 @@ func (c *JudgeCommand) Execute(args []string) error {
 	if c.Repeat < 1 {
 		return errors.New("--repeat must be at least 1")
 	}
-	if c.Budget != 0 || flagSet("judge", "budget") {
-		if err := config.CheckCost(c.Budget); err != nil {
-			return fmt.Errorf("--budget: %w", err)
-		}
+	budget, err := parseBudget("judge", c.Budget)
+	if err != nil {
+		return err
 	}
 	cfg, err := load(opts.Config)
 	if err != nil {
@@ -209,7 +207,7 @@ func (c *JudgeCommand) Execute(args []string) error {
 		Runs:      c.Runs,
 		Jobs:      c.Jobs,
 		Repeat:    c.Repeat,
-		Budget:    c.Budget,
+		Budget:    budget,
 		Offline:   c.Offline,
 		Suites:    c.Suites,
 		Agents:    c.Agents,
@@ -250,6 +248,19 @@ func checkRuns(command string, n int, run string) error {
 // flagSet says whether command's --long was given, in any spelling the
 // parser takes (-N3, -vN 3, --runs=3), so an explicit 0 is told from the
 // flag's absence.
+// parseBudget reads a command's --budget: none when the flag is absent,
+// and an empty value given is an error, as any other bad one.
+func parseBudget(command, v string) (config.Budget, error) {
+	if v == "" && !flagSet(command, "budget") {
+		return config.Budget{}, nil
+	}
+	b, err := config.ParseBudget(v)
+	if err != nil {
+		return config.Budget{}, fmt.Errorf("--budget: %w", err)
+	}
+	return b, nil
+}
+
 func flagSet(command, long string) bool {
 	if parser == nil {
 		return false

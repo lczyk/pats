@@ -157,10 +157,19 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	if stat.failed.Load() {
 		return fmt.Errorf("harness reported an error (likely bad/expired creds)\n%s", said)
 	}
-	// a cap is checked against the cost a harness reports: one that reported
-	// none here leaves it nothing to check.
-	if (a.Budget != nil || opts.Budget > 0) && !stat.costSeen.Load() {
-		logw{opts.Out, opts.Color, opts.Verbose}.warn("agent %s reports no cost: its budget has nothing to check", a.Name)
+	// a cap is checked against what a harness reports: one that reported
+	// none of a kind here leaves a cap of it nothing to check. preflight
+	// asks for no tool call, so for tools only a harness with no parse
+	// script is known to report none.
+	lw := logw{opts.Out, opts.Color, opts.Verbose}
+	if (a.Budget.Cost > 0 || opts.Budget.Cost > 0) && !stat.costSeen.Load() {
+		lw.warn("agent %s reports no cost: its budget has nothing to check", a.Name)
+	}
+	if (a.Budget.Tokens > 0 || opts.Budget.Tokens > 0) && !stat.tokensSeen.Load() {
+		lw.warn("agent %s reports no tokens: its tokens budget has nothing to check", a.Name)
+	}
+	if (a.Budget.Tools > 0 || opts.Budget.Tools > 0) && hd.Parser() == nil {
+		lw.warn("agent %s reports no tool calls: its tools budget has nothing to check", a.Name)
 	}
 	return nil
 }

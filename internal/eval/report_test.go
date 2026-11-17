@@ -90,6 +90,7 @@ func TestReportJSON(t *testing.T) {
 	assert.Equal(t, p(0)["cost_estimated"], any(false))
 	assert.Equal(t, p(1)["cache_write_tokens"], any(nil))
 	assert.Equal(t, p(1)["error"], any(nil))
+	assert.Equal(t, p(1)["budget_kind"], any(nil)) // not stopped by a budget: null, as one from before the field
 	assert.EqualArrays(t, p(1)["denied_egress"].([]any), []any{"evil.example"})
 	assert.EqualArrays(t, p(1)["blocked_egress"].([]any), []any{}) // known empty: [], not null
 	// a half-written metadata.json: listed, run fields null, warned about.
@@ -251,4 +252,13 @@ func TestSummaryScanCutShort(t *testing.T) {
 	log := `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}` + "\n" + big + "\n"
 	require.NoError(t, os.WriteFile(p, []byte(log), 0o644))
 	assert.That(t, summarize(hd("claude-cli-keyless"), p) == nil, "a scan cut short gives no summary")
+}
+
+// a pair a budget stopped names the cap in budget_kind.
+func TestReportBudgetKind(t *testing.T) {
+	var p reportPair
+	p.summaryFields(&pairMeta{Status: "budget", Error: "tools 4 passed its budget 3", BudgetKind: "tools"})
+	b, err := json.Marshal(p)
+	require.NoError(t, err)
+	assert.ContainsString(t, string(b), `"status":"budget","error":"tools 4 passed its budget 3","budget_kind":"tools"`)
 }

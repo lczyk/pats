@@ -351,7 +351,7 @@ func checkSlots(fields map[string]*yaml.Node, kind, what string) error {
 
 // merge decodes defaults overlaid with own into a fresh item of proto's type.
 // an own null unsets the default. a slot set or nulled by own replaces the
-// whole slot; env merges key by key. the overlay is built as a mapping node so
+// whole slot; env and budget merge key by key. the overlay is built as a mapping node so
 // aliases and merge keys in either layer decode as yaml.v3 resolves them.
 func merge(proto any, kind string, defaults, own map[string]*yaml.Node) (any, error) {
 	layer := map[string]*yaml.Node{}
@@ -378,11 +378,17 @@ func merge(proto any, kind string, defaults, own map[string]*yaml.Node) (any, er
 		case isNull(v):
 			delete(layer, k)
 		case k == "env" && layer["env"] != nil:
-			env, err := mergeEnv(layer["env"], v)
+			env, err := mergeKeys(layer["env"], v, "env")
 			if err != nil {
 				return nil, err
 			}
 			layer[k] = env
+		case k == "budget" && layer["budget"] != nil:
+			b, err := mergeKeys(budgetMapping(layer["budget"]), budgetMapping(v), "budget")
+			if err != nil {
+				return nil, err
+			}
+			layer[k] = b
 		default:
 			layer[k] = v
 		}
@@ -403,14 +409,14 @@ func merge(proto any, kind string, defaults, own map[string]*yaml.Node) (any, er
 	return item, nil
 }
 
-// mergeEnv overlays one env mapping on another, key by key; a null value
-// drops the inherited key.
-func mergeEnv(base, over *yaml.Node) (*yaml.Node, error) {
-	b, err := mappingOf(base, "env")
+// mergeKeys overlays one mapping on another, key by key; a null value
+// drops the inherited key. what names the field in errors.
+func mergeKeys(base, over *yaml.Node, what string) (*yaml.Node, error) {
+	b, err := mappingOf(base, what)
 	if err != nil {
 		return nil, err
 	}
-	o, err := mappingOf(over, "env")
+	o, err := mappingOf(over, what)
 	if err != nil {
 		return nil, err
 	}

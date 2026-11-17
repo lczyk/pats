@@ -1,7 +1,6 @@
 package main
 
 import (
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,11 +77,12 @@ func TestRunRepeatAtLeastOne(t *testing.T) {
 	}
 }
 
-// a cap is a positive finite number of dollars.
+// a cap is a positive finite number of dollars, or a list of kinds.
 func TestRunMaxCost(t *testing.T) {
-	for _, c := range []float64{-1, math.Inf(1), math.NaN(), 2e6} {
+	for _, c := range []string{"-1", "inf", "nan", "2e6", "2000000", "1e2", "cost=1,cost=2", "nope=1", "cost=", "tokens=1.2345k", "time=-5m"} {
 		err := (&RunCommand{Repeat: 1, Budget: c}).Execute(nil)
-		assert.Error(t, err, "--budget")
+		require.That(t, err != nil, "%s: no error", c)
+		assert.ContainsString(t, err.Error(), "--budget")
 	}
 }
 

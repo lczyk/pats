@@ -65,12 +65,20 @@ type pairStat struct {
 	cost      float64
 	costKnown bool // the summary reported a cost
 
-	liveCost atomic.Uint64 // float64 bits: spend reported so far, for the bar
-	costSeen atomic.Bool   // the harness reported a cost at all, 0 included
-	failed   atomic.Bool   // the harness's stream says the run is in error, as it stands
-	failure  atomic.Value  // string: what it said of that error
-	// spend, when set, hears each step's cost as the harness reports it.
-	spend func(c float64)
+	// the counts a budget caps, from the summary when the pair ended: the
+	// ledger counts them in place of the live ones (tokens only when the
+	// harness reported any).
+	tokensUsed, toolsUsed   int64
+	tokensKnown, toolsKnown bool
+
+	liveCost   atomic.Uint64 // float64 bits: spend reported so far, for the bar
+	liveTokens atomic.Int64  // input, output, cache read and write tokens reported so far
+	costSeen   atomic.Bool   // the harness reported a cost at all, 0 included
+	tokensSeen atomic.Bool   // the harness reported a token count at all, 0 included
+	failed     atomic.Bool   // the harness's stream says the run is in error, as it stands
+	failure    atomic.Value  // string: what it said of that error
+	// use, when set, hears each line's change in what the pair reported.
+	use func(d usage)
 	// price, when set, costs the tokens of a harness that reports no cost.
 	price *modelPrice
 }
@@ -78,16 +86,23 @@ type pairStat struct {
 // spent is the spend the pair's harness reported so far.
 func (s *pairStat) spent() float64 { return math.Float64frombits(s.liveCost.Load()) }
 
-// addCost records a step's cost as the harness reports it.
-func (s *pairStat) addCost(c float64) {
-	for {
+// used is what the pair reported so far.
+func (s *pairStat) used() usage {
+	return usage{cost: s.spent(), tokens: s.liveTokens.Load(), tools: atomic.LoadInt64(&s.tools)}
+}
+
+// addUsage records a line's change in cost and tokens as the harness reports
+// it (the tool count is stored whole by the scanner), and passes the change on.
+func (s *pairStat) addUsage(d usage) {
+	for d.cost != 0 {
 		old := s.liveCost.Load()
-		if s.liveCost.CompareAndSwap(old, math.Float64bits(math.Float64frombits(old)+c)) {
+		if s.liveCost.CompareAndSwap(old, math.Float64bits(math.Float64frombits(old)+d.cost)) {
 			break
 		}
 	}
-	if s.spend != nil {
-		s.spend(c)
+	s.liveTokens.Add(d.tokens)
+	if s.use != nil {
+		s.use(d)
 	}
 }
 
@@ -436,26 +451,30 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 		return nil
 	}
 	pass := p.NewPass()
-	var cost float64
+	var prev usage
 	return func(line []byte, s *pairStat) {
 		_ = pass.Line(line) // the pass after the pair reports a failed line
 		r := pass.Result()
 		atomic.StoreInt64(&s.tools, int64(r.ToolCalls))
 		s.failed.Store(r.IsError)
 		s.failure.Store(r.ErrorMsg)
+		now := usage{cost: prev.cost, tokens: int64(r.Input + r.Output + r.CacheRead + r.CacheWrite), tools: int64(r.ToolCalls)}
 		// a harness that reports tokens and no cost is priced by its
 		// model's list price, so a budget has something to check.
-		now, has := r.CostUSD, r.HasCost
+		c, has := r.CostUSD, r.HasCost
 		if !has {
-			now, has = s.price.cost(r.Input, r.Output, r.CacheRead, r.CacheWrite)
+			c, has = s.price.cost(r.Input, r.Output, r.CacheRead, r.CacheWrite)
 		}
 		if has {
 			s.costSeen.Store(true)
+			now.cost = c
 		}
-		if now != cost {
-			d := now - cost
-			cost = now
-			s.addCost(d)
+		if r.HasTokens {
+			s.tokensSeen.Store(true)
+		}
+		if d := (usage{now.cost - prev.cost, now.tokens - prev.tokens, now.tools - prev.tools}); d != (usage{}) {
+			prev = now
+			s.addUsage(d)
 		}
 	}
 }
@@ -489,6 +508,8 @@ type runSummary struct {
 	ParseErrors int `json:"parse_errors,omitempty"`
 
 	parseError string // the first failed line, for the pair's warning
+	hasTokens  bool   // the harness reported a token count at all
+	toolCalls  int
 }
 
 // readLog runs a fresh pass of a parse script over a finished stdout log. a
@@ -568,6 +589,7 @@ func summaryOf(r *parse.Result) *runSummary {
 		ReasoningTokens: r.Reasoning, PremiumRequests: r.PremiumRequests,
 		TTFTms: r.TTFTms, APIDurationMs: r.APIms, IsError: r.IsError, Error: r.ErrorMsg,
 		Tools: r.Tools, ParseErrors: r.Errors,
+		hasTokens: r.HasTokens, toolCalls: r.ToolCalls,
 	}
 	if r.Errors > 0 {
 		sum.parseError = fmt.Sprintf("line %d: %s (%d line(s) failed)", r.FirstErrorLine, r.FirstError, r.Errors)

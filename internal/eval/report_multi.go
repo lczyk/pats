@@ -40,11 +40,12 @@ type multiPair struct {
 // multiSample is one attempt: a run the pair ran in, its mean null when
 // nothing scored it there.
 type multiSample struct {
-	Run     string   `json:"run"`
-	Mean    *float64 `json:"mean"`
-	Status  *string  `json:"status"`
-	Error   *string  `json:"error"`
-	CostUSD *float64 `json:"cost_usd"`
+	Run        string   `json:"run"`
+	Mean       *float64 `json:"mean"`
+	Status     *string  `json:"status"`
+	Error      *string  `json:"error"`
+	BudgetKind *string  `json:"budget_kind"` // the cap that stopped a budget attempt
+	CostUSD    *float64 `json:"cost_usd"`
 	// CostEstimated says cost_usd is the tokens at the model's list price.
 	CostEstimated bool               `json:"cost_estimated"`
 	DurationS     *float64           `json:"duration_s"`
@@ -162,6 +163,10 @@ func buildMulti(runDirs []string, warn io.Writer) (*multiDoc, map[string][]strin
 				if r.meta.Error != "" {
 					e := r.meta.Error
 					s.Error = &e
+				}
+				if r.meta.BudgetKind != "" {
+					k := r.meta.BudgetKind
+					s.BudgetKind = &k
 				}
 				if sm := r.meta.Summary; sm != nil && sm.HasCost {
 					c := sm.CostUSD

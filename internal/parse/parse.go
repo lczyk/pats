@@ -52,6 +52,7 @@ type Result struct {
 	PremiumRequests, TTFTms, APIms                         int
 	CostUSD                                                float64
 	HasCost                                                bool // cost_usd was passed at all, 0 included
+	HasTokens                                              bool // a token count was passed at all, 0 included
 	IsError                                                bool
 	ErrorMsg                                               string // what the harness said of its error, "" when it said nothing
 
@@ -293,6 +294,9 @@ func (ps *Pass) outUsage(_ *starlark.Thread, b *starlark.Builtin, args starlark.
 
 	for i, c := range counts {
 		*c.dst = next[i]
+		if c.v != nil && strings.HasSuffix(c.key, "_tokens") {
+			r.HasTokens = true
+		}
 	}
 	if cost != nil {
 		r.CostUSD, r.HasCost = nextCost, true

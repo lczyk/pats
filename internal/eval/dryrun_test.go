@@ -12,6 +12,7 @@ import (
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
 
+	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 )
 
@@ -70,14 +71,25 @@ sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 	assert.Equal(t, len(after), len(runs)) // no run dir made
 
 	var js, log bytes.Buffer
-	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Repeat: 5, Budget: 20})
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Repeat: 5, Budget: config.Budget{Cost: 20}})
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(js.String()), "\n")
 	require.Len(t, lines, 3)
 	assert.ContainsString(t, lines[0], `"agent":"orx","task":"txx","sandbox":"sxx","estimate_usd":2,"samples":3,"unknown":null,"repeat":5,"estimate_total_usd":10`)
 	assert.ContainsString(t, lines[1], `"unknown":"no history"`)
-	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":10,"known_usd":10,"unknown_pairs":1,"budget_usd":20,"fits":true}`)
+	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":10,"known_usd":10,"unknown_pairs":1,"budget":{"cost_usd":20},"fits":true}`)
 	assert.ContainsString(t, log.String(), "WARN skipping ") // warnings go to the log, never into the json
+
+	// caps of other kinds are listed, with no fit; without a cost cap fits is null.
+	js.Reset()
+	out.Reset()
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Budget: config.Budget{Tokens: 50_000_000, Time: 2 * time.Hour}})
+	require.NoError(t, err)
+	lines = strings.Split(strings.TrimSpace(js.String()), "\n")
+	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":2,"known_usd":2,"unknown_pairs":1,"budget":{"tokens":50000000,"time_s":7200},"fits":null}`)
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, DryRun: true, Tasks: []string{"txx"}, Budget: config.Budget{Cost: 20, Tools: 300}})
+	require.NoError(t, err)
+	assert.ContainsString(t, out.String(), "INFO 2 pair(s), est $2.00 + 1 unknown, under --budget $20.00, --budget also caps tools=300 (no estimate)\n")
 }
 
 // a project with no runs yet estimates every pair as unknown.

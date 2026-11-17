@@ -70,6 +70,9 @@ type pairMeta struct {
 	DurationS float64      `json:"duration_s"`
 	Status    string       `json:"status"` // ok | nonzero | error
 	Error     string       `json:"error,omitempty"`
+	// BudgetKind is the cap of the agent's budget that stopped the pair:
+	// cost, tokens, tools or time; "" when none did.
+	BudgetKind string `json:"budget_kind,omitempty"`
 	// Synced is whether the agent's files came home, so collect saw them; a
 	// pair from before the field has nil (see filesHome).
 	Synced      *bool  `json:"synced"`

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/version"
@@ -179,7 +180,8 @@ func runPair(
 	// setup -- start, the in-sandbox prepare -- has its own budget; the
 	// task's timeout covers the agent only.
 	var r harnessRun
-	var budget, stopped bool // the agent's budget stopped it; it or the deadline did
+	var stopped bool      // the agent's budget or the deadline stopped it
+	var budgetKind string // the cap of its agent's budget that stopped it
 	var sess sandbox.Session
 	// synced: the host copy of the agent's files is current, so collect
 	// can read it.
@@ -221,18 +223,26 @@ func runPair(
 		// the agent gets a context of its own: its agent's budget cancels
 		// it alone, and sync and collect still run on the pair's.
 		actx, acancel := context.WithCancelCause(ctx)
-		stat.spend = func(c float64) {
-			opts.ledger.add(stat, c)
-			if spent := stat.spent(); a.Budget != nil && spent > *a.Budget {
-				acancel(errBudget)
+		stat.use = func(d usage) {
+			opts.ledger.add(stat, d)
+			if kind := passed(a.Budget, stat.used()); kind != "" {
+				acancel(budgetStop{kind})
 			}
+		}
+		// an agent's time below the task's timeout is a deadline of its own.
+		if bt, tt := a.Budget.Time, t.TimeoutDuration(); bt > 0 && (tt == 0 || bt < tt) {
+			timer := time.AfterFunc(bt, func() { acancel(budgetStop{"time"}) })
+			defer timer.Stop()
 		}
 		r = h.exec(actx, sess, stdoutW, stderrW, t.TimeoutDuration())
 		// the first cause wins: a deadline first is a timeout, a cap first
 		// a budget stop; an interrupt is neither.
-		budget = !r.timedOut && ctx.Err() == nil && errors.Is(context.Cause(actx), errBudget)
+		var bs budgetStop
+		if !r.timedOut && ctx.Err() == nil && errors.As(context.Cause(actx), &bs) {
+			budgetKind = bs.kind
+		}
 		acancel(nil)
-		stopped = r.timedOut || budget
+		stopped = r.timedOut || budgetKind != ""
 		// bring the agent's writes home for collect (a no-op where the
 		// workdir is bound). a timed-out or stopped agent left files too; a
 		// run interrupted by ctrl+c is not waited on.
@@ -251,8 +261,8 @@ func runPair(
 	case ctx.Err() != nil:
 		// an interrupt of the run wins over whatever else ended the agent.
 		status, errStr = "error", "interrupted"
-	case budget:
-		status, errStr = "budget", fmt.Sprintf("cost %s passed its budget %s", usd(stat.spent()), usd(*a.Budget))
+	case budgetKind != "":
+		status, errStr = "budget", stopMessage(budgetKind, a.Budget, stat.used(), time.Duration(r.dur*float64(time.Second)))
 		if syncErr != nil {
 			errStr += fmt.Sprintf("; sync: %v", syncErr)
 		}
@@ -315,11 +325,14 @@ func runPair(
 		}
 	}
 
+	if status != "budget" {
+		budgetKind = "" // an interrupt during sync or collect
+	}
 	meta := pairMeta{
 		Agent: job.agentName, Harness: a.Harness, HarnessFrom: hd.From, HarnessHash: hd.Digest(),
 		Model: a.Model, Effort: a.Effort, Task: t.Name,
 		Sandbox: sbID, Driver: sb.Driver, SandNotBoxed: sandbox.TraitsOf(sb.Driver).Unboxed, Image: sb.Image, Sudo: h.spec.Sudo,
-		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, Synced: &synced,
+		ExitCode: r.code, DurationS: round2(r.dur), Status: status, Error: errStr, BudgetKind: budgetKind, Synced: &synced,
 		PatsVersion:  version.Info.Version,
 		DeniedEgress: ea.Denied, BlockedEgress: ea.Blocked, FailedEgress: ea.Failed,
 		Summary:    summarize(hd, filepath.Join(outDir, "stdout.log")),
@@ -346,6 +359,9 @@ func runPair(
 	meta.Summary.estimate(stat.price)
 	if s := meta.Summary; s != nil {
 		stat.tokens, stat.cost, stat.costKnown = s.OutputTokens, s.CostUSD, s.HasCost
+		stat.toolsUsed, stat.toolsKnown = int64(s.toolCalls), true
+		stat.tokensUsed = int64(s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheWriteTokens)
+		stat.tokensKnown = s.hasTokens
 		if s.ParseErrors > 0 {
 			lg.warn("%s parse: %s", job.label, s.parseError)
 		}
@@ -353,7 +369,7 @@ func runPair(
 	// an interrupt during the close or the lookups above still makes the
 	// pair interrupted.
 	if ctx.Err() != nil {
-		meta.Status, meta.Error = "error", "interrupted"
+		meta.Status, meta.Error, meta.BudgetKind = "error", "interrupted", ""
 	}
 	if job.meta != nil {
 		job.meta(&meta)

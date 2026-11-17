@@ -164,7 +164,7 @@ func TestMaxCostNoCost(t *testing.T) {
 		warns bool
 	}{
 		"the agent's cap": {"budget: 2", Options{}, true},
-		"the run's cap":   {"effort: low", Options{Budget: 5}, true},
+		"the run's cap":   {"effort: low", Options{Budget: config.Budget{Cost: 5}}, true},
 		"no cap":          {"effort: low", Options{}, false},
 	} {
 		dir := t.TempDir()
@@ -206,7 +206,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
-	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, Budget: 1.5})
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, Budget: config.Budget{Cost: 1.5}})
 	assert.ErrorIs(t, err, ErrBudget)
 	assert.ContainsString(t, out.String(), "WARN budget $1.50 reached at $2.00: 1 pair(s) not started")
 	ran := 0
@@ -221,7 +221,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	dir2 := t.TempDir()
 	pinAll(t, dir2, cfg)
 	out.Reset()
-	_, err = Run(cfg, Options{ConfigDir: dir2, Now: time.Now(), Out: &out, Jobs: 1, Budget: 3, Repeat: 3})
+	_, err = Run(cfg, Options{ConfigDir: dir2, Now: time.Now(), Out: &out, Jobs: 1, Budget: config.Budget{Cost: 3}, Repeat: 3})
 	assert.ErrorIs(t, err, ErrBudget)
 	runs, _ := sortedRunNames(filepath.Join(dir2, runsSubdir))
 	assert.Len(t, runs, 1)
@@ -229,9 +229,9 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 }
 
 // the ledger moves a pair from live to finished in one step, counting the
-// summary's cost when known, else the live spend, never both.
+// summary's counts when known, else the live ones, never both.
 func TestLedger(t *testing.T) {
-	l := newLedger(0)
+	l := newLedger(config.Budget{})
 	var wg sync.WaitGroup
 	for i := range 50 {
 		wg.Add(1)
@@ -239,41 +239,71 @@ func TestLedger(t *testing.T) {
 			defer wg.Done()
 			s := &pairStat{}
 			require.That(t, l.admit(s), "admit")
-			l.add(s, 1)
-			l.add(s, 1)
-			if i%2 == 0 {
-				s.cost, s.costKnown = 2.5, true // the summary's
+			l.add(s, usage{1, 10, 1})
+			l.add(s, usage{1, 10, 1})
+			if i%2 == 0 { // the summary's
+				s.cost, s.costKnown = 2.5, true
+				s.tokensUsed, s.tokensKnown = 25, true
+				s.toolsUsed, s.toolsKnown = 3, true
 			}
 			l.finish(s)
 		}()
 	}
 	wg.Wait()
-	spent, _ := l.totals()
-	assert.Equal(t, spent, 25*2.5+25*2.0)
+	used, _ := l.totals()
+	assert.Equal(t, used, usage{25*2.5 + 25*2.0, 25*25 + 25*20, 25*3 + 25*2})
 
-	capped := newLedger(1)
+	capped := newLedger(config.Budget{Cost: 1})
 	s := &pairStat{}
 	require.That(t, capped.admit(s), "the first pair")
-	capped.add(s, 1)
+	capped.add(s, usage{cost: 1})
 	assert.That(t, !capped.admit(&pairStat{}), "admitted past the cap")
 	capped.finish(s) // no summary: the live spend stands
-	spent, not := capped.totals()
-	assert.Equal(t, spent, 1.0)
+	used, not := capped.totals()
+	assert.Equal(t, used.cost, 1.0)
 	assert.Equal(t, not, 1)
+	assert.Equal(t, capped.reachedAt(), "budget $1.00 reached at $1.00")
 
 	// a spend that reached the cap and later reads under it (a summary
 	// below the live sum, or a float sum regrouped as pairs finish:
 	// 0.01+(0.01+0.06) is 0.07999999999999999) stays reached.
-	latched := newLedger(0.08)
+	latched := newLedger(config.Budget{Cost: 0.08})
 	a := &pairStat{}
 	require.That(t, latched.admit(a), "admit")
-	latched.add(a, 0.08)
+	latched.add(a, usage{cost: 0.08})
 	a.cost, a.costKnown = 0.07, true
 	latched.finish(a)
-	spent, _ = latched.totals()
-	require.That(t, spent < 0.08, "the spend did not drop: %v", spent)
+	used, _ = latched.totals()
+	require.That(t, used.cost < 0.08, "the spend did not drop: %v", used.cost)
 	assert.That(t, latched.reached(), "the cap re-opened")
 	assert.That(t, !latched.admit(&pairStat{}), "admitted after the cap re-opened")
+}
+
+// tokens and tools are capped as cost is; a restated total below the sum
+// takes it back; one change reaching two caps latches the first kind, in
+// the order cost, tokens, tools, time; the clock runs from the ledger's
+// start.
+func TestLedgerKinds(t *testing.T) {
+	l := newLedger(config.Budget{Tokens: 100, Tools: 5})
+	s := &pairStat{}
+	require.That(t, l.admit(s), "admit")
+	l.add(s, usage{tokens: 90, tools: 4})
+	l.add(s, usage{tokens: -20})
+	assert.That(t, !l.reached(), "reached at 70 tokens, 4 tools")
+	l.add(s, usage{tokens: 30, tools: 1}) // both caps at once
+	assert.That(t, l.reached(), "not reached")
+	assert.Equal(t, l.hit, "tokens")
+	assert.Equal(t, l.reachedAt(), "budget tokens 100 reached at 100")
+	l.add(s, usage{tools: 10})
+	assert.Equal(t, l.hit, "tokens") // latched
+
+	now := time.Unix(1000, 0)
+	timed := newLedger(config.Budget{Time: time.Hour, Cost: 5})
+	timed.start, timed.now = now, func() time.Time { return now }
+	require.That(t, timed.admit(&pairStat{}), "admitted at the start")
+	now = now.Add(time.Hour + 13*time.Second)
+	assert.That(t, !timed.admit(&pairStat{}), "admitted past the clock")
+	assert.Equal(t, timed.reachedAt(), "budget time 1h0m0s reached at 1h0m13s")
 }
 
 // behind the machine's proxy the run names the upstream, redacted, before
@@ -344,9 +374,137 @@ sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 	dir = t.TempDir()
 	pinAll(t, dir, cfg)
 	out.Reset()
-	runDir, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 4, Budget: 2.5})
+	runDir, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 4, Budget: config.Budget{Cost: 2.5}})
 	assert.ErrorIs(t, err, ErrBudget)
 	n := ran(runDir)
 	assert.That(t, n >= 3 && n < 8, "%d pairs ran under a budget three of them spend: %s", n, out.String())
 	assert.ContainsString(t, out.String(), "pair(s) not started")
+}
+
+// runOne runs agent axx on task txx under box, the agent and task taking
+// the extra keys given, and returns the pair's metadata and the log.
+func runOne(t *testing.T, harness, agentKeys, taskKeys string, box *fakeSandbox, opts Options) (pairMeta, string) {
+	t.Helper()
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return box, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: `+harness+`, model: m, sandbox: sxx, `+agentKeys+`}}}
+txx: {kind: task, items: {txx: {prompt: p, collect: echo collected, `+taskKeys+`}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	opts.ConfigDir, opts.Now, opts.Out = dir, time.Now(), &out
+	runDir, err := Run(cfg, opts)
+	require.NoError(t, err, "%s", out.String())
+	return readMeta(t, runDir, "axx", "txx"), out.String()
+}
+
+// opencode's tool_use lines.
+func toolUses(n int) string {
+	return strings.Repeat(`{"type":"tool_use","part":{"tool":"read"}}`+"\n", n)
+}
+
+// a tokens or tools cap stops a pair mid-stream as a cost cap does:
+// synced, collected, status budget, the kind in budget_kind and the error.
+func TestAgentBudgetKinds(t *testing.T) {
+	// three steps of 1000 tokens each: 400 in, 300 out, 200 cache read, 100 cache write.
+	step := `{"type":"step_finish","part":{"cost":0.01,"tokens":{"input":400,"output":300,"cache":{"read":200,"write":100}}}}` + "\n"
+	for name, c := range map[string]struct {
+		agent, preRun, kind, err string
+	}{
+		"tokens":    {"budget: {tokens: 2.5k}", strings.Repeat(step, 3), "tokens", "tokens 3000 passed its budget 2500"},
+		"tools":     {"budget: {tools: 3}", toolUses(4), "tools", "tools 4 passed its budget 3"},
+		"cost wins": {"budget: {cost: 0.025, tokens: 2.5k}", strings.Repeat(step, 3), "cost", "cost $0.03 passed its budget $0.03"},
+	} {
+		box := &fakeSandbox{blockUntilDone: true, preRun: c.preRun}
+		m, out := runOne(t, "opencode-openrouter", c.agent, "timeout: 1m", box, Options{})
+		assert.Equal(t, m.Status, "budget", name)
+		assert.Equal(t, m.BudgetKind, c.kind, name)
+		assert.Equal(t, m.Error, c.err, name)
+		assert.ContainsString(t, out, "axx/txx budget")
+	}
+}
+
+// claude states its usage on its final result only: a tokens cap marks
+// the pair there.
+func TestAgentTokensAtTheEnd(t *testing.T) {
+	result := `{"type":"result","total_cost_usd":0.1,"num_turns":2,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":3000,"cache_creation_input_tokens":0},"result":"done"}` + "\n"
+	box := &fakeSandbox{blockUntilDone: true, preRun: result, preflightOut: result}
+	m, out := runOne(t, "claude-cli-keyless", "budget: {tokens: 3000}", "timeout: 1m", box, Options{})
+	assert.Equal(t, m.Status, "budget")
+	assert.Equal(t, m.Error, "tokens 3030 passed its budget 3000")
+	assert.That(t, !strings.Contains(out, "reports no tokens"), "%s", out)
+}
+
+// an agent's time below the task's effective timeout stops the pair as a
+// budget; at or above it the task's deadline binds; under a timeout of 0
+// the agent's time is the only one.
+func TestAgentTime(t *testing.T) {
+	for name, c := range map[string]struct {
+		agent, task, status, kind string
+	}{
+		"below the timeout": {"budget: {time: 50ms}", "timeout: 1m", "budget", "time"},
+		"equal":             {"budget: {time: 100ms}", "timeout: 100ms", "timeout", ""},
+		"no timeout":        {"budget: {time: 50ms}", `timeout: "0"`, "budget", "time"},
+	} {
+		box := &fakeSandbox{blockUntilDone: true}
+		m, _ := runOne(t, "opencode-openrouter", c.agent, c.task, box, Options{})
+		assert.Equal(t, m.Status, c.status, name)
+		assert.Equal(t, m.BudgetKind, c.kind, name)
+		if c.kind == "time" {
+			assert.That(t, strings.HasPrefix(m.Error, "time ") && strings.HasSuffix(m.Error, " reached its budget 50ms"), "%s: %s", name, m.Error)
+		}
+	}
+}
+
+// --budget tools=1: the first pair's one tool call reaches it, and the rest
+// do not start.
+func TestRunBudgetTools(t *testing.T) {
+	fake := &fakeSandbox{preRun: toolUses(1)}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tvx: {kind: task, items: {t1x: {prompt: p}, t2x: {prompt: p}, t3x: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, Budget: config.Budget{Tools: 1}})
+	assert.ErrorIs(t, err, ErrBudget)
+	assert.ContainsString(t, out.String(), "WARN budget tools 1 reached at 1: 2 pair(s) not started")
+}
+
+// a cap of a kind the harness reports nothing of warns after preflight:
+// tokens when preflight saw no token count, tools when the harness has no
+// parse script.
+func TestBudgetKindsNothingToCheck(t *testing.T) {
+	silent := &fakeSandbox{preRun: `{"type":"item.completed","item":{"type":"command_execution"}}` + "\n"}
+	_, out := runOne(t, "codex-cli-keyless", "budget: {tokens: 1M, tools: 10}", "", silent, Options{})
+	assert.ContainsString(t, out, "WARN agent axx reports no tokens: its tokens budget has nothing to check")
+	assert.That(t, !strings.Contains(out, "reports no tool calls"), "%s", out)
+
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return &fakeSandbox{}, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+hxx: {kind: harness, items: {bare: {run: "true"}}}
+axx: {kind: agent, items: {axx: {harness: bare, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var buf bytes.Buffer
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &buf, Budget: config.Budget{Tools: 5}})
+	require.NoError(t, err, "%s", buf.String())
+	assert.ContainsString(t, buf.String(), "WARN agent axx reports no tool calls: its tools budget has nothing to check")
 }

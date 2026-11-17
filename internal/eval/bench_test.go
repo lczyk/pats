@@ -115,7 +115,7 @@ func BenchmarkProgressRedraw(b *testing.B) {
 			p := &progress{out: io.Discard, total: 4 * pairs, done: pairs, began: time.Now()}
 			for i := range pairs {
 				st := &pairStat{out: int64(1200 + 37*i), tools: int64(11 + i), net: int64(3 * i), netSeen: 1}
-				st.addCost(0.01 * float64(i+1))
+				st.addUsage(usage{cost: 0.01 * float64(i+1)})
 				p.active = append(p.active, &inflight{
 					label: fmt.Sprintf("agent-%02d/task-%02d", i%8, i), stat: st, showTools: true, spinRate: 0.9 + float64(i%20)/100,
 				})

@@ -64,6 +64,7 @@ type reportPair struct {
 	Mean             *float64 `json:"mean"`
 	Status           *string  `json:"status"`
 	Error            *string  `json:"error"`
+	BudgetKind       *string  `json:"budget_kind"` // the cap that stopped a budget pair
 	DurationS        *float64 `json:"duration_s"`
 	Turns            *int     `json:"turns"`
 	InputTokens      *int     `json:"input_tokens"`
@@ -174,6 +175,10 @@ func (p *reportPair) summaryFields(pm *pairMeta) {
 	if pm.Error != "" {
 		e := pm.Error
 		p.Error = &e
+	}
+	if pm.BudgetKind != "" {
+		k := pm.BudgetKind
+		p.BudgetKind = &k
 	}
 	p.DeniedEgress = append([]string{}, pm.DeniedEgress...)
 	p.BlockedEgress = append([]string{}, pm.BlockedEgress...)

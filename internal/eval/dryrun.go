@@ -30,13 +30,42 @@ type dryPair struct {
 
 // dryTotal is the dry run's last line.
 type dryTotal struct {
-	Total        bool     `json:"total"`
-	Pairs        int      `json:"pairs"`
-	Executions   int      `json:"executions"`
-	KnownUSD     float64  `json:"known_usd"`
-	UnknownPairs int      `json:"unknown_pairs"`
-	BudgetUSD    *float64 `json:"budget_usd"`
-	Fits         *bool    `json:"fits"`
+	Total        bool       `json:"total"`
+	Pairs        int        `json:"pairs"`
+	Executions   int        `json:"executions"`
+	KnownUSD     float64    `json:"known_usd"`
+	UnknownPairs int        `json:"unknown_pairs"`
+	Budget       *dryBudget `json:"budget"`
+	Fits         *bool      `json:"fits"` // the estimate is under the cost cap; null without one
+}
+
+// dryBudget is the caps --budget gave, each absent when not given.
+type dryBudget struct {
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+	Tokens  *int64   `json:"tokens,omitempty"`
+	Tools   *int64   `json:"tools,omitempty"`
+	TimeS   *float64 `json:"time_s,omitempty"`
+}
+
+func dryBudgetOf(b config.Budget) *dryBudget {
+	if b.IsZero() {
+		return nil
+	}
+	var d dryBudget
+	if b.Cost > 0 {
+		d.CostUSD = &b.Cost
+	}
+	if b.Tokens > 0 {
+		d.Tokens = &b.Tokens
+	}
+	if b.Tools > 0 {
+		d.Tools = &b.Tools
+	}
+	if b.Time > 0 {
+		s := b.Time.Seconds()
+		d.TimeS = &s
+	}
+	return &d
 }
 
 // historyKey is what makes a past pair the same pair.
@@ -83,10 +112,10 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 		}
 		lines = append(lines, d)
 	}
-	if opts.Budget > 0 {
-		c := opts.Budget
+	total.Budget = dryBudgetOf(opts.Budget)
+	if c := opts.Budget.Cost; c > 0 {
 		fits := total.KnownUSD < c
-		total.BudgetUSD, total.Fits = &c, &fits
+		total.Fits = &fits
 	}
 	if opts.JSON {
 		enc := json.NewEncoder(opts.JSONOut)
@@ -125,7 +154,10 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 		if !*total.Fits {
 			rel = "not under"
 		}
-		sum += fmt.Sprintf(", %s --budget $%.2f", rel, *total.BudgetUSD)
+		sum += fmt.Sprintf(", %s --budget $%.2f", rel, opts.Budget.Cost)
+	}
+	if rest := (config.Budget{Tokens: opts.Budget.Tokens, Tools: opts.Budget.Tools, Time: opts.Budget.Time}); !rest.IsZero() {
+		sum += ", --budget also caps " + rest.String() + " (no estimate)"
 	}
 	lg.info("%s", sum)
 	return nil

@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"math"
 	"regexp"
 	"slices"
 	"sort"
@@ -370,11 +369,6 @@ func (c *Config) validateAgents(add func(string, ...any)) {
 		if a.Model == "" && (h == nil || strings.Contains(h.Run, "PATS_MODEL")) {
 			add("agent %q: model is required", a.Name)
 		}
-		if a.Budget != nil {
-			if err := CheckCost(*a.Budget); err != nil {
-				add("agent %q: budget: %v", a.Name, err)
-			}
-		}
 		sbID, err := c.ResolveSandbox(a)
 		if err != nil {
 			add("%v", err)
@@ -635,13 +629,4 @@ func mark(m map[string]bool, xs StrList, sets map[string][]string) {
 			m[name] = true
 		}
 	}
-}
-
-// CheckCost says whether a cap in us dollars is one: finite, above zero, at
-// most a million.
-func CheckCost(c float64) error {
-	if math.IsNaN(c) || math.IsInf(c, 0) || c <= 0 || c > 1e6 {
-		return fmt.Errorf("%v is not a cost cap (a number above 0, at most 1e6)", c)
-	}
-	return nil
 }

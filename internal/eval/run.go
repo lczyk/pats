@@ -44,8 +44,8 @@ type Options struct {
 	DryRun  bool
 	JSON    bool
 	JSONOut io.Writer
-	Repeat  int     // runs of the selection, one after another; 0 or 1 is one
-	Budget  float64 // the invocation's budget in us dollars; 0 is none
+	Repeat  int           // runs of the selection, one after another; 0 or 1 is one
+	Budget  config.Budget // the invocation's caps; zero is none
 
 	live io.Writer // -vv's stream when Out is a pair's buffer (see liveStream)
 	// ledger is the invocation's spend (budget.md); nil counts nothing.
@@ -172,7 +172,8 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 
 	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
 
-	// the budget spans every repeat: the invocation's.
+	// the budget spans every repeat: the invocation's. its clock starts
+	// here, after preflight.
 	opts.ledger = newLedger(opts.Budget)
 
 	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
@@ -204,15 +205,18 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	if ctx.Err() != nil {
 		return runDir, ErrInterrupted
 	}
-	if spent, notStarted := opts.ledger.totals(); notStarted > 0 || unrun > 0 {
+	if _, notStarted := opts.ledger.totals(); notStarted > 0 || unrun > 0 {
 		what := fmt.Sprintf("%d pair(s)", notStarted)
 		if n > 1 {
 			what += fmt.Sprintf(" of run %d/%d", current, n)
 		}
-		if unrun > 0 {
+		switch {
+		case current == 0:
+			what = fmt.Sprintf("%d run(s)", unrun) // a cap reached before the first
+		case unrun > 0:
 			what += fmt.Sprintf(" and %d more run(s)", unrun)
 		}
-		lg.warn("budget $%.2f reached at $%.2f: %s not started", opts.Budget, spent, what)
+		lg.warn("%s: %s not started", opts.ledger.reachedAt(), what)
 		return runDir, ErrBudget
 	}
 	return runDir, nil

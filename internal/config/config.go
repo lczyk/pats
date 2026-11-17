@@ -186,10 +186,9 @@ type Agent struct {
 	Model   string `yaml:"model"`
 	Sandbox string `yaml:"sandbox"` // a sandbox name; omitted -> the only sandbox defined
 	Effort  string `yaml:"effort"`  // optional reasoning effort (claude/copilot --effort; codex model_reasoning_effort; opencode --variant; pi --thinking)
-	// Budget stops a pair once its reported spend passes it, in us dollars;
-	// nil is no cap. it has nothing to check under a harness that reports no
-	// cost.
-	Budget *float64 `yaml:"budget"`
+	// Budget stops a pair once what it reported passes a cap of it; zero is
+	// no cap. a kind its harness does not report has nothing to check.
+	Budget Budget `yaml:"budget"`
 }
 
 // Task is one scenario handed to a task-running agent. each step is a shell

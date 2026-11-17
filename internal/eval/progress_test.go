@@ -508,7 +508,11 @@ func TestPiSummary(t *testing.T) {
 func TestScanCostAtTheEnd(t *testing.T) {
 	var s pairStat
 	var heard []float64
-	s.spend = func(c float64) { heard = append(heard, c) }
+	s.use = func(d usage) {
+		if d.cost != 0 {
+			heard = append(heard, d.cost)
+		}
+	}
 	tap := &statTap{stat: &s, scan: statScanner(hd("claude-cli-keyless"))}
 	_, _ = tap.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}` + "\n"))
 	assert.Equal(t, s.costSeen.Load(), false)

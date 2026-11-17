@@ -29,7 +29,7 @@ type JudgeOptions struct {
 	Runs      int    // --runs: the latest this many runs, each in turn
 	Jobs      int    // judge jobs at once; 0 -> 1, negative -> auto
 	Repeat    int    // samples per judgement; 0 or 1 is one
-	Budget    float64
+	Budget    config.Budget
 	Offline   bool
 	Suites    []string
 	Agents    []string
@@ -176,8 +176,8 @@ func Judge(cfg *config.Config, jo JudgeOptions) (err error) {
 	if ctx.Err() != nil {
 		return ErrInterrupted
 	}
-	if spent, notStarted := ro.ledger.totals(); notStarted > 0 {
-		lg.warn("budget $%.2f reached at $%.2f: %d judge job(s) not started", jo.Budget, spent, notStarted)
+	if _, notStarted := ro.ledger.totals(); notStarted > 0 {
+		lg.warn("%s: %d judge job(s) not started", ro.ledger.reachedAt(), notStarted)
 		return ErrBudget
 	}
 	return nil
