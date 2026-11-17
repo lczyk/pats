@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +59,7 @@ func (b *bundleCache) get(ctx context.Context, key string, read func() ([]byte, 
 // merged trust bundle go to caDir for the driver to mount.
 type material struct {
 	policyYAML string
+	keys       string // PATS_EGRESS_KEYS, json; "" without held keys
 	caCert     string // pem, "" without mitm
 	caKey      string // pem, never written to disk
 	caDir      string // "" without a bundle
@@ -76,6 +78,13 @@ func (p *process) prepare(eg Egress, trust []byte, readBundle func() ([]byte, er
 		return nil, err
 	}
 	m := &material{policyYAML: string(y)}
+	if len(eg.Keys) > 0 {
+		b, err := json.Marshal(eg.Keys)
+		if err != nil {
+			return nil, err
+		}
+		m.keys = string(b)
+	}
 	defer func() {
 		if err != nil {
 			m.cleanup()
@@ -128,6 +137,9 @@ func (m *material) cleanup() {
 // (inline, so the key never touches disk) and where the trust bundle is.
 func (m *material) proxyEnv(rootsPath string) map[string]string {
 	env := map[string]string{"PATS_EGRESS_POLICY": m.policyYAML}
+	if m.keys != "" {
+		env["PATS_EGRESS_KEYS"] = m.keys
+	}
 	if m.caCert != "" {
 		env["PATS_EGRESS_CA_CERT"] = m.caCert
 		env["PATS_EGRESS_CA_KEY"] = m.caKey

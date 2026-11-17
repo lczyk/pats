@@ -197,6 +197,11 @@ func TestHostEgress(t *testing.T) {
 	assert.That(t, !strings.Contains(string(b2), "/around"), "a request around the proxy was audited: %s", b2)
 	assert.That(t, exec.Command("kill", "-0", strconv.Itoa(pid)).Run() != nil, "proxy %d outlived close", pid)
 
+	// the agent runs beside its proxy here: no key is held from it.
+	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
+		Keys: map[string]string{"ph": "real"}, Policy: proxy.Policy{Allow: []string{host}}}})
+	assert.Error(t, err, "cannot hold keys")
+
 	// tls inspection needs a bundle the user vouches for.
 	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
 		Policy: proxy.Policy{Allow: []string{"example.com/x/*"}}}})

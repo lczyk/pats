@@ -229,6 +229,11 @@ func (s *hostSession) untrack(id *int) {
 // system's trust.
 func (s *hostSession) startProxy(ctx context.Context, eg Egress) error {
 	o := s.b.h.o
+	// the agent runs as pats's user here, beside its proxy: no key is kept
+	// from it.
+	if len(eg.Keys) > 0 || len(eg.Policy.Keys) > 0 {
+		return errors.New("egress: the host driver cannot hold keys from the agent (key-proxy)")
+	}
 	penv := map[string]string{}
 	var bundle, added string
 	if eg.Policy.NeedsCA() {

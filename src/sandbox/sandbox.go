@@ -55,6 +55,9 @@ type Egress struct {
 	Image     string       // proxy sidecar image; empty -> the published build of src/sandbox/proxy
 	AuditPath string       // where to write the proxy's json audit log; "" discards it
 	SelfTest  bool         // prove the sandbox has no route out before running
+	// Keys are the real values of Policy.Keys, by placeholder: the proxy's
+	// alone, on the channel its CA key takes, never the sandbox's.
+	Keys map[string]string
 }
 
 // Mount is an extra host path bound into the sandbox. a driver keeps the

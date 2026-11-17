@@ -547,3 +547,34 @@ func TestBundleCache(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 	close(release)
 }
+
+// held keys reach the proxy beside its policy, on the channel its CA key
+// takes, and never the agent.
+func TestEgressKeysToProxyOnly(t *testing.T) {
+	p := testProcess(t)
+	eg := Egress{Set: true, Keys: map[string]string{"ph-1": "real-1"},
+		Policy: proxy.Policy{Keys: []proxy.KeyBinding{{Name: "K", Placeholder: "ph-1", Bind: []string{"POST a.test/x"}}}}}
+	m, err := p.prepare(eg, nil, func() ([]byte, error) { return []byte("roots"), nil })
+	require.NoError(t, err)
+	defer m.cleanup()
+	env := m.proxyEnv("")
+	assert.Equal(t, env["PATS_EGRESS_KEYS"], `{"ph-1":"real-1"}`)
+	assert.That(t, !strings.Contains(env["PATS_EGRESS_POLICY"], "real-1"), "the value in the policy")
+	assert.That(t, env["PATS_EGRESS_CA_KEY"] != "", "keys need the CA")
+	for k, v := range m.agentEnv("http://proxy:8080") {
+		assert.That(t, !strings.Contains(v, "real-1"), "agent env %s holds the key", k)
+	}
+	without, err := p.prepare(Egress{Set: true}, nil, nil)
+	require.NoError(t, err)
+	_, ok := without.proxyEnv("")["PATS_EGRESS_KEYS"]
+	assert.That(t, !ok, "keys without any held")
+
+	fd := newFakeDocker(t)
+	fd.out = []byte("-----BEGIN CERTIFICATE-----\nsystemroots\n-----END CERTIFICATE-----")
+	netArgs, teardown, err := fd.container().startEgressProxy(context.Background(),
+		Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-k"), Egress: eg})
+	require.NoError(t, err)
+	defer teardown()
+	assert.ContainsString(t, strings.Join(fd.find("run -d"), " "), `PATS_EGRESS_KEYS={"ph-1":"real-1"}`)
+	assert.That(t, !strings.Contains(strings.Join(netArgs, " "), "real-1"), "the agent's args hold the key")
+}
