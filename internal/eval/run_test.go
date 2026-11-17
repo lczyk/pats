@@ -398,8 +398,8 @@ func TestRunOrchestrationFakeSandbox(t *testing.T) {
 }
 
 // -N runs the selection that many times, each its own run dir, with the
-// credential preflight once; an interrupt stops the series after the
-// current run and is an error.
+// credential preflight once; an interrupt starts nothing further and is an
+// error.
 func TestRunRepeat(t *testing.T) {
 	fake := &fakeSandbox{stdout: "fine\n"}
 	old := newSandbox
@@ -421,6 +421,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.Len(t, runs, 3)
 	assert.Equal(t, fake.preflights, 1)
 	assert.ContainsString(t, out.String(), "INFO run 3/3: "+runs[2])
+	assert.ContainsString(t, out.String(), "INFO axx/txx#3 ok")
 	for _, r := range runs {
 		_, err := os.Stat(filepath.Join(dir, runsSubdir, r, "axx", "txx", "metadata.json"))
 		assert.NoError(t, err, r)

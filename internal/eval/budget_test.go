@@ -225,7 +225,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	assert.ErrorIs(t, err, ErrBudget)
 	runs, _ := sortedRunNames(filepath.Join(dir2, runsSubdir))
 	assert.Len(t, runs, 1)
-	assert.ContainsString(t, out.String(), "reached at $3.00: 0 pair(s) of run 1/3 and 2 more run(s) not started")
+	assert.ContainsString(t, out.String(), "reached at $3.00: 2 more run(s) not started")
 }
 
 // the ledger moves a pair from live to finished in one step, counting the

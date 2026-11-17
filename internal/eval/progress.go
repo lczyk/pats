@@ -61,6 +61,7 @@ type pairStat struct {
 
 	// set once the pair ends, for the run's summary.
 	status    string
+	agentDur  float64 // seconds the agent ran, as metadata's duration_s
 	tokens    int
 	cost      float64
 	costKnown bool // the summary reported a cost
@@ -203,6 +204,14 @@ func (p *progress) finish(label, log string) {
 	}
 	p.done++
 	p.emitLocked(log)
+}
+
+// drop takes k pairs that will not start off the total.
+func (p *progress) drop(k int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.total -= k
+	p.redraw()
 }
 
 // log prints a one-off message above the bar.

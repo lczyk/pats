@@ -71,6 +71,10 @@ func dryBudgetOf(b config.Budget) *dryBudget {
 // historyKey is what makes a past pair the same pair.
 type historyKey struct{ agent, task, harness, model, effort string }
 
+func keyOf(p config.TestPair, a config.Agent) historyKey {
+	return historyKey{p.Agent, p.Task, a.Harness, a.Model, a.Effort}
+}
+
 // dryRun lists pairs with their estimates, to the log or, with JSON, as
 // json lines to JSONOut.
 func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) error {
@@ -78,9 +82,9 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 	want := map[historyKey]bool{}
 	for _, p := range pairs {
 		a := agents[p.Agent]
-		want[historyKey{p.Agent, p.Task, a.Harness, a.Model, a.Effort}] = true
+		want[keyOf(p, a)] = true
 	}
-	hist, err := costHistory(filepath.Join(opts.ConfigDir, runsSubdir), want, lg)
+	hist, err := readHistory(filepath.Join(opts.ConfigDir, runsSubdir), want, true, lg)
 	if err != nil {
 		return err
 	}
@@ -96,7 +100,10 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 				d.Steps, _ = cfg.One("sandbox", t.StepSandbox)
 			}
 		}
-		costs := hist[historyKey{p.Agent, p.Task, a.Harness, a.Model, a.Effort}]
+		var costs []float64
+		if h := hist[keyOf(p, a)]; h != nil {
+			costs = h.costs
+		}
 		d.Samples = len(costs)
 		if len(costs) > 0 {
 			m := median(costs)
@@ -163,25 +170,46 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 	return nil
 }
 
-// costHistory is the cost of every past pair matching want, by key, from
-// every numbered run dir under base. every pair dir is read, so the rules
-// hold for history outside the selection too: a pair dir without metadata
-// is skipped; metadata that does not parse is skipped with a warning; any
-// other read error stops with its path. no base yet is no history.
-func costHistory(base string, want map[historyKey]bool, lg logw) (map[historyKey][]float64, error) {
+// pastPairs is what past pairs matching a key ran: the cost of those that
+// reported one, and the agent's duration of those that ran it (any status
+// but error), in seconds.
+type pastPairs struct {
+	costs, durations []float64
+}
+
+// readHistory is every past pair matching want, by key, from every numbered
+// run dir under base. every pair dir is read, so the rules hold for history
+// outside the selection too: a pair dir without metadata is skipped. strict
+// is the dry run's: metadata that does not parse is skipped with a warning,
+// and any other read error stops with its path. otherwise, as the
+// dispatcher reads it, both are skipped without a word. no base yet is no
+// history.
+func readHistory(base string, want map[historyKey]bool, strict bool, lg logw) (map[historyKey]*pastPairs, error) {
 	names, err := sortedRunNames(base)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
+		if !strict {
+			return nil, nil
+		}
 		return nil, err
 	}
-	out := map[historyKey][]float64{}
+	out := map[historyKey]*pastPairs{}
+	readErr := func(path string, err error) error {
+		if !strict {
+			return nil
+		}
+		return fmt.Errorf("%s: %w", path, err)
+	}
 	for _, name := range names {
 		run := filepath.Join(base, name)
 		agents, err := os.ReadDir(run)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", run, err)
+			if err := readErr(run, err); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		for _, a := range agents {
 			if !a.IsDir() {
@@ -190,7 +218,10 @@ func costHistory(base string, want map[historyKey]bool, lg logw) (map[historyKey
 			dir := filepath.Join(run, a.Name())
 			tasks, err := os.ReadDir(dir)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", dir, err)
+				if err := readErr(dir, err); err != nil {
+					return nil, err
+				}
+				continue
 			}
 			for _, t := range tasks {
 				if !t.IsDir() {
@@ -202,19 +233,32 @@ func costHistory(base string, want map[historyKey]bool, lg logw) (map[historyKey
 					continue
 				}
 				if err != nil {
-					return nil, fmt.Errorf("%s: %w", path, err)
+					if err := readErr(path, err); err != nil {
+						return nil, err
+					}
+					continue
 				}
 				var m pairMeta
 				if err := json.Unmarshal(b, &m); err != nil {
-					lg.warn("skipping %s: %v", relToCwd(path), err)
+					if strict {
+						lg.warn("skipping %s: %v", relToCwd(path), err)
+					}
 					continue
 				}
-				if m.Summary == nil || !m.Summary.HasCost {
-					continue // no cost
-				}
 				k := historyKey{m.Agent, m.Task, m.Harness, m.Model, m.Effort}
-				if want[k] {
-					out[k] = append(out[k], m.Summary.CostUSD)
+				if !want[k] {
+					continue
+				}
+				p := out[k]
+				if p == nil {
+					p = &pastPairs{}
+					out[k] = p
+				}
+				if m.Summary != nil && m.Summary.HasCost {
+					p.costs = append(p.costs, m.Summary.CostUSD)
+				}
+				if m.Status != "error" && m.Status != "" {
+					p.durations = append(p.durations, m.DurationS)
 				}
 			}
 		}

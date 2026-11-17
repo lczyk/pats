@@ -398,7 +398,7 @@ func runPair(
 	default:
 		lg.error("%s", statusLine)
 	}
-	stat.status = status
+	stat.status, stat.agentDur = status, r.dur
 	stats := stat.cols(hd.Parser() != nil)
 	if s := meta.Summary; s != nil {
 		// cost + turns are omitted for harnesses whose stream doesn't report them.
