@@ -213,17 +213,54 @@ func TestStrayCalls(t *testing.T) {
 	c := newClock()
 	s := newSched(1)
 	stray := &Task[string, string]{Key: "x"}
-	s.Start(stray, c.now())
+	assert.That(t, !s.Start(stray, c.now()), "started a task never queued")
 	assert.Equal(t, s.Running(), 0)
 	s.Done(stray, time.Second, true)
 	_, ok := s.Estimate(stray, c.now())
 	assert.That(t, !ok, "a stray Done made a sample")
 	s.Add(stray)
-	s.Start(stray, c.now())
+	assert.That(t, s.Start(stray, c.now()), "not started")
+	assert.That(t, !s.Start(stray, c.now()), "started twice")
 	s.Done(stray, time.Second, true)
 	s.Done(stray, time.Hour, true) // twice: once counted
 	est, _ := s.Estimate(stray, c.now())
 	assert.Equal(t, est, time.Second)
+}
+
+// Start refuses past the slots or a group's cap, whatever Peek said before.
+func TestStartRefuses(t *testing.T) {
+	c := newClock()
+	s := New[string, string](Options{Slots: 2, Caps: map[string]int{"g": 1}})
+	a := &Task[string, string]{Key: "a", Group: "g"}
+	b := &Task[string, string]{Key: "b", Group: "g", Index: 1}
+	x := &Task[string, string]{Key: "x", Index: 2}
+	y := &Task[string, string]{Key: "y", Index: 3}
+	s.Add(a, b, x, y)
+	assert.That(t, s.Start(a, c.now()), "a not started")
+	assert.That(t, !s.Start(b, c.now()), "past g's cap")
+	assert.That(t, s.Start(x, c.now()), "x not started")
+	assert.That(t, !s.Start(y, c.now()), "past the slots")
+	assert.Equal(t, s.Running(), 2)
+	assert.Equal(t, s.Queued(), 2)
+	s.Done(a, time.Second, true)
+	assert.That(t, s.Start(b, c.now()), "b not started once a ended")
+}
+
+// a task added twice, or again while it runs, is queued once.
+func TestAddDuplicates(t *testing.T) {
+	c := newClock()
+	s := New[string, string](Options{Slots: 2, Caps: map[string]int{"g": 1}})
+	a := &Task[string, string]{Key: "a", Group: "g"}
+	s.Add(a, a, nil)
+	assert.Equal(t, s.Queued(), 1)
+	assert.That(t, s.Start(a, c.now()), "not started")
+	s.Add(a)
+	assert.Equal(t, s.Queued(), 0)
+	s.Done(a, time.Second, true)
+	// g's count is back to zero: another task of g starts.
+	b := &Task[string, string]{Key: "b", Group: "g"}
+	s.Add(b)
+	assert.That(t, s.Start(b, c.now()), "g left full")
 }
 
 // sim runs keys x rounds on slots with the fake clock, each task taking
@@ -343,44 +380,57 @@ func TestValue(t *testing.T) {
 	assert.Equal(t, *s.Peek(c.now()).Value, 7)
 }
 
-// several goroutines at once: nothing lost, no slot overrun.
+// several goroutines at once, each peeking and starting on its own: a
+// stale pick is refused, nothing is lost, and no slot or cap is overrun.
 func TestConcurrentUse(t *testing.T) {
 	c := newClock()
-	s := New[string, string](Options{Slots: 3})
+	s := New[string, string](Options{Slots: 3, Caps: map[string]int{"g": 1}})
 	for i := range 200 {
-		s.Add(&Task[string, string]{Key: fmt.Sprint(i % 7), Index: i})
+		g := ""
+		if i%5 == 0 {
+			g = "g"
+		}
+		s.Add(&Task[string, string]{Key: fmt.Sprint(i % 7), Group: g, Index: i})
 	}
 	var mu sync.Mutex
-	most, now, done := 0, 0, 0
+	most, mostG, now, nowG, done := 0, 0, 0, 0, 0
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
 			for {
-				mu.Lock()
 				p := s.Peek(c.now())
 				if p == nil {
-					q := s.Queued()
-					mu.Unlock()
-					if q == 0 {
+					if s.Queued() == 0 {
 						return
 					}
 					time.Sleep(time.Microsecond)
 					continue
 				}
-				s.Start(p, c.now())
+				if !s.Start(p, c.now()) {
+					continue // another goroutine took the slot, or the task
+				}
+				mu.Lock()
 				now++
 				most = max(most, now)
+				if p.Group == "g" {
+					nowG++
+					mostG = max(mostG, nowG)
+				}
 				mu.Unlock()
 				time.Sleep(time.Microsecond)
 				mu.Lock()
 				now--
+				if p.Group == "g" {
+					nowG--
+				}
 				done++
-				s.Done(p, time.Microsecond, true)
 				mu.Unlock()
+				s.Done(p, time.Microsecond, true)
 			}
 		})
 	}
 	wg.Wait()
 	assert.Equal(t, done, 200)
 	assert.That(t, most <= 3, "%d ran at once", most)
+	assert.That(t, mostG <= 1, "%d of g ran at once", mostG)
 }

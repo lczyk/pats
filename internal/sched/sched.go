@@ -81,11 +81,15 @@ func (s *Scheduler[K, V]) Prime(key K, durations ...time.Duration) {
 	s.primed[key] = append(s.primed[key], durations...)
 }
 
-// Add queues tasks.
+// Add queues tasks. a task already queued or running is not queued again.
 func (s *Scheduler[K, V]) Add(tasks ...*Task[K, V]) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.queue = append(s.queue, tasks...)
+	for _, t := range tasks {
+		if t != nil && !s.running[t] && !slices.Contains(s.queue, t) {
+			s.queue = append(s.queue, t)
+		}
+	}
 }
 
 // Peek is the task to start next at now: the first queued in order with a
@@ -100,25 +104,34 @@ func (s *Scheduler[K, V]) Peek(now time.Time) *Task[K, V] {
 	}
 	s.sortLocked(now)
 	for _, t := range s.queue {
-		if c, capped := s.opts.Caps[t.Group]; !capped || s.inGroup[t.Group] < c {
+		if s.roomLocked(t) {
 			return t
 		}
 	}
 	return nil
 }
 
-// Start takes t off the queue as running since at.
-func (s *Scheduler[K, V]) Start(t *Task[K, V], at time.Time) {
+// roomLocked says whether t's group has room for one more.
+func (s *Scheduler[K, V]) roomLocked(t *Task[K, V]) bool {
+	c, capped := s.opts.Caps[t.Group]
+	return !capped || s.inGroup[t.Group] < c
+}
+
+// Start takes t off the queue as running since at, and says whether it
+// did: not when t is not queued, every slot is taken, or its group is at its
+// cap. the caller starts t only on true.
+func (s *Scheduler[K, V]) Start(t *Task[K, V], at time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	i := slices.Index(s.queue, t)
-	if i < 0 {
-		return
+	if i < 0 || len(s.running) >= s.opts.Slots || !s.roomLocked(t) {
+		return false
 	}
 	s.queue = slices.Delete(s.queue, i, i+1)
 	t.started = at
 	s.running[t] = true
 	s.inGroup[t.Group]++
+	return true
 }
 
 // Done ends a running task. when ok, took is a duration of its key, which

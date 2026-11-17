@@ -418,7 +418,12 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 					d.say(lvInfo, true, "run dir: %s", relToCwd(dir))
 				}
 			}
-			d.s.Start(t, d.now())
+			if !d.s.Start(t, d.now()) {
+				// it was just peeked by this goroutine, so it cannot be
+				// refused; if it were, it would not run.
+				d.opts.ledger.finish(stat)
+				break
+			}
 			go func() {
 				d.runOne(ctx, t, rr.dir, stat)
 				done <- ended{t, stat}
