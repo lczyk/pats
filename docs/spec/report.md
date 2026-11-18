@@ -49,9 +49,11 @@ small nor quite parsable:
 }
 ```
 
-- **`scores`** -- every score the means are over, one per (agent, task, scorer), as `scores.json` holds them after any
+- **`scores`** -- every score the run holds, one per (agent, task, scorer), as `scores.json` holds them after any
   merges. a scorer that said `na` or failed has no entry, as it has no score; the human report and the means treat it
-  the same way.
+  the same way. a score with `retired: true` is one a merge kept for an agent, task or scorer the config no longer
+  has (`cli-filters.md`): no mean is over it, so a pair with only such scores has `mean: null`, and the human report
+  counts them in a line under the table.
 - **`pairs`** -- one per pair that has a `metadata.json` or a score: the union, so a pair that ran and scored nothing
   is listed with `mean: null`, and a scored pair whose metadata is gone (a run that died mid-pair) with `status:
   null`. the run fields come from its `metadata.json` as it is at report time. a `metadata.json` that cannot be read

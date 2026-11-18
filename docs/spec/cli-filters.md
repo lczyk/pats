@@ -28,10 +28,13 @@ way `run`'s filters do. so `score` gets the same filters, plus one for scorers.
 - a filter value that reaches nothing, and a selection that leaves nothing, are errors (a typo guard), as they are for
   `run` today (`Config.FilterPairs`).
 - a narrowed score (any of `-S`, `-a`, `-t`, `-s`) merges into the run's `scores.json`: the scores it set out to
-  compute are replaced by what it computed (one that now fails or says `na` is dropped, not kept stale), every
-  other score is kept unless the config no longer has its (agent, task, scorer), and the means cover them all. a
-  narrowed score that reaches no score is an error and leaves the file alone; `-r all` skips a run where that happens
-  and fails only when every run does. an unnarrowed score replaces the file, as before.
+  compute are replaced by what it computed (one that now fails or says `na` is dropped, not kept stale) and every
+  other score is kept. one whose (agent, task, scorer) the config no longer has is kept too, marked `retired`: pats
+  cannot compute it again, so a merge must not be what loses it. the means cover every score but the retired, so
+  they are what an unnarrowed score of the same config gives, and a retired score counts again once the config has
+  it back. the report says how many a run holds. a narrowed score that reaches no score is an error and leaves the
+  file alone; `-r all` skips a run where that happens and fails only when every run does. an unnarrowed score
+  replaces the file, as before: that drops what the config no longer reaches, and it says how many scores went.
 - `pats judge` takes the same filters and merges the same way (`agent-scorers.md`): `pats judge -s my-judge` judges
   that scorer's pairs and nothing else. `pats score` lost `--judge`: an agent score in its selection is read from its
   stored verdict.

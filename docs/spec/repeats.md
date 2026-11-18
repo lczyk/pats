@@ -209,6 +209,9 @@ a single-run report keeps its current document, version 1, unchanged. a report o
 cost and duration. per-run facts of a pair live in its samples, each carrying its run name. a pair carries only what is
 computed across runs. `report.md` gets the version 2 shape beside version 1.
 
+a sample's `scores` holds what its `mean` is over. a score the run keeps for an agent, task or scorer the config no
+longer has (`retired` in the single-run document) is in no mean, and so not here.
+
 ## not doing
 
 - **no series id, no series dir.** that would make a series a new kind of thing every reader has to know.
