@@ -127,6 +127,11 @@ the proxy writes one json line per event to the pair's `egress.log`:
 - `req` a request the proxy saw in clear: `kind` (`mitm` or `http`), `method`, `url`, `ua`, `status`, `in`, `out`,
   `ms`, `revocation` (`good` or `unchecked` on a mitm'd host).
 
+`url` is the request as sent. where its path holds dot segments or doubled slashes, `resolved` is the url with the path
+they resolve to: `github.com/a/b/../c` is `github.com/a/c`. the verdict covers both, so an `allowed: true` beside a
+`..` says the resolved path is one the policy admits, not that the dots got past it. a scorer matching on paths
+should read `resolved` where a line has one.
+
 `rule` is the entry that decided, or `default`. refusals are folded into three lists in the pair's `metadata.json`:
 
 - `denied_egress` -- `rule: default`: nobody anticipated it. the cheat signal.
