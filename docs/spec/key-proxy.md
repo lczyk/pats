@@ -75,13 +75,29 @@ opencode-openrouter:
   auth-env: [OPENROUTER_API_KEY]
   auth-bind:
     OPENROUTER_API_KEY: [POST openrouter.ai/api/v1/chat/completions]
+pi-openrouter:
+  auth-env: [OPENROUTER_API_KEY]
+  auth-bind:
+    OPENROUTER_API_KEY:
+      - POST openrouter.ai/api/v1/chat/completions
+      - {match: POST openrouter.ai/api/v1/messages, header: X-Api-Key}
 ```
 
 - a map from an `auth-env` name to url entries in `docs/egress.md`'s syntax, each with a method prefix and a path, on
   a host named in full. a binding is on https to port 443 only, with the request's own `Host` naming that port, and
   on a path spelled without percent escapes.
-- the defaults are what the pinned clis were seen to send the key with (recorded below): `pi-openrouter` binds the
-  same single entry. a harness upgrade re-records it.
+- an entry says which header takes the key there. a line is `Authorization: Bearer <key>`. a mapping of `match` and
+  `header` is the key as that header's whole value, for an endpoint that takes it bare. the header is one of a closed
+  set, for now `X-Api-Key` alone, and not `Authorization`, which a line already means: a header the proxy or go's
+  transport sets, strips or rewrites itself (`Host`, `Accept-Encoding`, the hop-by-hop ones) would carry no key, and
+  a closed set is what lets a bound endpoint look at every header a key could ride in. the policy and a pair's
+  recorded metadata carry an entry the same way, a line or that mapping. a sidecar from before this refuses the
+  mapping, so a pair fails at its proxy's start, with the hint that names `egress.image`.
+- a key may be bound to one endpoint more than once, in a header each. every entry the request is on counts, so the
+  order they are written in decides nothing.
+- the defaults are what the pinned clis were seen to send the key with (recorded below). `pi-openrouter` binds two
+  entries, since pi takes openrouter's anthropic route for the `anthropic/*` models of its catalogue. a harness
+  upgrade re-records it.
 - a binding matches as an `allow` url entry does (`admitsURL`): the host normalised, the path matched case-sensitively,
   every reading of an ambiguous path (dot segments, `%2e`, `%2f`, a backslash, doubled slashes, control bytes) held to
   the entry. a path that reads more than one way is on no binding, so a placeholder sent on it is a misuse (below)
@@ -142,12 +158,17 @@ for each request the proxy sees in clear (on a mitm'd host, or plain http), in t
 1. **find the placeholders** in the request's url (path and query) and in every header name and value.
 2. **a placeholder anywhere but its binding's one header** refuses the request: 403, audited `rule: key`,
    `reason: misuse`, before the policy is asked. that is a placeholder to another host, path, method or port, over
-   plain http even to a bound host, in the url, or in any header other than the one below. the 403's body names
-   neither the placeholder nor the query.
+   plain http even to a bound host, in the url, or in any header other than the one below. the header one endpoint
+   names is no good on another: a bearer placeholder on an `X-Api-Key` endpoint is a misuse, and the reverse. the
+   403's body names neither the placeholder nor the query.
 3. **otherwise the policy decides**, as today. an explicit `deny` still refuses.
-4. **substitution**, on an allowed request to a bound endpoint: an `Authorization` header whose value is exactly
-   `Bearer <placeholder>` becomes `Bearer <real value>`. nothing else in the request changes. a bound request with
-   no such header goes out as it is; one with an `Authorization` of another shape is refused as misuse.
+4. **substitution**, on an allowed request to a bound endpoint, in the header its entry names: an `Authorization`
+   whose value is exactly `Bearer <placeholder>` becomes `Bearer <real value>`, or a named header whose value is
+   exactly the placeholder becomes the real value. nothing else in the request changes. a bound request with no
+   credential goes out as it is. a bound endpoint takes no other credential: each header a key can be spent in
+   (`Authorization`, `X-Api-Key`) is absent there or is that one spend, so one in another shape, given twice, or
+   holding a key of the agent's own, beside the placeholder or alone, is refused as misuse, and one key at most is
+   spent on a request.
 5. **the response**, on a bound endpoint, scrubbed as defence in depth (the provider is trusted not to echo the key,
    and a key it re-encodes is not caught):
    - the proxy drops the client's `Accept-Encoding` before forwarding, so go's transport asks for gzip itself and
@@ -237,11 +258,20 @@ what the pinned clis send, run as their harnesses run them, against a recording 
   `GET /api/v1/models`, no generation-stats call, no retry, no websocket.
 - **pi 1.5.2**: one `POST openrouter.ai/api/v1/chat/completions` per turn, streamed, with `Authorization: Bearer
   <key>` and the same `Accept-Encoding`; no other host, with or without `PI_OFFLINE`.
+- **pi 1.5.2, an anthropic model**: its catalogue marks twenty openrouter models `anthropic-messages` (every
+  `anthropic/claude-*` and `~anthropic/claude-*-latest` it lists) and the other 381 `openai-completions`. for those
+  twenty it sends one `POST openrouter.ai/api/v1/messages?beta=true` per turn, streamed, with the key bare in
+  `X-Api-Key` and no `Authorization`. a 401 is not retried, a 500 is, three times, the same way. an anthropic model
+  id its catalogue does not list (`anthropic/claude-haiku-4-5-20251001`) goes to chat completions as a bearer token.
+  the binding names the path alone, so the query passes (`docs/egress.md`: a query is matched only through a `?` the
+  entry spells).
+- **opencode 1.19.5, an anthropic model**: chat completions with a bearer token, as for any other model, on a 401
+  too.
 - neither put the key in a url or a body, or sent it to another host; both took a key not shaped like one
   (`pats-ph-` and hex) and sent it the same way; both asked for `br` and `zstd`, which the proxy's dropping of
   `Accept-Encoding` exists for.
-- not covered: error and 401 paths, tool-call turns (the same endpoint), h2 (the recorder offered http/1.1, as the
-  proxy does).
+- not covered: tool-call turns (the same endpoint), h2 (the recorder offered http/1.1, as the proxy does), and for
+  the first two records the error and 401 paths.
 
 ## deployments
 
@@ -288,7 +318,14 @@ the run CA's bundle into the sandbox as any url entry does. it works where egres
   not start; an older proxy refuses a policy with bindings, and the pair's error names `egress.image`; an
   `egress.image` from the same build is pinned and substitutes.
 - proxy, with a recording upstream: a bound `POST` with `Authorization: Bearer <placeholder>` goes out with the real
-  value and nothing else changed; the placeholder in another header, in the url, in `Authorization` of another shape,
+  value and nothing else changed; on an endpoint bound to `X-Api-Key`, the placeholder as that header's whole value
+  goes out as the real value, query kept, and a bearer placeholder there, the placeholder in `X-Api-Key` on the
+  bearer endpoint, in both headers, twice, in another shape or on a path below is refused as misuse; an endpoint
+  another credential there, beside the placeholder or alone, is refused on either endpoint; a key bound twice on an
+  endpoint is spent in either header, in either order of its entries, and not in both; an endpoint decodes from a
+  line or a mapping of `match` and `header`, and an unknown key, a repeated one, a mapping without both, a json
+  `null`, a header outside the set (`Host`, `Accept-Encoding`, `Cookie`) or `Authorization` are errors; the
+  placeholder in another header, in the url, in `Authorization` of another shape,
   to another host, path, method or port, or over plain http is refused 403 `key`/`misuse`, audited, with a body that
   names neither; `/api/v1/x/%2e%2e/chat/completions` and `/api/v1//chat/completions` with the placeholder are refused
   as misuse; an explicit `deny` of the bound path still refuses; under `methods: [GET, HEAD]` the bound `POST` passes;

@@ -183,12 +183,16 @@ the design). the agent's env gets a placeholder in place of each key its harness
 random characters to its length -- drawn fresh for each pair, judge sample and preflight. the proxy gets the real
 values beside its policy (`PATS_EGRESS_KEYS`, on the channel the run CA's key takes) and the bindings, which pats
 merges into the allow list: for `opencode-openrouter` and `pi-openrouter` that is `OPENROUTER_API_KEY` on `POST
-openrouter.ai/api/v1/chat/completions`, set in the built-in harness table only.
+openrouter.ai/api/v1/chat/completions`, as a bearer token, and for `pi-openrouter` also on `POST
+openrouter.ai/api/v1/messages`, bare in `X-Api-Key`, which is where pi sends openrouter's anthropic models. they are
+set in the built-in harness table only, and `pats egress check` on a key-proxy sandbox lists them.
 
-on a request the proxy sees in clear, an `Authorization: Bearer <placeholder>` on its binding -- over tls to port 443,
-the request's own `Host` naming that port, a path spelled without escapes that reads one way -- goes out with the real
-key. the placeholder anywhere else (another header or header name, the url or query, another host, path, method or
-port, plain http) refuses the request 403 before the policy is asked, audited `rule: key`, `reason: misuse`, and
+on a request the proxy sees in clear, the placeholder in the header its binding names (`Authorization: Bearer
+<placeholder>`, or `X-Api-Key: <placeholder>` on the endpoint that takes it so) -- over tls to port 443, the request's
+own `Host` naming that port, a path spelled without escapes that reads one way -- goes out with the real key. the
+placeholder anywhere else (another header or header name, the other endpoint's header, the url or query, another
+host, path, method or port, plain http), or another credential in `Authorization` or `X-Api-Key` on a bound endpoint,
+refuses the request 403 before the policy is asked, audited `rule: key`, `reason: misuse`, and
 folded into `key_misuse` in `metadata.json`, which is warned about and printed by `pats report`. a request's trailers
 do not go on where keys are held. on a bound endpoint the client's `Accept-Encoding` is dropped, and the answer's
 headers, trailers and streamed body have the real key written over by the placeholder; an answer still encoded is
