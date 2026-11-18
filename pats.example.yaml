@@ -74,7 +74,7 @@ harnesses:
 
 # harness: one of the five, a machine's, or an item above. with one sandbox defined every agent uses it, otherwise set
 # `sandbox:`. `effort:` is optional reasoning effort. `model:` is required unless the harness's `run` reads none.
-# `budget:` caps each pair: a cost in us dollars, or a mapping like {cost: 2, tokens: 2M, tools: 300, time: 5m}.
+# `budget:` caps each pair: a cost in us dollars, or a mapping like {cost: 2, tokens: 2M, tools: 300, turns: 50, time: 5m}.
 haiku:
   kind: agent
   items:

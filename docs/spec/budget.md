@@ -1,6 +1,6 @@
 # budget
 
-status: implemented. `budget-kinds.md` adds caps on tokens, tool calls and time beside cost.
+status: implemented. `budget-kinds.md` adds caps on tokens, tool calls, turns and time beside cost.
 
 ## problem
 

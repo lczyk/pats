@@ -1,7 +1,7 @@
 # budget kinds
 
-status: implemented, in 1.1.0. extends `budget.md`, which stays the reference for the ledger, stopping a pair and
-repeats.
+status: implemented, in 1.1.0, the `turns` kind in 1.2.0. extends `budget.md`, which stays the reference for the
+ledger, stopping a pair and repeats.
 
 ## problem
 
@@ -52,6 +52,7 @@ pats run --budget 20                      # $20, as now
 pats run --budget cost=20,time=2h         # $20, or 2h after preflight, whichever first
 pats run --budget tokens=50M              # 50m reported tokens across every pair
 pats judge --budget cost=5,tools=2000
+pats run --budget turns=5k                # 5000 reported turns across every pair
 ```
 
 ## kinds
@@ -61,6 +62,7 @@ pats judge --budget cost=5,tools=2000
 | `cost` | us dollars | yes | yes | the spend as `budget.md` has it, list-price estimates included |
 | `tokens` | reported tokens | yes | yes | the parse script's live usage (below) |
 | `tools` | reported tool calls | yes | yes | the parse script's live tool count |
+| `turns` | reported turns | yes | yes | the parse script's live usage (below) |
 | `time` | wall-clock | yes | yes | pats's own clock |
 
 - **`tokens`** is the sum of the input, output, cache read and cache write tokens a harness reports. harnesses and
@@ -68,6 +70,10 @@ pats judge --budget cost=5,tools=2000
   hundred tokens on a long run, so the sum is the one count that means the same across harnesses that report all
   four. it is a cap on what is reported: copilot reports output tokens only (below), so its sum is a fraction of
   what the model handled. it is not the `tokens` of the run's totals line, which is output tokens.
+- **`turns`** is the `turns` a harness's parse script reports, model round trips as `harness-parse.md` has them.
+  each harness counts its own: claude its `num_turns`, opencode its steps, pi its assistant messages, copilot
+  its `assistant.turn_end` events. so a cap means the same from pair to pair of one harness, and only roughly
+  the same across harnesses.
 - **`time` on an agent** is a deadline for its pair's agent step, beside the task's effective timeout: the task's
   `timeout`, 10m when it sets none, none at `0`. a judge's is its scorer's, 5m when it sets none. the earlier
   deadline binds. a `time` at or above the effective timeout does nothing, and the readme says so: it shortens,
@@ -76,31 +82,35 @@ pats judge --budget cost=5,tools=2000
   and, for `pats judge`, every run. it is an admission deadline, not a kill: once passed, no new pair or judge job
   starts, and the running ones finish under their own bounds. a pair with no timeout and no `time` of its own can
   therefore run long after it.
-- **`tokens` and `tools` on the command line** are sums over every pair, finished and live, as cost is.
+- **`tokens`, `tools` and `turns` on the command line** are sums over every pair, finished and live, as cost is.
 
 ## what each harness reports
 
 when a count arrives decides when a cap on it can act:
 
-| harness | tools counted | tokens reported | tokens arrive |
-|---|---|---|---|
-| claude-cli-keyless | on the assistant message that calls one | all four | on the final `result` |
-| codex-cli-keyless | when the call completes | input, output, cache reads | on `turn.completed` |
-| copilot-cli-keyless | when the call starts | output only | per assistant message |
-| opencode-openrouter | on its `tool_use` event | all four | per step |
-| pi-openrouter | when the call starts | input, output, cache reads and writes | per assistant message |
+| harness | tools counted | tokens reported | tokens arrive | turns arrive |
+|---|---|---|---|---|
+| claude-cli-keyless | on the assistant message that calls one | all four | on the final `result` | on the final `result` |
+| codex-cli-keyless | when the call completes | input, output, cache reads | on `turn.completed` | never |
+| copilot-cli-keyless | when the call starts | output only | per assistant message | per `assistant.turn_end` |
+| opencode-openrouter | on its `tool_use` event | all four | per step | per step |
+| pi-openrouter | when the call starts | input, output, cache reads and writes | per assistant message | per assistant message |
 
 - a `tools` cap stops every harness mid-run, but on codex only once a call has completed: a call that hangs is not
   counted until it returns, and the task's timeout is what bounds it.
 - a `tokens` cap stops opencode, pi and copilot mid-run. claude's and codex's totals come once, at the end of their
   run, so a cap marks such a pair `budget` there, with its work done, as a cost cap does for claude now.
-- a harness of your own reports what its parse script says. a harness with no `parse` reports neither count.
+- a `turns` cap stops opencode, pi and copilot mid-run, and marks a claude pair `budget` at its end, as a `tokens`
+  cap does. codex reports no turns (`codex exec` is one turn by construction), so a cap on it has nothing to
+  check.
+- a harness of your own reports what its parse script says. a harness with no `parse` reports none of the counts.
 
 ## values
 
 - **`cost`** as now: finite, above zero, at most 1e6.
-- **`tokens` and `tools`** are whole numbers above zero, at most 1e12. a value may carry a suffix: `k` (1e3), `m`
-  (1e6) or `g` (1e9), either case, after a decimal number. the product must be whole, and is computed exactly.
+- **`tokens`, `tools` and `turns`** are whole numbers above zero, at most 1e12. a value may carry a suffix: `k`
+  (1e3), `m` (1e6) or `g` (1e9), either case, after a decimal number. the product must be whole, and is computed
+  exactly.
   `20k`, `1.5M` and `2g` are values; `1.2345k`, `20kb`, `20Ki`, `1e3`, `-5` and `0` are errors. the suffixes are
   decimal: a token count is not a size in bytes. in yaml a plain integer works too (`2000000`), and a suffixed one
   is a string to yaml either way, so `2M` and `"2M"` are the same.
@@ -128,12 +138,13 @@ every kind given is a limit, and the first one passed stops the pair. it stops a
 - `cost $2.04 passed its budget $2.00` (unchanged)
 - `tokens 2013456 passed its budget 2000000`
 - `tools 301 passed its budget 300`
+- `turns 51 passed its budget 50`
 - `time 5m0s reached its budget 5m0s`
 
 counts print in full, so the two numbers are never rounded to the same one.
 
-- **one line can pass two caps.** the counts a line brings are checked in a fixed order, cost, tokens, tools, and
-  the first passed is the pair's `budget_kind`.
+- **one line can pass two caps.** the counts a line brings are checked in a fixed order, cost, tokens, tools, turns,
+  and the first passed is the pair's `budget_kind`.
 - **the first cause wins**, as now: the agent's context is cancelled once, with the kind that stopped it, and
   output arriving while it stops changes nothing. an interrupt (ctrl-c) is `error: interrupted` whatever else
   happened.
@@ -145,10 +156,10 @@ counts print in full, so the two numbers are never rounded to the same one.
 the ledger keeps a sum per kind, finished plus live, as it does for cost. once any kind given reaches its cap, no
 new pair or judge job starts, and the ones running finish.
 
-- **one check can reach two caps.** the kinds are checked in the order cost, tokens, tools, time, and the first
-  reached is latched. it is the one the warning names, and later checks do not change it.
-- **the warning** names the kind, its cap and where it stood: for cost, tokens and tools the sum when the run
-  ends, for time the clock when the cap latched.
+- **one check can reach two caps.** the kinds are checked in the order cost, tokens, tools, turns, time, and the
+  first reached is latched. it is the one the warning names, and later checks do not change it.
+- **the warning** names the kind, its cap and where it stood: for cost, tokens, tools and turns the sum when the
+  run ends, for time the clock when the cap latched.
   - `budget $20.00 reached at $20.13: 14 pair(s) not started` (unchanged)
   - `budget tokens 50000000 reached at 50213456: 14 pair(s) not started`
   - `budget time 2h0m0s reached at 2h0m0s: 14 pair(s) of run 3/5 and 2 more run(s) not started`
@@ -166,7 +177,7 @@ newline, and a `usage(total = True)` may restate a total below the sum so far. s
 - **live**, each line's totals feed the pair's counts and the ledger as differences against the pass's previous
   totals. a difference can be negative, and the sums take it.
 - **when the pair ends**, its counts in the ledger are its summary's when there is a summary: cost when the summary
-  has one, tokens when the harness reported any, tools always. without a summary the live counts stand.
+  has one, tokens when the harness reported any, tools and turns always. without a summary the live counts stand.
 - **a cap is decided live.** a pair's status is set by the live counts only. a count that passes a cap only in the
   summary changes no status, and counts toward the run cap from then on.
 - a run cap once reached stays reached, as now, whatever the final counts.
@@ -181,6 +192,9 @@ check is whether the harness reported the count at all, not whether it was above
   nothing to check`.
 - `tools`, when the harness has no parse script: `agent X reports no tool calls: its tools budget has nothing to
   check`. preflight asks the agent to call no tool, so zero calls there say nothing.
+- `turns`, when preflight counted none: `agent X reports no turns: its turns budget has nothing to check`. unlike
+  the others this one is a check above zero: preflight's one prompt is at least one turn, so a harness that
+  counted none reports none.
 
 each counts the agent's own cap and the run's (`--budget`) alike. `time` always has something to check.
 
@@ -190,21 +204,22 @@ each counts the agent's own cap and the run's (`--budget`) alike. `time` always 
 - `report --json` carries a pair's `budget_kind` beside its `status`: `null` for a pair not stopped by a budget,
   and for a pair from before this field. it is a new field, so the document's `version` stays.
 - `pats run --dry-run --json` replaces the total's `budget_usd` with a `budget` object holding the caps given
-  (`cost_usd`, `tokens`, `tools`, `time_s`). `fits` stays, about cost: `null` without a cost cap. the text form
+  (`cost_usd`, `tokens`, `tools`, `turns`, `time_s`). `fits` stays, about cost: `null` without a cost cap. the text form
   names the other caps, with no fit.
 
 ## compatibility
 
 `budget: <number>` keeps its meaning, as does `--budget <number>` in its plain decimal form, and the cost messages
 are unchanged. the dry run's json and the flag's grammar change, as above. a config using the mapping fails to load
-on 1.0, which takes a number only. a minor release.
+on 1.0, which takes a number only. a minor release. a config with a `turns` cap fails to load before 1.2.0, where
+`turns` is an unknown kind.
 
 ## not doing
 
 - **no per-agent total across a run.** an agent's budget is per pair. a cap on all of one agent's pairs together
   would be a ledger bucket per agent, and wants its own spelling; it can come later without breaking this one.
-- **no `turns` or `premium_requests` kinds.** both are in the parse output and would fit the same path, but nothing
-  asks for them yet.
+- **no `premium_requests` kind.** it is in the parse output and would fit the same path, but only copilot reports
+  it and nothing asks for it yet.
 - **no binary suffixes.** `Ki` and `Mi` are for bytes.
 - **no kill of running pairs at the run's `time`.** a deadline on finishing would need a cancellation policy for
   running work and its cleanup.
@@ -225,5 +240,7 @@ on 1.0, which takes a number only. a minor release.
   first kind latched, and a time cap on an injected clock.
 - run-wide: `-j 1`, three pairs of one tool call each, `--budget tools=1`: one runs, two are not started.
 - preflight warns for a tokens cap on a harness that reports no tokens, and for a tools cap on one with no parse.
+- `turns`: a cap stops the opencode fake mid-stream and marks the claude-style log at its end, `--budget turns=1`
+  leaves two of three pairs not started, `turns: 0` is an error, and preflight warns for a cap on codex.
 - `report --json` has `budget_kind` on a budget-stopped pair and `null` elsewhere. the dry run's json has the
   `budget` object.
