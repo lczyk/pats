@@ -97,7 +97,7 @@ type RunCommand struct {
 	DryRun  bool     `long:"dry-run" short:"n" description:"list the pairs with a cost estimate from past runs, and run nothing"`
 	JSON    bool     `long:"json" description:"with -n: the list as one json object a line on stdout, the log on stderr"`
 	Repeat  int      `long:"repeat" short:"N" default:"1" description:"run the selection this many times, one run after another, each its own run dir"`
-	Budget  string   `long:"budget" value-name:"<usd|kind=value,...>" description:"stop starting pairs once a cap is reached, across every repeat: a cost in us dollars, or cost=, tokens= (e.g. 50M), tools=, time= (e.g. 2h, after preflight)"`
+	Budget  string   `long:"budget" value-name:"<usd|kind=value,...>" description:"stop starting pairs once a cap is reached, across every repeat: a cost in us dollars, or cost=, tokens= (e.g. 50M), tools=, turns=, time= (e.g. 2h, after preflight)"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -182,7 +182,7 @@ type JudgeCommand struct {
 	Tasks   []string `long:"task" short:"t" description:"only judge these tasks' pairs, or task vectors' (repeatable); default: all"`
 	Scorers []string `long:"scorer" short:"s" description:"only run these agent scorers or scorer vectors (repeatable); default: all"`
 	Suites  []string `long:"suite" short:"S" description:"only judge these suites or suite vectors (repeatable); default: all"`
-	Budget  string   `long:"budget" value-name:"<usd|kind=value,...>" description:"stop starting judge jobs once a cap is reached, across every run: a cost in us dollars, or cost=, tokens= (e.g. 50M), tools=, time= (e.g. 2h, after preflight)"`
+	Budget  string   `long:"budget" value-name:"<usd|kind=value,...>" description:"stop starting judge jobs once a cap is reached, across every run: a cost in us dollars, or cost=, tokens= (e.g. 50M), tools=, turns=, time= (e.g. 2h, after preflight)"`
 	Offline bool     `long:"offline" description:"skip checking for newer upstream images and the openrouter model check"`
 }
 

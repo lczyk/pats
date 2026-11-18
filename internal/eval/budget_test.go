@@ -239,19 +239,20 @@ func TestLedger(t *testing.T) {
 			defer wg.Done()
 			s := &pairStat{}
 			require.That(t, l.admit(s), "admit")
-			l.add(s, usage{1, 10, 1})
-			l.add(s, usage{1, 10, 1})
+			l.add(s, usage{1, 10, 1, 2})
+			l.add(s, usage{1, 10, 1, 2})
 			if i%2 == 0 { // the summary's
 				s.cost, s.costKnown = 2.5, true
 				s.tokensUsed, s.tokensKnown = 25, true
 				s.toolsUsed, s.toolsKnown = 3, true
+				s.turnsUsed, s.turnsKnown = 5, true
 			}
 			l.finish(s)
 		}()
 	}
 	wg.Wait()
 	used, _ := l.totals()
-	assert.Equal(t, used, usage{25*2.5 + 25*2.0, 25*25 + 25*20, 25*3 + 25*2})
+	assert.Equal(t, used, usage{25*2.5 + 25*2.0, 25*25 + 25*20, 25*3 + 25*2, 25*5 + 25*4})
 
 	capped := newLedger(config.Budget{Cost: 1})
 	s := &pairStat{}
@@ -279,10 +280,10 @@ func TestLedger(t *testing.T) {
 	assert.That(t, !latched.admit(&pairStat{}), "admitted after the cap re-opened")
 }
 
-// tokens and tools are capped as cost is; a restated total below the sum
-// takes it back; one change reaching two caps latches the first kind, in
-// the order cost, tokens, tools, time; the clock runs from the ledger's
-// start.
+// tokens, tools and turns are capped as cost is; a restated total below
+// the sum takes it back; one change reaching two caps latches the first
+// kind, in the order cost, tokens, tools, turns, time; the clock runs from
+// the ledger's start.
 func TestLedgerKinds(t *testing.T) {
 	l := newLedger(config.Budget{Tokens: 100, Tools: 5})
 	s := &pairStat{}
@@ -296,6 +297,17 @@ func TestLedgerKinds(t *testing.T) {
 	assert.Equal(t, l.reachedAt(), "budget tokens 100 reached at 100")
 	l.add(s, usage{tools: 10})
 	assert.Equal(t, l.hit, "tokens") // latched
+
+	turned := newLedger(config.Budget{Tools: 5, Turns: 3})
+	p := &pairStat{}
+	require.That(t, turned.admit(p), "admit")
+	turned.add(p, usage{turns: 2})
+	assert.That(t, !turned.reached(), "reached at 2 turns")
+	turned.add(p, usage{turns: 2})
+	assert.Equal(t, turned.reachedAt(), "budget turns 3 reached at 4")
+	both := newLedger(config.Budget{Tools: 5, Turns: 3})
+	both.add(p, usage{tools: 5, turns: 3})
+	assert.Equal(t, both.hit, "tools")
 
 	now := time.Unix(1000, 0)
 	timed := newLedger(config.Budget{Time: time.Hour, Cost: 5})
@@ -408,16 +420,17 @@ func toolUses(n int) string {
 	return strings.Repeat(`{"type":"tool_use","part":{"tool":"read"}}`+"\n", n)
 }
 
-// a tokens or tools cap stops a pair mid-stream as a cost cap does:
+// a tokens, tools or turns cap stops a pair mid-stream as a cost cap does:
 // synced, collected, status budget, the kind in budget_kind and the error.
 func TestAgentBudgetKinds(t *testing.T) {
-	// three steps of 1000 tokens each: 400 in, 300 out, 200 cache read, 100 cache write.
+	// three steps, a turn each, of 1000 tokens each: 400 in, 300 out, 200 cache read, 100 cache write.
 	step := `{"type":"step_finish","part":{"cost":0.01,"tokens":{"input":400,"output":300,"cache":{"read":200,"write":100}}}}` + "\n"
 	for name, c := range map[string]struct {
 		agent, preRun, kind, err string
 	}{
 		"tokens":    {"budget: {tokens: 2.5k}", strings.Repeat(step, 3), "tokens", "tokens 3000 passed its budget 2500"},
 		"tools":     {"budget: {tools: 3}", toolUses(4), "tools", "tools 4 passed its budget 3"},
+		"turns":     {"budget: {turns: 2}", strings.Repeat(step, 3), "turns", "turns 3 passed its budget 2"},
 		"cost wins": {"budget: {cost: 0.025, tokens: 2.5k}", strings.Repeat(step, 3), "cost", "cost $0.03 passed its budget $0.03"},
 	} {
 		box := &fakeSandbox{blockUntilDone: true, preRun: c.preRun}
@@ -429,15 +442,20 @@ func TestAgentBudgetKinds(t *testing.T) {
 	}
 }
 
-// claude states its usage on its final result only: a tokens cap marks
-// the pair there.
-func TestAgentTokensAtTheEnd(t *testing.T) {
+// claude states its usage on its final result only: a tokens or turns cap
+// marks the pair there.
+func TestAgentCountsAtTheEnd(t *testing.T) {
 	result := `{"type":"result","total_cost_usd":0.1,"num_turns":2,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":3000,"cache_creation_input_tokens":0},"result":"done"}` + "\n"
-	box := &fakeSandbox{blockUntilDone: true, preRun: result, preflightOut: result}
-	m, out := runOne(t, "claude-cli-keyless", "budget: {tokens: 3000}", "timeout: 1m", box, Options{})
-	assert.Equal(t, m.Status, "budget")
-	assert.Equal(t, m.Error, "tokens 3030 passed its budget 3000")
-	assert.That(t, !strings.Contains(out, "reports no tokens"), "%s", out)
+	for budget, want := range map[string]string{
+		"budget: {tokens: 3000}": "tokens 3030 passed its budget 3000",
+		"budget: {turns: 1}":     "turns 2 passed its budget 1",
+	} {
+		box := &fakeSandbox{blockUntilDone: true, preRun: result, preflightOut: result}
+		m, out := runOne(t, "claude-cli-keyless", budget, "timeout: 1m", box, Options{})
+		assert.Equal(t, m.Status, "budget", budget)
+		assert.Equal(t, m.Error, want)
+		assert.That(t, !strings.Contains(out, "reports no "), "%s", out)
+	}
 }
 
 // an agent's time below the task's effective timeout stops the pair as a
@@ -461,10 +479,26 @@ func TestAgentTime(t *testing.T) {
 	}
 }
 
-// --budget tools=1: the first pair's one tool call reaches it, and the rest
-// do not start.
-func TestRunBudgetTools(t *testing.T) {
-	fake := &fakeSandbox{preRun: toolUses(1)}
+// --budget tools=1 or turns=1: the first pair's one tool call or turn
+// reaches it, and the rest do not start.
+func TestRunBudgetCounts(t *testing.T) {
+	for want, c := range map[string]struct {
+		preRun string
+		budget config.Budget
+	}{
+		"WARN budget tools 1 reached at 1: 2 pair(s) not started": {toolUses(1), config.Budget{Tools: 1}},
+		"WARN budget turns 1 reached at 1: 2 pair(s) not started": {steps(1, 0), config.Budget{Turns: 1}},
+	} {
+		out, err := runThree(t, &fakeSandbox{preRun: c.preRun}, c.budget)
+		assert.ErrorIs(t, err, ErrBudget)
+		assert.ContainsString(t, out, want)
+	}
+}
+
+// runThree runs one agent's three tasks under fake, one at a time, and
+// returns the log.
+func runThree(t *testing.T, fake *fakeSandbox, budget config.Budget) (string, error) {
+	t.Helper()
 	old := newSandbox
 	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
 	defer func() { newSandbox = old }()
@@ -477,18 +511,18 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 `)
 	pinAll(t, dir, cfg)
 	var out bytes.Buffer
-	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, Budget: config.Budget{Tools: 1}})
-	assert.ErrorIs(t, err, ErrBudget)
-	assert.ContainsString(t, out.String(), "WARN budget tools 1 reached at 1: 2 pair(s) not started")
+	_, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1, Budget: budget})
+	return out.String(), err
 }
 
 // a cap of a kind the harness reports nothing of warns after preflight:
-// tokens when preflight saw no token count, tools when the harness has no
-// parse script.
+// tokens when preflight saw no token count, turns when it counted none,
+// tools when the harness has no parse script.
 func TestBudgetKindsNothingToCheck(t *testing.T) {
 	silent := &fakeSandbox{preRun: `{"type":"item.completed","item":{"type":"command_execution"}}` + "\n"}
-	_, out := runOne(t, "codex-cli-keyless", "budget: {tokens: 1M, tools: 10}", "", silent, Options{})
+	_, out := runOne(t, "codex-cli-keyless", "budget: {tokens: 1M, tools: 10, turns: 50}", "", silent, Options{})
 	assert.ContainsString(t, out, "WARN agent axx reports no tokens: its tokens budget has nothing to check")
+	assert.ContainsString(t, out, "WARN agent axx reports no turns: its turns budget has nothing to check")
 	assert.That(t, !strings.Contains(out, "reports no tool calls"), "%s", out)
 
 	old := newSandbox

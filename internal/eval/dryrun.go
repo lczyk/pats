@@ -44,6 +44,7 @@ type dryBudget struct {
 	CostUSD *float64 `json:"cost_usd,omitempty"`
 	Tokens  *int64   `json:"tokens,omitempty"`
 	Tools   *int64   `json:"tools,omitempty"`
+	Turns   *int64   `json:"turns,omitempty"`
 	TimeS   *float64 `json:"time_s,omitempty"`
 }
 
@@ -60,6 +61,9 @@ func dryBudgetOf(b config.Budget) *dryBudget {
 	}
 	if b.Tools > 0 {
 		d.Tools = &b.Tools
+	}
+	if b.Turns > 0 {
+		d.Turns = &b.Turns
 	}
 	if b.Time > 0 {
 		s := b.Time.Seconds()
@@ -163,7 +167,7 @@ func dryRun(cfg *config.Config, opts Options, pairs []config.TestPair, lg logw) 
 		}
 		sum += fmt.Sprintf(", %s --budget $%.2f", rel, opts.Budget.Cost)
 	}
-	if rest := (config.Budget{Tokens: opts.Budget.Tokens, Tools: opts.Budget.Tools, Time: opts.Budget.Time}); !rest.IsZero() {
+	if rest := (config.Budget{Tokens: opts.Budget.Tokens, Tools: opts.Budget.Tools, Turns: opts.Budget.Turns, Time: opts.Budget.Time}); !rest.IsZero() {
 		sum += ", --budget also caps " + rest.String() + " (no estimate)"
 	}
 	lg.info("%s", sum)

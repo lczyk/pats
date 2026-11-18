@@ -29,12 +29,12 @@ func (b budgetStop) Error() string { return b.kind + " budget passed" }
 
 // usage is what a pair reported of the kinds a budget caps, but time.
 type usage struct {
-	cost          float64
-	tokens, tools int64
+	cost                 float64
+	tokens, tools, turns int64
 }
 
 func (u usage) plus(v usage) usage {
-	return usage{u.cost + v.cost, u.tokens + v.tokens, u.tools + v.tools}
+	return usage{u.cost + v.cost, u.tokens + v.tokens, u.tools + v.tools, u.turns + v.turns}
 }
 
 // passed is the first kind of b that u is past, "" for none. the order is
@@ -47,6 +47,8 @@ func passed(b config.Budget, u usage) string {
 		return "tokens"
 	case b.Tools > 0 && u.tools > b.Tools:
 		return "tools"
+	case b.Turns > 0 && u.turns > b.Turns:
+		return "turns"
 	}
 	return ""
 }
@@ -61,6 +63,8 @@ func stopMessage(kind string, b config.Budget, u usage, ran time.Duration) strin
 		return fmt.Sprintf("tokens %d passed its budget %d", u.tokens, b.Tokens)
 	case "tools":
 		return fmt.Sprintf("tools %d passed its budget %d", u.tools, b.Tools)
+	case "turns":
+		return fmt.Sprintf("turns %d passed its budget %d", u.turns, b.Turns)
 	}
 	return fmt.Sprintf("time %s reached its budget %s", roundDur(ran), b.Time)
 }
@@ -109,6 +113,8 @@ func (l *ledger) reachedLocked() bool {
 		l.hit = "tokens"
 	case l.limit.Tools > 0 && u.tools >= l.limit.Tools:
 		l.hit = "tools"
+	case l.limit.Turns > 0 && u.turns >= l.limit.Turns:
+		l.hit = "turns"
 	case l.limit.Time > 0:
 		if el := l.now().Sub(l.start); el >= l.limit.Time {
 			l.hit, l.hitAt = "time", el
@@ -174,6 +180,9 @@ func (l *ledger) finish(s *pairStat) {
 	if s.toolsKnown {
 		u.tools = s.toolsUsed
 	}
+	if s.turnsKnown {
+		u.turns = s.turnsUsed
+	}
 	l.finished = l.finished.plus(u)
 	delete(l.live, s)
 	l.reachedLocked()
@@ -209,6 +218,8 @@ func (l *ledger) reachedAt() string {
 		return fmt.Sprintf("budget tokens %d reached at %d", l.limit.Tokens, u.tokens)
 	case "tools":
 		return fmt.Sprintf("budget tools %d reached at %d", l.limit.Tools, u.tools)
+	case "turns":
+		return fmt.Sprintf("budget turns %d reached at %d", l.limit.Turns, u.turns)
 	case "time":
 		return fmt.Sprintf("budget time %s reached at %s", l.limit.Time, roundDur(l.hitAt))
 	}

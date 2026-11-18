@@ -375,6 +375,7 @@ func runPair(
 	if s := meta.Summary; s != nil {
 		stat.tokens, stat.cost, stat.costKnown = s.OutputTokens, s.CostUSD, s.HasCost
 		stat.toolsUsed, stat.toolsKnown = int64(s.toolCalls), true
+		stat.turnsUsed, stat.turnsKnown = int64(s.Turns), true
 		stat.tokensUsed = int64(s.InputTokens + s.OutputTokens + s.CacheReadTokens + s.CacheWriteTokens)
 		stat.tokensKnown = s.hasTokens
 		if s.ParseErrors > 0 {

@@ -83,13 +83,13 @@ sux: {kind: suite, items: {sux: {agents: avx, tasks: tvx}}}
 	// caps of other kinds are listed, with no fit; without a cost cap fits is null.
 	js.Reset()
 	out.Reset()
-	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Budget: config.Budget{Tokens: 50_000_000, Time: 2 * time.Hour}})
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &log, DryRun: true, JSON: true, JSONOut: &js, Tasks: []string{"txx"}, Budget: config.Budget{Tokens: 50_000_000, Turns: 40, Time: 2 * time.Hour}})
 	require.NoError(t, err)
 	lines = strings.Split(strings.TrimSpace(js.String()), "\n")
-	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":2,"known_usd":2,"unknown_pairs":1,"budget":{"tokens":50000000,"time_s":7200},"fits":null}`)
-	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, DryRun: true, Tasks: []string{"txx"}, Budget: config.Budget{Cost: 20, Tools: 300}})
+	assert.Equal(t, lines[2], `{"total":true,"pairs":2,"executions":2,"known_usd":2,"unknown_pairs":1,"budget":{"tokens":50000000,"turns":40,"time_s":7200},"fits":null}`)
+	_, err = Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, DryRun: true, Tasks: []string{"txx"}, Budget: config.Budget{Cost: 20, Tools: 300, Turns: 40}})
 	require.NoError(t, err)
-	assert.ContainsString(t, out.String(), "INFO 2 pair(s), est $2.00 + 1 unknown, under --budget $20.00, --budget also caps tools=300 (no estimate)\n")
+	assert.ContainsString(t, out.String(), "INFO 2 pair(s), est $2.00 + 1 unknown, under --budget $20.00, --budget also caps tools=300,turns=40 (no estimate)\n")
 }
 
 // a project with no runs yet estimates every pair as unknown.

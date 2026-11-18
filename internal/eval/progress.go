@@ -69,11 +69,12 @@ type pairStat struct {
 	// the counts a budget caps, from the summary when the pair ended: the
 	// ledger counts them in place of the live ones (tokens only when the
 	// harness reported any).
-	tokensUsed, toolsUsed   int64
-	tokensKnown, toolsKnown bool
+	tokensUsed, toolsUsed, turnsUsed    int64
+	tokensKnown, toolsKnown, turnsKnown bool
 
 	liveCost   atomic.Uint64 // float64 bits: spend reported so far, for the bar
 	liveTokens atomic.Int64  // input, output, cache read and write tokens reported so far
+	liveTurns  atomic.Int64  // turns reported so far
 	costSeen   atomic.Bool   // the harness reported a cost at all, 0 included
 	tokensSeen atomic.Bool   // the harness reported a token count at all, 0 included
 	failed     atomic.Bool   // the harness's stream says the run is in error, as it stands
@@ -89,11 +90,12 @@ func (s *pairStat) spent() float64 { return math.Float64frombits(s.liveCost.Load
 
 // used is what the pair reported so far.
 func (s *pairStat) used() usage {
-	return usage{cost: s.spent(), tokens: s.liveTokens.Load(), tools: atomic.LoadInt64(&s.tools)}
+	return usage{cost: s.spent(), tokens: s.liveTokens.Load(), tools: atomic.LoadInt64(&s.tools), turns: s.liveTurns.Load()}
 }
 
-// addUsage records a line's change in cost and tokens as the harness reports
-// it (the tool count is stored whole by the scanner), and passes the change on.
+// addUsage records a line's change in cost, tokens and turns as the harness
+// reports it (the tool count is stored whole by the scanner), and passes the
+// change on.
 func (s *pairStat) addUsage(d usage) {
 	for d.cost != 0 {
 		old := s.liveCost.Load()
@@ -102,6 +104,7 @@ func (s *pairStat) addUsage(d usage) {
 		}
 	}
 	s.liveTokens.Add(d.tokens)
+	s.liveTurns.Add(d.turns)
 	if s.use != nil {
 		s.use(d)
 	}
@@ -467,7 +470,7 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 		atomic.StoreInt64(&s.tools, int64(r.ToolCalls))
 		s.failed.Store(r.IsError)
 		s.failure.Store(r.ErrorMsg)
-		now := usage{cost: prev.cost, tokens: int64(r.Input + r.Output + r.CacheRead + r.CacheWrite), tools: int64(r.ToolCalls)}
+		now := usage{cost: prev.cost, tokens: int64(r.Input + r.Output + r.CacheRead + r.CacheWrite), tools: int64(r.ToolCalls), turns: int64(r.Turns)}
 		// a harness that reports tokens and no cost is priced by its
 		// model's list price, so a budget has something to check.
 		c, has := r.CostUSD, r.HasCost
@@ -481,7 +484,7 @@ func statScanner(hd *machine.Harness) func([]byte, *pairStat) {
 		if r.HasTokens {
 			s.tokensSeen.Store(true)
 		}
-		if d := (usage{now.cost - prev.cost, now.tokens - prev.tokens, now.tools - prev.tools}); d != (usage{}) {
+		if d := (usage{now.cost - prev.cost, now.tokens - prev.tokens, now.tools - prev.tools, now.turns - prev.turns}); d != (usage{}) {
 			prev = now
 			s.addUsage(d)
 		}

@@ -20,12 +20,13 @@ type Budget struct {
 	Cost   float64       // us dollars
 	Tokens int64         // reported tokens: input, output, cache reads and writes
 	Tools  int64         // reported tool calls
+	Turns  int64         // reported turns
 	Time   time.Duration // wall-clock
 }
 
 // BudgetKinds are the kinds in the order they are checked: the first one a
 // check finds passed is the one that stopped it.
-var BudgetKinds = []string{"cost", "tokens", "tools", "time"}
+var BudgetKinds = []string{"cost", "tokens", "tools", "turns", "time"}
 
 // IsZero says whether the budget caps nothing.
 func (b Budget) IsZero() bool { return b == Budget{} }
@@ -42,13 +43,16 @@ func (b Budget) String() string {
 	if b.Tools > 0 {
 		parts = append(parts, fmt.Sprintf("tools=%d", b.Tools))
 	}
+	if b.Turns > 0 {
+		parts = append(parts, fmt.Sprintf("turns=%d", b.Turns))
+	}
 	if b.Time > 0 {
 		parts = append(parts, "time="+b.Time.String())
 	}
 	return strings.Join(parts, ",")
 }
 
-// maxCount bounds a tokens or tools cap.
+// maxCount bounds a tokens, tools or turns cap.
 const maxCount = 1e12
 
 // CheckCost says whether a cap in us dollars is one: finite, above zero, at
@@ -62,9 +66,9 @@ func CheckCost(c float64) error {
 
 var countRe = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)([kKmMgG]?)$`)
 
-// ParseCount reads a tokens or tools cap: a whole number above zero, at most
-// 1e12, that may carry a decimal suffix (k, m or g, either case) after a
-// decimal number, as long as the product is whole.
+// ParseCount reads a tokens, tools or turns cap: a whole number above zero,
+// at most 1e12, that may carry a decimal suffix (k, m or g, either case)
+// after a decimal number, as long as the product is whole.
 func ParseCount(s string) (int64, error) {
 	bad := fmt.Errorf("%q is not a count (a whole number above 0, at most 1e12, e.g. 300, 20k, 1.5M)", s)
 	m := countRe.FindStringSubmatch(s)
@@ -143,6 +147,8 @@ func ParseBudget(s string) (Budget, error) {
 			b.Tokens, err = ParseCount(v)
 		case "tools":
 			b.Tools, err = ParseCount(v)
+		case "turns":
+			b.Turns, err = ParseCount(v)
 		case "time":
 			b.Time, err = parseTime(v)
 		default:
@@ -200,6 +206,8 @@ func (b *Budget) UnmarshalYAML(node *yaml.Node) error {
 			out.Tokens, err = yamlCount(v)
 		case "tools":
 			out.Tools, err = yamlCount(v)
+		case "turns":
+			out.Turns, err = yamlCount(v)
 		case "time":
 			out.Time, err = yamlTime(v)
 		}

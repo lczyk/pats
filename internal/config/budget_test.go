@@ -78,6 +78,7 @@ func TestParseBudgetErrors(t *testing.T) {
 		{"{tokens: 2000000.0}", "budget: tokens:"},
 		{"{tools: 0}", "budget: tools:"},
 		{"{tools: 2e12}", "budget: tools:"},
+		{"{turns: 0}", "budget: turns:"},
 		{"{time: -5m}", `budget: time: "-5m" is not a duration`},
 		{"{time: 300}", "budget: time:"},
 	} {
@@ -107,6 +108,7 @@ func TestParseBudgetFlag(t *testing.T) {
 		"cost=20,time=2h":       {Cost: 20, Time: 2 * time.Hour},
 		"tokens=50M":            {Tokens: 50_000_000},
 		" cost = 5 , tools=2k ": {Cost: 5, Tools: 2000},
+		"turns=50,tools=1k":     {Tools: 1000, Turns: 50},
 	} {
 		b, err := ParseBudget(s)
 		require.NoError(t, err, s)
@@ -122,6 +124,7 @@ func TestParseBudgetFlag(t *testing.T) {
 		"=5":            "is not kind=value",
 		"cost=5,":       "is not kind=value",
 		"tokens=1.5":    "tokens:",
+		"turns=0":       "turns:",
 		"time=0s":       "time:",
 	} {
 		_, err := ParseBudget(s)
@@ -131,8 +134,8 @@ func TestParseBudgetFlag(t *testing.T) {
 
 // String gives back what ParseBudget reads.
 func TestBudgetString(t *testing.T) {
-	b := Budget{Cost: 2.5, Tokens: 20_000, Tools: 3, Time: 90 * time.Second}
-	assert.Equal(t, b.String(), "cost=2.5,tokens=20000,tools=3,time=1m30s")
+	b := Budget{Cost: 2.5, Tokens: 20_000, Tools: 3, Turns: 7, Time: 90 * time.Second}
+	assert.Equal(t, b.String(), "cost=2.5,tokens=20000,tools=3,turns=7,time=1m30s")
 	back, err := ParseBudget(b.String())
 	require.NoError(t, err)
 	assert.Equal(t, back, b)

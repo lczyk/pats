@@ -178,7 +178,8 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	// a cap is checked against what a harness reports: one that reported
 	// none of a kind here leaves a cap of it nothing to check. preflight
 	// asks for no tool call, so for tools only a harness with no parse
-	// script is known to report none.
+	// script is known to report none. it always takes a turn, so a harness
+	// that counted none here reports none.
 	lw := logw{opts.Out, opts.Color, opts.Verbose}
 	if (a.Budget.Cost > 0 || opts.Budget.Cost > 0) && !stat.costSeen.Load() {
 		lw.warn("agent %s reports no cost: its budget has nothing to check", a.Name)
@@ -188,6 +189,9 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	}
 	if (a.Budget.Tools > 0 || opts.Budget.Tools > 0) && hd.Parser() == nil {
 		lw.warn("agent %s reports no tool calls: its tools budget has nothing to check", a.Name)
+	}
+	if (a.Budget.Turns > 0 || opts.Budget.Turns > 0) && stat.liveTurns.Load() == 0 {
+		lw.warn("agent %s reports no turns: its turns budget has nothing to check", a.Name)
 	}
 	return nil
 }
