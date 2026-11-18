@@ -30,6 +30,8 @@ sandbox:
         deny:
           - 'github.com/*/some-answer-repo**'
         deny-response: 403         # 403 | 404 | reset | timeout
+        deny-message: |            # what a 403 refusal says. absent: a default. "": the bare 403
+          this environment has no access to that source.
         allow-private: false       # true lets entries name loopback, link-local and rfc1918 targets
         image: ghcr.io/...         # the sidecar image (container drivers)
       env:                         # extra environment for the agent, under what pats sets
@@ -67,8 +69,8 @@ sandbox:
 - **harness hosts** under `default: deny` the hosts the harness itself needs (inference, token refresh, startup
   fetches) are merged in per agent. pats.yaml lists only what the task needs.
 - **tasks** a task may set `egress: {allow, deny}`. its entries are unioned over the sandbox's for that task's pairs;
-  posture (`none`, `default`, `deny-response`, `allow-private`, `image`) stays the sandbox's. a task with `egress`
-  paired with an agent whose sandbox runs no proxy is a load error.
+  posture (`none`, `default`, `deny-response`, `deny-message`, `allow-private`, `image`) stays the sandbox's. a task
+  with `egress` paired with an agent whose sandbox runs no proxy is a load error.
 - **methods** `methods: [GET, HEAD]` refuses every other method, with `rule: methods` and `reason: method` in the
   audit. a tunnel cannot show a method, so the posture makes the proxy inspect every allowed host -- under
   `default: allow`, every host reached -- except the harness's own (its inference api is never decrypted for it; an
@@ -76,6 +78,17 @@ sandbox:
   method prefix, which needs a url part: `POST api.github.com/graphql` in `allow` admits that method there whatever
   the posture, `PUT,PATCH github.com/**` in `deny` refuses only those methods. absent, every method passes and nothing
   extra is inspected.
+
+- **refusals** under `deny-response: 403`, the default, a refused request is answered
+  `403 Blocked by network policy, do not retry` with a few lines of text: the refusal is a decision and not a fault,
+  retrying will not change it, and a way round it is not wanted. the reason phrase is what python's `urllib` and wget
+  show, the body what curl and git show, and a refused CONNECT shows curl and git neither. the answer is the same for
+  every refusal and names no entry: that stays in the audit. `deny-message` sets the body: utf-8, at most 2048 bytes,
+  no control character but a newline. `deny-message: ""` is the refusal of pats before 1.3, `403 Forbidden` and
+  `egress denied`, for a run that must compare with an older one. beside another `deny-response` it is a load error:
+  `404`, `reset` and `timeout` are there to look like the network, and say nothing. a 403 with its message ends the
+  connection it was asked on. the text a pair's agent was shown is `deny_message` in the effective policy in its
+  `metadata.json`. the design is `docs/spec/refusal-message.md`.
 
 ## topology
 

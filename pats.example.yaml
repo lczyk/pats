@@ -23,6 +23,7 @@ sandbox:
       #     - 'github.com/*/some-answer-repo**'  # the answer source, by url (`*` stays in one path segment, `**` crosses `/`)
       #   # default: allow          # a denylist instead; bare hosts in allow are dead under it
       #   # deny-response: 404      # 403 (default) | 404 | reset | timeout
+      #   # deny-message: "..."     # what a 403 refusal tells the agent; absent, a default that says not to retry
       #   # allow-private: true     # let entries name lan / loopback targets
       #   # methods: [GET, HEAD]    # refuse writes everywhere; every allowed host but the harness's gets mitm'd
       # host lists other tasks tend to need, to copy from:

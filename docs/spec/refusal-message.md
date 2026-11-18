@@ -1,6 +1,7 @@
 # refusal message
 
-status: proposed.
+status: implemented, for 1.3.0, but for the spread test at the end of "tests": the answer was checked by hand
+instead, with curl, git and python against the built proxy, on a terminated host, a plain one and a refused CONNECT.
 
 ## problem
 
