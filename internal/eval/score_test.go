@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -339,6 +340,109 @@ suites: {kind: suite, items: {all: {agents: agx, tasks: tasks, scorers: scorers}
 	after, err := os.ReadFile(filepath.Join(run, "scores.json"))
 	require.NoError(t, err)
 	assert.Equal(t, string(after), string(data))
+}
+
+// a narrowed score keeps a score whose agent, task or scorer the config no
+// longer has: retired, out of the means. a plain score rebuilds the file and
+// says what that dropped.
+func TestScoreKeepsRetired(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755))
+	}
+	write("x.sh", "echo 1.0")
+	write("y.sh", "echo 0.0")
+	run := filepath.Join(dir, ".pats", "runs", "20260621-1")
+	for _, p := range []string{"axx/t1x", "axx/t2x"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(run, p), 0o755))
+	}
+	const head = `
+sxx: {kind: sandbox, items: {sxx: {image: img}}}
+agx: {kind: agent, defaults: {harness: opencode-openrouter, model: m, sandbox: sxx}, items: {axx: ~}}
+suites: {kind: suite, items: {all: {agents: agx, tasks: tasks, scorers: scorers}}}
+`
+	full := parseCfg(t, head+`
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~, t2x: ~}}
+scorers: {kind: scorer, items: {xxx: {score: ./x.sh}, yxx: {score: ./y.sh}}}
+`)
+	// t2x parked and yxx deleted since the run was scored.
+	cut := parseCfg(t, head+`
+tasks: {kind: task, defaults: {prompt: p.txt}, items: {t1x: ~}}
+scorers: {kind: scorer, items: {xxx: {score: ./x.sh}}}
+`)
+	score := func(cfg *config.Config, o ScoreOptions) (*ScoreReport, string) {
+		var out bytes.Buffer
+		o.ConfigDir, o.RunDir, o.Out = dir, run, &out
+		rep, err := Score(cfg, o)
+		require.NoError(t, err)
+		return rep, out.String()
+	}
+	type scored struct {
+		score   float64
+		retired bool
+	}
+	scoreMap := func(r *ScoreReport) map[string]scored {
+		m := map[string]scored{}
+		for _, c := range r.Scores {
+			m[c.Agent+"/"+c.Task+"/"+c.Scorer] = scored{c.Score, c.Retired}
+		}
+		return m
+	}
+
+	rep, _ := score(full, ScoreOptions{})
+	assert.Len(t, rep.Scores, 4)
+
+	write("x.sh", "echo 0.5")
+	rep, out := score(cut, ScoreOptions{Scorers: []string{"xxx"}})
+	assert.EqualMaps(t, scoreMap(rep), map[string]scored{
+		"axx/t1x/xxx": {0.5, false},
+		"axx/t1x/yxx": {0, true},
+		"axx/t2x/xxx": {1, true},
+		"axx/t2x/yxx": {0, true},
+	})
+	assert.EqualMaps(t, rep.PerPair, map[string]float64{"axx/t1x": 0.5})
+	assert.EqualMaps(t, rep.PerAgent, map[string]float64{"axx": 0.5})
+	assert.Equal(t, rep.Overall, 0.5)
+	assert.ContainsString(t, out, "retired scores: 3")
+
+	// the file holds them, marked, and the reports show the mark and count
+	// only what the means do.
+	onDisk, err := readScores(run)
+	require.NoError(t, err)
+	assert.EqualMaps(t, scoreMap(onDisk), scoreMap(rep))
+	doc := buildReport(run, onDisk, io.Discard)
+	assert.Len(t, doc.Scores, 4)
+	for _, p := range doc.Pairs {
+		assert.Equal(t, p.Mean != nil, p.Task == "t1x", p.Task)
+	}
+	multi, _, err := buildMulti([]string{run}, io.Discard)
+	require.NoError(t, err)
+	for _, p := range multi.Pairs {
+		if p.Task == "t1x" {
+			assert.EqualMaps(t, p.Samples[0].Scores, map[string]float64{"xxx": 0.5})
+		} else {
+			assert.Len(t, p.Samples[0].Scores, 0)
+		}
+	}
+
+	// back in the config, a kept score counts again.
+	write("y.sh", "echo 1.0")
+	rep, out = score(full, ScoreOptions{Scorers: []string{"yxx"}})
+	assert.EqualMaps(t, scoreMap(rep), map[string]scored{
+		"axx/t1x/xxx": {0.5, false},
+		"axx/t1x/yxx": {1, false},
+		"axx/t2x/xxx": {1, false},
+		"axx/t2x/yxx": {1, false},
+	})
+	assert.EqualMaps(t, rep.PerPair, map[string]float64{"axx/t1x": 0.75, "axx/t2x": 1})
+	assert.That(t, !strings.Contains(out, "retired"), "nothing retired", out)
+
+	// a plain score rebuilds the file from the config, and says what went.
+	rep, out = score(cut, ScoreOptions{})
+	assert.EqualMaps(t, scoreMap(rep), map[string]scored{"axx/t1x/xxx": {0.5, false}})
+	assert.ContainsString(t, out, "scores dropped: 3")
+	_, out = score(cut, ScoreOptions{})
+	assert.That(t, !strings.Contains(out, "dropped"), "nothing dropped", out)
 }
 
 func TestParseScore(t *testing.T) {

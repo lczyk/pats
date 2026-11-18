@@ -71,6 +71,45 @@ type ScoreResult struct {
 	Task   string  `json:"task"`
 	Scorer string  `json:"scorer"`
 	Score  float64 `json:"score"`
+	// Retired marks a score whose agent, task or scorer the config no longer
+	// had when the file was written: kept as it was, out of every mean.
+	Retired bool `json:"retired,omitempty"`
+}
+
+// key is r's (agent, task, scorer), what a set of scores is indexed by.
+func (r ScoreResult) key() ScoreResult {
+	return ScoreResult{Agent: r.Agent, Task: r.Task, Scorer: r.Scorer}
+}
+
+// scoreKeys is every (agent, task, scorer) testPairs and scorePairs hold.
+func scoreKeys(testPairs []config.TestPair, scorePairs []config.ScorePair) map[ScoreResult]bool {
+	scorersOf := map[string][]string{}
+	for _, sp := range scorePairs {
+		scorersOf[sp.Task] = append(scorersOf[sp.Task], sp.Scorer)
+	}
+	keys := map[ScoreResult]bool{}
+	for _, tp := range testPairs {
+		for _, sc := range scorersOf[tp.Task] {
+			keys[ScoreResult{Agent: tp.Agent, Task: tp.Task, Scorer: sc}] = true
+		}
+	}
+	return keys
+}
+
+// retiredNote is the line that says n scores of a report are retired.
+func retiredNote(n int) string {
+	return fmt.Sprintf("retired scores: %d (their agent, task or scorer is no longer in the config: kept, out of the means)", n)
+}
+
+// retired counts r's retired scores.
+func (r *ScoreReport) retired() int {
+	n := 0
+	for _, s := range r.Scores {
+		if s.Retired {
+			n++
+		}
+	}
+	return n
 }
 
 // Score runs each suite's tasks x script scorers over a run's collected
@@ -265,7 +304,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 			default:
 				jlg.detail("%s/%s %s = %.4f", j.agent, j.task, j.sc.Name, score)
 				mu.Lock()
-				results = append(results, ScoreResult{j.agent, j.task, j.sc.Name, score})
+				results = append(results, ScoreResult{Agent: j.agent, Task: j.task, Scorer: j.sc.Name, Score: score})
 				mu.Unlock()
 			}
 
@@ -286,6 +325,7 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		return nil, ErrInterrupted
 	}
 
+	prev, prevErr := readScores(runDir)
 	var rep *ScoreReport
 	if narrowed {
 		scope := map[ScoreResult]bool{}
@@ -298,11 +338,27 @@ func Score(cfg *config.Config, opts ScoreOptions) (*ScoreReport, error) {
 		if rep, err = mergeScores(cfg, runDir, results, scope); err != nil {
 			return nil, err
 		}
+		if n := rep.retired(); n > 0 && opts.noReport {
+			lg.info("%s: %s", filepath.Base(runDir), retiredNote(n))
+		}
 	} else {
 		rep = aggregate(runDir, results, testPairs)
+		// an unnarrowed score rebuilds the file from the config: what the
+		// config no longer reaches goes, and cannot be scored again.
+		if prevErr == nil {
+			has, gone := scoreKeys(testPairs, scorePairs), 0
+			for _, r := range prev.Scores {
+				if !has[r.key()] {
+					gone++
+				}
+			}
+			if gone > 0 {
+				lg.warn("%s: scores dropped: %d (their agent, task or scorer is no longer in the config)", filepath.Base(runDir), gone)
+			}
+		}
 	}
 	// a stored judge score keeps where its scorer's steps ran.
-	if prev, err := readScores(runDir); err == nil {
+	if prevErr == nil {
 		for _, r := range stored {
 			if rec, ok := prev.Steps[r.Scorer]; ok {
 				if rep.Steps == nil {
@@ -460,6 +516,9 @@ func aggregate(runDir string, results []ScoreResult, testPairs []config.TestPair
 	}
 	pair := map[string]*acc{}
 	for _, c := range results {
+		if c.Retired {
+			continue
+		}
 		k := c.Agent + "/" + c.Task
 		a := pair[k]
 		if a == nil {
@@ -725,9 +784,9 @@ func splitRunName(name string) (date string, n int, ok bool) {
 
 // mergeScores folds a narrowed score's results into the run's existing
 // scores.json: those in scope (what this score set out to compute) are
-// replaced by what it computed, the rest are kept unless the config
-// no longer has their (agent, task, scorer), and the report is aggregated
-// over every suite's pairs.
+// replaced by what it computed and the rest are kept, retired when the config
+// no longer has their (agent, task, scorer). the report is aggregated over
+// every suite's pairs.
 func mergeScores(cfg *config.Config, runDir string, results []ScoreResult, scope map[ScoreResult]bool) (*ScoreReport, error) {
 	allPairs, err := cfg.ExpandTestPairs()
 	if err != nil {
@@ -737,16 +796,7 @@ func mergeScores(cfg *config.Config, runDir string, results []ScoreResult, scope
 	if err != nil {
 		return nil, err
 	}
-	scorersOf := map[string][]string{}
-	for _, sp := range allScore {
-		scorersOf[sp.Task] = append(scorersOf[sp.Task], sp.Scorer)
-	}
-	valid := map[ScoreResult]bool{}
-	for _, tp := range allPairs {
-		for _, sc := range scorersOf[tp.Task] {
-			valid[ScoreResult{Agent: tp.Agent, Task: tp.Task, Scorer: sc}] = true
-		}
-	}
+	valid := scoreKeys(allPairs, allScore)
 
 	merged := append([]ScoreResult(nil), results...)
 	var prevSteps map[string]stepsRecord
@@ -760,11 +810,12 @@ func mergeScores(cfg *config.Config, runDir string, results []ScoreResult, scope
 		return nil, fmt.Errorf("%w (a narrowed score merges into it; score without filters to rebuild it)", err)
 	default:
 		for _, r := range prev.Scores {
-			key := ScoreResult{Agent: r.Agent, Task: r.Task, Scorer: r.Scorer}
-			if !scope[key] && valid[key] {
-				merged = append(merged, r)
-				kept = append(kept, r)
+			if scope[r.key()] {
+				continue
 			}
+			r.Retired = !valid[r.key()]
+			merged = append(merged, r)
+			kept = append(kept, r)
 		}
 		prevSteps = prev.Steps
 	}

@@ -135,6 +135,9 @@ func buildMulti(runDirs []string, warn io.Writer) (*multiDoc, map[string][]strin
 		doc.Runs = append(doc.Runs, reportRun{Name: name, Dir: abs})
 		scores := map[string]map[string]float64{}
 		for _, s := range rep.Scores {
+			if s.Retired {
+				continue // out of the means, so out of what they are over
+			}
 			k := s.Agent + "/" + s.Task
 			if scores[k] == nil {
 				scores[k] = map[string]float64{}

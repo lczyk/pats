@@ -402,6 +402,9 @@ func judgeRun(ctx context.Context, cfg *config.Config, ro Options, runDir string
 		}
 	}
 	lg.info("%s: %d judged (%d failed), %d na, %d skipped", filepath.Base(runDir), judged, failed, na, skipped)
+	if n := rep.retired(); n > 0 {
+		lg.info("%s: %s", filepath.Base(runDir), retiredNote(n))
+	}
 	unsaved := 0
 	for _, j := range js {
 		if j.saveErr != nil {

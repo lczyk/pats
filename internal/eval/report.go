@@ -664,6 +664,9 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 			fmt.Fprintf(w, "key misuse: %s/%s tried to spend a held key at %s\n", p.agent, p.task, strings.Join(p.meta.KeyMisuse, ", "))
 		}
 	}
+	if n := r.retired(); n > 0 {
+		fmt.Fprintln(w, retiredNote(n))
+	}
 	for _, j := range readJudges(runDir, warn) {
 		line := fmt.Sprintf("judge %s: %d judged, %d failed, %d na, %d samples, %s tok, %s", j.Name,
 			j.Judgements, j.Failed, j.NA, j.Samples, humanK(j.OutputTokens), hms(j.DurationS))
