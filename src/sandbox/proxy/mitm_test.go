@@ -222,6 +222,41 @@ func TestMitmH2ResponseRewrite(t *testing.T) {
 	assert.Equal(t, string(body), "hi")
 }
 
+// a terminated request is audited with its resolved url as a plain one is
+// (TestAuditResolved).
+func TestMitmAuditResolved(t *testing.T) {
+	ok := rtFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: http.NoBody, ContentLength: 0, Header: http.Header{}}, nil
+	})
+	p, pool, audit := mitmProxy(t, "mitm.test", ok)
+	proxy := httptest.NewServer(p)
+	defer proxy.Close()
+
+	conn, _ := connect(t, proxy.Listener.Addr().String(), "mitm.test:443")
+	defer conn.Close()
+	tconn := tls.Client(conn, &tls.Config{RootCAs: pool, ServerName: "mitm.test"})
+	require.NoError(t, tconn.Handshake())
+	tbr := bufio.NewReader(tconn)
+	for _, c := range []struct {
+		sent, resolved string
+		status         int
+	}{
+		{"/a/../ok?x=1", "mitm.test/ok?x=1", 200},
+		{"/ok", "", 200},
+		{"/a/../secret/x", "mitm.test/secret/x", 403},
+	} {
+		fmt.Fprintf(tconn, "GET %s HTTP/1.1\r\nHost: mitm.test\r\n\r\n", c.sent)
+		resp, err := http.ReadResponse(tbr, nil)
+		require.NoError(t, err)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		assert.Equal(t, resp.StatusCode, c.status, c.sent)
+		ev := audit.last(t)
+		assert.Equal(t, ev.URL, "mitm.test"+c.sent)
+		assert.Equal(t, ev.Resolved, c.resolved, c.sent)
+	}
+}
+
 // COVER: handleMitm's half of the raw-200-write fix -- see the matching
 // comment on handleConnect's TestHandleConnectNoFramingHeaders in
 // proxy_test.go. Go's http.Transport waits for the full CONNECT response

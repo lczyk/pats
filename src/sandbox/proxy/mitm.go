@@ -150,7 +150,8 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 	}
 	serveConn(tconn, idle, http.HandlerFunc(func(w http.ResponseWriter, inner *http.Request) {
 		ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "mitm",
-			Method: inner.Method, URL: p.maskKeys(auditURL(host, inner.URL)), UA: p.maskKeys(inner.UserAgent())}
+			Method: inner.Method, URL: p.maskKeys(auditURL(host, inner.URL)), Resolved: p.maskKeys(auditResolved(host, inner.URL)),
+			UA: p.maskKeys(inner.UserAgent())}
 		if innerHost, _ := splitHostPort(inner.Host, port); !sameHost(innerHost, want) {
 			ev.Rule, ev.Reason = "mitm", "host-mismatch"
 			ev.Status = p.refuse(w)

@@ -92,6 +92,51 @@ func (a *auditBuf) closes(t *testing.T, n int) []Event {
 	}
 }
 
+// a request whose path resolves to another is audited with both: the url as
+// sent, and resolved, the one the verdict was for. refusals too.
+func TestAuditResolved(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+	uhost := strings.TrimPrefix(upstream.URL, "http://")
+
+	var audit auditBuf
+	p := &Proxy{Rule: mustRule(t, false, []string{uhost}, []string{uhost + "/secret**"}), Audit: &audit, Dial: looseDial}
+	proxy := httptest.NewServer(p)
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	for _, c := range []struct {
+		sent, resolved string
+		status         int
+	}{
+		{"/ok?x=1", "", 200},
+		{"/a/", "", 200},
+		{"/a/../ok?x=/../y", "/ok?x=/../y", 200},
+		{"/a//ok", "/a/ok", 200},
+		{"/a/b/..", "/a/", 200},
+		{"/a/./ok", "/a/ok", 200},
+		{"/a/../secret/x", "/secret/x", 403},
+		// a reading only some origins make is the matcher's to weigh, not a
+		// path the request asked for.
+		{"/a/..;/ok", "", 200},
+	} {
+		resp, err := client.Get(upstream.URL + c.sent)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, resp.StatusCode, c.status, c.sent)
+		ev := audit.last(t)
+		assert.Equal(t, ev.URL, ev.Host+c.sent)
+		want := ""
+		if c.resolved != "" {
+			want = ev.Host + c.resolved
+		}
+		assert.Equal(t, ev.Resolved, want, c.sent)
+	}
+}
+
 // COVER: the plain-http proxy path (absolute-URI requests, e.g. apt) -- host
 // gate, url entries applied directly (no mitm needed), and forwarding.
 func TestHandleHTTP(t *testing.T) {

@@ -58,7 +58,9 @@ type Proxy struct {
 //	close -- a tunnel ended: bytes each way and its duration. never a
 //	         refusal (allowed is always true).
 //	req   -- a request the proxy saw in clear: kind mitm or http, method,
-//	         url, user agent, upstream status, body bytes each way.
+//	         url, user agent, upstream status, body bytes each way. where
+//	         the path's dot segments or doubled slashes resolve to another
+//	         path, resolved is the url with that one.
 //
 // Rule is the entry that decided, or "default". Reason says why a refusal or
 // failure happened.
@@ -74,6 +76,7 @@ type Event struct {
 	IP         string `json:"ip,omitempty"`
 	Method     string `json:"method,omitempty"`
 	URL        string `json:"url,omitempty"`
+	Resolved   string `json:"resolved,omitempty"`
 	UA         string `json:"ua,omitempty"`
 	Status     int    `json:"status,omitempty"`
 	In         int64  `json:"in,omitempty"`  // bytes received from upstream
@@ -262,7 +265,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	host, port := splitHostPort(req.Host, 80)
 	ev := Event{Ev: "req", Host: host, Port: portStr(port), Kind: "http",
-		Method: req.Method, URL: p.maskKeys(auditURL(host, req.URL)), UA: p.maskKeys(req.UserAgent())}
+		Method: req.Method, URL: p.maskKeys(auditURL(host, req.URL)), Resolved: p.maskKeys(auditResolved(host, req.URL)),
+		UA: p.maskKeys(req.UserAgent())}
 	// a key is never spent in clear.
 	if use := p.useOf(req, host, port, false); use.misuse {
 		p.refuseKey(w, &ev)
@@ -290,6 +294,16 @@ func auditURL(host string, u *url.URL) string {
 		return host + u.Path + "?" + u.RawQuery
 	}
 	return host + u.Path
+}
+
+// auditResolved is auditURL with the path resolved as the policy read it,
+// or "" where that is the path as sent.
+func auditResolved(host string, u *url.URL) string {
+	r := resolvePath(u.Path)
+	if r == u.Path {
+		return ""
+	}
+	return auditURL(host, &url.URL{Path: r, RawQuery: u.RawQuery})
 }
 
 // errChainAuth is the upstream proxy asking for a credential it was given,
