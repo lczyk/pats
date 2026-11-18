@@ -164,11 +164,12 @@ for each request the proxy sees in clear (on a mitm'd host, or plain http), in t
 3. **otherwise the policy decides**, as today. an explicit `deny` still refuses.
 4. **substitution**, on an allowed request to a bound endpoint, in the header its entry names: an `Authorization`
    whose value is exactly `Bearer <placeholder>` becomes `Bearer <real value>`, or a named header whose value is
-   exactly the placeholder becomes the real value. nothing else in the request changes. a bound request with no
-   credential goes out as it is. a bound endpoint takes no other credential: each header a key can be spent in
-   (`Authorization`, `X-Api-Key`) is absent there or is that one spend, so one in another shape, given twice, or
-   holding a key of the agent's own, beside the placeholder or alone, is refused as misuse, and one key at most is
-   spent on a request.
+   exactly the placeholder becomes the real value. the substitution changes nothing else. what the scrub needs is
+   apart from it and on every bound request: the client's `Accept-Encoding` dropped (below), and no request trailers
+   sent on where keys are held. a bound request with no credential goes out without a key. a bound endpoint takes
+   no other credential: each header a key can be spent in (`Authorization`, `X-Api-Key`) is absent there or is that
+   one spend, so one in another shape, given twice, or holding a key of the agent's own, beside the placeholder or
+   alone, is refused as misuse, and one key at most is spent on a request.
 5. **the response**, on a bound endpoint, scrubbed as defence in depth (the provider is trusted not to echo the key,
    and a key it re-encodes is not caught):
    - the proxy drops the client's `Accept-Encoding` before forwarding, so go's transport asks for gzip itself and
