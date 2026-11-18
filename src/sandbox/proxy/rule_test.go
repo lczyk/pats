@@ -240,6 +240,56 @@ func TestDecideQueryAndClean(t *testing.T) {
 	})
 }
 
+// dot segments below a path a policy leaves open, as agents sent them at a
+// repository denied but for its info/refs: refused where they resolve onto a
+// denied path, however the dots are written, and admitted where they resolve
+// to one the policy never named (which the origin has no answer for).
+func TestDecideTraversalBelowOpenPath(t *testing.T) {
+	r := mustRule(t, false,
+		[]string{"github.com", "raw.githubusercontent.com", "api.github.com"},
+		[]string{
+			"github.com/*/chisel-releases",
+			"github.com/*/chisel-releases/**",
+			"github.com/*/chisel-releases.git",
+			"github.com/*/chisel-releases.git/git-upload-pack",
+			"raw.githubusercontent.com/*/chisel-releases/**/slices/**",
+			"api.github.com/repos/*/chisel-releases/**",
+		})
+	const refs = "/canonical/chisel-releases.git/info/refs"
+	for _, c := range []struct {
+		host, path string
+		want       bool
+	}{
+		{"github.com", refs, true},
+		{"github.com", refs + "/../../git-upload-pack", false},
+		{"github.com", refs + "/../../../chisel-releases/raw/ubuntu-26.04/slices/udev.yaml", false},
+		{"github.com", refs + "/../../../../canonical/chisel-releases/blob/ubuntu-26.04/slices/udev.yaml", false},
+		{"github.com", refs + "/../../../canonical/../chisel-releases/commits/ubuntu-26.04.atom", false},
+		{"github.com", refs + "/../../../Chisel-Releases/raw/ubuntu-26.04/slices/udev.yaml", false},
+		{"github.com", refs + "/../../../chisel-releases/./raw/ubuntu-26.04/slices/udev.yaml", false},
+		{"github.com", refs + "/..//..//..//..//canonical/chisel-releases/blob/ubuntu-26.04/slices/udev.yaml", false},
+		{"github.com", refs + "/..;/..;/..;/..;/canonical/chisel-releases/blob/ubuntu-26.04/slices/udev.yaml", false},
+		{"github.com", refs + `/..\..\..\..\canonical/chisel-releases/blob/ubuntu-26.04/slices/udev.yaml`, false},
+		{"github.com", refs + "/..%2f..%2f..%2f..%2fcanonical/chisel-releases/blob/ubuntu-26.04/slices/udev.yaml", false},
+		{"github.com", "/canonical/chisel-releases.git/../chisel-releases/archive/refs/heads/ubuntu-24.04.tar.gz", false},
+		{"github.com", "/..;/canonical/chisel-releases", false},
+		{"github.com", "/canonical/chisel-releases/tree/ubuntu-24.04/slices/../../.git", false},
+		{"raw.githubusercontent.com", refs + "/../../../chisel-releases/ubuntu-24.04/slices/udev.yaml", false},
+		{"raw.githubusercontent.com", "/canonical/chisel-releases/ubuntu-26.04/README.md/../slices/udev.yaml", false},
+		{"api.github.com", "/repos/canonical/chisel/../chisel-releases/contents/slices/udev.yaml", false},
+		// a ".." short or over lands on a path the policy does not name.
+		{"github.com", refs + "/../git-upload-pack", true},                                                   // .git/info/git-upload-pack
+		{"github.com", refs + "/../../chisel-releases/raw/ubuntu-26.04/slices/udev.yaml", true},              // .git/chisel-releases/raw/..
+		{"github.com", refs + "/../../../canonical/chisel-releases/raw/ubuntu-26.04/slices/udev.yaml", true}, // /canonical/canonical/..
+		{"github.com", refs + "/../../../raw/ubuntu-26.04/slices/udev.yaml", true},                           // /canonical/raw/..
+		{"github.com", "/canonical/chisel-releases.git/../pull/1491.patch", true},                            // /canonical/pull/..
+	} {
+		assert.Equal(t, r.Decide(c.host, 443, "GET", c.path, "").Allowed, c.want, "%s%s", c.host, c.path)
+	}
+	// dots in a query are the query's.
+	assert.Equal(t, r.Decide("github.com", 443, "GET", refs, "service=git-upload-pack/../../../raw/x").Allowed, true)
+}
+
 // an allow errs the other way to a deny: it admits a path only when every
 // reading of it matches, and a query only through a "?" the entry spells.
 func TestDecideAllowReadings(t *testing.T) {
