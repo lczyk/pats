@@ -37,7 +37,10 @@ type Proxy struct {
 	// DenyResponse is what a refused request sees: "403" (default), "404",
 	// "reset" (the connection is reset), or "timeout" (held, then reset).
 	DenyResponse string
-	Audit        io.Writer
+	// DenyMessage is the body of a 403 refusal. nil: DefaultDenyMessage. "":
+	// the bare 403 net/http writes, "egress denied".
+	DenyMessage *string
+	Audit       io.Writer
 	// Chain is the upstream proxy, when there is one: a 407 it answers a
 	// plain http request with is its failure, not the origin's answer.
 	Chain *Chain
@@ -122,24 +125,84 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // only bound on it.
 const denyHold = 60 * time.Second
 
-// refuse answers a refused request per DenyResponse and returns the status it
-// sent (0 when the connection was reset). after it the connection is
-// unusable by design.
-func (p *Proxy) refuse(w http.ResponseWriter) int {
+// refuse audits ev as a refusal and answers the request per DenyResponse.
+// the audit comes first: the answer may wait on a client that never reads
+// it. ev's status is the answer decided on (none for a reset), whether or not
+// the client stayed for it.
+func (p *Proxy) refuse(w http.ResponseWriter, req *http.Request, ev Event) {
 	switch p.DenyResponse {
 	case "404":
+		ev.Status = http.StatusNotFound
+		p.audit(ev)
 		http.Error(w, "not found", http.StatusNotFound)
-		return http.StatusNotFound
 	case "reset":
+		p.audit(ev)
 		resetConn(w, 0)
-		return 0
 	case "timeout":
+		p.audit(ev)
 		resetConn(w, denyHold)
-		return 0
 	default:
-		http.Error(w, "egress denied", http.StatusForbidden)
-		return http.StatusForbidden
+		ev.Status = http.StatusForbidden
+		p.audit(ev)
+		p.forbid(w, req)
 	}
+}
+
+// denyPhrase is the reason phrase of a 403 refusal: the one place some
+// clients show (python's urllib, wget), where others show the body.
+const denyPhrase = "Blocked by network policy, do not retry"
+
+const (
+	// forbidWrite bounds the write of a refusal to a client that is not
+	// reading.
+	forbidWrite = 5 * time.Second
+	// forbidDrain and forbidLinger bound what is read off a refused client
+	// before the close, so that the close is not a reset on top of the answer.
+	forbidDrain  = 64 << 10
+	forbidLinger = time.Second
+)
+
+// forbid answers 403 with the policy's message. net/http writes a status
+// line's phrase itself, so the answer goes to the hijacked connection by
+// hand, which this owns from the hijack to the close. nothing is read before
+// the answer: a client waiting on "Expect: 100-continue" gets it, not a 100.
+// a client still sending past the drain may read a reset where the 403 was.
+func (p *Proxy) forbid(w http.ResponseWriter, req *http.Request) {
+	msg := DefaultDenyMessage
+	if p.DenyMessage != nil {
+		msg = *p.DenyMessage
+	}
+	hj, ok := w.(http.Hijacker)
+	if msg == "" || !ok {
+		http.Error(w, "egress denied", http.StatusForbidden)
+		return
+	}
+	if !strings.HasSuffix(msg, "\n") {
+		msg += "\n"
+	}
+	conn, buffered, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	answer := "HTTP/1.1 403 " + denyPhrase + "\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"Content-Length: " + strconv.Itoa(len(msg)) + "\r\n" +
+		"Connection: close\r\n\r\n"
+	if req.Method != http.MethodHead {
+		answer += msg
+	}
+	_ = conn.SetDeadline(time.Now().Add(forbidWrite))
+	if _, err := io.WriteString(conn, answer); err != nil {
+		return
+	}
+	if hc, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = hc.CloseWrite()
+	}
+	// through the reader the hijack handed back: what the server had read
+	// ahead of the handler counts against the drain too.
+	_ = conn.SetDeadline(time.Now().Add(forbidLinger))
+	_, _ = io.CopyN(io.Discard, buffered.Reader, forbidDrain)
 }
 
 // resetConn hijacks the connection, holds it for d, and closes it with a
@@ -179,8 +242,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 	v := p.Rule.DecideHost(host, port)
 	open := Event{Ev: "open", Host: host, Port: portStr(port), Kind: "tunnel", Rule: v.Rule, Reason: v.Reason}
 	if !v.Allowed {
-		open.Status = p.refuse(w)
-		p.audit(open)
+		p.refuse(w, req, open)
 		return
 	}
 	if p.Signer != nil && (p.Rule.MitmHost(host, port) || p.keyHost(host, port)) {
@@ -280,8 +342,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 		v.Allowed, ev.Rule, ev.Reason = false, "url", "bad-url"
 	}
 	if !v.Allowed {
-		ev.Status = p.refuse(w)
-		p.audit(ev)
+		p.refuse(w, req, ev)
 		return
 	}
 	p.forward(w, req, ev, nil, keyUse{})

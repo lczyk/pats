@@ -227,6 +227,7 @@ func TestKeyMisuse(t *testing.T) {
 		before := len(k.got())
 		resp, body := k.do(t, c.method, c.url, c.hdr)
 		assert.Equal(t, resp.StatusCode, http.StatusForbidden, name)
+		assert.Equal(t, body, "egress denied: key misuse\n", name) // not the policy's message: no policy was asked
 		assert.That(t, !strings.Contains(body, k.ph), "%s: the refusal names the placeholder", name)
 		assert.Equal(t, len(k.got()), before, name)
 		ev := k.audit.last(t)

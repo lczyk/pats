@@ -321,6 +321,8 @@ func TestValidateErrors(t *testing.T) {
 		{"egress wildcard host", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny: [\"*/chisel-releases*\"]}}}}\n", "literal hostname"},
 		{"egress bad default", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {default: maybe}}}}\n", "want deny or allow"},
 		{"egress bad deny-response", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-response: 500}}}}\n", "want 403, 404, reset or timeout"},
+		{"egress deny-message with a control character", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-message: \"a\\tb\"}}}}\n", "control character"},
+		{"egress deny-message beside a 404", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-response: 404, deny-message: x}}}}\n", "deny-message needs deny-response 403"},
 		{"egress bad regexp", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: ['a.test ~(']}}}}\n", "regexp"},
 		{"egress empty methods", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {methods: []}}}}\n", "an empty list would refuse every request"},
 		{"egress bad method", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {methods: [get]}}}}\n", "not an upper-case http method"},
@@ -465,6 +467,33 @@ func TestEgressParseErrors(t *testing.T) {
 	assert.Error(t, err, "unknown field \"default\"")
 	_, err = Parse([]byte("xxx: {kind: task, items: {xxx: {prompt: p, egress: none}}}\n"))
 	assert.Error(t, err, "a task takes a mapping")
+	// what a refusal says is the sandbox's too, and a null is no message.
+	_, err = Parse([]byte("xxx: {kind: task, items: {xxx: {prompt: p, egress: {deny-message: x}}}}\n"))
+	assert.Error(t, err, "unknown field \"deny-message\"")
+	_, err = Parse([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-message: }}}}\n"))
+	assert.Error(t, err, "null is neither a message nor none")
+	_, err = Parse([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, provision: &n ~, egress: {deny-message: *n}}}}\n"))
+	assert.Error(t, err, "null is neither a message nor none")
+}
+
+// the message a 403 refusal carries is spelled out as the config loads: the
+// default where none is set, and none for a policy that refuses another way.
+func TestEgressDenyMessage(t *testing.T) {
+	c := parseT(t, "sxx: {kind: sandbox, items: {"+
+		"absent: {image: i, egress: {allow: [a.test]}}, "+
+		"set: {image: i, egress: {deny-message: \"not here\"}}, "+
+		"bare: {image: i, egress: {deny-message: \"\"}}, "+
+		"other: {image: i, egress: {deny-response: 404}}, "+
+		"open: {image: i}}}\n")
+	got := map[string]*string{}
+	for _, sb := range c.Sandboxes {
+		got[sb.Name] = sb.Egress.DenyMessage
+	}
+	assert.Equal(t, *got["absent"], proxy.DefaultDenyMessage)
+	assert.Equal(t, *got["set"], "not here")
+	assert.Equal(t, *got["bare"], "")
+	assert.That(t, got["other"] == nil)
+	assert.That(t, got["open"] == nil)
 }
 
 // the three shapes of `egress`: absent is open, the scalar none is no

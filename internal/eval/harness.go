@@ -215,6 +215,7 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, hd *machine.Harness, aud
 	if !eg.Set {
 		return eg
 	}
+	eg.Policy = eg.Policy.Resolved()
 	eg.Policy.Allow = mergeHosts(eg.Policy.Allow, te.Allow)
 	eg.Policy.Deny = mergeHosts(eg.Policy.Deny, te.Deny)
 	if hd == nil {

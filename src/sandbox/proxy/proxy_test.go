@@ -200,6 +200,12 @@ func TestHandleHTTPRelay(t *testing.T) {
 	proxy := httptest.NewServer(p)
 	defer proxy.Close()
 
+	// a refused request's body is no request of its own: the answer ends the
+	// connection, and what was sent behind it is dropped.
+	refused := exchange(t, proxy.Listener.Addr().String(),
+		fmt.Sprintf("POST http://%s/secret/x HTTP/1.1\r\nHost: %s\r\nContent-Length: 15\r\n\r\nGET /smuggled x", uhost, uhost))
+	assert.ContainsString(t, refused, "HTTP/1.1 403 ")
+
 	conn, err := net.Dial("tcp", proxy.Listener.Addr().String())
 	require.NoError(t, err)
 	defer conn.Close()
@@ -213,9 +219,6 @@ func TestHandleHTTPRelay(t *testing.T) {
 		require.NoError(t, err)
 		return resp.StatusCode, string(body)
 	}
-	fmt.Fprintf(conn, "POST http://%s/secret/x HTTP/1.1\r\nHost: %s\r\nContent-Length: 15\r\n\r\nGET /smuggled x", uhost, uhost)
-	code, _ := read()
-	assert.Equal(t, code, http.StatusForbidden)
 	fmt.Fprintf(conn, "GET http://%s/a?y=2;x=1 HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic abc\r\nProxy-Connection: keep-alive\r\n"+
 		"Connection: X-Hop\r\nX-Hop: secret\r\nUpgrade: websocket\r\nX-Forwarded-For: 10.1.2.3\r\n\r\n", uhost, uhost)
 	code, body := read()

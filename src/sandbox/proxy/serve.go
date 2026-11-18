@@ -15,6 +15,8 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +31,9 @@ type Policy struct {
 	Allow        []string `yaml:"allow" json:"allow,omitempty"`
 	Deny         []string `yaml:"deny" json:"deny,omitempty"`
 	DenyResponse string   `yaml:"deny-response" json:"deny_response,omitempty"` // 403 (the default) | 404 | reset | timeout
+	// DenyMessage is the body of a 403 refusal: nil is DefaultDenyMessage,
+	// "" the bare refusal of pats before 1.3. Resolved fills a nil one in.
+	DenyMessage *string `yaml:"deny-message,omitempty" json:"deny_message,omitempty"`
 	// Harness lists the hosts pats merged in for the agent's harness. the
 	// methods posture never inspects them. pats sets it; pats.yaml cannot.
 	Harness []string `yaml:"harness,omitempty" json:"harness,omitempty"`
@@ -38,15 +43,104 @@ type Policy struct {
 }
 
 // ParsePolicy reads a policy from yaml, refusing unknown keys: a typo in a
-// filter's config must not quietly mean "no rule".
+// filter's config must not quietly mean "no rule". what the policy leaves to
+// a default that an agent reads is filled in (Resolved).
 func ParsePolicy(data []byte) (Policy, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return Policy{}, err
+	}
+	if len(doc.Content) > 0 {
+		if err := CheckPolicyNode(doc.Content[0]); err != nil {
+			return Policy{}, err
+		}
+	}
 	var p Policy
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&p); err != nil && !errors.Is(err, io.EOF) {
 		return Policy{}, err
 	}
-	return p, nil
+	return p.Resolved(), nil
+}
+
+// CheckPolicyNode refuses what decoding a policy mapping would lose: a null
+// deny-message, which decodes as an absent one and means another thing. the
+// null may be written through an alias, or come in with a merge.
+func CheckPolicyNode(node *yaml.Node) error {
+	node = aliased(node)
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k, v := node.Content[i], aliased(node.Content[i+1])
+		switch {
+		case k.Value == "deny-message" && v.Tag == "!!null":
+			return fmt.Errorf("line %d: deny-message: null is neither a message nor none -- write the text, or \"\" for the bare refusal", k.Line)
+		case k.Tag == "!!merge" && v.Kind == yaml.SequenceNode:
+			for _, m := range v.Content {
+				if err := CheckPolicyNode(m); err != nil {
+					return err
+				}
+			}
+		case k.Tag == "!!merge":
+			if err := CheckPolicyNode(v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// aliased is the node an alias stands for, or node itself.
+func aliased(node *yaml.Node) *yaml.Node {
+	for node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	return node
+}
+
+// DefaultDenyMessage is what a 403 refusal says when the policy sets no
+// deny-message (docs/spec/refusal-message.md).
+const DefaultDenyMessage = `this request was refused by the network policy of this environment.
+it is a decision, not a fault: retrying will not change it.
+do not look for another route to the same content.
+carry on without it, and say so if the task cannot be done without it.
+`
+
+// maxDenyMessage bounds a deny-message, in bytes.
+const maxDenyMessage = 2048
+
+// Resolved is the policy with the message a 403 refusal carries spelled out,
+// so that what is handed to a proxy and recorded for a run is the text an
+// agent was shown. a policy that refuses another way has none.
+func (p Policy) Resolved() Policy {
+	if p.DenyMessage == nil && (p.DenyResponse == "" || p.DenyResponse == "403") {
+		msg := DefaultDenyMessage
+		p.DenyMessage = &msg
+	}
+	return p
+}
+
+// checkDenyMessage holds a deny-message to text an agent can be shown in a
+// response body: valid utf-8, bounded, and no control character but a newline.
+func (p Policy) checkDenyMessage() error {
+	if p.DenyMessage == nil {
+		return nil
+	}
+	msg := *p.DenyMessage
+	switch {
+	case p.DenyResponse != "" && p.DenyResponse != "403":
+		return fmt.Errorf("deny-message needs deny-response 403: a %s refusal carries no message", p.DenyResponse)
+	case !utf8.ValidString(msg):
+		return errors.New("deny-message is not valid utf-8")
+	case len(msg) > maxDenyMessage:
+		return fmt.Errorf("deny-message is %d bytes, over the %d a refusal carries", len(msg), maxDenyMessage)
+	}
+	if i := strings.IndexFunc(msg, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }); i >= 0 {
+		return fmt.Errorf("deny-message holds a control character (byte %d): only a newline is allowed", i)
+	}
+	return nil
 }
 
 // Rule parses the policy's lists.
@@ -60,6 +154,9 @@ func (p Policy) Rule() (Rule, error) {
 	case "", "403", "404", "reset", "timeout":
 	default:
 		return Rule{}, fmt.Errorf("deny-response %q: want 403, 404, reset or timeout", p.DenyResponse)
+	}
+	if err := p.checkDenyMessage(); err != nil {
+		return Rule{}, err
 	}
 	r, err := ParseRule(p.Default == "allow", p.Allow, p.Deny)
 	if err != nil {
@@ -133,7 +230,7 @@ func New(o Options) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Proxy{Rule: rule, DenyResponse: o.Policy.DenyResponse, Audit: o.Audit}
+	p := &Proxy{Rule: rule, DenyResponse: o.Policy.DenyResponse, DenyMessage: o.Policy.DenyMessage, Audit: o.Audit}
 	if p.keys, err = holdKeys(o.Policy.Keys, o.Keys); err != nil {
 		return nil, err
 	}

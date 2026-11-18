@@ -156,12 +156,18 @@ func (e *Egress) UnmarshalYAML(node *yaml.Node) error {
 		if err := errs.err(); err != nil {
 			return err
 		}
+		if err := proxy.CheckPolicyNode(node); err != nil {
+			return fmt.Errorf("egress: %w", err)
+		}
 		var f egressFields
 		if err := node.Decode(&f); err != nil {
 			return err
 		}
 		*e = Egress(f)
 		e.Set = true
+		// the message a refusal carries is spelled out once, here, so every
+		// policy made from this one hands on and records the text shown.
+		e.Policy = e.Policy.Resolved()
 		return nil
 	default:
 		return fmt.Errorf("line %d: egress: want none or a mapping", node.Line)

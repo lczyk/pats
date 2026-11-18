@@ -154,8 +154,7 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 			UA: p.maskKeys(inner.UserAgent())}
 		if innerHost, _ := splitHostPort(inner.Host, port); !sameHost(innerHost, want) {
 			ev.Rule, ev.Reason = "mitm", "host-mismatch"
-			ev.Status = p.refuse(w)
-			p.audit(ev)
+			p.refuse(w, inner, ev)
 			return
 		}
 		// a placeholder out of place is refused before the policy is asked.
@@ -171,8 +170,7 @@ func (p *Proxy) handleMitm(w http.ResponseWriter, req *http.Request, host string
 			v.Allowed, ev.Rule, ev.Reason = false, "url", "bad-url"
 		}
 		if !v.Allowed {
-			ev.Status = p.refuse(w)
-			p.audit(ev)
+			p.refuse(w, inner, ev)
 			return
 		}
 		p.forward(w, inner, ev, origin, use)
@@ -185,7 +183,8 @@ const idleWait = 2 * time.Minute
 // serveConn serves the one connection c as net/http serves any it accepts:
 // its framing, its keep-alive and what a handler left unread are the
 // server's. it returns once the connection is closed, or a handler took it
-// over (a refusal by reset). idle bounds its silences.
+// over (a refusal, which answers and closes it by hand). idle bounds its
+// silences.
 func serveConn(c net.Conn, idle time.Duration, h http.Handler) {
 	ln := &oneConn{conn: c, done: make(chan struct{})}
 	h1 := new(http.Protocols)

@@ -509,11 +509,12 @@ func TestMitmAnswerAsSent(t *testing.T) {
 	assert.Equal(t, string(rest), "data: two\n\n")
 }
 
-// a refusal inside a terminated connection takes the policy's shape, and one
-// that answers leaves the connection to the next request. an origin that
-// could not be reached is a 502, and no more.
+// a refusal inside a terminated connection takes the policy's shape. a 403
+// with its message and a reset end the connection, and a bare 403 or a 404
+// leaves it to the next request. an origin that could not be reached is a
+// 502, and no more.
 func TestMitmRefusals(t *testing.T) {
-	for _, shape := range []string{"403", "404", "reset"} {
+	for _, shape := range []string{"403", "403 bare", "404", "reset"} {
 		t.Run(shape, func(t *testing.T) {
 			fail := true
 			p, pool, audit := mitmProxy(t, "mitm.test", rtFunc(func(r *http.Request) (*http.Response, error) {
@@ -522,31 +523,65 @@ func TestMitmRefusals(t *testing.T) {
 				}
 				return echoPath(r)
 			}))
-			p.DenyResponse = shape
+			p.DenyResponse, _, _ = strings.Cut(shape, " ")
+			if shape == "403 bare" {
+				p.DenyMessage = new(string)
+			}
 			tconn, br := mitmConn(t, p, pool, "mitm.test")
 			fmt.Fprintf(tconn, "GET /down HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
-			resp, _ := answer(t, br)
+			resp, body := answer(t, br)
 			assert.Equal(t, resp.StatusCode, http.StatusBadGateway)
+			assert.Equal(t, body, "egress: private\n")
 			ev := audit.last(t)
 			assert.Equal(t, ev.Reason, "private")
 			assert.Equal(t, ev.Allowed, false)
 			assert.Equal(t, ev.Status, http.StatusBadGateway)
 
 			fmt.Fprintf(tconn, "POST /secret/x HTTP/1.1\r\nHost: mitm.test\r\nContent-Length: 3\r\n\r\nabc")
-			if shape == "reset" {
+			switch shape {
+			case "reset":
 				_, err := http.ReadResponse(br, nil)
 				assert.Error(t, err, assert.AnyError)
 				assert.Equal(t, audit.last(t).Status, 0)
 				return
+			case "403":
+				// the answer, whole, and then the tls close: a connection cut
+				// under it would fail the read.
+				rest, err := io.ReadAll(br)
+				require.NoError(t, err)
+				assert.Equal(t, string(rest), forbidHead(250)+DefaultDenyMessage)
+				assert.Equal(t, audit.last(t).Status, http.StatusForbidden)
+				return
 			}
 			resp, _ = answer(t, br)
-			assert.Equal(t, strconv.Itoa(resp.StatusCode), shape)
-			assert.Equal(t, strconv.Itoa(audit.last(t).Status), shape)
+			assert.Equal(t, strconv.Itoa(resp.StatusCode), p.DenyResponse)
+			assert.Equal(t, strconv.Itoa(audit.last(t).Status), p.DenyResponse)
 			fmt.Fprintf(tconn, "GET /after HTTP/1.1\r\nHost: mitm.test\r\n\r\n")
-			resp, body := answer(t, br)
+			resp, body = answer(t, br)
 			assert.Equal(t, resp.StatusCode, 200)
 			assert.Equal(t, body, "/after")
 		})
+	}
+}
+
+// a refused HEAD on a terminated connection is told the length and sent no
+// body, and a Host naming another host is refused with the same answer.
+func TestMitmRefusalHeadAndHost(t *testing.T) {
+	for name, req := range map[string]string{
+		"head": "HEAD /secret/x HTTP/1.1\r\nHost: mitm.test\r\n\r\n",
+		"host": "GET /ok HTTP/1.1\r\nHost: other.test\r\n\r\n",
+	} {
+		p, pool, audit := mitmProxy(t, "mitm.test", echoPath)
+		tconn, br := mitmConn(t, p, pool, "mitm.test")
+		fmt.Fprint(tconn, req)
+		rest, err := io.ReadAll(br)
+		require.NoError(t, err, name)
+		want := forbidHead(250)
+		if name == "host" {
+			want += DefaultDenyMessage
+			assert.Equal(t, audit.last(t).Reason, "host-mismatch")
+		}
+		assert.Equal(t, string(rest), want, name)
 	}
 }
 

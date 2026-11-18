@@ -28,6 +28,7 @@ import (
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
 	"github.com/lczyk/pats/src/sandbox/proxy"
+	"gopkg.in/yaml.v3"
 )
 
 func dockerOrSkip(t *testing.T) {
@@ -1010,13 +1011,48 @@ func TestEgressForTaskUnion(t *testing.T) {
 	assert.Equal(t, eg.Policy.Allow[0], "a.test")
 	assert.Equal(t, eg.Policy.Allow[1], "pypi.org")
 	assert.Equal(t, eg.Policy.DenyResponse, "404")
+	assert.That(t, eg.Policy.DenyMessage == nil) // a 404 carries no message
 	assert.Equal(t, len(sb.Egress.Policy.Allow), 1)
 	assert.Equal(t, len(sb.Egress.Policy.Deny), 1)
+
+	// the policy a pair runs under says what its refusals say, whoever built it.
+	sb.Egress.Policy.DenyResponse = ""
+	assert.Equal(t, *egressFor(sb, te, nil, "", false).Policy.DenyMessage, proxy.DefaultDenyMessage)
+	assert.That(t, sb.Egress.Policy.DenyMessage == nil)
 
 	// a sandbox without the proxy ignores task lists (validation refuses the pairing).
 	open := egressFor(config.Sandbox{}, te, hd("opencode-openrouter"), "", false)
 	assert.Equal(t, open.Set, false)
 	assert.Equal(t, len(open.Policy.Allow), 0)
+}
+
+// what a refusal says goes from pats.yaml to the yaml a proxy is handed and
+// to the policy a pair records, an empty message apart from an absent one.
+func TestDenyMessageFromConfigToRecord(t *testing.T) {
+	cfg, err := config.Parse([]byte("sxx: {kind: sandbox, items: {" +
+		"absent: {image: i, egress: {allow: [a.test]}}, " +
+		"set: {image: i, egress: {deny-message: \"not here\"}}, " +
+		"bare: {image: i, egress: {deny-message: \"\"}}}}\n"))
+	require.NoError(t, err)
+	want := map[string]string{"absent": proxy.DefaultDenyMessage, "set": "not here", "bare": ""}
+	for _, sb := range cfg.Sandboxes {
+		pol := egressFor(sb, config.TaskEgress{}, nil, "", false).Policy
+		y, err := yaml.Marshal(pol)
+		require.NoError(t, err)
+		handed, err := proxy.ParsePolicy(y)
+		require.NoError(t, err)
+		require.That(t, handed.DenyMessage != nil, sb.Name)
+		assert.Equal(t, *handed.DenyMessage, want[sb.Name], sb.Name)
+
+		b, err := json.Marshal(maskedPolicy(pol))
+		require.NoError(t, err)
+		var recorded struct {
+			DenyMessage *string `json:"deny_message"`
+		}
+		require.NoError(t, json.Unmarshal(b, &recorded))
+		require.That(t, recorded.DenyMessage != nil, "%s: %s", sb.Name, b)
+		assert.Equal(t, *recorded.DenyMessage, want[sb.Name], sb.Name)
+	}
 }
 
 // a failed setup step is the pair's error, named in its metadata: the agent
