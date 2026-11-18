@@ -82,7 +82,9 @@ func TestHoldKeys(t *testing.T) {
 		"ip":             {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: KeyLines("POST 10.0.0.1/x")}}, map[string]string{ph: testReal}, "names a method"},
 		"twice":          {append(ok, ok[0]), map[string]string{ph: testReal}, "used twice"},
 		"no entry":       {[]KeyBinding{{Name: "K", Placeholder: ph}}, map[string]string{ph: testReal}, "needs"},
-		"bad header":     {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []KeyEntry{{Match: bindLine, Header: "x api"}}}}, map[string]string{ph: testReal}, "not a header's name"},
+		"bad header":     {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []KeyEntry{{Match: bindLine, Header: "x api"}}}}, map[string]string{ph: testReal}, "not one a key is spent in"},
+		"proxy's header": {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []KeyEntry{{Match: bindLine, Header: "Accept-Encoding"}}}}, map[string]string{ph: testReal}, "not one a key is spent in"},
+		"host header":    {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []KeyEntry{{Match: bindLine, Header: "Host"}}}}, map[string]string{ph: testReal}, "not one a key is spent in"},
 		"bearer header":  {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []KeyEntry{{Match: bindLine, Header: "authorization"}}}}, map[string]string{ph: testReal}, "already takes the key there"},
 	} {
 		_, err := holdKeys(c.b, c.vals)
@@ -275,16 +277,10 @@ func TestKeyHeader(t *testing.T) {
 	}
 	assert.That(t, !strings.Contains(k.audit.buf.String(), testReal), "the real key in the audit")
 
-	// with no key header, or another credential beside the spent one, the
-	// request goes out as it is but for the key.
+	// with no key header the request goes out as it is.
 	resp, _ := k.do(t, "POST", messages, nil)
 	assert.Equal(t, resp.StatusCode, 200)
 	assert.Equal(t, k.audit.last(t).Key, "")
-	resp, _ = k.do(t, "POST", messages, map[string]string{"X-Api-Key": k.ph, "Authorization": "Bearer mine"})
-	assert.Equal(t, resp.StatusCode, 200)
-	got := k.got()
-	assert.Equal(t, got[len(got)-1].Header.Get("X-Api-Key"), testReal)
-	assert.Equal(t, got[len(got)-1].Header.Get("Authorization"), "Bearer mine")
 
 	// the answer on it is scrubbed as the other endpoint's is.
 	k = newKeyRig(t, []string{"openrouter.test"}, nil, nil, func(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +305,10 @@ func TestKeyHeader(t *testing.T) {
 		"both, on the bearer one":       {chat, map[string][]string{"X-Api-Key": {k.ph}, "Authorization": {bearerPH}}},
 		"a path below":                  {messages + "/count_tokens", map[string][]string{"X-Api-Key": {k.ph}}},
 		"another header":                {messages, map[string][]string{"Api-Key": {k.ph}}},
+		"another credential beside it":  {messages, map[string][]string{"X-Api-Key": {k.ph}, "Authorization": {"Bearer mine"}}},
+		"another credential alone":      {messages, map[string][]string{"Authorization": {"Bearer mine"}}},
+		"beside it, on the bearer one":  {chat, map[string][]string{"Authorization": {bearerPH}, "X-Api-Key": {"mine"}}},
+		"alone, on the bearer one":      {chat, map[string][]string{"X-Api-Key": {"mine"}}},
 	} {
 		before := len(k.got())
 		req, err := http.NewRequest("POST", c.url, strings.NewReader("{}"))
@@ -324,6 +324,29 @@ func TestKeyHeader(t *testing.T) {
 		ev := k.audit.last(t)
 		assert.Equal(t, ev.Rule, "key", name)
 		assert.Equal(t, ev.Reason, "misuse", name)
+	}
+}
+
+// a key bound twice on one endpoint, in a header each, is spent in either,
+// whichever entry is written first, and never in both.
+func TestKeyBoundTwice(t *testing.T) {
+	for _, bind := range [][]KeyEntry{
+		{{Match: msgLine}, {Match: "POST openrouter.test/api/v1/**", Header: "X-Api-Key"}},
+		{{Match: "POST openrouter.test/api/v1/**", Header: "X-Api-Key"}, {Match: msgLine}},
+	} {
+		k := newKeyRig(t, []string{"openrouter.test"}, nil, nil, nil)
+		held, err := holdKeys([]KeyBinding{{Name: "K", Placeholder: k.ph, Bind: bind}}, map[string]string{k.ph: testReal})
+		require.NoError(t, err)
+		k.proxy.keys = held
+		for header, sent := range map[string]string{"Authorization": "Bearer ", "X-Api-Key": ""} {
+			resp, _ := k.do(t, "POST", messages, map[string]string{header: sent + k.ph})
+			assert.Equal(t, resp.StatusCode, 200, header)
+			got := k.got()
+			assert.Equal(t, got[len(got)-1].Header.Get(header), sent+testReal)
+		}
+		resp, _ := k.do(t, "POST", messages, map[string]string{"Authorization": "Bearer " + k.ph, "X-Api-Key": k.ph})
+		assert.Equal(t, resp.StatusCode, http.StatusForbidden)
+		assert.Equal(t, k.audit.last(t).Reason, "misuse")
 	}
 }
 
@@ -367,6 +390,8 @@ func TestKeyEntryForms(t *testing.T) {
 		`[{"match":"POST a.test/x","header":"X","header":"Y"}]`: "written twice",
 		`[{"match":"POST a.test/x","header":7}]`:                "header",
 		`[7]`:                                                   "a line, or a mapping",
+		`[null]`:                                                "a line, or a mapping",
+		`[""]`:                                                  "a line, or a mapping",
 	} {
 		var e []KeyEntry
 		assert.Error(t, json.Unmarshal([]byte(src), &e), why, src)

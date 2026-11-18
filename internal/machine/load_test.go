@@ -293,7 +293,7 @@ func TestAuthBind(t *testing.T) {
 		"binds nowhere":          {"OPENROUTER_API_KEY": {}},
 		"names a method":         {"OPENROUTER_API_KEY": proxy.KeyLines("a.test/x")},
 		"names a method, a host": {"OPENROUTER_API_KEY": proxy.KeyLines("POST .a.test/x")},
-		"not a header's name":    {"OPENROUTER_API_KEY": {{Match: "POST a.test/x", Header: "x:y"}}},
+		"not one a key is spent": {"OPENROUTER_API_KEY": {{Match: "POST a.test/x", Header: "Cookie"}}},
 	} {
 		d := Defaults()
 		d.Harnesses["pi-openrouter"].AuthBind = bind

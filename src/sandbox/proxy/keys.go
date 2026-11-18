@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/textproto"
@@ -34,8 +35,9 @@ type KeyBinding struct {
 
 // KeyEntry is one endpoint a key is bound to: a url entry, and the header
 // the key goes out in there. with no Header that is `Authorization: Bearer
-// <key>`; a named header carries the key as its whole value. yaml and json
-// both carry an entry with no header as the line itself.
+// <key>`; a named header, one of keyHeaders, carries the key as its whole
+// value. yaml and json both carry an entry with no header as the line
+// itself.
 type KeyEntry struct {
 	Match  string
 	Header string
@@ -134,8 +136,12 @@ func (e *KeyEntry) UnmarshalYAML(node *yaml.Node) error {
 // UnmarshalJSON reads what MarshalJSON writes, a key at a time: a struct's
 // own decoding takes a key in any case and the last of two alike.
 func (e *KeyEntry) UnmarshalJSON(data []byte) error {
-	var line string
-	if err := json.Unmarshal(data, &line); err == nil {
+	// a null would decode into a string too, as an empty one.
+	if data = bytes.TrimSpace(data); len(data) > 0 && data[0] == '"' {
+		var line string
+		if err := json.Unmarshal(data, &line); err != nil || line == "" {
+			return errKeyEntry
+		}
 		*e = KeyEntry{Match: line}
 		return nil
 	}
@@ -305,9 +311,16 @@ func holdKeys(bindings []KeyBinding, values map[string]string) ([]heldKey, error
 	return out, nil
 }
 
+// keyHeaders are the headers a key is spent in, each with what stands before
+// the key there. an endpoint names one of them, Authorization by naming
+// none. the set is closed: a header go's transport or this proxy sets,
+// strips or rewrites itself would carry no key, and on a bound endpoint
+// every one of these is looked at.
+var keyHeaders = map[string]string{"Authorization": bearer, "X-Api-Key": ""}
+
 // Check says whether e can bind a key: a url entry with a method, on a host
-// named in full (no suffix, no ip), and a header, when it names one, that is
-// a header's name and not the one a bearer token goes in.
+// named in full (no suffix, no ip), and a header, when it names one, that
+// is one of keyHeaders other than the bearer token's.
 func (e KeyEntry) Check() error {
 	_, err := e.bound()
 	return err
@@ -324,16 +337,15 @@ func (e KeyEntry) bound() (boundEntry, error) {
 	if e.Header == "" {
 		return boundEntry{entry: entry, header: "Authorization", prefix: bearer}, nil
 	}
-	if strings.ContainsFunc(e.Header, func(r rune) bool {
-		return !(r == '-' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z')
-	}) {
-		return boundEntry{}, fmt.Errorf("header %q is not a header's name", e.Header)
-	}
 	header := textproto.CanonicalMIMEHeaderKey(e.Header)
-	if header == "Authorization" {
+	prefix, ok := keyHeaders[header]
+	switch {
+	case header == "Authorization":
 		return boundEntry{}, errors.New("header Authorization: an entry with no header already takes the key there, as a bearer token")
+	case !ok:
+		return boundEntry{}, fmt.Errorf("header %q is not one a key is spent in (X-Api-Key)", e.Header)
 	}
-	return boundEntry{entry: entry, header: header}, nil
+	return boundEntry{entry: entry, header: header, prefix: prefix}, nil
 }
 
 // keyUse is what a request does with the held keys: nothing, spend one in
@@ -353,10 +365,10 @@ const bearer = "Bearer "
 // useOf decides what req does with the keys. each endpoint a key is bound
 // to names the one header that spends it there: `Authorization: Bearer
 // <placeholder>`, or the placeholder as another header's whole value. a
-// placeholder anywhere else is a misuse, as is that header in another shape
-// on a bound endpoint. a binding is on tls (tls: the request came over a
-// terminated connection) to port 443, with the request's own Host naming
-// that port.
+// placeholder anywhere else is a misuse, and so is any other credential on
+// a bound endpoint: a header of keyHeaders there is absent or that spend. a
+// binding is on tls (tls: the request came over a terminated connection)
+// to port 443, with the request's own Host naming that port.
 func (p *Proxy) useOf(req *http.Request, host string, port uint16, tls bool) keyUse {
 	if len(p.keys) == 0 {
 		return keyUse{}
@@ -364,38 +376,45 @@ func (p *Proxy) useOf(req *http.Request, host string, port uint16, tls bool) key
 	var u keyUse
 	nhost, err := NormalizeHost(host)
 	_, hostPort := splitHostPort(req.Host, port)
-	var here []*boundEntry // the endpoint of each of u.scrub's keys, in step
+	// every entry of every key that req is on: a key may be bound here more
+	// than once, and which entry is written first decides nothing.
+	type spot struct {
+		key *heldKey
+		at  *boundEntry
+	}
+	var here []spot
 	if err == nil && tls && port == 443 && hostPort == port {
 		for i := range p.keys {
 			k := &p.keys[i]
-			if b := k.bound(nhost, port, req); b != nil {
-				u.scrub, here = append(u.scrub, k), append(here, b)
+			at := k.bound(nhost, port, req)
+			if len(at) > 0 {
+				u.scrub = append(u.scrub, k)
+			}
+			for _, b := range at {
+				here = append(here, spot{k, b})
 			}
 		}
 	}
-	// a header that spends a key here carries one value, the placeholder of
-	// a key bound here to that header, and one key at most is spent.
-	asked := map[string]bool{}
-	for _, b := range here {
-		if asked[b.header] {
-			continue
-		}
-		asked[b.header] = true
-		vals := req.Header.Values(b.header)
-		if len(vals) == 0 {
-			continue
-		}
-		spent := -1
-		for i, o := range here {
-			if len(vals) == 1 && o.header == b.header && vals[0] == o.prefix+u.scrub[i].placeholder {
-				spent = i
+	// here, a header a key is spent in carries one value, the placeholder
+	// of a key bound here to that header, and one key at most is spent.
+	if len(here) > 0 {
+		for _, header := range slices.Sorted(maps.Keys(keyHeaders)) {
+			vals := req.Header.Values(header)
+			if len(vals) == 0 {
+				continue
 			}
+			var spent *heldKey
+			for _, s := range here {
+				if len(vals) == 1 && s.at.header == header && vals[0] == s.at.prefix+s.key.placeholder {
+					spent = s.key
+				}
+			}
+			if spent == nil || u.key != nil {
+				u.misuse = true
+				continue
+			}
+			u.key, u.header, u.prefix = spent, header, keyHeaders[header]
 		}
-		if spent < 0 || u.key != nil {
-			u.misuse = true
-			continue
-		}
-		u.key, u.header, u.prefix = u.scrub[spent], b.header, here[spent].prefix
 	}
 	// what the url says, decoded once more: a placeholder escaped in it is
 	// still in it.
@@ -435,23 +454,24 @@ func (p *Proxy) useOf(req *http.Request, host string, port uint16, tls bool) key
 	return u
 }
 
-// bound is the first of k's endpoints req is on, on host (normalised) and
-// port, nil for none. the path must be spelled plainly and read one way
-// only: a path an origin could read two ways is not one to spend a key on.
-func (k *heldKey) bound(host string, port uint16, req *http.Request) *boundEntry {
+// bound are k's endpoints req is on, on host (normalised) and port. the
+// path must be spelled plainly and read one way only: a path an origin
+// could read two ways is not one to spend a key on.
+func (k *heldKey) bound(host string, port uint16, req *http.Request) []*boundEntry {
 	path := req.URL.Path
 	target, _, _ := strings.Cut(req.RequestURI, "?")
 	if req.URL.Opaque != "" || req.URL.RawPath != "" || strings.ContainsRune(target, '%') ||
 		!utf8.ValidString(path) || strings.ContainsFunc(path, isControl) || len(readings(path)) > 1 {
 		return nil
 	}
+	var at []*boundEntry
 	for i := range k.bind {
 		e := &k.bind[i].entry
 		if e.matchesHost(host, port) && e.matchesMethod(req.Method) && e.admitsURL(path, req.URL.RawQuery) {
-			return &k.bind[i]
+			at = append(at, &k.bind[i])
 		}
 	}
-	return nil
+	return at
 }
 
 func isControl(r rune) bool { return r < ' ' || r == 0x7f || (r >= 0x80 && r < 0xa0) }
