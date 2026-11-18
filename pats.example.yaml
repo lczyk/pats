@@ -21,6 +21,8 @@ sandbox:
       #     - '.githubusercontent.com/canonical/**'  # a url entry: its host is mitm'd, only matching paths pass
       #   deny:
       #     - 'github.com/*/some-answer-repo**'  # the answer source, by url (`*` stays in one path segment, `**` crosses `/`)
+      #     # - match: 'github.com/*/some-answer-repo.git**'   # an entry with exceptions: denied, but for what `except` names
+      #     #   except: ['GET /*/some-answer-repo.git/info/refs?service=git-upload-pack']
       #   # default: allow          # a denylist instead; bare hosts in allow are dead under it
       #   # deny-response: 404      # 403 (default) | 404 | reset | timeout
       #   # deny-message: "..."     # what a 403 refusal tells the agent; absent, a default that says not to retry

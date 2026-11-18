@@ -236,7 +236,9 @@ nothing in what 1.3.0 accepts or writes has to change. each step from it to this
 | the keys `predicates` and `predicates-file` | the source |
 
 so a 1.3.0 pats or proxy handed a policy from this spec refuses it, and never reads less into it than was
-written. four things in how 1.3.0 is built keep the step small:
+written. four things in how 1.3.0 is built keep the step small. the first is done, the second in part (an `except`
+and a deny's `match` each ask their question of one path at a time, as a plain string), and the last two are left
+for this change: they are inside the matcher, and nothing a policy writes or a proxy is handed depends on them.
 
 - **one decoder for an entry**, a line or a mapping, used for `allow` and `deny` both and in every place a policy
   is read. and one for an `except` item, refusing a mapping. each refuses unknown keys itself. the refusals are

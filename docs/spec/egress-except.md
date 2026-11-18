@@ -1,6 +1,6 @@
 # egress exceptions
 
-status: proposed, for 1.3.0. extends the policy grammar in `docs/egress.md`.
+status: implemented, for 1.3.0. extends the policy grammar in `docs/egress.md`.
 
 ## problem
 
@@ -75,6 +75,9 @@ allow is, and an allow's is read as a deny is.
   `/x/answers.git/info/refs/../../git-upload-pack` matches the entry and is not spared: it resolves to a path that
   is not `info/refs`. the readings are those of `docs/egress.md`: the path as sent, resolved, and as an origin reads
   it that drops `;parameters`, takes a backslash for a slash, folds a look-alike or decodes twice.
+- **and each without its trailing slash**, as a deny is tried against the path. `/a/b/..` resolves to `/a/`, which
+  an origin may serve as `/a`, so `/a/**` spares neither it nor `/a/`. an item that means the directory too is
+  `/a**`.
 - **no reading is waived.** an allow that itself writes a `;` or a backslash means the path as sent, and is let off
   the reading that rewrites it. an `except` is not: that waiver would spare `/a;b/key` where an origin that drops
   parameters serves `/a/key`, a path the entry denies. so a glob item that writes a `;`, a backslash, a `%` or a
@@ -85,7 +88,8 @@ allow is, and an allow's is read as a deny is.
 - **case.** it matches case-sensitively. `match` does not, so `/x/answers.git/INFO/refs` is denied. a regexp that
   writes `(?i)` has asked for the other.
 - **the query.** no wildcard takes the `?` before the query. an item that spells one, as the example does, spares
-  the path with that query only. one that spells none spares the path with any.
+  the path with that query only. one that spells none spares the path with any. a path that holds a `?` of its own,
+  sent as `%3F`, is spared by nothing: it would read as the query an item spells.
 - **the method.** an item with a method prefix spares those methods only. one with none spares every method `match`
   takes.
 - **no text.** a path that is no text (bytes that are no utf-8, a control character) is spared by nothing.
@@ -191,6 +195,8 @@ anything written here:
 - every reading, on a deny: dot segments below the spared path, `..;/`, a backslash, `%2f` sent encoded twice, a
   doubled slash, a look-alike dot, each alone and together.
 - a deny's regexp item is anchored: one that would match inside a longer path does not spare it.
+- a path that ends in a slash, or resolves to one that does, is not spared by an item for what is below it. a path
+  with a `?` of its own is not spared by an item that spells that query.
 - case, on a deny: the spared path in another case is denied.
 - the allow case above: admitted outside the item, withheld on it, through dot segments, `..;/`, a backslash, an
   encoded slash and another case. an unanchored regexp item withholds a longer path.

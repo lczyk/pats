@@ -27,8 +27,12 @@ sandbox:
           - 'api.github.com ~^/repos/[^/]+/x$'     # a url entry: a host and a go regexp over path?query
           - 10.0.5.20:5432         # an ip, dialable only with allow-private
           - POST api.github.com/graphql            # a method prefix: admits POST here whatever methods says
+          - match: 'github.com/canonical/**'       # an entry with exceptions: all of this
+            except: ['/canonical/answers**']       #   but what these url parts name
         deny:
           - 'github.com/*/some-answer-repo**'
+          - match: 'github.com/*/answers.git**'    # denied, but for the one request `git ls-remote` makes
+            except: ['GET /*/answers.git/info/refs?service=git-upload-pack']
         deny-response: 403         # 403 | 404 | reset | timeout
         deny-message: |            # what a 403 refusal says. absent: a default. "": the bare 403
           this environment has no access to that source.
@@ -61,6 +65,18 @@ sandbox:
   match has to begin in the path, so a query cannot stand in for it. an `allow` url entry matches the path
   case-sensitively, a `deny` one case-insensitively, each erring toward closed. a host with `allow` url entries passes
   only paths one of them admits.
+- **exceptions** an entry may be a mapping: `match`, the entry as a line writes it, and `except`, a list of url parts
+  it leaves alone. an item is a glob or a `~regexp` with an optional method prefix and no host: it applies wherever
+  `match` does. `match` must be a url entry. a deny takes what its `match` takes unless an item spares it, and a
+  spared request goes on to the other entries as if this one were not there. an allow admits what its `match` admits
+  unless an item withholds it, and another allow may still admit that: what must be out of reach whoever allows it
+  is a deny. an item is read the closed way for the list it is in. a deny's spares a request only when every reading
+  of the path matches, none waived, and each without its trailing slash too: case-sensitively, a regexp anchored to
+  the whole path, the query only through a `?` the item spells. so `/x/answers.git/info/refs/../../git-upload-pack`
+  is not spared by an exception for `info/refs`. an allow's withholds when any reading matches, case-insensitively,
+  a regexp anywhere in the path. an exception belongs to its entry: a deny still beats every allow, and a task's
+  exception does not open a path the sandbox denies. a harness's entries, in a machine file, stay lines. the design
+  is `docs/spec/egress-except.md`.
 - **mitm** a url entry is the opt-in to tls termination for its host: the proxy presents a leaf from a per-run CA and
   filters each request. every other host is a tunnel the proxy never decrypts. the run CA's key reaches the proxy
   over env only and never touches disk.
@@ -225,8 +241,9 @@ pats egress ca --out <dir>
 pats clean [-n|--dry-run] [--older-than 24h] [-a|--all] [-f|--force] [--run <token>] [--json]
 ```
 
-- `check` prints the verdict, the deciding entry, and whether the host would be a tunnel or mitm'd. it exits 1 on a
-  refusal. without `--agent` the harness hosts are not merged, and it says so.
+- `check` prints the verdict, the deciding entry, and whether the host would be a tunnel or mitm'd. before it, each
+  entry that matched and left the request alone, with the item that did: `spared` for a deny, `withheld` for an
+  allow. it exits 1 on a refusal. without `--agent` the harness hosts are not merged, and it says so.
 - `suggest` folds a run's audits into an `allow:` block for review. run once under `default: allow` to discover what
   a task reaches, then lock it down. requests are grouped by user agent; tunnels hide theirs and are listed apart.
 - `log` is the audit as a table.
