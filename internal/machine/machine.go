@@ -147,10 +147,11 @@ type Harness struct {
 	AuthHint string   `yaml:"auth-hint,omitempty"`
 	PassEnv  []string `yaml:"pass-env,omitempty"` // forwarded when set, not credentials
 	// AuthBind is where each auth-env key may be spent when a key proxy
-	// holds it (docs/spec/key-proxy.md): url entries, each with a method.
-	// only the built-in table sets it.
-	AuthBind map[string][]string `yaml:"auth-bind,omitempty"`
-	Models   string              `yaml:"models,omitempty"`
+	// holds it (docs/spec/key-proxy.md): url entries, each with a method,
+	// and the header the key goes out in when that is no bearer token. only
+	// the built-in table sets it.
+	AuthBind map[string][]proxy.KeyEntry `yaml:"auth-bind,omitempty"`
+	Models   string                      `yaml:"models,omitempty"`
 	// Parse is the script that reads the command's stdout
 	// (docs/spec/harness-parse.md), "" for none.
 	Parse string `yaml:"parse,omitempty"`
@@ -455,9 +456,9 @@ func (t *Tables) check() error {
 			case len(h.AuthBind[k]) == 0:
 				add("harnesses.%s: auth-bind %s binds nowhere", name, k)
 			}
-			for _, line := range h.AuthBind[k] {
-				if err := proxy.CheckBinding(line); err != nil {
-					add("harnesses.%s: auth-bind %s %q: %v", name, k, line, err)
+			for _, e := range h.AuthBind[k] {
+				if err := e.Check(); err != nil {
+					add("harnesses.%s: auth-bind %s %q: %v", name, k, e.Match, err)
 				}
 			}
 		}

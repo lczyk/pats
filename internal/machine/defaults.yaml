@@ -276,9 +276,13 @@ harnesses:
       allow:
         - openrouter.ai   # inference
     auth-env: [OPENROUTER_API_KEY]
-    # what pi 1.5.2 was recorded sending the key with.
+    # what pi 1.5.2 was recorded sending the key with: a bearer token to chat
+    # completions, and x-api-key to the anthropic route, which the
+    # anthropic/* models of its catalogue take.
     auth-bind:
-      OPENROUTER_API_KEY: [POST openrouter.ai/api/v1/chat/completions]
+      OPENROUTER_API_KEY:
+        - POST openrouter.ai/api/v1/chat/completions
+        - {match: POST openrouter.ai/api/v1/messages, header: X-Api-Key}
     models: openrouter
     # usage and the stop reason come on each assistant message as it ends. pi
     # exits 0 on a failed reply, so the stop reason is the one sign of it, and

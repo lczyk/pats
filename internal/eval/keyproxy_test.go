@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -120,8 +121,13 @@ func TestKeyProxyPair(t *testing.T) {
 		k := spec.Egress.Policy.Keys[0]
 		assert.Equal(t, k.Name, "OPENROUTER_API_KEY")
 		assert.Equal(t, k.Placeholder, ph)
-		assert.EqualArrays(t, k.Bind, []string{"POST openrouter.ai/api/v1/chat/completions"})
-		assert.That(t, strings.Contains(strings.Join(proxy.Matches(spec.Egress.Policy.Allow), " "), "POST openrouter.ai/api/v1/chat/completions"), "binding not allowed: %v", spec.Egress.Policy.Allow)
+		assert.EqualArrays(t, k.Bind, []proxy.KeyEntry{
+			{Match: "POST openrouter.ai/api/v1/chat/completions"},
+			{Match: "POST openrouter.ai/api/v1/messages", Header: "X-Api-Key"},
+		})
+		for _, e := range k.Bind {
+			assert.That(t, slices.Contains(proxy.Matches(spec.Egress.Policy.Allow), e.Match), "binding %s not allowed: %v", e.Match, spec.Egress.Policy.Allow)
+		}
 		for name, v := range spec.Env {
 			assert.That(t, !strings.Contains(v, fixtureKey), "spec env %s holds the key", name)
 		}
@@ -144,6 +150,7 @@ func TestKeyProxyPair(t *testing.T) {
 	require.NoError(t, json.Unmarshal(meta, &m))
 	assert.Equal(t, m.Egress.KeysSubstituted, 1)
 	assert.Equal(t, m.Egress.Policy.Keys[0].Placeholder, "<placeholder>")
+	assert.Equal(t, m.Egress.Policy.Keys[0].Bind[1], proxy.KeyEntry{Match: "POST openrouter.ai/api/v1/messages", Header: "X-Api-Key"})
 	assert.That(t, !strings.Contains(out.String(), fixtureKey), "the key in pats's -vv output")
 	_ = filepath.WalkDir(runDir, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {

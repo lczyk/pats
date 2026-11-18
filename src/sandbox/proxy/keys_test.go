@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+	"gopkg.in/yaml.v3"
 )
 
 // orPrefix is split so the key below reads as a fixture, not a secret.
@@ -28,6 +30,12 @@ const orPrefix = "sk-" + "or-v1-"
 var testReal = orPrefix + strings.Repeat("0123456789abcdef", 4)
 
 const bindLine = "POST openrouter.test/api/v1/chat/completions"
+
+// a second endpoint of the same key, which takes it bare in a header of its
+// own.
+const msgLine = "POST openrouter.test/api/v1/messages"
+
+var testBind = []KeyEntry{{Match: bindLine}, {Match: msgLine, Header: "x-api-key"}}
 
 func TestPlaceholder(t *testing.T) {
 	ph, err := Placeholder(testReal, nil)
@@ -56,7 +64,7 @@ func TestPlaceholder(t *testing.T) {
 func TestHoldKeys(t *testing.T) {
 	ph, err := Placeholder(testReal, nil)
 	require.NoError(t, err)
-	ok := []KeyBinding{{Name: "K", Placeholder: ph, Bind: []string{bindLine}}}
+	ok := []KeyBinding{{Name: "K", Placeholder: ph, Bind: KeyLines(bindLine)}}
 	_, err = holdKeys(ok, map[string]string{ph: testReal})
 	require.NoError(t, err)
 
@@ -68,12 +76,14 @@ func TestHoldKeys(t *testing.T) {
 		"no value":       {ok, map[string]string{}, "no value"},
 		"bad value":      {ok, map[string]string{ph: "short"}, "past its prefix"},
 		"length differs": {ok, map[string]string{ph: testReal + "0"}, "does not stand in"},
-		"no method":      {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []string{"openrouter.test/api/**"}}}, map[string]string{ph: testReal}, "names a method"},
-		"bare host":      {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []string{"openrouter.test"}}}, map[string]string{ph: testReal}, "names a method"},
-		"suffix host":    {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []string{"POST .openrouter.test/x"}}}, map[string]string{ph: testReal}, "names a method"},
-		"ip":             {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []string{"POST 10.0.0.1/x"}}}, map[string]string{ph: testReal}, "names a method"},
+		"no method":      {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: KeyLines("openrouter.test/api/**")}}, map[string]string{ph: testReal}, "names a method"},
+		"bare host":      {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: KeyLines("openrouter.test")}}, map[string]string{ph: testReal}, "names a method"},
+		"suffix host":    {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: KeyLines("POST .openrouter.test/x")}}, map[string]string{ph: testReal}, "names a method"},
+		"ip":             {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: KeyLines("POST 10.0.0.1/x")}}, map[string]string{ph: testReal}, "names a method"},
 		"twice":          {append(ok, ok[0]), map[string]string{ph: testReal}, "used twice"},
 		"no entry":       {[]KeyBinding{{Name: "K", Placeholder: ph}}, map[string]string{ph: testReal}, "needs"},
+		"bad header":     {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []KeyEntry{{Match: bindLine, Header: "x api"}}}}, map[string]string{ph: testReal}, "not a header's name"},
+		"bearer header":  {[]KeyBinding{{Name: "K", Placeholder: ph, Bind: []KeyEntry{{Match: bindLine, Header: "authorization"}}}}, map[string]string{ph: testReal}, "already takes the key there"},
 	} {
 		_, err := holdKeys(c.b, c.vals)
 		assert.Error(t, err, c.want, name)
@@ -123,7 +133,7 @@ func newKeyRig(t *testing.T, allow, deny []string, methods map[string]bool, hand
 	require.NoError(t, err)
 	k.ph, err = Placeholder(testReal, nil)
 	require.NoError(t, err)
-	held, err := holdKeys([]KeyBinding{{Name: "OPENROUTER_API_KEY", Placeholder: k.ph, Bind: []string{bindLine}}},
+	held, err := holdKeys([]KeyBinding{{Name: "OPENROUTER_API_KEY", Placeholder: k.ph, Bind: testBind}},
 		map[string]string{k.ph: testReal})
 	require.NoError(t, err)
 	rule := mustRule(t, false, allow, deny)
@@ -234,6 +244,132 @@ func TestKeyMisuse(t *testing.T) {
 		assert.Equal(t, ev.Rule, "key", name)
 		assert.Equal(t, ev.Reason, "misuse", name)
 		assert.That(t, !strings.Contains(ev.URL+ev.UA, k.ph), "%s: the audit names the placeholder: %s %s", name, ev.URL, ev.UA)
+	}
+}
+
+const messages = "https://openrouter.test/api/v1/messages"
+
+// an endpoint bound to a header of its own takes the placeholder as that
+// header's whole value, and nothing else: the bearer shape is the other
+// endpoint's.
+func TestKeyHeader(t *testing.T) {
+	k := newKeyRig(t, []string{"openrouter.test", bindLine, msgLine}, nil, nil, nil)
+	for _, name := range []string{"X-Api-Key", "x-api-key"} {
+		req, err := http.NewRequest("POST", messages+"?beta=true", strings.NewReader("{}"))
+		require.NoError(t, err)
+		req.Header[name] = []string{k.ph}
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+		resp, err := k.client.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, resp.StatusCode, 200, name)
+		got := k.got()
+		last := got[len(got)-1]
+		assert.EqualArrays(t, last.Header.Values("X-Api-Key"), []string{testReal})
+		assert.Equal(t, last.Header.Get("Authorization"), "")
+		assert.Equal(t, last.Header.Get("Anthropic-Version"), "2023-06-01")
+		assert.Equal(t, last.URL.RawQuery, "beta=true")
+		ev := k.audit.last(t)
+		assert.Equal(t, ev.Key, "substituted", name)
+		assert.Equal(t, ev.Allowed, true, name)
+	}
+	assert.That(t, !strings.Contains(k.audit.buf.String(), testReal), "the real key in the audit")
+
+	// with no key header, or another credential beside the spent one, the
+	// request goes out as it is but for the key.
+	resp, _ := k.do(t, "POST", messages, nil)
+	assert.Equal(t, resp.StatusCode, 200)
+	assert.Equal(t, k.audit.last(t).Key, "")
+	resp, _ = k.do(t, "POST", messages, map[string]string{"X-Api-Key": k.ph, "Authorization": "Bearer mine"})
+	assert.Equal(t, resp.StatusCode, 200)
+	got := k.got()
+	assert.Equal(t, got[len(got)-1].Header.Get("X-Api-Key"), testReal)
+	assert.Equal(t, got[len(got)-1].Header.Get("Authorization"), "Bearer mine")
+
+	// the answer on it is scrubbed as the other endpoint's is.
+	k = newKeyRig(t, []string{"openrouter.test"}, nil, nil, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "you sent "+r.Header.Get("X-Api-Key"))
+	})
+	_, body := k.do(t, "POST", messages, map[string]string{"X-Api-Key": k.ph})
+	assert.Equal(t, body, "you sent "+k.ph)
+
+	k = newKeyRig(t, []string{"openrouter.test", bindLine, msgLine}, nil, nil, nil)
+	bearerPH := "Bearer " + k.ph
+	for name, c := range map[string]struct {
+		url string
+		hdr map[string][]string
+	}{
+		"bearer on the header endpoint": {messages, map[string][]string{"Authorization": {bearerPH}}},
+		"bearer shape in the header":    {messages, map[string][]string{"X-Api-Key": {bearerPH}}},
+		"another value":                 {messages, map[string][]string{"X-Api-Key": {"sk-mine"}}},
+		"longer":                        {messages, map[string][]string{"X-Api-Key": {k.ph + "0"}}},
+		"twice":                         {messages, map[string][]string{"X-Api-Key": {k.ph, k.ph}}},
+		"both headers":                  {messages, map[string][]string{"X-Api-Key": {k.ph}, "Authorization": {bearerPH}}},
+		"the header on the bearer one":  {chat, map[string][]string{"X-Api-Key": {k.ph}}},
+		"both, on the bearer one":       {chat, map[string][]string{"X-Api-Key": {k.ph}, "Authorization": {bearerPH}}},
+		"a path below":                  {messages + "/count_tokens", map[string][]string{"X-Api-Key": {k.ph}}},
+		"another header":                {messages, map[string][]string{"Api-Key": {k.ph}}},
+	} {
+		before := len(k.got())
+		req, err := http.NewRequest("POST", c.url, strings.NewReader("{}"))
+		require.NoError(t, err)
+		for h, v := range c.hdr {
+			req.Header[h] = v
+		}
+		resp, err := k.client.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, resp.StatusCode, http.StatusForbidden, name)
+		assert.Equal(t, len(k.got()), before, name)
+		ev := k.audit.last(t)
+		assert.Equal(t, ev.Rule, "key", name)
+		assert.Equal(t, ev.Reason, "misuse", name)
+	}
+}
+
+// an endpoint is a line, or a mapping that names its header.
+func TestKeyEntryForms(t *testing.T) {
+	want := []KeyEntry{{Match: bindLine}, {Match: msgLine, Header: "X-Api-Key"}}
+	y := "- " + bindLine + "\n- {match: " + msgLine + ", header: X-Api-Key}\n"
+	var got []KeyEntry
+	require.NoError(t, yaml.Unmarshal([]byte(y), &got))
+	assert.EqualArrays(t, got, want)
+	out, err := yaml.Marshal(want)
+	require.NoError(t, err)
+	got = nil
+	require.NoError(t, yaml.Unmarshal(out, &got))
+	assert.EqualArrays(t, got, want)
+
+	j, err := json.Marshal(want)
+	require.NoError(t, err)
+	assert.Equal(t, string(j), `["`+bindLine+`",{"match":"`+msgLine+`","header":"X-Api-Key"}]`)
+	got = nil
+	require.NoError(t, json.Unmarshal(j, &got))
+	assert.EqualArrays(t, got, want)
+	assert.Equal(t, want[0].String(), bindLine+" (Authorization: Bearer)")
+	assert.Equal(t, KeyEntry{Match: msgLine, Header: "x-api-key"}.String(), msgLine+" (X-Api-Key)")
+	assert.EqualArrays(t, KeyMatches(want), []string{bindLine, msgLine})
+
+	for src, why := range map[string]string{
+		"- {match: POST a.test/x}":                       "both set",
+		"- {header: X-Api-Key}":                          "both set",
+		"- {match: POST a.test/x, header: X, prefix: y}": "unknown field",
+		"- {match: POST a.test/x, header: X, header: Y}": "written twice",
+		"- {match: POST a.test/x, header: [X]}":          "want a line",
+		"- [POST a.test/x]":                              "a line, or a mapping",
+	} {
+		var e []KeyEntry
+		assert.Error(t, yaml.Unmarshal([]byte(src), &e), why, src)
+	}
+	for src, why := range map[string]string{
+		`[{"match":"POST a.test/x"}]`:                           "both set",
+		`[{"match":"POST a.test/x","header":"X","Header":"Y"}]`: "unknown field",
+		`[{"match":"POST a.test/x","header":"X","header":"Y"}]`: "written twice",
+		`[{"match":"POST a.test/x","header":7}]`:                "header",
+		`[7]`:                                                   "a line, or a mapping",
+	} {
+		var e []KeyEntry
+		assert.Error(t, json.Unmarshal([]byte(src), &e), why, src)
 	}
 }
 
@@ -379,7 +515,12 @@ func TestScrubBody(t *testing.T) {
 func TestPolicyKeysRoundTrip(t *testing.T) {
 	p, err := ParsePolicy([]byte("allow: [openrouter.test]\nkeys:\n  - name: K\n    placeholder: ph\n    bind: [\"" + bindLine + "\"]\n"))
 	require.NoError(t, err)
-	assert.Equal(t, p.Keys[0].Bind[0], bindLine)
+	assert.Equal(t, p.Keys[0].Bind[0], KeyEntry{Match: bindLine})
+	p, err = ParsePolicy([]byte("allow: [openrouter.test]\nkeys:\n  - name: K\n    placeholder: ph\n    bind: [{match: \"" + msgLine + "\", header: X-Api-Key}]\n"))
+	require.NoError(t, err)
+	assert.Equal(t, p.Keys[0].Bind[0], KeyEntry{Match: msgLine, Header: "X-Api-Key"})
+	_, err = ParsePolicy([]byte("keys:\n  - name: K\n    placeholder: ph\n    bind: [{match: \"" + msgLine + "\", heder: X-Api-Key}]\n"))
+	assert.Error(t, err, "unknown field")
 	assert.That(t, p.NeedsCA(), "keys need the CA")
 	_, err = ParsePolicy([]byte("keyz: []\n"))
 	assert.Error(t, err, "keyz")
@@ -409,7 +550,7 @@ func TestKeysShareAnEndpoint(t *testing.T) {
 	second := orPrefix + strings.Repeat("fedcba9876543210", 4)
 	ph2, err := Placeholder(second, nil)
 	require.NoError(t, err)
-	more, err := holdKeys([]KeyBinding{{Name: "B", Placeholder: ph2, Bind: []string{bindLine}}}, map[string]string{ph2: second})
+	more, err := holdKeys([]KeyBinding{{Name: "B", Placeholder: ph2, Bind: KeyLines(bindLine)}}, map[string]string{ph2: second})
 	require.NoError(t, err)
 	k.proxy.keys = append(k.proxy.keys, more...)
 	for ph, real := range map[string]string{k.ph: testReal, ph2: second} {

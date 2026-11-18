@@ -417,7 +417,7 @@ func (p *Proxy) forward(w http.ResponseWriter, req *http.Request, ev Event, orig
 				sent.r, pr.Out.Body = pr.Out.Body, &sent
 			}
 			if k := use.key; k != nil {
-				pr.Out.Header.Set("Authorization", bearer+k.real)
+				pr.Out.Header.Set(use.header, use.prefix+k.real)
 			}
 			if len(use.scrub) > 0 {
 				// with none asked for, go's transport asks for gzip and

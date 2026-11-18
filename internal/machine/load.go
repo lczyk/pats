@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // where an entry's keys were last set.
@@ -360,20 +362,20 @@ func (t *Tables) Note() string {
 // definition a run asked for, whatever its name and wherever it was written.
 func (h *Harness) Digest() string {
 	d := struct {
-		CLI      string              `json:"cli"`
-		Run      string              `json:"run"`
-		Egress   Egress              `json:"egress"`
-		AuthEnv  []string            `json:"auth_env"`
-		Login    bool                `json:"login"`
-		AuthHint string              `json:"auth_hint"`
-		PassEnv  []string            `json:"pass_env"`
-		AuthBind map[string][]string `json:"auth_bind,omitempty"`
-		Models   string              `json:"models"`
-		Parse    string              `json:"parse"`
-		Version  string              `json:"version"`
-		LoginAt  string              `json:"login_file"`
-		HomeEnv  map[string]string   `json:"home_env"`
-		Files    [][3]string         `json:"artefacts"` // arch, sha256, bin: what a tree holds, not where it is from
+		CLI      string                      `json:"cli"`
+		Run      string                      `json:"run"`
+		Egress   Egress                      `json:"egress"`
+		AuthEnv  []string                    `json:"auth_env"`
+		Login    bool                        `json:"login"`
+		AuthHint string                      `json:"auth_hint"`
+		PassEnv  []string                    `json:"pass_env"`
+		AuthBind map[string][]proxy.KeyEntry `json:"auth_bind,omitempty"`
+		Models   string                      `json:"models"`
+		Parse    string                      `json:"parse"`
+		Version  string                      `json:"version"`
+		LoginAt  string                      `json:"login_file"`
+		HomeEnv  map[string]string           `json:"home_env"`
+		Files    [][3]string                 `json:"artefacts"` // arch, sha256, bin: what a tree holds, not where it is from
 	}{CLI: h.CLI, Run: h.Run, Egress: h.Egress, AuthEnv: h.AuthEnv, Login: h.Login, AuthHint: h.AuthHint,
 		PassEnv: h.PassEnv, AuthBind: h.AuthBind, Models: h.Models, Parse: h.Parse}
 	if h.cli != nil {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // the machine's file is under $XDG_CONFIG_HOME when that is absolute, else
@@ -280,14 +282,18 @@ func TestPrint(t *testing.T) {
 // harness reads, a method, a host and a path.
 func TestAuthBind(t *testing.T) {
 	d := Defaults()
-	for _, name := range []string{"opencode-openrouter", "pi-openrouter"} {
-		assert.EqualArrays(t, d.Harnesses[name].AuthBind["OPENROUTER_API_KEY"], []string{"POST openrouter.ai/api/v1/chat/completions"})
-	}
-	for want, bind := range map[string]map[string][]string{
-		"is not in auth-env":     {"OTHER_KEY": {"POST a.test/x"}},
+	chat := proxy.KeyEntry{Match: "POST openrouter.ai/api/v1/chat/completions"}
+	assert.EqualArrays(t, d.Harnesses["opencode-openrouter"].AuthBind["OPENROUTER_API_KEY"], []proxy.KeyEntry{chat})
+	// pi sends its anthropic models down another route, the key bare in a
+	// header of its own.
+	assert.EqualArrays(t, d.Harnesses["pi-openrouter"].AuthBind["OPENROUTER_API_KEY"],
+		[]proxy.KeyEntry{chat, {Match: "POST openrouter.ai/api/v1/messages", Header: "X-Api-Key"}})
+	for want, bind := range map[string]map[string][]proxy.KeyEntry{
+		"is not in auth-env":     {"OTHER_KEY": proxy.KeyLines("POST a.test/x")},
 		"binds nowhere":          {"OPENROUTER_API_KEY": {}},
-		"names a method":         {"OPENROUTER_API_KEY": {"a.test/x"}},
-		"names a method, a host": {"OPENROUTER_API_KEY": {"POST .a.test/x"}},
+		"names a method":         {"OPENROUTER_API_KEY": proxy.KeyLines("a.test/x")},
+		"names a method, a host": {"OPENROUTER_API_KEY": proxy.KeyLines("POST .a.test/x")},
+		"not a header's name":    {"OPENROUTER_API_KEY": {{Match: "POST a.test/x", Header: "x:y"}}},
 	} {
 		d := Defaults()
 		d.Harnesses["pi-openrouter"].AuthBind = bind

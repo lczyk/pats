@@ -232,7 +232,7 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, hd *machine.Harness, aud
 	// the bound host, and their method passes a methods posture.
 	if sb.Egress.KeyProxy {
 		for _, k := range slices.Sorted(maps.Keys(hd.AuthBind)) {
-			eg.Policy.Allow = mergeEntries(eg.Policy.Allow, proxy.Lines(hd.AuthBind[k]...))
+			eg.Policy.Allow = mergeEntries(eg.Policy.Allow, proxy.Lines(proxy.KeyMatches(hd.AuthBind[k])...))
 		}
 	}
 	return eg

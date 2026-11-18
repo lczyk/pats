@@ -81,7 +81,11 @@ func KeyBindings(cfg *config.Config, agentID string) []string {
 		}
 		for _, k := range hd.AuthEnv {
 			if bind := hd.AuthBind[k]; len(bind) > 0 {
-				out = append(out, k+" is held, spent on "+strings.Join(bind, ", "))
+				spent := make([]string, len(bind))
+				for i, e := range bind {
+					spent[i] = e.String()
+				}
+				out = append(out, k+" is held, spent on "+strings.Join(spent, ", "))
 			}
 		}
 	}

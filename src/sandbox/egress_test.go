@@ -558,7 +558,7 @@ func TestBundleCache(t *testing.T) {
 func TestEgressKeysToProxyOnly(t *testing.T) {
 	p := testProcess(t)
 	eg := Egress{Set: true, Keys: map[string]string{"ph-1": "real-1"},
-		Policy: proxy.Policy{Keys: []proxy.KeyBinding{{Name: "K", Placeholder: "ph-1", Bind: []string{"POST a.test/x"}}}}}
+		Policy: proxy.Policy{Keys: []proxy.KeyBinding{{Name: "K", Placeholder: "ph-1", Bind: proxy.KeyLines("POST a.test/x")}}}}
 	m, err := p.prepare(eg, nil, func() ([]byte, error) { return []byte("roots"), nil })
 	require.NoError(t, err)
 	defer m.cleanup()
@@ -591,7 +591,7 @@ func TestEgressKeysOldSidecar(t *testing.T) {
 	fd.out = []byte("-----BEGIN CERTIFICATE-----\nsystemroots\n-----END CERTIFICATE-----")
 	fd.dies = "error: PATS_EGRESS_POLICY: field keys not found in type proxy.Policy"
 	eg := Egress{Set: true, Keys: map[string]string{"ph-1": "real-1"},
-		Policy: proxy.Policy{Keys: []proxy.KeyBinding{{Name: "K", Placeholder: "ph-1", Bind: []string{"POST a.test/x"}}}}}
+		Policy: proxy.Policy{Keys: []proxy.KeyBinding{{Name: "K", Placeholder: "ph-1", Bind: proxy.KeyLines("POST a.test/x")}}}}
 	_, _, err := fd.container().startEgressProxy(context.Background(), Spec{Workdir: filepath.Join(t.TempDir(), "pats-work-o"), Egress: eg})
 	assert.Error(t, err, "field keys not found")
 	assert.Error(t, err, "egress.image")
