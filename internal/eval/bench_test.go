@@ -224,7 +224,7 @@ func reportTree(b *testing.B, configDir string, runs, agents, tasks int) {
 					DurationS: 60 + float64((a*31+k*17+r)%900), Status: "ok", Synced: &yes, PatsVersion: "1.0.0",
 					DeniedEgress: []string{"paste-01.example.net", "paste-02.example.net"},
 					Egress: &egressRecord{
-						Policy:   proxy.Policy{Allow: []string{".example.com", "github.com/canonical/*"}, Deny: []string{"github.com/*/answers*"}},
+						Policy:   proxy.Policy{Allow: proxy.Lines(".example.com", "github.com/canonical/*"), Deny: proxy.Lines("github.com/*/answers*")},
 						Requests: 240 + k, BytesIn: 9_000_000, BytesOut: 120_000, Enforced: &yes,
 					},
 					Summary: &runSummary{

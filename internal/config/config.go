@@ -231,9 +231,9 @@ type Task struct {
 // (none, default, deny-response, ...) is the sandbox's alone, so it has no
 // field here and the unmarshal rejects it.
 type TaskEgress struct {
-	Set   bool     `yaml:"-"`
-	Allow []string `yaml:"allow"`
-	Deny  []string `yaml:"deny"`
+	Set   bool             `yaml:"-"`
+	Allow []proxy.RawEntry `yaml:"allow"`
+	Deny  []proxy.RawEntry `yaml:"deny"`
 }
 
 type taskEgressFields TaskEgress

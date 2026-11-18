@@ -216,14 +216,14 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, hd *machine.Harness, aud
 		return eg
 	}
 	eg.Policy = eg.Policy.Resolved()
-	eg.Policy.Allow = mergeHosts(eg.Policy.Allow, te.Allow)
-	eg.Policy.Deny = mergeHosts(eg.Policy.Deny, te.Deny)
+	eg.Policy.Allow = mergeEntries(eg.Policy.Allow, te.Allow)
+	eg.Policy.Deny = mergeEntries(eg.Policy.Deny, te.Deny)
 	if hd == nil {
 		return eg
 	}
-	eg.Policy.Deny = mergeHosts(eg.Policy.Deny, hd.Egress.Deny)
+	eg.Policy.Deny = mergeEntries(eg.Policy.Deny, proxy.Lines(hd.Egress.Deny...))
 	if eg.Policy.Default != "allow" {
-		eg.Policy.Allow = mergeHosts(eg.Policy.Allow, hd.Egress.Allow)
+		eg.Policy.Allow = mergeEntries(eg.Policy.Allow, proxy.Lines(hd.Egress.Allow...))
 	}
 	// the harness's hosts are exempt from the methods posture either way: its
 	// inference traffic is not the task's to inspect.
@@ -232,7 +232,7 @@ func egressFor(sb config.Sandbox, te config.TaskEgress, hd *machine.Harness, aud
 	// the bound host, and their method passes a methods posture.
 	if sb.Egress.KeyProxy {
 		for _, k := range slices.Sorted(maps.Keys(hd.AuthBind)) {
-			eg.Policy.Allow = mergeHosts(eg.Policy.Allow, hd.AuthBind[k])
+			eg.Policy.Allow = mergeEntries(eg.Policy.Allow, proxy.Lines(hd.AuthBind[k]...))
 		}
 	}
 	return eg
@@ -313,6 +313,19 @@ func mergeHosts(hosts, extras []string) []string {
 	out := append([]string(nil), hosts...)
 	for _, e := range extras {
 		if !seen[e] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// mergeEntries is mergeHosts for a policy's entries: an extra is dropped
+// when one written the same way, exceptions and all, is already there.
+// entries is copied before appending, for mergeHosts' reason.
+func mergeEntries(entries, extras []proxy.RawEntry) []proxy.RawEntry {
+	out := append([]proxy.RawEntry(nil), entries...)
+	for _, e := range extras {
+		if !slices.ContainsFunc(out, e.Same) {
 			out = append(out, e)
 		}
 	}

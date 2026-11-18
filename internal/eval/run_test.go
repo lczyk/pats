@@ -967,7 +967,7 @@ func TestHarnessHomeCodexCredentials(t *testing.T) {
 func TestEgressForIncludesCodexHosts(t *testing.T) {
 	sb := config.Sandbox{Egress: config.Egress{
 		Set:    true,
-		Policy: proxy.Policy{Default: "deny", Allow: []string{"task.example.com"}},
+		Policy: proxy.Policy{Default: "deny", Allow: proxy.Lines("task.example.com")},
 	}}
 	eg := egressFor(sb, config.TaskEgress{}, hd("codex-cli-keyless"), "/tmp/audit", true)
 	assert.Equal(t, eg.AuditPath, "/tmp/audit")
@@ -979,7 +979,7 @@ func TestEgressForIncludesCodexHosts(t *testing.T) {
 		".chatgpt.com":     true,
 	}
 	for _, host := range eg.Policy.Allow {
-		delete(want, host)
+		delete(want, host.Match)
 	}
 	assert.Equal(t, len(want), 0)
 }
@@ -1003,13 +1003,13 @@ func TestNewHarnessSandboxEnv(t *testing.T) {
 func TestEgressForTaskUnion(t *testing.T) {
 	sb := config.Sandbox{Egress: config.Egress{
 		Set:    true,
-		Policy: proxy.Policy{Default: "deny", DenyResponse: "404", Allow: []string{"a.test"}, Deny: []string{"a.test/x*"}},
+		Policy: proxy.Policy{Default: "deny", DenyResponse: "404", Allow: proxy.Lines("a.test"), Deny: proxy.Lines("a.test/x*")},
 	}}
-	te := config.TaskEgress{Set: true, Allow: []string{"pypi.org", "a.test"}, Deny: []string{"github.com/*/answer*"}}
+	te := config.TaskEgress{Set: true, Allow: proxy.Lines("pypi.org", "a.test"), Deny: proxy.Lines("github.com/*/answer*")}
 	eg := egressFor(sb, te, hd("opencode-openrouter"), "", false)
-	assert.EqualArrays(t, eg.Policy.Deny, []string{"a.test/x*", "github.com/*/answer*"})
-	assert.Equal(t, eg.Policy.Allow[0], "a.test")
-	assert.Equal(t, eg.Policy.Allow[1], "pypi.org")
+	assert.EqualArrays(t, proxy.Matches(eg.Policy.Deny), []string{"a.test/x*", "github.com/*/answer*"})
+	assert.Equal(t, eg.Policy.Allow[0].Match, "a.test")
+	assert.Equal(t, eg.Policy.Allow[1].Match, "pypi.org")
 	assert.Equal(t, eg.Policy.DenyResponse, "404")
 	assert.That(t, eg.Policy.DenyMessage == nil) // a 404 carries no message
 	assert.Equal(t, len(sb.Egress.Policy.Allow), 1)
@@ -1406,8 +1406,8 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.Equal(t, spec.Env["PATS_MODEL"], "")
 
 	pol := spec.Egress.Policy
-	assert.Equal(t, strings.Join(pol.Allow, " "), "task.example api.mine.example")
-	assert.Equal(t, strings.Join(pol.Deny, " "), "noise.mine.example")
+	assert.Equal(t, strings.Join(proxy.Matches(pol.Allow), " "), "task.example api.mine.example")
+	assert.Equal(t, strings.Join(proxy.Matches(pol.Deny), " "), "noise.mine.example")
 	assert.Equal(t, strings.Join(pol.Harness, " "), "api.mine.example")
 
 	m := readMeta(t, runDir, "axx", "txx")

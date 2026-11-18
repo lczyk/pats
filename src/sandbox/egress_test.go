@@ -113,7 +113,7 @@ func TestStartEgressProxy(t *testing.T) {
 		Workdir: filepath.Join(t.TempDir(), "pats-work-x"),
 		Egress: Egress{
 			Set:    true,
-			Policy: proxy.Policy{Allow: []string{"api.example.com"}, Deny: []string{"evil.example.com"}, DenyResponse: "404"},
+			Policy: proxy.Policy{Allow: proxy.Lines("api.example.com"), Deny: proxy.Lines("evil.example.com"), DenyResponse: "404"},
 		},
 	}
 	netArgs, teardown, err := c.startEgressProxy(context.Background(), spec)
@@ -177,7 +177,7 @@ func TestStartEgressProxyMitm(t *testing.T) {
 		Workdir: filepath.Join(t.TempDir(), "pats-work-m"),
 		Egress: Egress{
 			Set:    true,
-			Policy: proxy.Policy{Deny: []string{"github.com/*/secrets*"}},
+			Policy: proxy.Policy{Deny: proxy.Lines("github.com/*/secrets*")},
 		},
 	}
 	netArgs, teardown, err := c.startEgressProxy(context.Background(), spec)
@@ -329,7 +329,7 @@ func TestPrepareUsesItsProcess(t *testing.T) {
 	p := testProcess(t)
 	home, err := p.home()
 	require.NoError(t, err)
-	eg := Egress{Set: true, Policy: proxy.Policy{Deny: []string{"a.test/x*"}}}
+	eg := Egress{Set: true, Policy: proxy.Policy{Deny: proxy.Lines("a.test/x*")}}
 	m, err := p.prepare(eg, nil, func() ([]byte, error) { return []byte("roots"), nil })
 	require.NoError(t, err)
 	defer m.cleanup()
@@ -344,7 +344,7 @@ func TestPrepareCleansUpOnError(t *testing.T) {
 	p := testProcess(t)
 	cache, err := p.home()
 	require.NoError(t, err)
-	eg := Egress{Set: true, Policy: proxy.Policy{Deny: []string{"a.test/x*"}}}
+	eg := Egress{Set: true, Policy: proxy.Policy{Deny: proxy.Lines("a.test/x*")}}
 	_, err = p.prepare(eg, nil, func() ([]byte, error) { return nil, errors.New("no bundle") })
 	assert.Error(t, err, "trust bundle")
 	var left []string
@@ -454,7 +454,7 @@ func TestProxyEnvOptions(t *testing.T) {
 	o, err := ProxyEnvOptions(func(k string) string { return env[k] })
 	require.NoError(t, err)
 	assert.Equal(t, o.Policy.Default, "allow")
-	assert.EqualArrays(t, o.Policy.Deny, []string{"evil.test"})
+	assert.EqualArrays(t, proxy.Matches(o.Policy.Deny), []string{"evil.test"})
 	assert.Equal(t, len(o.Refuse), 2)
 	assert.ContainsString(t, string(o.Roots), "BEGIN CERTIFICATE")
 	assert.Equal(t, o.Chain == nil, true)

@@ -169,7 +169,7 @@ func TestHostEgress(t *testing.T) {
 	b.h.pats = bin
 	audit := filepath.Join(t.TempDir(), "egress.log")
 	sess, err := b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true, AuditPath: audit,
-		Policy: proxy.Policy{AllowPrivate: true, Allow: []string{host}, Deny: []string{"evil.test"}}}})
+		Policy: proxy.Policy{AllowPrivate: true, Allow: proxy.Lines(host), Deny: proxy.Lines("evil.test")}}})
 	require.NoError(t, err)
 	s := sess.(*hostSession)
 	assert.ContainsString(t, s.env["HTTP_PROXY"], "http://127.0.0.1:")
@@ -199,12 +199,12 @@ func TestHostEgress(t *testing.T) {
 
 	// the agent runs beside its proxy here: no key is held from it.
 	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
-		Keys: map[string]string{"ph": "real"}, Policy: proxy.Policy{Allow: []string{host}}}})
+		Keys: map[string]string{"ph": "real"}, Policy: proxy.Policy{Allow: proxy.Lines(host)}}})
 	assert.Error(t, err, "cannot hold keys")
 
 	// tls inspection needs a bundle the user vouches for.
 	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
-		Policy: proxy.Policy{Allow: []string{"example.com/x/*"}}}})
+		Policy: proxy.Policy{Allow: proxy.Lines("example.com/x/*")}}})
 	assert.Error(t, err, "SSL_CERT_FILE")
 
 	// a proxy that dies before it listens fails the start.
@@ -213,7 +213,7 @@ func TestHostEgress(t *testing.T) {
 		b.h.pats = "/bin/false"
 	}
 	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
-		Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+		Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 	assert.Error(t, err, "exited before listening")
 
 	// one that never listens fails it too, and is reaped, not left running.
@@ -223,7 +223,7 @@ func TestHostEgress(t *testing.T) {
 	b.h.pats = stall
 	b.h.p.t.childReady = 2 * time.Second // room for the script to start on a busy machine
 	_, err = b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
-		Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+		Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 	assert.Error(t, err, "not listening after")
 	assertGone(t, pidFile)
 }
@@ -316,7 +316,7 @@ func TestHostHostsOnlyTrust(t *testing.T) {
 	b := hostOn(t, Options{Driver: HostDriver, TrustFile: "/etc/corp.pem"})
 	b.h.pats = bin
 	sess, err := b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
-		Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+		Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 	require.NoError(t, err)
 	defer sess.Close()
 	assert.Equal(t, sess.(*hostSession).env["SSL_CERT_FILE"], "/etc/corp.pem")
@@ -330,7 +330,7 @@ func TestHostProxyDeathFailsExec(t *testing.T) {
 	b := hostOn(t, Options{Driver: HostDriver})
 	b.h.pats = bin
 	sess, err := b.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true,
-		Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+		Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 	require.NoError(t, err)
 	defer sess.Close()
 	s := sess.(*hostSession)
@@ -474,8 +474,8 @@ var hostModes = []struct {
 }{
 	{"none", Egress{None: true}, false},
 	{"open", Egress{}, false},
-	{"hosts", Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}, false},
-	{"mitm", Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com/x/*"}}}, true},
+	{"hosts", Egress{Set: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}, false},
+	{"mitm", Egress{Set: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com/x/*")}}, true},
 }
 
 // hostSweep is sweep for the host driver: one entry run per command it

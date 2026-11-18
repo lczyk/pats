@@ -7,6 +7,7 @@ import (
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // tree writes files (path -> content) under a fresh temp dir and returns it.
@@ -172,5 +173,5 @@ func TestParseDirTaskEgress(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(c.Tasks), 1)
 	assert.Equal(t, c.Tasks[0].Egress.Set, true)
-	assert.EqualArrays(t, c.Tasks[0].Egress.Deny, []string{"github.com/*/chisel-releases*"})
+	assert.EqualArrays(t, proxy.Matches(c.Tasks[0].Egress.Deny), []string{"github.com/*/chisel-releases*"})
 }

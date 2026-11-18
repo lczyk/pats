@@ -323,6 +323,10 @@ func TestValidateErrors(t *testing.T) {
 		{"egress bad deny-response", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-response: 500}}}}\n", "want 403, 404, reset or timeout"},
 		{"egress deny-message with a control character", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-message: \"a\\tb\"}}}}\n", "control character"},
 		{"egress deny-message beside a 404", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny-response: 404, deny-message: x}}}}\n", "deny-message needs deny-response 403"},
+		{"egress except on a bare host", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny: [{match: a.test, except: [/x]}]}}}}\n", "an except needs a url entry: write a.test/**"},
+		{"egress except with a host", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [{match: 'a.test/**', except: [a.test/x]}]}}}}\n", "with no host"},
+		{"egress deny except that reads two ways", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny: [{match: 'a.test/**', except: ['/a;b']}]}}}}\n", "cannot write"},
+		{"task egress except on a bare host", "xxx: {kind: task, items: {xxx: {prompt: p, egress: {deny: [{match: a.test, except: [/x]}]}}}}\n", "an except needs a url entry"},
 		{"egress bad regexp", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: ['a.test ~(']}}}}\n", "regexp"},
 		{"egress empty methods", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {methods: []}}}}\n", "an empty list would refuse every request"},
 		{"egress bad method", "sxx: {kind: sandbox, items: {sxx: {image: img, egress: {methods: [get]}}}}\n", "not an upper-case http method"},
@@ -467,6 +471,14 @@ func TestEgressParseErrors(t *testing.T) {
 	assert.Error(t, err, "unknown field \"default\"")
 	_, err = Parse([]byte("xxx: {kind: task, items: {xxx: {prompt: p, egress: none}}}\n"))
 	assert.Error(t, err, "a task takes a mapping")
+	// an entry written as a mapping takes match and except and nothing else,
+	// in a sandbox's lists and in a task's.
+	_, err = Parse([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, egress: {deny: [{match: 'a.test/**', except: [/x], when: 'True'}]}}}}\n"))
+	assert.Error(t, err, "unknown field \"when\" in an entry")
+	_, err = Parse([]byte("sxx: {kind: sandbox, items: {sxx: {image: img, egress: {allow: [{match: 'a.test/**'}]}}}}\n"))
+	assert.Error(t, err, "write it as a line")
+	_, err = Parse([]byte("xxx: {kind: task, items: {xxx: {prompt: p, egress: {deny: [{match: 'a.test/**', except: []}]}}}}\n"))
+	assert.Error(t, err, "want a list of one or more url parts")
 	// what a refusal says is the sandbox's too, and a null is no message.
 	_, err = Parse([]byte("xxx: {kind: task, items: {xxx: {prompt: p, egress: {deny-message: x}}}}\n"))
 	assert.Error(t, err, "unknown field \"deny-message\"")
@@ -607,7 +619,7 @@ func FuzzCheckTemplates(f *testing.F) {
 		}
 		// nested: a map's value, a list's entry inside an embedded struct.
 		assert.Equal(t, checkTemplates(&Task{Env: map[string]string{"K": s}}, "task") != nil, held, "env %q", s)
-		assert.Equal(t, checkTemplates(&Sandbox{Egress: Egress{Policy: proxy.Policy{Allow: []string{"a.test", s}}}}, "sandbox") != nil, held, "egress %q", s)
+		assert.Equal(t, checkTemplates(&Sandbox{Egress: Egress{Policy: proxy.Policy{Allow: proxy.Lines("a.test", s)}}}, "sandbox") != nil, held, "egress %q", s)
 
 		assert.NoError(t, checkTemplates(&Task{Prompt: s}, "task"))
 		assert.NoError(t, checkTemplates(&Scorer{Prompt: s, Agent: "jxx"}, "scorer"))
@@ -642,8 +654,8 @@ func TestTaskEgressDefaults(t *testing.T) {
 	for _, tk := range c.Tasks {
 		got[tk.Name] = tk.Egress
 	}
-	assert.EqualArrays(t, got["inherits"].Deny, []string{"a.test/x*"})
-	assert.EqualArrays(t, got["replaces"].Allow, []string{"c.test"})
+	assert.EqualArrays(t, proxy.Matches(got["inherits"].Deny), []string{"a.test/x*"})
+	assert.EqualArrays(t, proxy.Matches(got["replaces"].Allow), []string{"c.test"})
 	assert.Equal(t, len(got["replaces"].Deny), 0)
 	assert.Equal(t, got["drops"].Set, false)
 }

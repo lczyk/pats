@@ -34,17 +34,99 @@ func egressConfig(t *testing.T) *config.Config {
 	return c
 }
 
+const exceptCfg = `box: {kind: sandbox, items: {sxx: {image: img, egress: {
+  allow: [github.com, {match: 'a.test/pub/**', except: ['/pub/answers**']}],
+  deny: ['github.com/*/secret**', {match: 'github.com/*/answers.git**', except: ['GET /*/answers.git/info/refs?service=git-upload-pack']}]}}}}
+axx: {kind: agent, items: {axx: {harness: claude-cli-keyless, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, egress: {
+  allow: [{match: 'a.test/pub/**', except: ['/pub/answers**']}, {match: 'a.test/pub/**', except: ['/pub/other**']}],
+  deny: [{match: 'github.com/*/secret**', except: ['/*/secret/open']}, {match: 'github.com/*/answers.git**', except: ['/*/answers.git/HEAD']}]}}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`
+
+// a mapping entry goes from pats.yaml to the pair's policy as written, a
+// task's unioned over the sandbox's: one written the same way is dropped,
+// and one with another exception is an entry of its own.
+func TestEffectivePolicyExcept(t *testing.T) {
+	c, err := config.Parse([]byte(exceptCfg))
+	require.NoError(t, err)
+	require.NoError(t, c.Validate())
+	pol, err := EffectivePolicy(c, "sxx", "txx", "")
+	require.NoError(t, err)
+	b, err := json.Marshal(pol.Allow)
+	require.NoError(t, err)
+	assert.Equal(t, string(b), `["github.com",{"match":"a.test/pub/**","except":["/pub/answers**"]},{"match":"a.test/pub/**","except":["/pub/other**"]}]`)
+	b, err = json.Marshal(pol.Deny)
+	require.NoError(t, err)
+	assert.Equal(t, string(b), `["github.com/*/secret**",`+
+		`{"match":"github.com/*/answers.git**","except":["GET /*/answers.git/info/refs?service=git-upload-pack"]},`+
+		`{"match":"github.com/*/secret**","except":["/*/secret/open"]},`+
+		`{"match":"github.com/*/answers.git**","except":["/*/answers.git/HEAD"]}]`)
+
+	// what the proxy is handed parses to the same policy.
+	y, err := yaml.Marshal(pol)
+	require.NoError(t, err)
+	handed, err := proxy.ParsePolicy(y)
+	require.NoError(t, err)
+	b2, err := json.Marshal(handed.Deny)
+	require.NoError(t, err)
+	assert.Equal(t, string(b2), string(b))
+
+	check := func(url, method string) (bool, string) {
+		t.Helper()
+		var out bytes.Buffer
+		ok, err := CheckURL(pol, url, method, true, nil, &out)
+		require.NoError(t, err)
+		return ok, out.String()
+	}
+	// a task's exception does not spare what the sandbox's own line takes.
+	ok, out := check("https://github.com/x/secret/open", "GET")
+	assert.Equal(t, ok, false)
+	assert.ContainsString(t, out, "deny  rule=github.com/*/secret**  (mitm;")
+	assert.That(t, !strings.Contains(out, "spared"), "%s", out)
+
+	// two entries with one match spare only what both do: the task's entry
+	// takes the request the sandbox's spares, and check names the one that
+	// spared it.
+	ok, out = check("https://github.com/x/answers.git/info/refs?service=git-upload-pack", "GET")
+	assert.Equal(t, ok, false)
+	assert.Equal(t, out, "spared rule=github.com/*/answers.git**  except=GET /*/answers.git/info/refs?service=git-upload-pack\n"+
+		"deny  rule=github.com/*/answers.git**  (mitm; default: deny)\n")
+
+	// an allow's exception withholds, and check names it. another entry
+	// with the same match admits what this one withholds.
+	ok, out = check("https://a.test/pub/answers/1", "GET")
+	assert.Equal(t, ok, true)
+	assert.Equal(t, out, "withheld rule=a.test/pub/**  except=/pub/answers**\n"+
+		"allow rule=a.test/pub/**  (mitm; default: deny)\n")
+	ok, out = check("https://a.test/pub/x", "GET")
+	assert.Equal(t, ok, true)
+	assert.Equal(t, out, "allow rule=a.test/pub/**  (mitm; default: deny)\n")
+}
+
+// mergeEntries drops an extra written as one already there, in the base or
+// earlier among the extras, and never writes to the base.
+func TestMergeEntries(t *testing.T) {
+	base := proxy.Lines("a.test", "b.test/x**")
+	x := proxy.RawEntry{Match: "b.test/x**", Except: []string{"/x/ok"}}
+	got := mergeEntries(base, []proxy.RawEntry{{Match: "a.test"}, x, x, {Match: "b.test/x**", Except: []string{"/x/ok", "/x/y"}}, {Match: "c.test"}, {Match: "c.test"}})
+	b, err := json.Marshal(got)
+	require.NoError(t, err)
+	assert.Equal(t, string(b), `["a.test","b.test/x**",{"match":"b.test/x**","except":["/x/ok"]},{"match":"b.test/x**","except":["/x/ok","/x/y"]},"c.test"]`)
+	assert.Len(t, base, 2)
+}
+
 func TestEffectivePolicy(t *testing.T) {
 	c := egressConfig(t)
 	pol, err := EffectivePolicy(c, "sxx", "", "")
 	require.NoError(t, err)
-	assert.EqualArrays(t, pol.Allow, []string{"a.test", ".ubuntu.com"})
+	assert.EqualArrays(t, proxy.Matches(pol.Allow), []string{"a.test", ".ubuntu.com"})
 
 	pol, err = EffectivePolicy(c, "sxx", "txx", "axx")
 	require.NoError(t, err)
-	assert.ContainsString(t, strings.Join(pol.Allow, " "), "pypi.org")
-	assert.ContainsString(t, strings.Join(pol.Allow, " "), ".anthropic.com")
-	assert.EqualArrays(t, pol.Deny, []string{"a.test/secret**", "github.com/*/answer*"})
+	assert.ContainsString(t, strings.Join(proxy.Matches(pol.Allow), " "), "pypi.org")
+	assert.ContainsString(t, strings.Join(proxy.Matches(pol.Allow), " "), ".anthropic.com")
+	assert.EqualArrays(t, proxy.Matches(pol.Deny), []string{"a.test/secret**", "github.com/*/answer*"})
 
 	for _, bad := range [][3]string{{"ghost", "", ""}, {"open", "", ""}, {"sxx", "ghost", ""}, {"sxx", "", "ghost"}} {
 		_, err := EffectivePolicy(c, bad[0], bad[1], bad[2])

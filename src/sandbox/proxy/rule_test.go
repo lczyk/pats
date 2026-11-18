@@ -435,17 +435,25 @@ func TestSpelledQuery(t *testing.T) {
 }
 
 // COVER: path.Clean("") returns "." (it differs from ""), so without a guard
-// urlCandidates would add a bogus "." candidate for every request with no
-// path at all.
-func TestURLCandidatesEmptyPath(t *testing.T) {
-	assert.EqualArrays(t, urlCandidates("", ""), []string{""})
-	assert.EqualArrays(t, urlCandidates("", "q=1"), []string{"", "?q=1"})
-	assert.EqualArrays(t, urlCandidates("/b", ""), []string{"/b"})
-	assert.EqualArrays(t, urlCandidates("/a/../b", "q"), []string{"/a/../b", "/a/../b?q", "/b", "/b?q"})
-	assert.EqualArrays(t, urlCandidates("/a/../b", ""), []string{"/a/../b", "/b"})
-	assert.EqualArrays(t, urlCandidates("/a/x/..", ""), []string{"/a/x/..", "/a", "/a/"})
-	assert.EqualArrays(t, urlCandidates("/a/..;/b", ""), []string{"/a/..;/b", "/a/../b", "/b"})
-	assert.EqualArrays(t, urlCandidates(`/a\b`, "q"), []string{`/a\b`, `/a\b?q`, "/a/b", "/a/b?q"})
+// a deny would be tried against a bogus "." for every request with no path
+// at all.
+func TestDenyReadings(t *testing.T) {
+	assert.EqualArrays(t, denyReadings(""), []string{""})
+	assert.EqualArrays(t, denyReadings("/b"), []string{"/b"})
+	assert.EqualArrays(t, denyReadings("/a/../b"), []string{"/a/../b", "/b"})
+	assert.EqualArrays(t, denyReadings("/a/x/.."), []string{"/a/x/..", "/a", "/a/"})
+	assert.EqualArrays(t, denyReadings("/a/..;/b"), []string{"/a/..;/b", "/a/../b", "/b"})
+	assert.EqualArrays(t, denyReadings(`/a\b`), []string{`/a\b`, "/a/b"})
+
+	// each is asked alone and with the query behind it.
+	e, err := ParseEntry(`h.test ~^/b\?q$`, true)
+	require.NoError(t, err)
+	assert.That(t, e.takesPath("/b", "q"))
+	assert.That(t, !e.takesPath("/b", ""))
+	assert.That(t, e.matchesURL("/a/../b", "q"))
+	e, err = ParseEntry(`h.test ~^\?q=1$`, true)
+	require.NoError(t, err)
+	assert.That(t, e.matchesURL("", "q=1"))
 }
 
 func TestDecideMethodsAndRegexp(t *testing.T) {
@@ -554,7 +562,7 @@ func TestPolicyRule(t *testing.T) {
 	assert.Error(t, err, "default")
 	_, err = Policy{DenyResponse: "500"}.Rule()
 	assert.Error(t, err, "deny-response")
-	_, err = Policy{Allow: []string{"*"}}.Rule()
+	_, err = Policy{Allow: Lines("*")}.Rule()
 	assert.Error(t, err, `allow "*"`)
 	_, err = Policy{Methods: []string{}}.Rule()
 	assert.Error(t, err, "empty list")
@@ -563,8 +571,8 @@ func TestPolicyRule(t *testing.T) {
 	_, err = Policy{Harness: []string{"*"}}.Rule()
 	assert.Error(t, err, "harness")
 	assert.That(t, Policy{Methods: []string{"GET"}}.NeedsCA()) // a posture inspects
-	assert.That(t, Policy{Deny: []string{"a.test/x*"}}.NeedsCA())
-	assert.That(t, !Policy{Allow: []string{"a.test"}}.NeedsCA())
+	assert.That(t, Policy{Deny: Lines("a.test/x*")}.NeedsCA())
+	assert.That(t, !Policy{Allow: Lines("a.test")}.NeedsCA())
 }
 
 func TestGuard(t *testing.T) {
@@ -814,8 +822,8 @@ func BenchmarkDecideHost(b *testing.B) {
 func TestMethodsPosture(t *testing.T) {
 	p := Policy{
 		Methods: []string{"GET", "HEAD"},
-		Allow:   []string{"a.test", "POST a.test/graphql", ".anthropic.com"},
-		Deny:    []string{"PUT,PATCH b.test/*"},
+		Allow:   Lines("a.test", "POST a.test/graphql", ".anthropic.com"),
+		Deny:    Lines("PUT,PATCH b.test/*"),
 		Harness: []string{".anthropic.com"},
 	}
 	r, err := p.Rule()
@@ -854,7 +862,7 @@ func TestMethodsPosture(t *testing.T) {
 
 	// an explicit url entry on an exempt host still mitm's it, and the
 	// posture applies to what that shows, as it does to plain http there.
-	p.Deny = append(p.Deny, "api.anthropic.com/v1/files*")
+	p.Deny = append(p.Deny, Lines("api.anthropic.com/v1/files*")...)
 	r, err = p.Rule()
 	require.NoError(t, err)
 	assert.That(t, r.MitmHost("api.anthropic.com", 443))

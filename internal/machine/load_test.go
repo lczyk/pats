@@ -152,6 +152,7 @@ func TestOverlayErrors(t *testing.T) {
 		"bad parse":        {"harnesses:\n  mine:\n    run: a\n    parse: out.tool(nope)", "machine.yaml:2: harnesses.mine.parse:1:10: undefined: nope"},
 		"a path in allow":  {"harnesses:\n  mine:\n    run: a\n    egress: {allow: [x.com/v1/*]}", "machine.yaml:2: harnesses.mine: egress allow"},
 		"wrong type":       {"harnesses:\n  mine:\n    run: a\n    auth-env: 5", "machine.yaml:4: harnesses.mine: cannot unmarshal"},
+		"a mapping entry":  {"harnesses:\n  mine:\n    run: a\n    egress: {deny: [{match: 'x.com/**', except: [/v1]}]}", "machine.yaml:"},
 		"nested key":       {"harnesses:\n  claude-cli-keyless:\n    egress:\n      alow: [x.com]", `machine.yaml:4: harnesses.claude-cli-keyless: egress: unknown key "alow"`},
 		"a key twice":      {"harnesses:\n  mine:\n    run: a\n    run: b", `machine.yaml:4: harnesses.mine: key "run" is there twice`},
 		"an entry twice":   {"harnesses:\n  mine: {run: a}\n  mine: {run: b}", "machine.yaml:3: harnesses.mine is there twice"},

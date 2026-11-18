@@ -25,12 +25,12 @@ import (
 // yaml tags are the config's; config.Egress embeds this type so there is one
 // field set.
 type Policy struct {
-	Default      string   `yaml:"default" json:"default,omitempty"`             // deny (the default) | allow
-	Methods      []string `yaml:"methods,omitempty" json:"methods,omitempty"`   // the methods posture; nil: every method, nothing extra inspected
-	AllowPrivate bool     `yaml:"allow-private" json:"allow_private,omitempty"` // let entries name private targets
-	Allow        []string `yaml:"allow" json:"allow,omitempty"`
-	Deny         []string `yaml:"deny" json:"deny,omitempty"`
-	DenyResponse string   `yaml:"deny-response" json:"deny_response,omitempty"` // 403 (the default) | 404 | reset | timeout
+	Default      string     `yaml:"default" json:"default,omitempty"`             // deny (the default) | allow
+	Methods      []string   `yaml:"methods,omitempty" json:"methods,omitempty"`   // the methods posture; nil: every method, nothing extra inspected
+	AllowPrivate bool       `yaml:"allow-private" json:"allow_private,omitempty"` // let entries name private targets
+	Allow        []RawEntry `yaml:"allow" json:"allow,omitempty"`
+	Deny         []RawEntry `yaml:"deny" json:"deny,omitempty"`
+	DenyResponse string     `yaml:"deny-response" json:"deny_response,omitempty"` // 403 (the default) | 404 | reset | timeout
 	// DenyMessage is the body of a 403 refusal: nil is DefaultDenyMessage,
 	// "" the bare refusal of pats before 1.3. Resolved fills a nil one in.
 	DenyMessage *string `yaml:"deny-message,omitempty" json:"deny_message,omitempty"`
@@ -158,7 +158,7 @@ func (p Policy) Rule() (Rule, error) {
 	if err := p.checkDenyMessage(); err != nil {
 		return Rule{}, err
 	}
-	r, err := ParseRule(p.Default == "allow", p.Allow, p.Deny)
+	r, err := ParseRawRule(p.Default == "allow", p.Allow, p.Deny)
 	if err != nil {
 		return r, err
 	}

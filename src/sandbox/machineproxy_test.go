@@ -142,7 +142,7 @@ func TestMachineProxyContainer(t *testing.T) {
 			// agent pats's proxy and empty NO_PROXY / ALL_PROXY.
 			f.calls = nil
 			sess, err = c.Start(context.Background(), Spec{Workdir: workdir(t),
-				Egress: Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+				Egress: Egress{Set: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 			require.NoError(t, err)
 			s = sess.(*containerSession)
 			f.mu.Lock()
@@ -178,7 +178,7 @@ func TestMachineProxyContainer(t *testing.T) {
 			assert.Error(t, err, "the upstream http://u:xxxxx@proxy.corp:3128: unreachable from the")
 			f.upstreamDown = true
 			_, err = c.Start(context.Background(), Spec{Workdir: workdir(t),
-				Egress: Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+				Egress: Egress{Set: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 			assert.Error(t, err, "network, behind the upstream http://u:xxxxx@proxy.corp:3128")
 			assert.Error(t, err, "exited before listening: error: upstream")
 		})
@@ -225,7 +225,7 @@ func TestMachineProxyLXD(t *testing.T) {
 		}
 	}
 	sess, err = l.Start(context.Background(), Spec{Workdir: workdir(t),
-		Egress: Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+		Egress: Egress{Set: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 	require.NoError(t, err)
 	require.NoError(t, sess.Close())
 	assert.Equal(t, penv[proxy.EnvUpstreamHTTPS], "http://u:secret@10.20.30.40:3128")
@@ -239,7 +239,7 @@ func TestMachineProxyLXD(t *testing.T) {
 	_, err = l.Start(context.Background(), Spec{Workdir: workdir(t), Egress: Egress{SelfTest: true}})
 	assert.Error(t, err, "cannot reach the upstream http://u:xxxxx@10.20.30.40:3128")
 	_, err = l.Start(context.Background(), Spec{Workdir: workdir(t),
-		Egress: Egress{Set: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+		Egress: Egress{Set: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 	assert.Error(t, err, "on the uplink, behind the upstream http://u:xxxxx@10.20.30.40:3128")
 	assert.Error(t, err, "exited before listening: error: upstream")
 }
@@ -335,11 +335,11 @@ func TestMachineProxyTrust(t *testing.T) {
 		assert.Equal(t, agentGet(t, corpURL, m.bundlePath, "https://example.com/open"), "origin:/open")
 	})
 	t.Run("hosts only", func(t *testing.T) {
-		via, m := patsProxy(t, proxy.Policy{Allow: []string{"example.com"}})
+		via, m := patsProxy(t, proxy.Policy{Allow: proxy.Lines("example.com")})
 		assert.Equal(t, agentGet(t, via, m.bundlePath, "https://example.com/tunnel"), "origin:/tunnel")
 	})
 	t.Run("tls inspection", func(t *testing.T) {
-		via, m := patsProxy(t, proxy.Policy{Allow: []string{"example.com/x/*"}})
+		via, m := patsProxy(t, proxy.Policy{Allow: proxy.Lines("example.com/x/*")})
 		assert.Equal(t, agentGet(t, via, m.bundlePath, "https://example.com/x/mitm"), "origin:/x/mitm")
 	})
 }

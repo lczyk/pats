@@ -16,6 +16,7 @@ import (
 
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox"
+	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
 // fixtureKey is split so it reads as a fixture, not a secret.
@@ -120,7 +121,7 @@ func TestKeyProxyPair(t *testing.T) {
 		assert.Equal(t, k.Name, "OPENROUTER_API_KEY")
 		assert.Equal(t, k.Placeholder, ph)
 		assert.EqualArrays(t, k.Bind, []string{"POST openrouter.ai/api/v1/chat/completions"})
-		assert.That(t, strings.Contains(strings.Join(spec.Egress.Policy.Allow, " "), "POST openrouter.ai/api/v1/chat/completions"), "binding not allowed: %v", spec.Egress.Policy.Allow)
+		assert.That(t, strings.Contains(strings.Join(proxy.Matches(spec.Egress.Policy.Allow), " "), "POST openrouter.ai/api/v1/chat/completions"), "binding not allowed: %v", spec.Egress.Policy.Allow)
 		for name, v := range spec.Env {
 			assert.That(t, !strings.Contains(v, fixtureKey), "spec env %s holds the key", name)
 		}

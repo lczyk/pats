@@ -347,8 +347,8 @@ func (c *Config) validateTaskEgress(add func(string, ...any)) {
 		}
 		if sb.Egress.Default == "allow" {
 			for _, line := range t.Egress.Allow {
-				if e, err := proxy.ParseEntry(line, false); err == nil && !e.URL() {
-					add("task %q: egress allow %q is dead under sandbox %q's default: allow", p.Task, line, sbID)
+				if e, err := proxy.ParseRawEntry(line, false); err == nil && !e.URL() {
+					add("task %q: egress allow %q is dead under sandbox %q's default: allow", p.Task, line.Match, sbID)
 				}
 			}
 		}
@@ -572,8 +572,8 @@ func (c *Config) validateJudge(add func(string, ...any), s Scorer) {
 	}
 	if sb.Egress.Default == "allow" {
 		for _, line := range s.Egress.Allow {
-			if e, err := proxy.ParseEntry(line, false); err == nil && !e.URL() {
-				add("%s: egress allow %q is dead under sandbox %q's default: allow", what, line, sbID)
+			if e, err := proxy.ParseRawEntry(line, false); err == nil && !e.URL() {
+				add("%s: egress allow %q is dead under sandbox %q's default: allow", what, line.Match, sbID)
 			}
 		}
 	}

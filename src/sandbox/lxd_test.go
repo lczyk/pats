@@ -579,7 +579,7 @@ func TestLXDStartProxy(t *testing.T) {
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
 	})
-	sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+	sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 	require.NoError(t, err)
 	s := sess.(*lxdSession)
 

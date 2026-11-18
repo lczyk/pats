@@ -30,8 +30,8 @@ type egressMode struct {
 var lxdEgressModes = []egressMode{
 	{"none", Egress{None: true}},
 	{"open", Egress{SelfTest: true}},
-	{"proxy", Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com"}}}},
-	{"mitm", Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: []string{"example.com/x/*"}}}},
+	{"proxy", Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}},
+	{"mitm", Egress{Set: true, SelfTest: true, Policy: proxy.Policy{Allow: proxy.Lines("example.com/x/*")}}},
 }
 
 func proxyBin(t *testing.T) string {

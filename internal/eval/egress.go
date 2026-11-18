@@ -128,17 +128,28 @@ func CheckURL(pol proxy.Policy, target, method string, merged bool, chain *proxy
 	}
 
 	var v proxy.Verdict
+	var left []proxy.Left
 	how := "tunnel"
 	switch {
 	case u.Scheme == "http":
 		how = "plain http"
-		v = r.Decide(u.Hostname(), port, method, path, u.RawQuery)
+		v, left = r.DecideTrace(u.Hostname(), port, method, path, u.RawQuery)
 	default:
 		v = r.DecideHost(u.Hostname(), port)
 		if v.Allowed && r.MitmHost(u.Hostname(), port) {
 			how = "mitm"
-			v = r.Decide(u.Hostname(), port, method, path, u.RawQuery)
+			v, left = r.DecideTrace(u.Hostname(), port, method, path, u.RawQuery)
 		}
+	}
+	// an entry that matched and left the request alone is named before the
+	// verdict: without it the policy shows an entry that matches and a
+	// verdict that disagrees.
+	for _, l := range left {
+		did := "withheld"
+		if l.Deny {
+			did = "spared"
+		}
+		fmt.Fprintf(out, "%s rule=%s  except=%s\n", did, l.Entry, l.Item)
 	}
 	verdict := "deny "
 	if v.Allowed {

@@ -114,7 +114,7 @@ func TestChainTunnelByConnect(t *testing.T) {
 	defer origin.Close()
 	up := newFakeUpstream(t, strings.TrimPrefix(origin.URL, "https://"), "u:p@ss")
 	purl, audit := chainedProxy(t, Options{
-		Policy: Policy{Allow: []string{"example.com"}},
+		Policy: Policy{Allow: Lines("example.com")},
 		Chain:  mustChain(t, up.url("u:p%40ss"), "", ""),
 	})
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(purl),
@@ -141,7 +141,7 @@ func TestChainConnectFramed(t *testing.T) {
 	up := newFakeUpstream(t, strings.TrimPrefix(origin.URL, "https://"), "")
 	up.framed = true
 	purl, _ := chainedProxy(t, Options{
-		Policy: Policy{Allow: []string{"example.com"}},
+		Policy: Policy{Allow: Lines("example.com")},
 		Chain:  mustChain(t, up.url(""), "", ""),
 	})
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(purl),
@@ -162,7 +162,7 @@ func TestChainMitmThroughConnect(t *testing.T) {
 	up := newFakeUpstream(t, strings.TrimPrefix(origin.URL, "https://"), "")
 	certPath, keyPath, pool := testCA(t, t.TempDir())
 	purl, audit := chainedProxy(t, Options{
-		Policy: Policy{Allow: []string{"example.com/ok*"}},
+		Policy: Policy{Allow: Lines("example.com/ok*")},
 		CACert: certPath, CAKey: keyPath, Roots: roots,
 		Chain: mustChain(t, up.url(""), "", ""),
 	})
@@ -182,7 +182,7 @@ func TestChainMitmThroughConnect(t *testing.T) {
 func TestChainPlainHTTPAbsoluteForm(t *testing.T) {
 	up := newFakeUpstream(t, "", "u:p")
 	purl, audit := chainedProxy(t, Options{
-		Policy: Policy{Allow: []string{"example.com"}},
+		Policy: Policy{Allow: Lines("example.com")},
 		Chain:  mustChain(t, "", up.url("u:p"), ""),
 	})
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(purl)}}
@@ -204,7 +204,7 @@ func TestChainNoProxyDirect(t *testing.T) {
 	up := newFakeUpstream(t, "", "")
 	host := strings.TrimPrefix(origin.URL, "http://")
 	purl, _ := chainedProxy(t, Options{
-		Policy: Policy{Allow: []string{host}, AllowPrivate: true},
+		Policy: Policy{Allow: Lines(host), AllowPrivate: true},
 		Chain:  mustChain(t, up.url(""), up.url(""), "127.0.0.1"),
 	})
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(purl)}}
@@ -224,7 +224,7 @@ func TestChainNoProxyDirect(t *testing.T) {
 func TestChainUpstreamRefusal(t *testing.T) {
 	up := newFakeUpstream(t, "", "u:right")
 	purl, audit := chainedProxy(t, Options{
-		Policy: Policy{Allow: []string{"example.com"}},
+		Policy: Policy{Allow: Lines("example.com")},
 		Chain:  mustChain(t, up.url("u:wrong"), up.url("u:wrong"), ""),
 	})
 	conn, _ := connect(t, purl.Host, "example.com:443")
@@ -247,7 +247,7 @@ func TestChainUpstreamRefusal(t *testing.T) {
 func TestChainPolicyFirst(t *testing.T) {
 	up := newFakeUpstream(t, "", "")
 	purl, audit := chainedProxy(t, Options{
-		Policy: Policy{Allow: []string{"example.com", "10.1.2.3"}},
+		Policy: Policy{Allow: Lines("example.com", "10.1.2.3")},
 		Chain:  mustChain(t, up.url(""), up.url(""), ""),
 	})
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(purl)}}
@@ -286,7 +286,7 @@ func TestChainDirectToUpstreamGuarded(t *testing.T) {
 		"no_proxy":         mustChain(t, up.url(""), up.url(""), "127.0.0.1"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			purl, audit := chainedProxy(t, Options{Policy: Policy{Allow: []string{host}}, Chain: c})
+			purl, audit := chainedProxy(t, Options{Policy: Policy{Allow: Lines(host)}, Chain: c})
 			client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(purl)}}
 			resp, err := client.Get("http://" + host + "/")
 			require.NoError(t, err)

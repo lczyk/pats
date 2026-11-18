@@ -88,7 +88,7 @@ func TestLXDE2E(t *testing.T) {
 	t.Run("proxy", func(t *testing.T) {
 		audit := filepath.Join(t.TempDir(), "egress.log")
 		sess, err := sb.Start(ctx, Spec{Workdir: t.TempDir(), Sudo: true, Egress: Egress{Set: true, SelfTest: true, AuditPath: audit,
-			Policy: proxy.Policy{Allow: []string{"example.com"}}}})
+			Policy: proxy.Policy{Allow: proxy.Lines("example.com")}}})
 		require.NoError(t, err)
 		defer sess.Close()
 		script := `p=${HTTP_PROXY#http://}; exec 3<>/dev/tcp/${p%:*}/${p##*:}; printf "GET http://$1/ HTTP/1.1\r\nHost: $1\r\nConnection: close\r\n\r\n" >&3; head -1 <&3`

@@ -38,6 +38,9 @@ type Entry struct {
 	urlText string         // the glob or the regexp as written
 	urlIsRe bool
 	deny    bool
+	// except are the requests the entry leaves alone (except.go). each is a
+	// url part of its own, with no host, read as the other list reads one.
+	except []Entry
 }
 
 // URL reports whether the entry filters on the path (and so mitm's its host).
@@ -292,34 +295,40 @@ func (e Entry) matchesMethod(method string) bool {
 	return false
 }
 
-// matchesURL is a deny's reading of a request: the entry's url matcher is
-// tried against every candidate form of the path, each reading of it alone
-// and with its query, so "a/../b" cannot dodge an entry anchored on "/b".
+// matchesURL is a deny's reading of a request: the entry takes it when it
+// takes any reading of the path, so "a/../b" cannot dodge an entry anchored
+// on "/b".
 func (e Entry) matchesURL(urlPath, rawQuery string) bool {
-	for _, c := range urlCandidates(urlPath, rawQuery) {
-		if e.urlRe.MatchString(c) {
+	for _, p := range denyReadings(urlPath) {
+		if e.takesPath(p, rawQuery) {
 			return true
 		}
 	}
 	return false
 }
 
-func urlCandidates(urlPath, rawQuery string) []string {
-	paths := []string{urlPath, pathpkg.Clean(urlPath)}
+// takesPath is a deny's question of one reading of a path: does the url
+// part match it, alone or with the query behind it.
+func (e Entry) takesPath(p, rawQuery string) bool {
+	return e.urlRe.MatchString(p) || (rawQuery != "" && e.urlRe.MatchString(p+"?"+rawQuery))
+}
+
+// denyReadings are the paths a deny is tried against: every reading of
+// urlPath, and the path as path.Clean leaves it, without the trailing slash
+// a reading keeps.
+func denyReadings(urlPath string) []string {
+	paths := []string{urlPath}
+	add := func(p string) {
+		if (p == "." && urlPath == "") || slices.Contains(paths, p) {
+			return // path.Clean("") is ".", which no request asked for
+		}
+		paths = append(paths, p)
+	}
+	add(pathpkg.Clean(urlPath))
 	for _, r := range readings(urlPath) {
-		paths = append(paths, r.path)
+		add(r.path)
 	}
-	var cands []string
-	for _, p := range paths {
-		if (p == "." && urlPath == "") || slices.Contains(cands, p) {
-			continue // path.Clean("") is ".", which no request asked for
-		}
-		cands = append(cands, p)
-		if rawQuery != "" {
-			cands = append(cands, p+"?"+rawQuery)
-		}
-	}
-	return cands
+	return paths
 }
 
 // reading is one path an origin may serve for a request's.
@@ -580,18 +589,24 @@ type Rule struct {
 
 // ParseRule parses allow and deny lines into a Rule, naming the first bad one.
 func ParseRule(defaultAllow bool, allow, deny []string) (Rule, error) {
+	return ParseRawRule(defaultAllow, Lines(allow...), Lines(deny...))
+}
+
+// ParseRawRule is ParseRule for entries as a policy writes them, exceptions
+// and all.
+func ParseRawRule(defaultAllow bool, allow, deny []RawEntry) (Rule, error) {
 	r := Rule{DefaultAllow: defaultAllow}
-	for _, line := range allow {
-		e, err := ParseEntry(line, false)
+	for _, raw := range allow {
+		e, err := ParseRawEntry(raw, false)
 		if err != nil {
-			return r, fmt.Errorf("allow %q: %w", line, err)
+			return r, fmt.Errorf("allow %q: %w", raw.Match, err)
 		}
 		r.Allow = append(r.Allow, e)
 	}
-	for _, line := range deny {
-		e, err := ParseEntry(line, true)
+	for _, raw := range deny {
+		e, err := ParseRawEntry(raw, true)
 		if err != nil {
-			return r, fmt.Errorf("deny %q: %w", line, err)
+			return r, fmt.Errorf("deny %q: %w", raw.Match, err)
 		}
 		r.Deny = append(r.Deny, e)
 	}
@@ -629,8 +644,26 @@ func (r Rule) DecideHost(host string, port uint16) Verdict {
 
 // Decide is the full verdict for a request the proxy can see: deny entries
 // first (bare or url, method included), then allow entries, with a host that
-// has only url allow entries refused when none matches, then the default.
+// has only url allow entries refused when none matches, then the default. an
+// entry leaves alone what its except names: a deny goes on to the next
+// entry, an allow counts as one that did not admit.
 func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string) Verdict {
+	return r.decide(host, port, method, urlPath, rawQuery, nil)
+}
+
+// DecideTrace is Decide, and the entries that matched the request and left
+// it alone on the way to the verdict, in the order they were asked.
+func (r Rule) DecideTrace(host string, port uint16, method, urlPath, rawQuery string) (Verdict, []Left) {
+	var left []Left
+	return r.decide(host, port, method, urlPath, rawQuery, &left), left
+}
+
+func (r Rule) decide(host string, port uint16, method, urlPath, rawQuery string, left *[]Left) Verdict {
+	note := func(l Left) {
+		if left != nil {
+			*left = append(*left, l)
+		}
+	}
 	host, err := NormalizeHost(host)
 	if err != nil {
 		return Verdict{Rule: "default", Reason: "bad-host"}
@@ -643,9 +676,17 @@ func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string)
 		if !e.matchesHost(host, port) || !e.matchesMethod(method) {
 			continue
 		}
-		if !e.URL() || odd || e.matchesURL(urlPath, rawQuery) {
-			return Verdict{Rule: e.Raw}
+		if e.URL() && !odd && !e.matchesURL(urlPath, rawQuery) {
+			continue
 		}
+		// a path that is no text is spared by nothing.
+		if !odd {
+			if x := e.spared(method, urlPath, rawQuery); x != nil {
+				note(Left{Deny: true, Entry: e.Raw, Item: x.Raw})
+				continue
+			}
+		}
+		return Verdict{Rule: e.Raw}
 	}
 	// an allow entry that names the request's method overrides the posture,
 	// wherever it sits in the list; any other match is subject to it.
@@ -654,15 +695,23 @@ func (r Rule) Decide(host string, port uint16, method, urlPath, rawQuery string)
 		if !e.matchesHost(host, port) {
 			continue
 		}
-		switch {
-		case !e.URL():
+		if !e.URL() {
 			if matched == nil {
 				matched = &r.Allow[i]
 			}
-		case e.matchesMethod(method) && !odd && e.admitsURL(urlPath, rawQuery):
-			if e.methods != nil {
-				return Verdict{Allowed: true, Rule: e.Raw}
+			continue
+		}
+		admits := e.matchesMethod(method) && !odd && e.admitsURL(urlPath, rawQuery)
+		if admits {
+			if x := e.withheld(method, urlPath, rawQuery); x != nil {
+				note(Left{Entry: e.Raw, Item: x.Raw})
+				admits = false
 			}
+		}
+		switch {
+		case admits && e.methods != nil:
+			return Verdict{Allowed: true, Rule: e.Raw}
+		case admits:
 			if matched == nil {
 				matched = &r.Allow[i]
 			}
