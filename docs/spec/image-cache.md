@@ -1,6 +1,7 @@
 # an image cache for init
 
-status: proposed. `init.md` is what `pats init` builds and pins, and `lxd.md` how the lxd driver builds an image.
+status: implemented. `init.md` is what `pats init` builds and pins, and `lxd.md` how the lxd driver builds an
+image. where the code differs from the plan below is in "as built" at the end.
 
 ## problem
 
@@ -125,11 +126,11 @@ lxc image list "$r:" --project pats --format json |
   init would have built is pinned as built, so a later init that supersedes it may remove it, as it may one it
   built (`init.md`, removing superseded images). one a `pats.yaml` names is pinned as found, and is never pats's
   to remove.
-- an image left there with no alias (the check failed, the alias was
-  another's by step 3, the init was cut short after step 2) is found again by its fingerprint at step 2 of the
-  next init with that file. until then `pats clean --all` takes it, as it takes every image of the project. while
-  it is there it is one more image of the project: a reference written as the beginning of a fingerprint, which
-  it happens to share, no longer names one image.
+- an image left there with no alias (the check failed, the alias was another's by step 3, the init was cut short
+  after step 2) is found again by its fingerprint at step 2 of the next init with that file. until then
+  `pats clean --all` takes it, as it takes every image of the project. while it is there it is one more image of
+  the project: a reference written as the beginning of a fingerprint, which it happens to share, no longer names
+  one image.
 - **the run's marks** (`user.pats.run`, `user.pats.owner`, `user.pats.created`) stay the exporting machine's.
   `pats clean` reads them only beside a run-private alias (`src/sandbox/lxd_clean.go`), and an import has none.
 - **what the flag cannot promise**: a file that imports, passes what can be checked, and is still not a usable
@@ -364,3 +365,20 @@ the name its engine knows the image by, with an ending that says the format.
 
 - whether a unified image's fingerprint is its tarball's sha256 on lxd 6.x, as it is on 5.21. the import's first
   step rests on it, and the real-server test above is what says.
+
+## as built
+
+- **the directory is asked in `lxd.resolve`**, not in `lxd.fingerprint`: a function beside it that `Resolve` and a
+  build's base go through. `fingerprint` has callers that must never import (a build's claim and its cleanup, a
+  run's checks), so it stays the server's answer alone. `lxd.image` asks for its own alias with `importCached`,
+  which is where the check of the key is.
+- **a vm sandbox never asks the directory**, for an image it builds or one it is given: decided by the sandbox, not
+  by what the file turns out to be.
+- **a warning has nowhere to go for a named image.** a build has a log and a warning line. `Resolve` returns an
+  image or an error, so a file that could not be used for an `image:` is in the error init fails with, and one
+  that could not be used while another init made the alias is not said at all.
+- **no test runs the export loop.** it is text in the readme. the real-server test exports one image by its alias,
+  as the loop does for each, and checks the name, the hash and the import. the loop's pattern and its json are
+  checked by hand against lxd 5.21.
+- **not tested**: a docker sandbox with the flag (the container drivers have no code that reads it), and two
+  forced layers through `init` (each layer's forced build is tested on its own).

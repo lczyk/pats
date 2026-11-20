@@ -39,7 +39,8 @@ projects share a layer only by accident of identical inputs.
 
 ### `pats init`
 
-`pats init [-S <suite>]... [-a <agent>]... [-t <task>]... [--sandbox <name>]... [--driver <d>] [--force]` makes what
+`pats init [-S <suite>]... [-a <agent>]... [-t <task>]... [--sandbox <name>]... [--driver <d>] [--force]
+[--image-cache <dir>]` makes what
 the selected pairs' sandboxes need -- by default every sandbox the config's suites use -- and pins it. `-S`, `-a`
 and `-t` are `run`'s selectors, so `pats init` and `pats run` with the same flags agree on what is needed;
 `--sandbox` and `--driver` narrow further. the driver comes from each sandbox, so a project mixing docker and lxd
@@ -53,7 +54,9 @@ per driver:
   `provision:` images as `run` does today; pull or build the egress proxy image for a sandbox with an egress
   policy. pin each by image id (and repo digest when pulled).
 - **lxd.** set the server up (the `pats` project, the uplink, the docker bridge check that today first fails in a
-  run), build the sandbox layer, the project layer and the proxy, pin each by fingerprint. details below.
+  run), build the sandbox layer, the project layer and the proxy, pin each by fingerprint. details below. with
+  `--image-cache <dir>`, an image the server lacks is imported from a file in that directory named as its alias,
+  where it would be built, or for an `image:` not found (`image-cache.md`).
 - **bwrap**, when it exists: there are no images; init checks the host has what the sandbox needs (`bwrap`, the
   harness clis) and pins their versions, so the same staleness check applies.
 

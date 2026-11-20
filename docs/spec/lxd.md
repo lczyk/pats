@@ -189,6 +189,8 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
   shared by every run, carries no run token and is left by `pats clean`; `--all` takes it (lxd refuses while an
   instance is on it). egress
   proxies use it as their way out too.
+- a miss, with init's `--image-cache`: the file named as the alias is imported from that directory, and nothing
+  below happens (`image-cache.md`).
 - a miss: launch the base as a builder, push the script and `bin/`, run it as root, stop, `lxc publish` under a
   run-private alias `pats-img-<hash>-<token>`, delete the builder, then create the real alias. an alias carries no
   config, so the image itself gets the run token and `user.pats.created` as properties. if another run made the real
