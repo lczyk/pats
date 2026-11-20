@@ -29,6 +29,7 @@ func scoredRun(t *testing.T) (configDir, runDir string) {
 	}
 	meta("claude", "t1", `{"agent":"claude","harness":"claude-cli-keyless","task":"t1","status":"ok","duration_s":12.5,
 		"denied_egress":["evil.example"],
+		"timings":{"stage_s":1.5,"start_s":40,"total_s":60.25},
 		"summary":{"turns":4,"has_cost":true,"cost_usd":0.25,"cost_estimated":true,"input_tokens":10,"output_tokens":20,
 		"cache_read_tokens":300,"tools":{"Bash":3}}}`)
 	meta("codex", "t1", `{"agent":"codex","harness":"codex-cli-keyless","task":"t1","status":"nonzero","duration_s":3,
@@ -93,6 +94,10 @@ func TestReportJSON(t *testing.T) {
 	assert.Equal(t, p(1)["budget_kind"], any(nil)) // not stopped by a budget: null, as one from before the field
 	assert.EqualArrays(t, p(1)["denied_egress"].([]any), []any{"evil.example"})
 	assert.EqualArrays(t, p(1)["blocked_egress"].([]any), []any{}) // known empty: [], not null
+	// where the pair's time went, as its metadata has it; null on a pair from before.
+	assert.Equal(t, p(1)["timings"].(map[string]any)["start_s"], any(float64(40)))
+	assert.Equal(t, p(1)["timings"].(map[string]any)["total_s"], any(60.25))
+	assert.Equal(t, p(0)["timings"], any(nil))
 	// a half-written metadata.json: listed, run fields null, warned about.
 	assert.Equal(t, p(2)["task"], any("t2"))
 	assert.Equal(t, p(2)["status"], any(nil))

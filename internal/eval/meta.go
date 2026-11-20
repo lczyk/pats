@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/src/sandbox/proxy"
@@ -43,6 +44,34 @@ type stepsRecord struct {
 	Image   string `json:"image,omitempty"`
 }
 
+// pairTimings is where a pair's wall time went beside the agent's own run
+// (duration_s), in seconds. a step that did not run, or took under a
+// hundredth of a second, is left out.
+type pairTimings struct {
+	StageS   float64 `json:"stage_s,omitempty"`   // stage and prompt-cmd, with the step sandbox they ran in
+	StartS   float64 `json:"start_s,omitempty"`   // the sandbox coming up, and its handover to the agent
+	PrepareS float64 `json:"prepare_s,omitempty"` // the in-sandbox prepare
+	SyncS    float64 `json:"sync_s,omitempty"`    // the agent's files coming home
+	CloseS   float64 `json:"close_s,omitempty"`   // the sandbox and its proxy going away
+	CollectS float64 `json:"collect_s,omitempty"` // collect, with its step sandbox
+	TotalS   float64 `json:"total_s"`             // the pair up to this record: the agent's run included, the workdir's removal not
+}
+
+// lap times one step into d: the func it returns ends the step. a step
+// timed twice adds up.
+func lap(d *float64) func() {
+	t0 := time.Now()
+	return func() { *d += time.Since(t0).Seconds() }
+}
+
+// rounded is t as metadata.json records it.
+func (t pairTimings) rounded() *pairTimings {
+	for _, f := range []*float64{&t.StageS, &t.StartS, &t.PrepareS, &t.SyncS, &t.CloseS, &t.CollectS, &t.TotalS} {
+		*f = round2(*f)
+	}
+	return &t
+}
+
 type pairMeta struct {
 	Agent   string `json:"agent"`
 	Harness string `json:"harness,omitempty"`
@@ -70,7 +99,8 @@ type pairMeta struct {
 	Steps     *stepsRecord `json:"steps,omitempty"`
 	ExitCode  int          `json:"exit_code"`
 	DurationS float64      `json:"duration_s"`
-	Status    string       `json:"status"` // ok | nonzero | error
+	Timings   *pairTimings `json:"timings,omitempty"` // nil on a pair from before
+	Status    string       `json:"status"`            // ok | nonzero | error
 	Error     string       `json:"error,omitempty"`
 	// BudgetKind is the cap of the agent's budget that stopped the pair:
 	// cost, tokens, tools or time; "" when none did.

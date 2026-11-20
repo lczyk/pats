@@ -59,6 +59,10 @@ type pairStat struct {
 	net     int64 // egress requests, from the proxy audit log
 	netSeen int32 // 1 once egress.log was readable (i.e. proxy mode) -> show net
 
+	// timings is what the pair has timed so far, its total up to the call:
+	// nil until runPair starts.
+	timings func() *pairTimings
+
 	// set once the pair ends, for the run's summary.
 	status    string
 	agentDur  float64 // seconds the agent ran, as metadata's duration_s

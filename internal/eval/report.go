@@ -88,6 +88,9 @@ type reportPair struct {
 	// EgressEnforced is false when the pair's egress was advisory (the host
 	// driver), null when unknown or no policy ran.
 	EgressEnforced *bool `json:"egress_enforced"`
+	// Timings is where the rest of the pair's wall time went, as its
+	// metadata has it.
+	Timings *pairTimings `json:"timings"`
 }
 
 // pairRecord is one pair and its metadata.json: meta nil when there is none
@@ -177,7 +180,7 @@ func known(n int) *int {
 // summaryFields fills p's run fields from pm.
 func (p *reportPair) summaryFields(pm *pairMeta) {
 	status, dur := pm.Status, pm.DurationS
-	p.Status, p.DurationS = &status, &dur
+	p.Status, p.DurationS, p.Timings = &status, &dur, pm.Timings
 	if pm.Error != "" {
 		e := pm.Error
 		p.Error = &e

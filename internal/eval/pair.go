@@ -65,6 +65,12 @@ func runPair(
 	sandboxes map[string]config.Sandbox, stat *pairStat,
 ) error {
 	a, t, outDir := job.agent, job.task, job.outDir
+	var tm pairTimings
+	began := time.Now()
+	stat.timings = func() *pairTimings {
+		tm.TotalS = time.Since(began).Seconds()
+		return tm.rounded()
+	}
 	stat.price = opts.prices[a.Name]
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -144,6 +150,10 @@ func runPair(
 	// agent never runs, nothing is collected, and the metadata names the step.
 	var setupErr error
 	var promptData []byte
+	staged := func() {}
+	if t.Stage != "" || t.PromptCmd != "" {
+		staged = lap(&tm.StageS)
+	}
 	if sp != nil && (t.Stage != "" || t.PromptCmd != "") {
 		promptData, setupErr = beforeBox(ctx, opts, sp, job, t, taskDir, []string{workDir, outDir, h.homeDir}, hostEnv)
 	} else if stage := (step{script: t.Stage, dir: taskDir, drop: drop}); stage.set() {
@@ -158,6 +168,7 @@ func runPair(
 		// a prompt-cmd that ran in the box has given the prompt, empty or not.
 		if sp == nil || t.PromptCmd == "" {
 			if promptData, err = taskPrompt(ctx, opts.ConfigDir, taskDir, t, hostEnv, drop); err != nil {
+				staged()
 				return fmt.Errorf("prompt: %w", err)
 			}
 		}
@@ -166,6 +177,7 @@ func runPair(
 			return err
 		}
 	}
+	staged()
 
 	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
 	if err != nil {
@@ -197,7 +209,9 @@ func runPair(
 	if setupErr == nil {
 		sctx, scancel := context.WithTimeout(ctx, setupTimeout)
 		var err error
+		started := lap(&tm.StartS)
 		sess, err = h.box.Start(sctx, h.spec)
+		started()
 		switch {
 		case err != nil:
 			setupErr = fmt.Errorf("start: %w", err)
@@ -205,17 +219,21 @@ func runPair(
 			defer sess.Close()
 			if t.Prepare != "" {
 				env := prepareEnv(job, filepath.Base(runDir), h.paths)
+				prepared := lap(&tm.PrepareS)
 				if err := runLogged(filepath.Join(outDir, "prepare.log"), opts.stream(), func(w io.Writer) error {
 					return runPrepare(sctx, sess, sb.Driver, opts.ConfigDir, taskDir, t, env, h.paths.Prepare, w)
 				}); err != nil {
 					setupErr = fmt.Errorf("prepare: %w", err)
 				}
+				prepared()
 			}
 			// root is done: the agent gets what it left, and its sudo.
 			if setupErr == nil {
+				handed := lap(&tm.StartS)
 				if err := sess.HandOver(sctx, h.paths.Work, h.paths.Home); err != nil {
 					setupErr = fmt.Errorf("start: %w", err)
 				}
+				handed()
 			}
 		}
 		scancel()
@@ -259,11 +277,13 @@ func runPair(
 		// run interrupted by ctrl+c is not waited on.
 		if (r.err == nil || stopped) && ctx.Err() == nil {
 			sctx, scancel := context.WithTimeout(ctx, syncTimeout)
+			home := lap(&tm.SyncS)
 			if syncErr = sess.Sync(sctx); syncErr == nil {
 				synced = true
 			} else if r.err == nil {
 				r.err = fmt.Errorf("sync: %w", syncErr)
 			}
+			home()
 			scancel()
 		}
 	}
@@ -295,9 +315,11 @@ func runPair(
 	// is whole before anything reads it or a step box holds the output dir.
 	// Close is idempotent; the deferred one is a no-op after this.
 	if sess != nil {
+		closed := lap(&tm.CloseS)
 		if err := sess.Close(); err != nil {
 			lg.warn("%s sandbox cleanup: %v; pats clean removes what is left", job.label, err)
 		}
+		closed()
 	}
 
 	// collect when the agent ran, left something to gather (it finished, or
@@ -305,6 +327,7 @@ func runPair(
 	// nothing; a failed or skipped sync (ctrl+c) left a stale host copy.
 	if collect := (step{script: t.Collect, dir: taskDir, drop: drop}); (r.err == nil || stopped) && synced && collect.set() {
 		var err error
+		collected := lap(&tm.CollectS)
 		if sp != nil {
 			err = afterBox(ctx, opts, sp, job, collect, []string{workDir, outDir}, hostEnv)
 		} else {
@@ -312,6 +335,7 @@ func runPair(
 				return collect.run(ctx, opts.ConfigDir, hostEnv, w)
 			})
 		}
+		collected()
 		if err != nil {
 			lg.warn("%s collect: %v", job.label, err)
 		}
@@ -390,6 +414,7 @@ func runPair(
 	if job.meta != nil {
 		job.meta(&meta)
 	}
+	meta.Timings = stat.timings()
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), meta); err != nil {
 		return err
 	}
@@ -447,6 +472,9 @@ func pairFailed(ctx context.Context, cfg *config.Config, job pairJob, sandboxes 
 		sb := sandboxes[id]
 		meta.Sandbox, meta.Driver, meta.SandNotBoxed, meta.Image, meta.Components = id, sb.Driver, sandbox.TraitsOf(sb.Driver).Unboxed, sb.Image, sb.Components
 		meta.Placed = sb.Placed
+	}
+	if stat.timings != nil {
+		meta.Timings = stat.timings()
 	}
 	if job.meta != nil {
 		job.meta(&meta)

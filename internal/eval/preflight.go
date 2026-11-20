@@ -54,10 +54,11 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 			continue
 		}
 		done[sp.sb.Name] = true
+		t0 := time.Now()
 		if err := preflightSteps(ctx, opts, sp); err != nil {
 			return fmt.Errorf("step sandbox %q failed preflight: %w", sp.sb.Name, err)
 		}
-		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: step sandbox %s ok", sp.sb.Name)
+		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: step sandbox %s ok (%.1fs)", sp.sb.Name, time.Since(t0).Seconds())
 	}
 	seen := map[string]bool{}
 	for _, p := range pairs {
@@ -65,10 +66,11 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 			continue
 		}
 		seen[p.Agent] = true
+		t0 := time.Now()
 		if err := preflightAgent(ctx, cfg, opts, agents[p.Agent], sandboxes); err != nil {
 			return fmt.Errorf("agent %q failed credential preflight: %w", p.Agent, err)
 		}
-		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok", p.Agent)
+		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok (%.1fs)", p.Agent, time.Since(t0).Seconds())
 	}
 	return nil
 }

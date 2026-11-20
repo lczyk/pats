@@ -79,6 +79,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 		}
 		clis := sandboxCLIs(cfg, sb.Name)
 		lg.info("sandbox %q: %s", sb.Name, initWhat(sb, opts.ConfigDir, places(sb) && len(clis) > 0))
+		t0 := time.Now()
 		target, e, err := initSandbox(ctx, sb, clis, sandboxPins(cfg, sb.Name), ro, opts)
 		if err != nil {
 			failed = append(failed, sb.Name)
@@ -89,7 +90,7 @@ func Init(cfg *config.Config, opts InitOptions) error {
 			lg.error("sandbox %q: %v", sb.Name, err)
 			continue
 		}
-		lg.info("sandbox %q: pinned %s under %s", sb.Name, short(e.Image.ID), target)
+		lg.info("sandbox %q: pinned %s under %s (%s)", sb.Name, short(e.Image.ID), target, time.Since(t0).Round(time.Second))
 		done = append(done, pinned{target, sb, e})
 	}
 

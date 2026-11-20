@@ -1101,6 +1101,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 			assert.Equal(t, pm.Status, "error")
 			assert.ContainsString(t, pm.Error, c.want)
 			assert.That(t, pm.Synced != nil && !*pm.Synced, "a failed setup synced nothing")
+			assert.That(t, pm.Timings != nil, "a failed setup has no timings")
 			assert.Equal(t, c.fake.calls, 1) // the preflight only, never the pair's agent
 			_, err = os.Stat(filepath.Join(runDir, "axx", "txx", "collected"))
 			assert.That(t, os.IsNotExist(err), "collected after a failed setup")
@@ -1109,6 +1110,55 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 				assert.ContainsString(t, string(log), "apt said no")
 			}
 		})
+	}
+}
+
+// a pair's metadata says where its wall time went beside the agent's own
+// run: each step that ran, and the whole pair.
+func TestRunPairTimings(t *testing.T) {
+	const nap = 60 * time.Millisecond
+	fake := &fakeSandbox{onRoot: func(cmd sandbox.Cmd, stdout io.Writer) (int, error) {
+		if cmd.Argv[0] != "rm" {
+			time.Sleep(nap)
+		}
+		return 0, nil
+	}}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	defer func() { newSandbox = old }()
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+tvv: {kind: task, items: {txx: {prompt: p, stage: sleep 0.06, prepare: "true", collect: sleep 0.06}, bare: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [txx, bare]}}}
+`)
+	var out bytes.Buffer
+	pinAll(t, dir, cfg)
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.NoError(t, err)
+
+	tm := readMeta(t, runDir, "axx", "txx").Timings
+	require.That(t, tm != nil, "no timings in the pair's metadata")
+	for name, got := range map[string]float64{"stage_s": tm.StageS, "prepare_s": tm.PrepareS, "collect_s": tm.CollectS} {
+		assert.That(t, got >= nap.Seconds(), "%s is %v, under the %v its step slept", name, got, nap)
+	}
+	pm := readMeta(t, runDir, "axx", "txx")
+	steps := tm.StageS + tm.StartS + tm.PrepareS + tm.SyncS + tm.CloseS + tm.CollectS
+	assert.That(t, tm.TotalS+0.05 >= steps+pm.DurationS, "total %v is under its steps %v and the agent's %v", tm.TotalS, steps, pm.DurationS)
+
+	// a step the task has none of is left out, not written as zero.
+	b, err := os.ReadFile(filepath.Join(runDir, "axx", "bare", "metadata.json"))
+	require.NoError(t, err)
+	var raw struct {
+		Timings map[string]float64 `json:"timings"`
+	}
+	require.NoError(t, json.Unmarshal(b, &raw))
+	_, hasTotal := raw.Timings["total_s"]
+	assert.That(t, hasTotal, "timings without total_s: %v", raw.Timings)
+	for _, k := range []string{"stage_s", "prepare_s", "collect_s"} {
+		_, has := raw.Timings[k]
+		assert.That(t, !has, "%s recorded for a task with no such step: %v", k, raw.Timings)
 	}
 }
 
@@ -1124,7 +1174,7 @@ func TestRunPairEarlyFailureMetadata(t *testing.T) {
 	cfg := parseCfg(t, `
 sxx: {kind: sandbox, items: {sxx: {image: s}}}
 axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
-txx: {kind: task, items: {txx: {prompt-cmd: exit 5}}}
+txx: {kind: task, items: {txx: {prompt-cmd: sleep 0.06; exit 5}}}
 sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 `)
 	var out bytes.Buffer
@@ -1135,6 +1185,9 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 	assert.Equal(t, pm.Status, "error")
 	assert.ContainsString(t, pm.Error, "prompt: ")
 	assert.Equal(t, pm.Sandbox, "sxx")
+	// what it had timed before giving up is kept: the prompt-cmd that failed.
+	require.That(t, pm.Timings != nil, "an early failure has no timings")
+	assert.That(t, pm.Timings.StageS >= 0.06, "stage_s is %v, under the prompt-cmd's sleep", pm.Timings.StageS)
 	assert.That(t, pm.Synced != nil && !*pm.Synced, "a pair that never started synced nothing")
 	// its record still says which definition it was asked to run.
 	assert.Equal(t, pm.HarnessFrom, "default")
