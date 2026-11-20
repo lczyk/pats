@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -156,6 +157,9 @@ func TestLXDImageCacheMiss(t *testing.T) {
 		{"a directory", func(t *testing.T, dir string) {
 			require.NoError(t, os.Mkdir(filepath.Join(dir, name), 0o755))
 		}, "not a regular file", 0},
+		{"a fifo", func(t *testing.T, dir string) {
+			require.NoError(t, syscall.Mkfifo(filepath.Join(dir, name), 0o644))
+		}, "not a regular file", 0},
 		{"another key's image under the name", func(t *testing.T, dir string) {
 			cacheFile(t, dir, name, "x", builtProps(keyOf(t, other)))
 		}, "not " + key, 1},
@@ -294,10 +298,36 @@ func TestLXDImageCacheServerHasImage(t *testing.T) {
 			}
 		}
 		l := lxdOn(t, f, Options{ImageCache: dir})
-		_, got, _, built, err := l.image(context.Background(), spec, io.Discard)
+		var warns []string
+		s := spec
+		s.Warn = func(m string) { warns = append(warns, m) }
+		_, got, _, built, err := l.image(context.Background(), s, io.Discard)
 		require.NoError(t, err)
 		assert.That(t, !built && got == theirs, "built %v, fingerprint %s", built, got)
+		// the file that could not be used is still said.
+		require.Len(t, warns, 1)
+		assert.ContainsString(t, warns[0], alias+".tar")
 	})
+}
+
+// a vm's image is a split one, which the cache does not hold: a vm sandbox
+// never asks the directory, for an image it builds or one it is given.
+func TestLXDImageCacheNotForVMs(t *testing.T) {
+	spec := lxdImageSpec{Base: "img", Argv: []string{"true"}}
+	key, err := imageKey(fakeFP("img"), spec, true)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	cacheFile(t, dir, "pats-img-"+key+".tar", "one", builtProps(key))
+	cacheFile(t, dir, "my-rock.tar", "hand-made", nil)
+	f := newFakeServer(t)
+	l := lxdOn(t, f, Options{ImageCache: dir, VM: true})
+	_, _, _, built, err := l.image(context.Background(), spec, io.Discard)
+	require.NoError(t, err)
+	assert.That(t, built, "a vm's image came from the cache")
+	_, err = l.Resolve(context.Background(), "my-rock")
+	assert.ErrorIs(t, err, ErrNoImage)
+	assert.That(t, !strings.Contains(err.Error(), "image cache"), "the cache named for a vm: %v", err)
+	assert.Len(t, calls(f, "image import"), 0)
 }
 
 // two files for one alias: the newer is the one used.
@@ -373,6 +403,32 @@ func TestLXDImageCacheNamedImage(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, img.ID, fp)
 	})
+	t.Run("another init imports it first", func(t *testing.T) {
+		dir := t.TempDir()
+		_, fp := cacheFile(t, dir, "my-rock.tar", "hand-made", nil)
+		f := newFakeServer(t)
+		f.importSeen = func(fp string) { f.images[fp] = &fakeImage{props: map[string]string{}} }
+		img, err := lxdOn(t, f, Options{ImageCache: dir}).Resolve(ctx, "my-rock")
+		require.NoError(t, err) // a refused import of bytes the server has is no failure
+		assert.Equal(t, img.ID, fp)
+		assert.Equal(t, f.lookupImage("my-rock"), fp)
+	})
+	t.Run("a replaced file is another image on a new server", func(t *testing.T) {
+		dir := t.TempDir()
+		_, first := cacheFile(t, dir, "my-rock.tar", "first", nil)
+		old := newFakeServer(t)
+		img, err := lxdOn(t, old, Options{ImageCache: dir}).Resolve(ctx, "my-rock")
+		require.NoError(t, err)
+		assert.Equal(t, img.ID, first)
+		_, second := cacheFile(t, dir, "my-rock.tar", "second", nil)
+		// the server that has the alias keeps its image; a new one takes the file.
+		img, err = lxdOn(t, old, Options{ImageCache: dir}).Resolve(ctx, "my-rock")
+		require.NoError(t, err)
+		assert.Equal(t, img.ID, first)
+		img, err = lxdOn(t, newFakeServer(t), Options{ImageCache: dir}).Resolve(ctx, "my-rock")
+		require.NoError(t, err)
+		assert.Equal(t, img.ID, second)
+	})
 	t.Run("the server's alias wins", func(t *testing.T) {
 		dir := t.TempDir()
 		cacheFile(t, dir, "my-rock.tar.zst", "newer", nil)
@@ -411,12 +467,17 @@ func TestLXDImageCacheNamedImage(t *testing.T) {
 		cacheFile(t, filepath.Join(dir, "a"), "b.tar", "nested", nil)
 		f := newFakeServer(t)
 		l := lxdOn(t, f, Options{ImageCache: dir})
-		for _, ref := range []string{"../x", "a/b", "abc123", strings.Repeat("ab", 32)} {
+		// the beginning of two fingerprints: the error it is with no flag.
+		f.images["abc1"+strings.Repeat("0", 60)] = &fakeImage{}
+		f.images["abc1"+strings.Repeat("1", 60)] = &fakeImage{}
+		cacheFile(t, dir, "abc1.tar", "hex", nil)
+		for _, ref := range []string{"../x", "a/b", "abc123", "abc1", strings.Repeat("ab", 32)} {
 			_, err := l.Resolve(ctx, ref)
 			assert.Error(t, err, "")
 			assert.That(t, !strings.Contains(err.Error(), "image cache"), "%s: the cache was asked: %v", ref, err)
 		}
 		assert.Len(t, calls(f, "image import"), 0)
+		assert.Equal(t, f.lookupImage("abc1"), "")
 	})
 }
 

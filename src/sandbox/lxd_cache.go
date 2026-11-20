@@ -90,30 +90,37 @@ func builtAs(key string) func(props map[string]string) error {
 	}
 }
 
+// cached says whether the image cache is asked for alias: a vm's image is
+// a split one, two files, which the cache does not hold.
+func (l *lxd) cached(alias string) bool {
+	return l.o.ImageCache != "" && !l.o.VM && cacheName(alias)
+}
+
 // importCached brings alias in from the image cache and returns the
 // fingerprint the alias then names: errNoCached when the cache has nothing
 // for it, any other error when it has and the image could not be used.
 // check, when set, sees the image's properties before the alias is made.
-func (l *lxd) importCached(ctx context.Context, alias string, check func(props map[string]string) error) (string, error) {
-	if l.o.ImageCache == "" || !cacheName(alias) {
-		return "", errNoCached
+// failed is why the cache's file was not used when another init made the
+// alias meanwhile and that image is returned.
+func (l *lxd) importCached(ctx context.Context, alias string, check func(props map[string]string) error) (fp string, failed, err error) {
+	if !l.cached(alias) {
+		return "", nil, errNoCached
 	}
 	path, err := cachedFile(l.o.ImageCache, alias)
 	if errors.Is(err, errNoCached) {
-		return "", err
+		return "", nil, err
 	}
 	if err == nil {
-		var fp string
 		if fp, err = l.importFile(ctx, path, alias, check); err == nil {
-			return fp, nil
+			return fp, nil, nil
 		}
 		err = fmt.Errorf("%s: %w", path, err)
 	}
-	// another init may have made the alias meanwhile.
+	err = fmt.Errorf("image cache: %w", err)
 	if theirs, aerr := l.fingerprint(ctx, alias); aerr == nil {
-		return theirs, nil
+		return theirs, err, nil
 	}
-	return "", fmt.Errorf("image cache: %w", err)
+	return "", nil, err
 }
 
 // importFile imports a cache file when the server lacks its image, and
@@ -176,13 +183,13 @@ func (l *lxd) resolve(ctx context.Context, ref string) (string, error) {
 	if err == nil || !notFound(err) {
 		return fp, err
 	}
-	cached, cerr := l.importCached(ctx, ref, nil)
+	cached, _, cerr := l.importCached(ctx, ref, nil)
 	switch {
 	case cerr == nil:
 		return cached, nil
 	case !errors.Is(cerr, errNoCached):
 		return "", fmt.Errorf("%w (%v)", err, cerr)
-	case l.o.ImageCache != "" && cacheName(ref):
+	case l.cached(ref):
 		return "", fmt.Errorf("%w (and no file for it in the image cache %s)", err, l.o.ImageCache)
 	}
 	return "", err

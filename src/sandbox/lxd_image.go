@@ -115,8 +115,11 @@ func (l *lxd) image(ctx context.Context, spec lxdImageSpec, log io.Writer) (alia
 		if fp, err := l.fingerprint(ctx, alias); err == nil {
 			return alias, fp, base, false, nil
 		}
-		fp, err := l.importCached(ctx, alias, builtAs(key))
+		fp, failed, err := l.importCached(ctx, alias, builtAs(key))
 		switch {
+		case failed != nil:
+			spec.warn(log, "%v; another init has made %s meanwhile", failed, alias)
+			return alias, fp, base, false, nil
 		case err == nil:
 			spec.step(log, "imported lxd image %s from %s", alias, l.o.ImageCache)
 			return alias, fp, base, false, nil

@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -179,15 +181,21 @@ func TestLXDE2EImageCache(t *testing.T) {
 		return im.Properties
 	}
 
-	// an argv no other test builds: the image is this test's to remove.
-	spec := BuildSpec{Base: "ubuntu:24.04", Argv: []string{"sh", "-c", "echo image-cache-e2e > /etc/pats-e2e"}, Role: "project", Sandbox: "e2e-cache"}
+	// a script no other run builds, so the image is made here and is this
+	// test's to remove: by its fingerprint, which an import that never got
+	// its alias would still have.
+	tag := make([]byte, 6)
+	_, err := rand.Read(tag)
+	require.NoError(t, err)
+	spec := BuildSpec{Base: "ubuntu:24.04", Argv: []string{"sh", "-c", "echo " + hex.EncodeToString(tag) + " > /etc/pats-e2e"}, Role: "project", Sandbox: "e2e-cache"}
 	d, err := Open(Options{Driver: "lxd"}.WithEnv())
 	require.NoError(t, err)
 	var log bytes.Buffer
-	img, _, _, err := d.Build(ctx, spec, &log)
+	img, _, built, err := d.Build(ctx, spec, &log)
 	require.NoError(t, err, "%v\n%s", err, log.String())
+	require.That(t, built, "the image was there already: not this test's")
 	t.Cleanup(func() {
-		_, _ = exec.Command("lxc", "image", "delete", remote+":"+img.Name, "--project", lxdProject).CombinedOutput()
+		_, _ = exec.Command("lxc", "image", "delete", remote+":"+img.ID, "--project", lxdProject).CombinedOutput()
 	})
 	before := props(img.ID)
 
