@@ -195,7 +195,9 @@ creation per pair, about a second, at the cost of state shared across pairs; it 
   alias first (two laptops, one miss) its image is used and this one deleted: same key, same inputs. cleanup removes
   a dead run's private alias; an image left under that alias alone goes once nothing used it for 30 days
   (`sandbox-seams.md`, clean). never
-  `lxc publish --reuse`, which could swap an image out from under a running pair. output goes to
+  `lxc publish --reuse`, which could swap an image out from under a running pair. the publish asks for
+  `--compression zstd`: the server's default, gzip, took 132s on a 2.7 GiB rootfs where zstd took 23s, for an image
+  no bigger. a server or client that refuses the flag gets a warning and a publish with its default. output goes to
   `<run>/images/<hash>.log`, so the run dir is made before images are resolved (`internal/eval/run.go` builds first
   today); only a generous fixed time cap.
 - cached images keep their harness cli versions until the base refreshes, the same staleness docker has; whatever
