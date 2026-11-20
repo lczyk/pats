@@ -92,52 +92,74 @@ func TestInitPinsContainers(t *testing.T) {
 	assert.That(t, f.entry("fake:host", "own").Image.Pulled, "a re-init forgot pats pulled the image")
 }
 
-// init hands its image cache to each sandbox's driver, as an absolute path.
-// one that is no directory it can read is a warning, and init goes on as
-// with no flag.
+// init hands its image cache, as an absolute path, to the driver of each
+// sandbox that can take an image from it: lxd, and no vm. one that is no
+// directory it can read is a warning, and init goes on as with no flag. with
+// no such sandbox the directory is not looked at.
 func TestInitImageCache(t *testing.T) {
-	cache := t.TempDir()
+	const lxdCfg = `
+sbx:
+  kind: sandbox
+  items:
+    box: {driver: lxd, image: "srv:mine"}
+    vmx: {driver: lxd, vm: true, image: "srv:mine"}
+    dkr: {image: my/image:1}
+agx:
+  kind: agent
+  defaults: {harness: opencode-openrouter, model: m}
+  items:
+    a-box: {sandbox: box}
+    a-vmx: {sandbox: vmx}
+    a-dkr: {sandbox: dkr}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: agx, tasks: txx}}}
+`
+	cache, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	file := filepath.Join(t.TempDir(), "a-file")
 	require.NoError(t, os.WriteFile(file, nil, 0o644))
+	missing := filepath.Join(cache, "nope")
 	for _, c := range []struct {
-		name, flag, want, warn string
+		name, flag string
+		only       []string // the sandboxes selected, all when nil
+		want, warn string
 	}{
-		{"none", "", "", ""},
-		{"a directory", cache, cache, ""},
-		{"relative", ".", "", ""}, // want is the cwd, set below
-		{"missing", filepath.Join(cache, "nope"), "", "going on without it"},
-		{"a file", file, "", "not a directory"},
+		{"none", "", nil, "", ""},
+		{"a directory", cache, nil, cache, ""},
+		{"relative", ".", nil, cache, ""},
+		{"missing", missing, nil, "", "going on without it"},
+		{"a file", file, nil, "", "not a directory"},
+		{"missing, with no sandbox to use it", missing, []string{"vmx", "dkr"}, "", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
 			if c.flag == "." {
 				t.Chdir(cache)
-				c.want = cache
 			}
-			cfg := parseCfg(t, initCfg)
-			h := newFakeHost("my/image:1")
-			var got []string
+			cfg := parseCfg(t, lxdCfg)
+			h := newFakeHost("my/image:1", "srv:mine")
+			got := map[string]string{}
 			old := hostFor
 			hostFor = func(sb config.Sandbox) (host, error) {
-				got = append(got, placeOptions(sb).ImageCache)
+				got[sb.Name] = placeOptions(sb).ImageCache
 				return h, nil
 			}
 			t.Cleanup(func() { hostFor = old })
 			var out bytes.Buffer
-			require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, ImageCache: c.flag}))
-			require.That(t, len(got) > 0, "no host was opened")
-			want, err := filepath.EvalSymlinks(c.want)
-			if c.want == "" {
-				want, err = "", nil
-			}
-			require.NoError(t, err)
-			for _, g := range got {
-				if g != "" {
+			require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, ImageCache: c.flag, Sandboxes: c.only}), out.String())
+			if c.only == nil {
+				_, opened := got["box"]
+				require.That(t, opened, "the lxd sandbox's host was not opened: %v", got)
+				if g := got["box"]; g != "" {
 					g, err = filepath.EvalSymlinks(g)
 					require.NoError(t, err)
+					assert.Equal(t, g, c.want)
+				} else {
+					assert.Equal(t, g, c.want)
 				}
-				assert.Equal(t, g, want)
 			}
+			assert.Equal(t, got["vmx"], "") // a vm's image is not in the cache
+			assert.Equal(t, got["dkr"], "") // nor a container engine's
 			if c.warn == "" {
 				assert.That(t, !strings.Contains(out.String(), "image cache"), "warned of a cache: %s", out.String())
 			} else {

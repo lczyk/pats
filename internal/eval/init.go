@@ -57,10 +57,19 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	if err != nil {
 		return err
 	}
-	if cache := imageCacheDir(opts.ImageCache, lg); cache != "" {
-		for i := range sbs {
-			sbs[i].ImageCache = cache
+	// only a sandbox that can take an image from the cache is told of it,
+	// and the directory is looked at only when one is there.
+	var cache string
+	for i := range sbs {
+		if opts.ImageCache == "" || sbs[i].Driver != sandbox.LXDDriver || sbs[i].VM {
+			continue
 		}
+		if cache == "" {
+			if cache = imageCacheDir(opts.ImageCache, lg); cache == "" {
+				break
+			}
+		}
+		sbs[i].ImageCache = cache
 	}
 	// a run reads its pins once and starts each pair from them: init in the
 	// same project waits for no run, so it may not remove an image one uses.
