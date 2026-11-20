@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/lczyk/pats/internal/version"
@@ -70,6 +71,21 @@ func (s lxdImageSpec) warn(log io.Writer, format string, a ...any) {
 	if s.Warn != nil {
 		s.Warn(msg)
 	}
+}
+
+// publishCompression is what a built image is compressed with, in place of
+// the server's default, gzip: several times faster to write and to unpack,
+// at about the size.
+const publishCompression = "zstd"
+
+// noCompression says whether why, the last line of a failed publish, refuses
+// the compression asked for: a server without the tool, or a client from
+// before the flag. either refuses before any image is made.
+func noCompression(why string) bool {
+	why = strings.ToLower(why)
+	return strings.Contains(why, "invalid compression algorithm") ||
+		strings.Contains(why, "unknown flag: --compression") ||
+		strings.Contains(why, `"`+publishCompression+`"`)
 }
 
 // lowPoolSpace is the free space under which a build warns: a builder and
@@ -441,8 +457,13 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 		}
 		_, _ = l.lxc(bg, "image", "delete", l.ref(private), "--project", lxdProject)
 	}()
-	if _, err := l.lxc(ctx, pub...); err != nil {
-		return "", err
+	said, perr := l.lxc(ctx, append(slices.Clone(pub), "--compression", publishCompression)...)
+	if why := lastLine(said); perr != nil && noCompression(why) {
+		spec.warn(log, "%s does not publish with %s compression (%s); publishing with its default, which is slower", l.o.Remote, publishCompression, why)
+		_, perr = l.lxc(ctx, pub...)
+	}
+	if perr != nil {
+		return "", perr
 	}
 	fp, err = l.fingerprint(ctx, private)
 	if err != nil {

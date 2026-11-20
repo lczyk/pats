@@ -53,6 +53,9 @@ type fakeServer struct {
 
 	// probe answers.
 	offline bool // the online probe fails
+	// noCompression are the algorithms a publish is refused with, as a
+	// server without the tool refuses.
+	noCompression map[string]bool
 	// upstream is the machine's proxy, ip:port: an open bridge reaches it
 	// unless its acl rejects the address.
 	upstream string
@@ -105,6 +108,7 @@ type fakeImage struct {
 	props              map[string]string
 	aliases            []string
 	lastUsed, uploaded time.Time
+	compression        string // what it was published with, "" for the server's default
 }
 
 type fakeOp struct {
@@ -200,7 +204,7 @@ func (a fakeArgs) flag(name string) string {
 func (f *fakeServer) parse(args []string) (fakeArgs, error) {
 	a := fakeArgs{flags: map[string][]string{}, bools: map[string]bool{}}
 	valued := map[string]bool{"--project": true, "--target-project": true, "-X": true, "--storage": true, "-c": true, "-d": true, "-p": true, "-n": true,
-		"--user": true, "--group": true, "--cwd": true, "--env": true, "--alias": true}
+		"--user": true, "--group": true, "--cwd": true, "--env": true, "--alias": true, "--compression": true}
 	boolean := map[string]bool{"--vm": true, "--force": true, "--force-noninteractive": true}
 	for i := 0; i < len(args); i++ {
 		s := args[i]
@@ -748,9 +752,13 @@ func (f *fakeServer) publish(stderr io.Writer, a fakeArgs) error {
 	if alias != "" && f.lookupImage(alias) != "" {
 		return lxcFail(stderr, "Alias already exists")
 	}
+	compression := a.flag("--compression")
+	if compression != "" && f.noCompression[compression] {
+		return lxcFail(stderr, "Invalid compression algorithm %q", compression)
+	}
 	f.seq++
 	fp := fakeFP(fmt.Sprintf("%s/%d", a.pos[1], f.seq))
-	im := &fakeImage{props: kv(a.pos[3:])}
+	im := &fakeImage{props: kv(a.pos[3:]), compression: compression}
 	if alias != "" {
 		im.aliases = []string{alias}
 	}

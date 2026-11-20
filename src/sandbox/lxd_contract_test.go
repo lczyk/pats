@@ -142,7 +142,7 @@ var lxdContracts = []struct {
 		inst, alias := "pats-ct-"+c.tag+"-pub", "pats-img-ct-"+c.tag
 		c.must(t, "init", c.image, c.ref(inst), "--project", lxdProject, "--storage", c.pool)
 		c.later(t, "delete", c.ref(inst), "--project", lxdProject, "--force")
-		c.must(t, "publish", c.ref(inst), c.remote+":", "--project", lxdProject, "--alias", alias, "user.pats.run=ct")
+		c.must(t, "publish", c.ref(inst), c.remote+":", "--project", lxdProject, "--alias", alias, "user.pats.run=ct", "--compression", publishCompression)
 		c.later(t, "image", "delete", c.ref(alias), "--project", lxdProject)
 		info := c.must(t, "image", "info", c.ref(alias), "--project", lxdProject)
 		fp := ""

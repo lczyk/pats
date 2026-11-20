@@ -644,6 +644,87 @@ func TestLXDImagePropsAndForceOnServer(t *testing.T) {
 	}
 }
 
+// a build is published with pats's compression. a server that refuses it
+// gets its own default, said once; any other failed publish is not retried.
+func TestLXDImagePublishCompression(t *testing.T) {
+	publishes := func(f *fakeServer) (out []string) {
+		for _, c := range f.all() {
+			if strings.HasPrefix(c, "publish ") {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	noPrivate := func(t *testing.T, f *fakeServer) {
+		for _, im := range f.images {
+			for _, a := range im.aliases {
+				assert.That(t, !runPrivateAlias(a), "a run-private alias was left: %s", a)
+			}
+		}
+	}
+	t.Run("asked for", func(t *testing.T) {
+		f := newFakeServer(t)
+		l := lxdOn(t, f, Options{})
+		alias, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "img", Argv: []string{"true"}}, io.Discard)
+		require.NoError(t, err)
+		assert.Equal(t, f.images[f.lookupImage(alias)].compression, publishCompression)
+		assert.Len(t, publishes(f), 1)
+	})
+	t.Run("refused by the server", func(t *testing.T) {
+		f := newFakeServer(t)
+		f.noCompression = map[string]bool{publishCompression: true}
+		l := lxdOn(t, f, Options{})
+		var warns []string
+		spec := lxdImageSpec{Base: "img", Argv: []string{"true"}, Warn: func(m string) { warns = append(warns, m) }}
+		alias, _, _, built, err := l.image(context.Background(), spec, io.Discard)
+		require.NoError(t, err)
+		assert.That(t, built, "the build did not build")
+		assert.Equal(t, f.images[f.lookupImage(alias)].compression, "")
+		got := publishes(f)
+		require.Len(t, got, 2)
+		assert.ContainsString(t, got[0], "--compression "+publishCompression)
+		assert.That(t, !strings.Contains(got[1], "--compression"), "the retry still asks for a compression: %s", got[1])
+		require.Len(t, warns, 1)
+		assert.ContainsString(t, warns[0], publishCompression)
+		noPrivate(t, f)
+	})
+	t.Run("another failure", func(t *testing.T) {
+		f := newFakeServer(t)
+		// the run-private alias is taken as the publish arrives.
+		f.before = func(args []string) {
+			if args[0] != "publish" {
+				return
+			}
+			for i, a := range args {
+				if a == "--alias" {
+					f.images[fakeFP("squatter")] = &fakeImage{aliases: []string{args[i+1]}}
+				}
+			}
+		}
+		l := lxdOn(t, f, Options{})
+		_, _, _, _, err := l.image(context.Background(), lxdImageSpec{Base: "img", Argv: []string{"true"}}, io.Discard)
+		assert.Error(t, err, "Alias already exists")
+		assert.Len(t, publishes(f), 1)
+	})
+}
+
+// only a refusal of the compression itself is one: a failure that merely
+// mentions the word is returned as it is.
+func TestNoCompression(t *testing.T) {
+	for why, want := range map[string]bool{
+		`Error: Invalid compression algorithm "zstd"`:                      true, // lxd 5.21, as recorded
+		`Error: unknown flag: --compression`:                               true, // a client from before the flag
+		`Error: exec: "zstd": executable file not found in $PATH`:          true,
+		`Error: Alias already exists`:                                      false,
+		`Error: open /srv/compression/backup.tar: no such file`:            false,
+		`Error: Failed to run: zstd --version: exit status 1`:              false,
+		`Error: The instance is currently running. Use --force to have it`: false,
+		"": false,
+	} {
+		assert.Equal(t, noCompression(why), want, why)
+	}
+}
+
 // the key carries the pats version, and a Key stands for the material.
 func TestImageKeyVersionAndKey(t *testing.T) {
 	old := version.Info
