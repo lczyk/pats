@@ -150,6 +150,10 @@ type Options struct {
 	VM       bool   // virtual machines rather than system containers
 	Uplink   string // an existing bridge for builders and proxies; "" -> pats's own
 	ProxyBin string // a linux pats for the server's arch, put in the proxy image
+	// ImageCache is a directory of exported images, a file each under its
+	// alias: one the server lacks is imported from there
+	// (docs/spec/image-cache.md). "" for none.
+	ImageCache string
 	// EgressPool is the cidr egress networks are carved from; "" -> the
 	// default. docker, podman and lxd.
 	EgressPool string

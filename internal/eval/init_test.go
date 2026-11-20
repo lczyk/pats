@@ -92,6 +92,62 @@ func TestInitPinsContainers(t *testing.T) {
 	assert.That(t, f.entry("fake:host", "own").Image.Pulled, "a re-init forgot pats pulled the image")
 }
 
+// init hands its image cache to each sandbox's driver, as an absolute path.
+// one that is no directory it can read is a warning, and init goes on as
+// with no flag.
+func TestInitImageCache(t *testing.T) {
+	cache := t.TempDir()
+	file := filepath.Join(t.TempDir(), "a-file")
+	require.NoError(t, os.WriteFile(file, nil, 0o644))
+	for _, c := range []struct {
+		name, flag, want, warn string
+	}{
+		{"none", "", "", ""},
+		{"a directory", cache, cache, ""},
+		{"relative", ".", "", ""}, // want is the cwd, set below
+		{"missing", filepath.Join(cache, "nope"), "", "going on without it"},
+		{"a file", file, "", "not a directory"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if c.flag == "." {
+				t.Chdir(cache)
+				c.want = cache
+			}
+			cfg := parseCfg(t, initCfg)
+			h := newFakeHost("my/image:1")
+			var got []string
+			old := hostFor
+			hostFor = func(sb config.Sandbox) (host, error) {
+				got = append(got, placeOptions(sb).ImageCache)
+				return h, nil
+			}
+			t.Cleanup(func() { hostFor = old })
+			var out bytes.Buffer
+			require.NoError(t, Init(cfg, InitOptions{ConfigDir: dir, Out: &out, ImageCache: c.flag}))
+			require.That(t, len(got) > 0, "no host was opened")
+			want, err := filepath.EvalSymlinks(c.want)
+			if c.want == "" {
+				want, err = "", nil
+			}
+			require.NoError(t, err)
+			for _, g := range got {
+				if g != "" {
+					g, err = filepath.EvalSymlinks(g)
+					require.NoError(t, err)
+				}
+				assert.Equal(t, g, want)
+			}
+			if c.warn == "" {
+				assert.That(t, !strings.Contains(out.String(), "image cache"), "warned of a cache: %s", out.String())
+			} else {
+				assert.ContainsString(t, out.String(), "WARN image cache "+c.flag)
+				assert.ContainsString(t, out.String(), c.warn)
+			}
+		})
+	}
+}
+
 // init takes .pats/lock: a run in the same project reads its pins once, and
 // an init beside it could remove an image the run's next pair needs.
 func TestInitTakesDirLock(t *testing.T) {

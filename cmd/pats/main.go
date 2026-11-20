@@ -61,12 +61,13 @@ func (c *CleanCommand) Execute(args []string) error {
 
 // InitCommand makes and pins the sandboxes' images.
 type InitCommand struct {
-	Agents    []string `long:"agent" short:"a" description:"only the sandboxes these agents or agent vectors use (repeatable); default: all"`
-	Tasks     []string `long:"task" short:"t" description:"only the sandboxes these tasks' pairs use (repeatable); default: all"`
-	Suites    []string `long:"suite" short:"S" description:"only the sandboxes these suites or suite vectors use (repeatable); default: all"`
-	Sandboxes []string `long:"sandbox" description:"only these sandboxes (repeatable); default: every one the selection uses"`
-	Driver    string   `long:"driver" description:"only sandboxes of this driver"`
-	Force     bool     `long:"force" description:"rebuild and re-pull what already exists"`
+	Agents     []string `long:"agent" short:"a" description:"only the sandboxes these agents or agent vectors use (repeatable); default: all"`
+	Tasks      []string `long:"task" short:"t" description:"only the sandboxes these tasks' pairs use (repeatable); default: all"`
+	Suites     []string `long:"suite" short:"S" description:"only the sandboxes these suites or suite vectors use (repeatable); default: all"`
+	Sandboxes  []string `long:"sandbox" description:"only these sandboxes (repeatable); default: every one the selection uses"`
+	Driver     string   `long:"driver" description:"only sandboxes of this driver"`
+	Force      bool     `long:"force" description:"rebuild and re-pull what already exists"`
+	ImageCache string   `long:"image-cache" value-name:"dir" description:"a directory of exported lxd images, a file each under its alias: one a server lacks is imported from there, not built"`
 }
 
 func (c *InitCommand) Execute(args []string) error {
@@ -75,15 +76,16 @@ func (c *InitCommand) Execute(args []string) error {
 		return err
 	}
 	return eval.Init(cfg, eval.InitOptions{
-		ConfigDir: filepath.Dir(opts.Config),
-		Out:       os.Stdout,
-		Suites:    c.Suites,
-		Agents:    c.Agents,
-		Tasks:     c.Tasks,
-		Sandboxes: c.Sandboxes,
-		Driver:    c.Driver,
-		Force:     c.Force,
-		Verbose:   len(opts.Verbose),
+		ConfigDir:  filepath.Dir(opts.Config),
+		Out:        os.Stdout,
+		Suites:     c.Suites,
+		Agents:     c.Agents,
+		Tasks:      c.Tasks,
+		Sandboxes:  c.Sandboxes,
+		Driver:     c.Driver,
+		Force:      c.Force,
+		ImageCache: c.ImageCache,
+		Verbose:    len(opts.Verbose),
 	})
 }
 

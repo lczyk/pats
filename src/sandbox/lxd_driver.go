@@ -84,7 +84,7 @@ func (l *lxd) Resolve(ctx context.Context, ref string) (Image, error) {
 	if err != nil {
 		return Image{}, err
 	}
-	fp, err := c.fingerprint(ctx, ref)
+	fp, err := c.resolve(ctx, ref)
 	if err != nil {
 		return Image{}, noImage(err)
 	}

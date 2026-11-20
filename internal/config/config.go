@@ -92,6 +92,9 @@ type Sandbox struct {
 	// ProxyImage is the egress proxy image a run starts its proxies from: the
 	// pinned one, set by the run from the pins, never by pats.yaml.
 	ProxyImage string `yaml:"-"`
+	// ImageCache is the directory init may import images from, set by init
+	// from its flag, never by pats.yaml (docs/spec/image-cache.md).
+	ImageCache string `yaml:"-"`
 	// Components are the harness versions stamped into the pinned image, and
 	// Placed what init placed of each harness cli there.
 	Components map[string]string            `yaml:"-"`

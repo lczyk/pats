@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -151,4 +152,66 @@ func TestLXDE2EPlacesHarness(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, built, false)
 	assert.Equal(t, again.ID, img.ID)
+}
+
+// an image exported by its alias, removed from the server and found in the
+// image cache comes back as it was: under its alias, with its fingerprint
+// and the properties its publish set, and nothing is built
+// (docs/spec/image-cache.md). the export is the one a ci runs.
+func TestLXDE2EImageCache(t *testing.T) {
+	if os.Getenv("PATS_LXD_E2E") == "" {
+		t.Skip("set PATS_LXD_E2E=1 to drive a real lxd server")
+	}
+	ctx := context.Background()
+	defer Shutdown()
+	lxc := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("lxc", args...).CombinedOutput()
+		require.NoError(t, err, "lxc %s: %s", strings.Join(args, " "), out)
+		return string(out)
+	}
+	remote := strings.TrimSpace(lxc("remote", "get-default"))
+	props := func(fp string) map[string]string {
+		var im struct {
+			Properties map[string]string `json:"properties"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(lxc("query", remote+":/1.0/images/"+fp+"?project="+lxdProject)), &im))
+		return im.Properties
+	}
+
+	// an argv no other test builds: the image is this test's to remove.
+	spec := BuildSpec{Base: "ubuntu:24.04", Argv: []string{"sh", "-c", "echo image-cache-e2e > /etc/pats-e2e"}, Role: "project", Sandbox: "e2e-cache"}
+	d, err := Open(Options{Driver: "lxd"}.WithEnv())
+	require.NoError(t, err)
+	var log bytes.Buffer
+	img, _, _, err := d.Build(ctx, spec, &log)
+	require.NoError(t, err, "%v\n%s", err, log.String())
+	t.Cleanup(func() {
+		_, _ = exec.Command("lxc", "image", "delete", remote+":"+img.Name, "--project", lxdProject).CombinedOutput()
+	})
+	before := props(img.ID)
+
+	dir := t.TempDir()
+	lxc("image", "export", remote+":"+img.Name, filepath.Join(dir, img.Name), "--project", lxdProject)
+	ents, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, ents, 1) // a unified image: one file
+	assert.That(t, strings.HasPrefix(ents[0].Name(), img.Name+".tar"), "the export is named %s, not the alias and .tar", ents[0].Name())
+	sum, err := fileSHA256(filepath.Join(dir, ents[0].Name()))
+	require.NoError(t, err)
+	assert.Equal(t, sum, img.ID) // the file's hash is the fingerprint
+
+	lxc("image", "delete", remote+":"+img.Name, "--project", lxdProject)
+	cached, err := Open(Options{Driver: "lxd", ImageCache: dir}.WithEnv())
+	require.NoError(t, err)
+	log.Reset()
+	again, _, built, err := cached.Build(ctx, spec, &log)
+	require.NoError(t, err, "%v\n%s", err, log.String())
+	assert.That(t, !built, "the image was built with its file in the cache:\n%s", log.String())
+	assert.Equal(t, again, img)
+	after := props(again.ID)
+	for _, k := range []string{"pats.inputs", "pats.role", "pats.sandbox", "pats.version", "pats.stamped"} {
+		assert.Equal(t, after[k], before[k], k)
+		assert.That(t, before[k] != "", "%s was not set at the publish", k)
+	}
 }

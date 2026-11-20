@@ -32,6 +32,9 @@ type InitOptions struct {
 	Driver    string   // narrow to sandboxes of this driver
 	Force     bool     // rebuild and re-pull what exists
 	Verbose   int      // -v count: 1 adds build steps, 2 streams the builds
+	// ImageCache is a directory of exported images init imports from where
+	// a server lacks one (docs/spec/image-cache.md); "" for none.
+	ImageCache string
 }
 
 // Init makes every image the selected pairs' sandboxes need and pins it in
@@ -53,6 +56,11 @@ func Init(cfg *config.Config, opts InitOptions) error {
 	sbs, err := initSandboxes(cfg, opts)
 	if err != nil {
 		return err
+	}
+	if cache := imageCacheDir(opts.ImageCache, lg); cache != "" {
+		for i := range sbs {
+			sbs[i].ImageCache = cache
+		}
 	}
 	// a run reads its pins once and starts each pair from them: init in the
 	// same project waits for no run, so it may not remove an image one uses.
@@ -152,6 +160,30 @@ func Init(cfg *config.Config, opts InitOptions) error {
 		return fmt.Errorf("init failed for sandbox(es) %s", strings.Join(failed, ", "))
 	}
 	return nil
+}
+
+// imageCacheDir is init's image cache as the drivers take it: absolute, and
+// "" with a warning when it is no directory init can read, so init goes on
+// as with no flag.
+func imageCacheDir(dir string, lg logw) string {
+	if dir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err == nil {
+		var st os.FileInfo
+		if st, err = os.Stat(abs); err == nil && !st.IsDir() {
+			err = errors.New("not a directory")
+		}
+		if err == nil {
+			_, err = os.ReadDir(abs)
+		}
+	}
+	if err != nil {
+		lg.warn("image cache %s: %v; going on without it", dir, err)
+		return ""
+	}
+	return abs
 }
 
 // initSandboxes is what init makes: the sandboxes the selected pairs use,

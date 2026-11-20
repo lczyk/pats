@@ -102,7 +102,7 @@ func (l *lxd) image(ctx context.Context, spec lxdImageSpec, log io.Writer) (alia
 	if err := l.prepareServer(ctx); err != nil {
 		return "", "", "", false, err
 	}
-	base, err = l.fingerprint(ctx, spec.Base)
+	base, err = l.resolve(ctx, spec.Base)
 	if err != nil {
 		return "", "", "", false, fmt.Errorf("base %s: %w", spec.Base, err)
 	}
@@ -111,8 +111,18 @@ func (l *lxd) image(ctx context.Context, spec lxdImageSpec, log io.Writer) (alia
 		return "", "", "", false, err
 	}
 	alias = "pats-img-" + key
-	if fp, err := l.fingerprint(ctx, alias); err == nil && !spec.Force {
-		return alias, fp, base, false, nil
+	if !spec.Force {
+		if fp, err := l.fingerprint(ctx, alias); err == nil {
+			return alias, fp, base, false, nil
+		}
+		fp, err := l.importCached(ctx, alias, builtAs(key))
+		switch {
+		case err == nil:
+			spec.step(log, "imported lxd image %s from %s", alias, l.o.ImageCache)
+			return alias, fp, base, false, nil
+		case !errors.Is(err, errNoCached):
+			spec.warn(log, "%v; building it", err)
+		}
 	}
 	spec.step(log, "building lxd image %s on %s from %s", alias, l.o.Remote, spec.Base)
 	if free, total, ok := l.poolSpace(ctx); ok && free < lowPoolSpace {

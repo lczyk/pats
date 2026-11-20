@@ -57,7 +57,7 @@ var hostFor = func(sb config.Sandbox) (host, error) {
 
 // placeOptions are the driver options of the place a sandbox runs on.
 func placeOptions(sb config.Sandbox) sandbox.Options {
-	return sandbox.Options{Driver: sb.Driver, Remote: sb.Remote, VM: sb.VM}.WithEnv()
+	return sandbox.Options{Driver: sb.Driver, Remote: sb.Remote, VM: sb.VM, ImageCache: sb.ImageCache}.WithEnv()
 }
 
 // newSandbox makes a sandbox on a place, swappable in tests to run the

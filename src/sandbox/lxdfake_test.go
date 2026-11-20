@@ -10,12 +10,15 @@ import (
 	"io"
 	"net/netip"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // fakeServer answers the lxc cli the way an lxd 5.21 server does, for the
@@ -53,6 +56,9 @@ type fakeServer struct {
 
 	// probe answers.
 	offline bool // the online probe fails
+	// importSeen, when set, sees an import's fingerprint before the server
+	// decides on it, f.mu held: a test's place to have another client win.
+	importSeen func(fp string)
 	// noCompression are the algorithms a publish is refused with, as a
 	// server without the tool refuses.
 	noCompression map[string]bool
@@ -692,6 +698,34 @@ func (f *fakeServer) image(stdout, stderr io.Writer, a fakeArgs) error {
 		}
 		f.images[fp] = &fakeImage{props: map[string]string{}}
 		f.copies++
+		return nil
+	case p[1] == "import":
+		if err := f.needProject(stderr, a, lxdProject); err != nil {
+			return err
+		}
+		if len(p) != 4 || p[3] != f.remote+":" {
+			f.t.Errorf("fake lxd: image import %v, not one file to the pinned remote", p[2:])
+		}
+		if a.flag("--alias") != "" {
+			f.t.Errorf("fake lxd: image import --alias, which replaces an alias that is there")
+		}
+		data, err := os.ReadFile(p[2])
+		if err != nil {
+			return lxcFail(stderr, "%v", err)
+		}
+		props, err := fakeImageProps(data)
+		if err != nil {
+			return lxcFail(stderr, "Failed to parse the image: %v", err)
+		}
+		sum := sha256.Sum256(data)
+		fp := hex.EncodeToString(sum[:])
+		if f.importSeen != nil {
+			f.importSeen(fp)
+		}
+		if f.images[fp] != nil {
+			return lxcFail(stderr, "Image with same fingerprint already exists")
+		}
+		f.images[fp] = &fakeImage{props: props}
 		return nil
 	case p[1] == "alias" && p[2] == "create":
 		if err := f.needProject(stderr, a, lxdProject); err != nil {
@@ -1334,4 +1368,33 @@ func parseEnvScript(s string) map[string]string {
 		env[k] = strings.ReplaceAll(v, `'\''`, "'")
 	}
 	return env
+}
+
+// fakeImageProps reads an exported image as lxd does at an import: a tar
+// with a metadata.yaml, whose properties are the image's.
+func fakeImageProps(data []byte) (map[string]string, error) {
+	tr := tar.NewReader(strings.NewReader(string(data)))
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			return nil, fmt.Errorf("no metadata.yaml: %v", err)
+		}
+		if h.Name != "metadata.yaml" {
+			continue
+		}
+		var meta struct {
+			Properties map[string]string `yaml:"properties"`
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		if err := yaml.Unmarshal(b, &meta); err != nil {
+			return nil, err
+		}
+		if meta.Properties == nil {
+			meta.Properties = map[string]string{}
+		}
+		return meta.Properties, nil
+	}
 }
