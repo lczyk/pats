@@ -7,23 +7,23 @@ class Pats < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/lczyk/pats/releases/download/v1.3.0/pats_1.3.0_darwin_arm64.tar.gz"
-      sha256 "b308e9701ad78891018782cdace5866535d75d4b0bc771defa79e975a1f6ff47"
+      url "https://github.com/lczyk/pats/releases/download/v1.3.1/pats_1.3.1_darwin_arm64.tar.gz"
+      sha256 "733cb44a3d1e66b0eba27b3577511b6c7f44c950630123b46680430a1b157d7b"
     end
     on_intel do
-      url "https://github.com/lczyk/pats/releases/download/v1.3.0/pats_1.3.0_darwin_amd64.tar.gz"
-      sha256 "0857efd76688bd4a6ad82b0a067e7f3539cff1e2b462218dc5c61f72ae9091c8"
+      url "https://github.com/lczyk/pats/releases/download/v1.3.1/pats_1.3.1_darwin_amd64.tar.gz"
+      sha256 "14db59eac0463a8900ccb63390747927ca00263c728d3d2b02d36fc18e7c3d0f"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/lczyk/pats/releases/download/v1.3.0/pats_1.3.0_linux_arm64.tar.gz"
-      sha256 "006aac24df6a2d9ffcf65cac27c2caadfd12c1cc048ee246bd385c9cd9d71289"
+      url "https://github.com/lczyk/pats/releases/download/v1.3.1/pats_1.3.1_linux_arm64.tar.gz"
+      sha256 "0ecfed6e000285ea92e8defadf58f2eca7a3a959ef8789022e5e7f8f9c80dde3"
     end
     on_intel do
-      url "https://github.com/lczyk/pats/releases/download/v1.3.0/pats_1.3.0_linux_amd64.tar.gz"
-      sha256 "50b5d4c98a906ad1bd1b0ac96ed108e4469f374b1d2b3b14676e9012d01fde8e"
+      url "https://github.com/lczyk/pats/releases/download/v1.3.1/pats_1.3.1_linux_amd64.tar.gz"
+      sha256 "c7f35ef3f9e80a18e937c0e084670428277f0d74aab9159ac03756f7b242f26d"
     end
   end
 
