@@ -39,7 +39,7 @@ var (
 	// probeAgentUser: the agent user, made when the image lacks it; prints
 	// whether the image can start a command with that user's groups
 	// (groupsVerdict), then its uid last.
-	probeAgentUser = probe{"agent-user", "sh", `id -u ` + lxdAgentUser + ` >/dev/null 2>&1 || useradd -m -s /bin/bash ` + lxdAgentUser + `; u=$(id -u ` + lxdAgentUser + `); setpriv --reuid "$u" --regid "$u" --init-groups true >/dev/null 2>&1 && echo init-groups=1 || echo init-groups=0; echo "$u"`}
+	probeAgentUser = probe{"agent-user", "sh", `id -u ` + lxdAgentUser + ` >/dev/null 2>&1 || useradd -m -s /bin/bash ` + lxdAgentUser + `; u=$(id -u ` + lxdAgentUser + `); setpriv --reuid "$u" --regid "$(id -g ` + lxdAgentUser + `)" --init-groups true >/dev/null 2>&1 && echo init-groups=1 || echo init-groups=0; echo "$u"`}
 	// probeProxyUser: the proxy user's uid.
 	probeProxyUser = probe{"proxy-user", "sh", `id -u ` + lxdProxyUser}
 )

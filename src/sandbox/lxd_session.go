@@ -248,15 +248,20 @@ func (s *lxdSession) ensureAgentUser(ctx context.Context) error {
 // asAgentScript starts "$@" as uid $1 with the groups that user has at that
 // moment, as a login would give it. `lxc exec --user --group` sets the uid
 // and the primary gid only, so a group a root step added (prepare's `usermod
-// -aG`) would never reach the agent. it runs as root, so HOME and USER are
-// what lxc set for root: they become the user's, unless the env named a HOME.
+// -aG`) would never reach the agent. it runs as root, so HOME, USER and
+// LOGNAME are what lxc set for root: they become the user's, unless the env
+// named a HOME. the name, primary gid and home come off /etc/passwd with the
+// shell's own read, so the image needs neither getent nor id.
 const asAgentScript = `u=$1; shift
-n=$(id -nu "$u") || exit 126
-h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+n=
+while IFS=: read -r pn _ pu pg _ ph _ || [ -n "$pn" ]; do
+	if [ "$pu" = "$u" ]; then n=$pn g=$pg h=$ph; break; fi
+done </etc/passwd
+[ -n "$n" ] || exit 126
 if [ "${HOME:-/root}" = /root ] && [ -n "$h" ]; then HOME=$h; fi
-USER=$n
-export HOME USER
-exec setpriv --reuid "$u" --regid "$u" --init-groups -- "$@"`
+USER=$n LOGNAME=$n
+export HOME USER LOGNAME
+exec setpriv --reuid "$u" --regid "$g" --init-groups -- "$@"`
 
 // asAgent wraps argv to run as the agent user with its groups.
 func (s *lxdSession) asAgent(argv []string) []string {
