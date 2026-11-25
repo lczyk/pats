@@ -36,6 +36,7 @@ type lxdSession struct {
 	bridge     string // the pair's bridge and its acl, "" under egress none
 	egress     *lxdEgress
 	uid        string
+	initGroups bool // the image has a setpriv that starts the agent with its groups
 	once       sync.Once
 	closeErr   error
 }
@@ -240,7 +241,26 @@ func (s *lxdSession) ensureAgentUser(ctx context.Context) error {
 	if s.uid, err = uidVerdict(out.String()); err != nil {
 		return fmt.Errorf("lxd: agent user: %w", err)
 	}
+	s.initGroups = groupsVerdict(out.String())
 	return nil
+}
+
+// asAgentScript starts "$@" as uid $1 with the groups that user has at that
+// moment, as a login would give it. `lxc exec --user --group` sets the uid
+// and the primary gid only, so a group a root step added (prepare's `usermod
+// -aG`) would never reach the agent. it runs as root, so HOME and USER are
+// what lxc set for root: they become the user's, unless the env named a HOME.
+const asAgentScript = `u=$1; shift
+n=$(id -nu "$u") || exit 126
+h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+if [ "${HOME:-/root}" = /root ] && [ -n "$h" ]; then HOME=$h; fi
+USER=$n
+export HOME USER
+exec setpriv --reuid "$u" --regid "$u" --init-groups -- "$@"`
+
+// asAgent wraps argv to run as the agent user with its groups.
+func (s *lxdSession) asAgent(argv []string) []string {
+	return append([]string{"/bin/sh", "-c", asAgentScript, "pats-user", s.uid}, argv...)
 }
 
 // paths are the in-instance paths of the binds; writable ones only when rw.
@@ -337,6 +357,10 @@ func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
 	if cmd.Root || user == "" {
 		user = "0"
 	}
+	argv := cmd.Argv
+	if user != "0" && s.initGroups {
+		user, argv = "0", s.asAgent(argv)
+	}
 	dir := cmd.Dir
 	if dir == "" {
 		dir = WorkMount
@@ -350,7 +374,6 @@ func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
 		env = mergeEnv(env, s.machineEnv)
 	}
 	env = mergeEnv(env, cmd.Env)
-	argv := cmd.Argv
 	switch {
 	case len(env) == 0:
 	case stdin == nil:

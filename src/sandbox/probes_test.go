@@ -74,6 +74,13 @@ func TestUIDVerdict(t *testing.T) {
 	assert.Error(t, err, "uid")
 	_, err = uidVerdict("")
 	assert.Error(t, err, "uid")
+	// the groups line sits above the uid and does not disturb it.
+	uid, err = uidVerdict("init-groups=1\n1001\n")
+	require.NoError(t, err)
+	assert.Equal(t, uid, "1001")
+	assert.That(t, groupsVerdict("init-groups=1\n1001\n"), "setpriv worked")
+	assert.That(t, !groupsVerdict("init-groups=0\n1001\n"), "no setpriv")
+	assert.That(t, !groupsVerdict("1001\n"), "an older probe's output")
 }
 
 // the reach probe, run by a real bash against a port that answers and one

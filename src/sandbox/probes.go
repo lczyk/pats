@@ -37,8 +37,9 @@ var (
 	// ($1, at mac $2) and a try out; see hostileVerdict.
 	probeHostile = probe{"hostile", "sh", `ip neigh replace "$1" lladdr "$2" dev pats0 nud permanent && ip route replace default via "$1" dev pats0 && { timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null && echo "egress-hostile leak=1" || echo "egress-hostile leak=0"; }; ip route del default 2>/dev/null; ip neigh del "$1" dev pats0 2>/dev/null; true`}
 	// probeAgentUser: the agent user, made when the image lacks it; prints
-	// its uid last.
-	probeAgentUser = probe{"agent-user", "sh", `id -u ` + lxdAgentUser + ` >/dev/null 2>&1 || useradd -m -s /bin/bash ` + lxdAgentUser + `; id -u ` + lxdAgentUser}
+	// whether the image can start a command with that user's groups
+	// (groupsVerdict), then its uid last.
+	probeAgentUser = probe{"agent-user", "sh", `id -u ` + lxdAgentUser + ` >/dev/null 2>&1 || useradd -m -s /bin/bash ` + lxdAgentUser + `; u=$(id -u ` + lxdAgentUser + `); setpriv --reuid "$u" --regid "$u" --init-groups true >/dev/null 2>&1 && echo init-groups=1 || echo init-groups=0; echo "$u"`}
 	// probeProxyUser: the proxy user's uid.
 	probeProxyUser = probe{"proxy-user", "sh", `id -u ` + lxdProxyUser}
 )
@@ -87,6 +88,12 @@ func hostileVerdict(out string) error {
 		return nil
 	}
 	return fmt.Errorf("egress is not fail-closed under lxd: a root agent routing through the bridge's host side got out (%s)", strings.TrimSpace(out))
+}
+
+// groupsVerdict reads the agent user probe's output: whether setpriv can
+// start a command as that user with its supplementary groups.
+func groupsVerdict(out string) bool {
+	return strings.Contains(out, "init-groups=1")
 }
 
 // uidVerdict reads a uid off the last line of out.
