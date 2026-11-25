@@ -124,7 +124,7 @@ jobs:
 
       # no cache in a workflow that publishes.
       - name: Set up Go
-        uses: actions/setup-go@v7.0.0
+        uses: actions/setup-go@v7.1.0
         with:
           go-version: '1.26'
           cache: false
