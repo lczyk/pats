@@ -207,6 +207,18 @@ func TestLXDExecArgs(t *testing.T) {
 	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / --env A=1 --env B=2 -- tar")
 	b, _ := io.ReadAll(in)
 	assert.Equal(t, string(b), "data")
+	// an image with setpriv starts the agent through it, so the agent has
+	// its user's groups: lxc's --user and --group give it none. root steps
+	// stay as they were.
+	s.initGroups = true
+	argv, _ = s.execArgs(Cmd{Argv: []string{"run", "it"}}, nil)
+	asAgent := strings.Join(s.asAgent(nil), " ")
+	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd /workspace -- "+wrap+" "+asAgent+" run it")
+	assert.ContainsString(t, asAgent, "pats-user 1001")
+	argv, _ = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil)
+	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- "+wrap+" id")
+	argv, _ = s.execArgs(Cmd{Argv: []string{"tar"}}, strings.NewReader("data"))
+	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd /workspace --env A=1 --env B=2 -- "+asAgent+" tar")
 
 	l, f := fakeLXD(t, Options{Driver: "lxd", VM: true}, SandboxOptions{Image: "img"})
 	_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})

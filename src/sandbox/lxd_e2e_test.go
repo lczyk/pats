@@ -70,6 +70,15 @@ func TestLXDE2E(t *testing.T) {
 		code, out := run(t, sess, false, "id -un; cat seed; echo agent >> rootfile; ip -br link | grep -vc '^lo'")
 		assert.Equal(t, code, 1, "%s", out) // grep -c counts no nic but lo, and exits 1
 		assert.ContainsString(t, out, "pats\nhost\n0\n")
+		// a group a root step gives the agent user reaches the agent, and
+		// its own names stand in the env: plain `lxc exec --user --group`
+		// would leave the group list empty.
+		code, out = run(t, sess, true, "groupadd pats-e2e && usermod -aG pats-e2e pats")
+		assert.Equal(t, code, 0, "%s", out)
+		code, out = run(t, sess, false, `id -Gn; echo "$USER $LOGNAME $(id -gn)"`)
+		assert.Equal(t, code, 0, "%s", out)
+		assert.ContainsString(t, out, "pats-e2e")
+		assert.ContainsString(t, out, "pats pats pats\n")
 		require.NoError(t, sess.Sync(ctx))
 		b, err := os.ReadFile(filepath.Join(work, "rootfile"))
 		require.NoError(t, err)

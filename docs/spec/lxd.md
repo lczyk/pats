@@ -147,6 +147,10 @@ type Session interface {
   see cleanup.
 - the agent runs as a `pats` user at the next free uid (ubuntu images already have `ubuntu` at 1000), never as plain
   root: harnesses refuse their permission-bypass flags as root (claude code unless `IS_SANDBOX=1`, to verify).
+  it starts through `setpriv --init-groups`, so it has the groups its user has at that moment: `lxc exec --user
+  --group` sets the uid and the primary gid only, and a group a root step added (`usermod -aG lxd pats` in a task's
+  `prepare`) would not reach it. an image without `setpriv` keeps the plain `--user --group` and no supplementary
+  groups.
 - files: tar over exec, one stream per dir, written and read in go on the host side: the workdir and every mount are
   pushed at start, and after the agent the writable ones are pulled back over their host copies (the session's
   `Sync`; a no-op for docker, whose paths are bound), names leaving the destination refused, symlinks made last and
