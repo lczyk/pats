@@ -1131,11 +1131,11 @@ func (f *fakeServer) probe(ctx context.Context, inst *fakeInst, name, probeName 
 		return nil
 	case "push":
 		f.mu.Unlock()
-		err := readFakeTar(stdin, inst, args[0], args[1], &f.mu)
+		err := readFakeTar(stdin, inst, args[0], args[1], args[3], &f.mu)
 		f.mu.Lock()
 		if err != nil {
 			fmt.Fprintf(stderr, "tar: %v\n", err)
-			return exitStatus(2)
+			return exitStatus(120)
 		}
 		return nil
 	case "handover":
@@ -1211,9 +1211,10 @@ func (f *fakeServer) reachesUpstream(inst *fakeInst, ip, port string) bool {
 }
 
 // readFakeTar extracts a pushed tar into dest; a single file lands at want.
-func readFakeTar(r io.Reader, inst *fakeInst, dest, want string, mu *sync.Mutex) error {
+func readFakeTar(r io.Reader, inst *fakeInst, dest, want, end string, mu *sync.Mutex) error {
 	tr := tar.NewReader(r)
 	var files []string
+	ended := false
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -1221,6 +1222,13 @@ func readFakeTar(r io.Reader, inst *fakeInst, dest, want string, mu *sync.Mutex)
 		}
 		if err != nil {
 			return err
+		}
+		if ended {
+			return fmt.Errorf("%s after the end marker", h.Name)
+		}
+		if h.Name == end {
+			ended = true
+			continue
 		}
 		p := path.Join(dest, h.Name)
 		var b []byte
@@ -1239,6 +1247,9 @@ func readFakeTar(r io.Reader, inst *fakeInst, dest, want string, mu *sync.Mutex)
 		mu.Unlock()
 	}
 	_, _ = io.Copy(io.Discard, r)
+	if !ended {
+		return fmt.Errorf("no end marker %s", end)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	inst.dirs[dest] = true

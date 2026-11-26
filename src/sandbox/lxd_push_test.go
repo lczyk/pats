@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -141,7 +143,7 @@ func TestLXDStartReadOnlyBinds(t *testing.T) {
 			assert.ContainsString(t, c, `do [ -d "$d" ] && chmod a+x "$d"; d=$(dirname "$d"); done`)
 			order = append(order, "file push")
 		case strings.Contains(c, "-- sh -c d=") && strings.Contains(c, " /opt/ref /opt/ref "):
-			assert.ContainsString(t, c, `chown 0:0 "$1" && chmod "$4" "$1"`)
+			assert.ContainsString(t, c, `chown 0:0 "$1" && chmod "$5" "$1"`)
 			order = append(order, "ro push")
 		case strings.Contains(c, " owners "):
 			// parents first, so a bind inside another wins over it.
@@ -175,4 +177,62 @@ func TestLXDStartReadOnlyUnderWritable(t *testing.T) {
 	}})
 	assert.Error(t, err, "read-only /workspace/ref lies under writable /workspace")
 	assert.NotNil(t, f.call("delete"), "the instance outlived the refusal")
+}
+
+// the push script, run by a real shell and tar, lands a whole tar, and
+// refuses one cut short with pushLostCode, a cut at a block boundary (which
+// tar takes for the whole archive) included.
+func TestPushArgvCutTar(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("no tar")
+	}
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "a"), bytes.Repeat([]byte("a"), 15872), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "b"), []byte("b"), 0o644))
+	fi, err := os.Stat(src)
+	require.NoError(t, err)
+	end, err := pushEndName()
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	require.NoError(t, writeTar(&buf, src, fi, tarOpts{end: end}))
+	run := func(in []byte) (string, int) {
+		dest := filepath.Join(t.TempDir(), "dest")
+		argv := pushArgv(dest, end, fi, pushOpts{})
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Stdin = bytes.NewReader(in)
+		out, err := cmd.CombinedOutput()
+		var x *exec.ExitError
+		if errors.As(err, &x) {
+			return dest, x.ExitCode()
+		}
+		require.NoError(t, err, "%s", out)
+		return dest, 0
+	}
+	dest, code := run(buf.Bytes())
+	assert.Equal(t, code, 0)
+	got, err := os.ReadFile(filepath.Join(dest, "b"))
+	require.NoError(t, err)
+	assert.Equal(t, string(got), "b")
+	_, err = os.Stat(filepath.Join(dest, end))
+	assert.That(t, os.IsNotExist(err), "the end marker stayed: %v", err)
+	// 512 header + 15872 data: the cut lands on a block boundary after a.
+	for _, n := range []int{0, 16384, buf.Len() - 1024 - 512} {
+		_, code := run(buf.Bytes()[:n])
+		assert.Equal(t, code, pushLostCode)
+	}
+}
+
+// a push whose tar arrives short goes again, and one that keeps arriving
+// short fails.
+func TestLXDPushRetriesShortTar(t *testing.T) {
+	l, f := fakeLXD(t, Options{Driver: "lxd", Remote: "srv"})
+	src := filepath.Join(t.TempDir(), "creds")
+	require.NoError(t, os.WriteFile(src, []byte("x"), 0o600))
+	s := &lxdSession{l: l, name: "pats-x"}
+	f.cutPushes = pushTries - 1
+	require.NoError(t, s.Push(context.Background(), src, "/etc/creds"))
+	f.cutPushes = pushTries
+	err := s.Push(context.Background(), src, "/etc/creds")
+	require.That(t, err != nil, "a push cut every time succeeded")
+	assert.ContainsString(t, err.Error(), "arrived short")
 }

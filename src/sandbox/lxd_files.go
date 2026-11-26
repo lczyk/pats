@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -42,10 +43,36 @@ func (s *lxdSession) pushBind(ctx context.Context, b bind) error {
 	return s.push(ctx, src, b.path, pushOpts{replace: true, ro: b.ro, masks: b.masks})
 }
 
+// pushLostCode is the push script's exit when the tar arrived short: tar
+// failed, or its last entry, the end marker, is missing. lxc exec can cut
+// stdin short, and a cut at a tar block boundary extracts part of the tree
+// and exits 0.
+const pushLostCode = 120
+
+// pushTries bounds the tries of a push whose tar arrives short.
+const pushTries = 3
+
 func (s *lxdSession) push(ctx context.Context, hostPath, path string, o pushOpts) error {
+	for i := 1; ; i++ {
+		lost, err := s.pushOnce(ctx, hostPath, path, o)
+		if !lost || i == pushTries {
+			if lost {
+				err = fmt.Errorf("push %s: the tar arrived short %d times in a row: %w", hostPath, pushTries, err)
+			}
+			return err
+		}
+	}
+}
+
+// pushOnce is one try at push, and whether the tar arrived short.
+func (s *lxdSession) pushOnce(ctx context.Context, hostPath, path string, o pushOpts) (bool, error) {
 	fi, err := os.Stat(hostPath)
 	if err != nil {
-		return err
+		return false, err
+	}
+	end, err := pushEndName()
+	if err != nil {
+		return false, err
 	}
 	var skip []string
 	for _, m := range o.masks {
@@ -58,10 +85,32 @@ func (s *lxdSession) push(ctx context.Context, hostPath, path string, o pushOpts
 	go func() {
 		// a file goes under the name it lands as: a symlinked source's own
 		// name could be a sibling the image has.
-		err := writeTar(pw, hostPath, fi, tarOpts{ro: o.ro, skip: skip, name: filepath.Base(path)})
+		err := writeTar(pw, hostPath, fi, tarOpts{ro: o.ro, skip: skip, name: filepath.Base(path), end: end})
 		pw.CloseWithError(err)
 		local <- err
 	}()
+	argv := pushArgv(path, end, fi, o)
+	var out bytes.Buffer
+	code, err := s.execIn(ctx, pr, Cmd{Argv: argv, Root: true, Dir: "/"}, &out, &out)
+	pr.Close()
+	// the local side failing is what made the remote tar complain, so it
+	// leads the error.
+	if lerr := <-local; lerr != nil && !errors.Is(lerr, io.ErrClosedPipe) {
+		return false, fmt.Errorf("push %s: %w (in the instance: %s)", hostPath, lerr, strings.TrimSpace(out.String()))
+	}
+	lost := err == nil && code == pushLostCode
+	if err == nil && code != 0 {
+		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(out.String()))
+	}
+	if err != nil {
+		return lost, fmt.Errorf("push %s: %w", hostPath, err)
+	}
+	return false, nil
+}
+
+// pushArgv is the in-instance command that takes push's tar on stdin and
+// lands it at path, checking end, the tar's last entry, arrived.
+func pushArgv(path, end string, fi fs.FileInfo, o pushOpts) []string {
 	dest := path
 	if !fi.IsDir() {
 		dest = filepath.Dir(path)
@@ -78,32 +127,28 @@ func (s *lxdSession) push(ctx context.Context, hostPath, path string, o pushOpts
 	if o.replace && fi.IsDir() {
 		script += ` && rm -rf "$1"/* "$1"/.[!.]* "$1"/..?*`
 	}
-	script += ` && tar -x -m -C "$1"`
+	script += ` && rm -f "$1/$4" && { tar -x -m -C "$1" && [ -f "$1/$4" ] || exit ` + fmt.Sprint(pushLostCode) + `; } && rm -f "$1/$4"`
 	if !fi.IsDir() {
 		script += ` && { [ "$1/$3" = "$2" ] || mv "$1/$3" "$2"; }`
 	}
 	// the tar carries what is under a dir, not the dir: a read-only one is
 	// made root's here, whatever the image had at its path.
-	argv := []string{"sh", "-c", script, "push", dest, path, filepath.Base(path)}
+	argv := []string{"sh", "-c", script, "push", dest, path, filepath.Base(path), end}
 	if o.ro && fi.IsDir() {
-		argv[2] += ` && chown 0:0 "$1" && chmod "$4" "$1"`
+		argv[2] += ` && chown 0:0 "$1" && chmod "$5" "$1"`
 		argv = append(argv, fmt.Sprintf("%o", roModes(int64(fi.Mode().Perm()), true)))
 	}
-	var out bytes.Buffer
-	code, err := s.execIn(ctx, pr, Cmd{Argv: argv, Root: true, Dir: "/"}, &out, &out)
-	pr.Close()
-	// the local side failing is what made the remote tar complain, so it
-	// leads the error.
-	if lerr := <-local; lerr != nil && !errors.Is(lerr, io.ErrClosedPipe) {
-		return fmt.Errorf("push %s: %w (in the instance: %s)", hostPath, lerr, strings.TrimSpace(out.String()))
+	return argv
+}
+
+// pushEndName is a fresh name for a push's end marker, so a marker an
+// earlier push left behind cannot stand in for this one's.
+func pushEndName() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
 	}
-	if err == nil && code != 0 {
-		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(out.String()))
-	}
-	if err != nil {
-		return fmt.Errorf("push %s: %w", hostPath, err)
-	}
-	return nil
+	return fmt.Sprintf(".pats-push-end-%x", b), nil
 }
 
 // tarOpts shape a pushed tree.
@@ -111,6 +156,7 @@ type tarOpts struct {
 	ro   bool
 	skip []string // slash paths, relative to the root, sent as empty dirs
 	name string   // a file's entry name; "" is its own
+	end  string   // the name of an empty file sent last; "" sends none
 }
 
 // pushOpened runs once a pushed file is open and its size taken (a test
@@ -205,7 +251,7 @@ func writeTar(w io.Writer, hostPath string, fi fs.FileInfo, o tarOpts) error {
 		if err := add(hostPath, name); err != nil {
 			return err
 		}
-		return tw.Close()
+		return closeTar(tw, o.end)
 	}
 	masked := func(rel string) (self, under bool) {
 		for _, m := range o.skip {
@@ -250,6 +296,16 @@ func writeTar(w io.Writer, hostPath string, fi fs.FileInfo, o tarOpts) error {
 	})
 	if err != nil {
 		return err
+	}
+	return closeTar(tw, o.end)
+}
+
+// closeTar sends the end marker, when there is one, and ends the tar.
+func closeTar(tw *tar.Writer, end string) error {
+	if end != "" {
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: end, Mode: 0o600}); err != nil {
+			return err
+		}
 	}
 	return tw.Close()
 }

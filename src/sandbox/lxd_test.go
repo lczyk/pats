@@ -30,6 +30,8 @@ type fakeLXC struct {
 	devices map[string]map[string]string // the expanded devices a query returns
 	config  map[string]string
 	failOn  string
+	// cutPushes is how many pushes next get their stdin cut to nothing.
+	cutPushes int
 }
 
 func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
@@ -38,6 +40,12 @@ func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 	if f.failOn != "" && strings.Contains(joined, f.failOn) {
 		io.WriteString(stderr, "Error: fake failure")
 		return &fakeExit{}
+	}
+	if args[0] == "exec" && strings.Contains(joined, "tar -x") && f.cutPushes > 0 {
+		f.cutPushes--
+		_, _ = io.Copy(io.Discard, stdin)
+		io.WriteString(stderr, "tar: This does not look like a tar archive\n")
+		return exitStatus(pushLostCode)
 	}
 	if stdin != nil {
 		_, _ = io.Copy(io.Discard, stdin)
@@ -527,7 +535,8 @@ func TestLXDPushFileNameIsAnArgument(t *testing.T) {
 	i := slices.Index(args, "push")
 	require.That(t, i > 0, "no push script in %v", args)
 	assert.That(t, !strings.Contains(args[i-1], "pwned"), "the name is in the script: %s", args[i-1])
-	assert.EqualArrays(t, args[i+1:], []string{"/etc", "/etc/ca.pem", "ca.pem"})
+	assert.EqualArrays(t, args[i+1:i+4], []string{"/etc", "/etc/ca.pem", "ca.pem"})
+	assert.That(t, strings.HasPrefix(args[i+4], ".pats-push-end-"), "no end marker name: %v", args[i+1:])
 }
 
 // when the local tar fails, the instance's tar sees a cut stream and
