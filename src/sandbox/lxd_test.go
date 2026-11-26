@@ -196,6 +196,41 @@ func TestLXDStartRefusesForeignNic(t *testing.T) {
 	assert.Error(t, err, "raw config")
 }
 
+// a container sandbox is never handed the host's kvm or vsock by a
+// profile, by name or by number, whatever nested says; a vm may be.
+func TestLXDStartRefusesHostVirtDevices(t *testing.T) {
+	refused := []map[string]string{
+		{"type": "unix-char", "source": "/dev/kvm"},
+		{"type": "unix-char", "path": "/dev//vhost-vsock"},
+		{"type": "unix-char", "source": "/dev/vsock", "path": "/dev/x"},
+		{"type": "unix-char", "path": "/dev/x", "major": "10", "minor": "241"},
+		{"type": "unix-block", "source": "/dev/vhost-net"},
+	}
+	for _, d := range refused {
+		l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "img"})
+		f.devices = map[string]map[string]string{"virt": d}
+		_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
+		assert.Error(t, err, "into a container")
+		assert.Nil(t, f.call("start"))
+	}
+	for _, d := range []map[string]string{
+		{"type": "unix-char", "source": "/dev/fuse"},
+		{"type": "unix-char", "path": "/dev/x", "major": "10", "minor": "229"},
+		{"type": "gpu"},
+	} {
+		l, f := fakeLXD(t, Options{Driver: "lxd"}, SandboxOptions{Image: "img"})
+		f.devices = map[string]map[string]string{"ok": d}
+		sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
+		require.NoError(t, err)
+		sess.Close()
+	}
+	l, f := fakeLXD(t, Options{Driver: "lxd", VM: true}, SandboxOptions{Image: "img"})
+	f.devices = map[string]map[string]string{"virt": refused[0]}
+	sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
+	require.NoError(t, err)
+	sess.Close()
+}
+
 // the agent runs as the pats user, root steps as root, both with the egress
 // env under their own. a vm carries agent.nic_config.
 func TestLXDExecArgs(t *testing.T) {

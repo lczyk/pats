@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -91,9 +92,15 @@ func (s *lxdSession) checkDevices(ctx context.Context, allowed map[string]bool) 
 	if err := json.Unmarshal([]byte(out), &inst); err != nil {
 		return fmt.Errorf("lxd: read instance config: %w", err)
 	}
-	for name, d := range inst.ExpandedDevices {
+	for _, name := range slices.Sorted(maps.Keys(inst.ExpandedDevices)) {
+		d := inst.ExpandedDevices[name]
 		if d["type"] == "nic" && !allowed[d["network"]] {
 			return fmt.Errorf("lxd: device %s (nic on %q) would bypass the sandbox's egress; pats gives the instance its only nic", name, d["network"]+d["parent"])
+		}
+		if !s.l.o.VM {
+			if node := hostVirtDevice(d); node != "" {
+				return fmt.Errorf("lxd: device %s passes the host's %s into a container: that is the host kernel's kvm or vsock, which an lxd container sandbox does not hand out (docs/spec/nested.md)", name, node)
+			}
 		}
 	}
 	for k := range inst.ExpandedConfig {
@@ -102,6 +109,39 @@ func (s *lxdSession) checkDevices(ctx context.Context, allowed map[string]bool) 
 		}
 	}
 	return nil
+}
+
+// hostVirtNodes are the host nodes a container sandbox may not be given:
+// kvm is the host kernel's, vsock a channel the egress acl does not see.
+// vsock's minor is dynamic, so it goes by name alone.
+var hostVirtNodes = map[string]string{
+	"/dev/kvm": "10:232", "/dev/vhost-net": "10:238", "/dev/vhost-vsock": "10:241", "/dev/vsock": "",
+}
+
+// hostVirtDevice is the host node a unix-char / unix-block device passes in,
+// by its source or path, or by major:minor; "" for none. only what the
+// expanded config says: a node made under another name on the server is not
+// seen.
+func hostVirtDevice(d map[string]string) string {
+	if d["type"] != "unix-char" && d["type"] != "unix-block" {
+		return ""
+	}
+	for _, k := range []string{"source", "path"} {
+		if p := path.Clean(d[k]); d[k] != "" {
+			if _, ok := hostVirtNodes[p]; ok {
+				return p
+			}
+		}
+	}
+	if d["major"] == "" || d["minor"] == "" {
+		return ""
+	}
+	for node, mm := range hostVirtNodes {
+		if mm != "" && mm == strings.TrimLeft(d["major"], "0")+":"+strings.TrimLeft(d["minor"], "0") {
+			return node
+		}
+	}
+	return ""
 }
 
 // queryPath prefixes a raw api path with the remote, for lxc query.
