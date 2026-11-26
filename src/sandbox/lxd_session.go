@@ -356,8 +356,8 @@ func (s *lxdSession) exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 // stdin free (nil), the env goes in on stdin as a script the command reads
 // first, so no value is on lxc's command line for ps to read; a step that
 // streams its own stdin (push, pull) carries only the egress env, which
-// holds no secret, as --env flags.
-func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
+// holds no secret, as --env flags. tag is the env wrapper's (newEnvTag).
+func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader, tag string) ([]string, io.Reader) {
 	user := s.uid
 	if cmd.Root || user == "" {
 		user = "0"
@@ -382,7 +382,7 @@ func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
 	switch {
 	case len(env) == 0:
 	case stdin == nil:
-		argv, stdin = envArgv(argv), envScript(env)
+		argv, stdin = envArgv(argv, tag), envScript(env, tag)
 	default:
 		for _, kv := range sortedEnv(env) {
 			args = append(args, "--env", kv)
@@ -393,11 +393,12 @@ func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
 
 func (s *lxdSession) execIn(ctx context.Context, stdin io.Reader, cmd Cmd, stdout, stderr io.Writer) (int, error) {
 	if stdin != nil {
-		args, in := s.execArgs(cmd, stdin)
+		args, in := s.execArgs(cmd, stdin, "")
 		return exitResult(s.l.exec(ctx, in, stdout, stderr, args...), "lxc exec")
 	}
-	return retryEnvLost(stderr, func(stderr io.Writer) (int, error) {
-		args, in := s.execArgs(cmd, nil)
+	tag := newEnvTag()
+	return retryEnvLost(stderr, tag, func(stderr io.Writer) (int, error) {
+		args, in := s.execArgs(cmd, nil, tag)
 		return exitResult(s.l.exec(ctx, in, stdout, stderr, args...), "lxc exec")
 	})
 }
@@ -417,8 +418,9 @@ func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 			_, _ = s.exec(bg, Cmd{Argv: []string{"pkill", "-KILL", "-u", s.uid}, Root: true, Dir: "/"}, io.Discard, io.Discard)
 		}
 	}
-	return retryEnvLost(stderr, func(stderr io.Writer) (int, error) {
-		args, in := s.execArgs(cmd, nil)
+	tag := newEnvTag()
+	return retryEnvLost(stderr, tag, func(stderr io.Writer) (int, error) {
+		args, in := s.execArgs(cmd, nil, tag)
 		return exitResult(s.l.p.execCancellable(ctx, s.l.r, in, stdout, stderr, cancel, args...), "lxc exec")
 	})
 }

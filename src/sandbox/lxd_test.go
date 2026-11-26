@@ -45,7 +45,7 @@ func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 		f.cutPushes--
 		_, _ = io.Copy(io.Discard, stdin)
 		io.WriteString(stderr, "tar: This does not look like a tar archive\n")
-		return exitStatus(pushLostCode)
+		return exitStatus(pushTarCode)
 	}
 	if stdin != nil {
 		_, _ = io.Copy(io.Discard, stdin)
@@ -201,17 +201,17 @@ func TestLXDStartRefusesForeignNic(t *testing.T) {
 func TestLXDExecArgs(t *testing.T) {
 	s := &lxdSession{l: &lxd{o: Options{Remote: "srv"}}, name: "pats-x", uid: "1001", env: map[string]string{"A": "1", "B": "2"}}
 	// the env goes in on stdin, never on lxc's command line, where ps reads it.
-	argv, in := s.execArgs(Cmd{Argv: []string{"run", "it"}, Env: map[string]string{"B": "it's 3"}}, nil)
+	argv, in := s.execArgs(Cmd{Argv: []string{"run", "it"}, Env: map[string]string{"B": "it's 3"}}, nil, "t")
 	args := strings.Join(argv, " ")
-	wrap := strings.Join(envArgv(nil), " ")
+	wrap := strings.Join(envArgv(nil, "t"), " ")
 	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 1001 --group 1001 --cwd /workspace -- "+wrap+" run it")
 	script, _ := io.ReadAll(in)
-	assert.Equal(t, string(script), "export A='1'\nexport B='it'\\''s 3'\n"+envEnd+"\n")
-	argv, in = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil)
+	assert.Equal(t, string(script), "export A='1'\nexport B='it'\\''s 3'\n"+envEnd("t")+"\n")
+	argv, in = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil, "t")
 	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- "+wrap+" id")
 	assert.That(t, in != nil, "no env on stdin")
 	// a step streaming its own stdin carries the egress env as flags.
-	argv, in = s.execArgs(Cmd{Argv: []string{"tar"}, Root: true, Dir: "/"}, strings.NewReader("data"))
+	argv, in = s.execArgs(Cmd{Argv: []string{"tar"}, Root: true, Dir: "/"}, strings.NewReader("data"), "t")
 	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / --env A=1 --env B=2 -- tar")
 	b, _ := io.ReadAll(in)
 	assert.Equal(t, string(b), "data")
@@ -219,13 +219,13 @@ func TestLXDExecArgs(t *testing.T) {
 	// its user's groups: lxc's --user and --group give it none. root steps
 	// stay as they were.
 	s.initGroups = true
-	argv, _ = s.execArgs(Cmd{Argv: []string{"run", "it"}}, nil)
+	argv, _ = s.execArgs(Cmd{Argv: []string{"run", "it"}}, nil, "t")
 	asAgent := strings.Join(s.asAgent(nil), " ")
 	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd /workspace -- "+wrap+" "+asAgent+" run it")
 	assert.ContainsString(t, asAgent, "pats-user 1001")
-	argv, _ = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil)
+	argv, _ = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil, "t")
 	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- "+wrap+" id")
-	argv, _ = s.execArgs(Cmd{Argv: []string{"tar"}}, strings.NewReader("data"))
+	argv, _ = s.execArgs(Cmd{Argv: []string{"tar"}}, strings.NewReader("data"), "t")
 	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd /workspace --env A=1 --env B=2 -- "+asAgent+" tar")
 
 	l, f := fakeLXD(t, Options{Driver: "lxd", VM: true}, SandboxOptions{Image: "img"})

@@ -43,36 +43,40 @@ func (s *lxdSession) pushBind(ctx context.Context, b bind) error {
 	return s.push(ctx, src, b.path, pushOpts{replace: true, ro: b.ro, masks: b.masks})
 }
 
-// pushLostCode is the push script's exit when the tar arrived short: tar
-// failed, or its last entry, the end marker, is missing. lxc exec can cut
-// stdin short, and a cut at a tar block boundary extracts part of the tree
-// and exits 0.
-const pushLostCode = 120
+// pushLostCode is the push script's exit when tar took the stream for the
+// whole archive but its last entry, the end marker, is missing: lxc exec
+// cut stdin short at a tar block boundary, which tar does not notice.
+// pushTarCode is tar failing, which a stream cut elsewhere (or not sent at
+// all) makes it do, but so does a full disk.
+const (
+	pushLostCode = 120
+	pushTarCode  = 121
+)
 
-// pushTries bounds the tries of a push whose tar arrives short.
+// pushTries bounds the tries of a push whose tar arrives short or fails.
 const pushTries = 3
 
 func (s *lxdSession) push(ctx context.Context, hostPath, path string, o pushOpts) error {
 	for i := 1; ; i++ {
-		lost, err := s.pushOnce(ctx, hostPath, path, o)
-		if !lost || i == pushTries {
-			if lost {
-				err = fmt.Errorf("push %s: the tar arrived short %d times in a row: %w", hostPath, pushTries, err)
-			}
+		code, err := s.pushOnce(ctx, hostPath, path, o)
+		if code != pushLostCode && code != pushTarCode {
 			return err
+		}
+		if i == pushTries {
+			return fmt.Errorf("the tar arrived short or tar failed %d times in a row, the last: %w", pushTries, err)
 		}
 	}
 }
 
-// pushOnce is one try at push, and whether the tar arrived short.
-func (s *lxdSession) pushOnce(ctx context.Context, hostPath, path string, o pushOpts) (bool, error) {
+// pushOnce is one try at push, and the push script's exit code.
+func (s *lxdSession) pushOnce(ctx context.Context, hostPath, path string, o pushOpts) (int, error) {
 	fi, err := os.Stat(hostPath)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	end, err := pushEndName()
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	var skip []string
 	for _, m := range o.masks {
@@ -96,16 +100,15 @@ func (s *lxdSession) pushOnce(ctx context.Context, hostPath, path string, o push
 	// the local side failing is what made the remote tar complain, so it
 	// leads the error.
 	if lerr := <-local; lerr != nil && !errors.Is(lerr, io.ErrClosedPipe) {
-		return false, fmt.Errorf("push %s: %w (in the instance: %s)", hostPath, lerr, strings.TrimSpace(out.String()))
-	}
-	lost := err == nil && code == pushLostCode
-	if err == nil && code != 0 {
-		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(out.String()))
+		return 0, fmt.Errorf("push %s: %w (in the instance: %s)", hostPath, lerr, strings.TrimSpace(out.String()))
 	}
 	if err != nil {
-		return lost, fmt.Errorf("push %s: %w", hostPath, err)
+		return 0, fmt.Errorf("push %s: %w", hostPath, err)
 	}
-	return false, nil
+	if code != 0 {
+		return code, fmt.Errorf("push %s: exited %d: %s", hostPath, code, strings.TrimSpace(out.String()))
+	}
+	return 0, nil
 }
 
 // pushArgv is the in-instance command that takes push's tar on stdin and
@@ -127,7 +130,7 @@ func pushArgv(path, end string, fi fs.FileInfo, o pushOpts) []string {
 	if o.replace && fi.IsDir() {
 		script += ` && rm -rf "$1"/* "$1"/.[!.]* "$1"/..?*`
 	}
-	script += ` && rm -f "$1/$4" && { tar -x -m -C "$1" && [ -f "$1/$4" ] || exit ` + fmt.Sprint(pushLostCode) + `; } && rm -f "$1/$4"`
+	script += ` && rm -f "$1/$4" && { tar -x -m -C "$1" || exit ` + fmt.Sprint(pushTarCode) + `; } && { [ -f "$1/$4" ] || exit ` + fmt.Sprint(pushLostCode) + `; } && rm -f "$1/$4"`
 	if !fi.IsDir() {
 		script += ` && { [ "$1/$3" = "$2" ] || mv "$1/$3" "$2"; }`
 	}

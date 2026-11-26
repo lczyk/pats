@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -746,4 +747,39 @@ func TestImageKeyVersionAndKey(t *testing.T) {
 func cleanOn(ctx context.Context, l *lxd) error {
 	_, err := l.p.clean(ctx, l, CleanOptions{Place: "lxd"})
 	return err
+}
+
+// an env script lxc exec delivers empty is sent again, for the egress proxy
+// and the agent alike; one that keeps arriving empty fails the exec as a
+// launch error, never running the agent without its env.
+func TestLXDEnvScriptCutShort(t *testing.T) {
+	f := newFakeServer(t)
+	f.cutEnvs = map[string]int{"/usr/local/bin/pats": envTries - 1}
+	l := lxdOn(t, f, Options{ProxyBin: proxyBin(t)})
+	ran := 0
+	f.agent = func(ctx context.Context, inst string, argv []string, stdout, stderr io.Writer) error {
+		if argv[0] == "agent" {
+			ran++
+		}
+		return nil
+	}
+	sess, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: lxdEgressModes[2].egress})
+	require.NoError(t, err)
+	defer sess.Close()
+
+	f.mu.Lock()
+	assert.Equal(t, f.cutEnvs["/usr/local/bin/pats"], 0)
+	f.cutEnvs["agent"] = envTries - 1
+	f.mu.Unlock()
+	code, err := sess.Exec(context.Background(), Cmd{Argv: []string{"agent"}}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, code, 0)
+	assert.Equal(t, ran, 1)
+
+	f.mu.Lock()
+	f.cutEnvs["agent"] = envTries
+	f.mu.Unlock()
+	_, err = sess.Exec(context.Background(), Cmd{Argv: []string{"agent"}}, io.Discard, io.Discard)
+	assert.That(t, errors.Is(err, ErrLaunch), "want ErrLaunch, got %v", err)
+	assert.Equal(t, ran, 1)
 }

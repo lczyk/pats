@@ -56,6 +56,9 @@ type fakeServer struct {
 
 	// probe answers.
 	offline bool // the online probe fails
+	// cutEnvs is, by a wrapped command's argv[0], how many of its next
+	// execs get their env script cut to nothing.
+	cutEnvs map[string]int
 	// importSeen, when set, sees an import's fingerprint before the server
 	// decides on it, f.mu held: a test's place to have another client win.
 	importSeen func(fp string)
@@ -1019,6 +1022,15 @@ func (f *fakeServer) exec(ctx context.Context, stdin io.Reader, stdout, stderr i
 	// would read it, and the command runs with stdin closed.
 	if v := a.argv; len(v) >= 5 && v[0] == "/bin/sh" && v[1] == "-c" && v[3] == "pats-env" {
 		script, _ := io.ReadAll(stdin)
+		if f.cutEnvs[v[4]] > 0 {
+			// lxc exec delivering stdin empty: the wrapper says so, tagged.
+			f.cutEnvs[v[4]]--
+			f.mu.Unlock()
+			tag := strings.Fields(v[2][strings.Index(v[2], envEnd("")):])[2]
+			tag = strings.TrimSuffix(tag, "'")
+			fmt.Fprintln(stderr, envLostMsg(tag))
+			return exitStatus(envLostCode)
+		}
 		for k, val := range parseEnvScript(string(script)) {
 			env[k] = val
 		}

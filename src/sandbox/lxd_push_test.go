@@ -215,10 +215,13 @@ func TestPushArgvCutTar(t *testing.T) {
 	assert.Equal(t, string(got), "b")
 	_, err = os.Stat(filepath.Join(dest, end))
 	assert.That(t, os.IsNotExist(err), "the end marker stayed: %v", err)
-	// 512 header + 15872 data: the cut lands on a block boundary after a.
-	for _, n := range []int{0, 16384, buf.Len() - 1024 - 512} {
+	// 512 header + 15872 data: the cut lands on a block boundary after a,
+	// which tar takes for the whole archive.
+	_, code = run(buf.Bytes()[:16384])
+	assert.Equal(t, code, pushLostCode)
+	for _, n := range []int{0, 100, buf.Len() - 1024 - 512} {
 		_, code := run(buf.Bytes()[:n])
-		assert.Equal(t, code, pushLostCode)
+		assert.That(t, code == pushLostCode || code == pushTarCode, "cut at %d: exited %d", n, code)
 	}
 }
 
@@ -234,5 +237,5 @@ func TestLXDPushRetriesShortTar(t *testing.T) {
 	f.cutPushes = pushTries
 	err := s.Push(context.Background(), src, "/etc/creds")
 	require.That(t, err != nil, "a push cut every time succeeded")
-	assert.ContainsString(t, err.Error(), "arrived short")
+	assert.ContainsString(t, err.Error(), "3 times in a row")
 }

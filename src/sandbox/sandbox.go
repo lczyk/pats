@@ -439,9 +439,11 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	args := []string{"exec", "-u", user, "-w", dir}
 	argv := cmd.Argv
 	env := mergeEnv(s.env, cmd.Env)
+	tag := ""
 	if len(env) > 0 {
+		tag = newEnvTag()
 		args = append(args, "-i")
-		argv = envArgv(argv)
+		argv = envArgv(argv, tag)
 	}
 	args = append(args, s.id)
 	args = append(args, argv...)
@@ -449,10 +451,10 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	// on ctx cancel (ctrl+C, the deadline) kill the container: ending the
 	// exec client leaves the process inside running.
 	kill := func() { _, _ = s.c.docker(context.Background(), "kill", s.id) }
-	return retryEnvLost(stderr, func(stderr io.Writer) (int, error) {
+	return retryEnvLost(stderr, tag, func(stderr io.Writer) (int, error) {
 		var stdin io.Reader
-		if len(env) > 0 {
-			stdin = envScript(env)
+		if tag != "" {
+			stdin = envScript(env, tag)
 		}
 		return exitResult(s.c.p.execCancellable(ctx, s.c.r, stdin, stdout, stderr, kill, args...), s.c.driver+" exec failed")
 	})

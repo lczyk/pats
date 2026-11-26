@@ -42,8 +42,8 @@ func TestEnvFlagsOnDocker(t *testing.T) {
 
 // the lxd env script round-trips any value through a real shell.
 func TestLXDEnvScriptShell(t *testing.T) {
-	in := envScript(map[string]string{"A": "it's\n$x `y` \"z\"", "B": ""})
-	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", `printf '%s|%s' "$A" "$B"`})[1:]...)
+	in := envScript(map[string]string{"A": "it's\n$x `y` \"z\"", "B": ""}, "t")
+	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", `printf '%s|%s' "$A" "$B"`}, "t")[1:]...)
 	cmd.Stdin = in
 	out, err := cmd.Output()
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestExecEnvOnDaemon(t *testing.T) {
 // an env script that does not apply stops the command, which never runs
 // without its env; the wrapper needs no cat.
 func TestEnvArgvFailsClosed(t *testing.T) {
-	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", "echo ran"})[1:]...)
+	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", "echo ran"}, "t")[1:]...)
 	cmd.Stdin = strings.NewReader("export A='unterminated\n")
 	cmd.Env = []string{"PATH=/nonexistent"} // no cat, no sh on PATH: only the shell's own builtins
 	out, err := cmd.CombinedOutput()
@@ -85,22 +85,25 @@ func TestEnvArgvFailsClosed(t *testing.T) {
 
 // an env script that arrives empty or cut short, as lxc exec can deliver
 // it, stops the command with envLostCode before it runs, a cut inside a
-// value included.
+// value included, and a cut just after a value's line that reads as an
+// untagged end marker.
 func TestEnvArgvRefusesShortScript(t *testing.T) {
-	full, err := io.ReadAll(envScript(map[string]string{"A": "1", "B": "two\nlines", "PATS_PROMPT_FILE": "/p"}))
+	const tag = "0123abcd"
+	full, err := io.ReadAll(envScript(map[string]string{"A": "1", "B": "two\n" + envEnd("") + "\nlines", "PATS_PROMPT_FILE": "/p"}, tag))
 	require.NoError(t, err)
-	for _, n := range []int{0, 1, 12, len(full) / 2, len(full) - 2} {
-		cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", "echo ran"})[1:]...)
+	fake := strings.Index(string(full), envEnd("")+"\n") + len(envEnd("")) + 1
+	for _, n := range []int{0, 1, 12, fake, len(full) / 2, len(full) - 2} {
+		cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", "echo ran"}, tag)[1:]...)
 		cmd.Stdin = strings.NewReader(string(full[:n]))
 		out, err := cmd.CombinedOutput()
 		var x *exec.ExitError
 		require.That(t, errors.As(err, &x), "cut at %d: the wrapper exited 0: %s", n, out)
 		assert.Equal(t, x.ExitCode(), envLostCode)
-		assert.That(t, envLost(x.ExitCode(), out), "cut at %d: no lost marker: %s", n, out)
+		assert.ContainsString(t, string(out), envLostMsg(tag))
 		assert.That(t, !strings.Contains(string(out), "ran"), "cut at %d: the command ran: %s", n, out)
 	}
 	// the whole script without its last newline still applies.
-	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", `printf %s "$A"`})[1:]...)
+	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", `printf %s "$A"`}, tag)[1:]...)
 	cmd.Stdin = strings.NewReader(strings.TrimSuffix(string(full), "\n"))
 	out, err := cmd.Output()
 	require.NoError(t, err)
@@ -109,31 +112,49 @@ func TestEnvArgvRefusesShortScript(t *testing.T) {
 
 // an exec whose env arrives short runs again; one that keeps arriving
 // short is a launch error, not an exit code. the command's own exit with
-// the same code is its own.
+// the same code is its own, even printing the lost line under another tag.
 func TestRetryEnvLost(t *testing.T) {
+	const tag = "0123abcd"
 	lost := func(short int) func(io.Writer) (int, error) {
 		n := 0
 		return func(w io.Writer) (int, error) {
 			n++
 			if n <= short {
-				_, _ = io.WriteString(w, envLostMsg+"\n")
+				_, _ = io.WriteString(w, envLostMsg(tag)+"\n")
 				return envLostCode, nil
 			}
 			return 0, nil
 		}
 	}
 	var errb strings.Builder
-	code, err := retryEnvLost(&errb, lost(envTries-1))
+	code, err := retryEnvLost(&errb, tag, lost(envTries-1))
 	require.NoError(t, err)
 	assert.Equal(t, code, 0)
-	assert.That(t, strings.Contains(errb.String(), envLostMsg), "the lost line did not reach stderr")
+	assert.ContainsString(t, errb.String(), envLostMsg(tag))
 
-	_, err = retryEnvLost(io.Discard, lost(envTries))
+	_, err = retryEnvLost(io.Discard, tag, lost(envTries))
 	assert.That(t, errors.Is(err, ErrLaunch), "want ErrLaunch, got %v", err)
 
+	// no wrapper (no env) is never retried, whatever the command says.
 	tries := 0
-	code, err = retryEnvLost(io.Discard, func(io.Writer) (int, error) { tries++; return envLostCode, nil })
+	code, err = retryEnvLost(io.Discard, "", func(w io.Writer) (int, error) {
+		tries++
+		_, _ = io.WriteString(w, envLostMsg(""))
+		return envLostCode, nil
+	})
 	require.NoError(t, err)
 	assert.Equal(t, code, envLostCode)
 	assert.Equal(t, tries, 1)
+
+	for _, line := range []string{"", envLostMsg("ffff0000")} {
+		tries := 0
+		code, err = retryEnvLost(io.Discard, tag, func(w io.Writer) (int, error) {
+			tries++
+			_, _ = io.WriteString(w, line)
+			return envLostCode, nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, code, envLostCode)
+		assert.Equal(t, tries, 1)
+	}
 }

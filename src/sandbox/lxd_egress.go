@@ -218,19 +218,28 @@ func (s *lxdSession) runProxy(ctx context.Context, p *lxdSession, auditPath stri
 		}
 		e.auditF, audit = f, f
 	}
-	args, in := p.execArgs(Cmd{Argv: []string{"/usr/local/bin/pats", "egress", "run"}, Env: penv, Dir: "/"}, nil)
-	run, err := follow(s.l.r, in, audit, args...)
-	if err != nil {
-		return fmt.Errorf("egress: start proxy: %w", err)
-	}
-	e.run = run
-	if err := run.ready(s.l.p.clock, s.l.p.t.proxyReady); err != nil {
+	for i := 1; ; i++ {
+		tag := newEnvTag()
+		args, in := p.execArgs(Cmd{Argv: []string{"/usr/local/bin/pats", "egress", "run"}, Env: penv, Dir: "/"}, nil, tag)
+		run, err := follow(s.l.r, in, audit, args...)
+		if err != nil {
+			return fmt.Errorf("egress: start proxy: %w", err)
+		}
+		e.run = run
+		err = run.ready(s.l.p.clock, s.l.p.t.proxyReady)
+		if err == nil {
+			return nil
+		}
+		// the proxy's env script arrived short: it never ran, so go again.
+		if i < envTries && strings.Contains(err.Error(), envLostMsg(tag)) {
+			run.stop(s.l.p.clock, 0)
+			continue
+		}
 		if up := s.l.o.Machine.chain(); up != nil {
 			return fmt.Errorf("egress: proxy %s, on the uplink, behind the upstream %s: %w", e.proxy, up.Describe(), err)
 		}
 		return fmt.Errorf("egress: proxy %s: %w", e.proxy, err)
 	}
-	return nil
 }
 
 // readBundle reads the image's trust bundle out of the instance.

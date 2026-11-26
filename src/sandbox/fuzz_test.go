@@ -180,10 +180,10 @@ func FuzzEnvScript(f *testing.F) {
 		if strings.ContainsRune(value, 0) {
 			return // not a thing an env can hold
 		}
-		argv := envArgv([]string{"/bin/sh", "-c", `printf %s "$PATS_FUZZ"`})
+		argv := envArgv([]string{"/bin/sh", "-c", `printf %s "$PATS_FUZZ"`}, "t")
 		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.Env = []string{}
-		cmd.Stdin = envScript(map[string]string{"PATS_FUZZ": value})
+		cmd.Stdin = envScript(map[string]string{"PATS_FUZZ": value}, "t")
 		out, err := cmd.Output()
 		require.NoError(t, err, "the env script for %q did not apply", value)
 		assert.Equal(t, string(out), value)

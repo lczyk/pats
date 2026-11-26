@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"sort"
@@ -62,8 +63,8 @@ func shQuote(s string) string {
 }
 
 // envScript is env as shell exports, read on stdin by envArgv's wrapper:
-// values of any content, never on a command line.
-func envScript(env map[string]string) io.Reader {
+// values of any content, never on a command line. tag is the wrapper's.
+func envScript(env map[string]string, tag string) io.Reader {
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
@@ -73,39 +74,47 @@ func envScript(env map[string]string) io.Reader {
 	for _, k := range keys {
 		b.WriteString("export " + k + "=" + shQuote(env[k]) + "\n")
 	}
-	b.WriteString(envEnd + "\n")
+	b.WriteString(envEnd(tag) + "\n")
 	return strings.NewReader(b.String())
 }
 
-// envEnd closes every env script. lxc exec can deliver stdin empty or cut
+// envEnd closes an env script. lxc exec can deliver stdin empty or cut
 // short (seen against a remote lxd under load), and a script missing its
 // tail would still eval: the command would run without its env, or part of
-// it. the wrapper runs nothing unless this line came last.
-const envEnd = ": pats-env-end"
+// it. the wrapper runs nothing unless this line came last. a random tag
+// keeps a value's own line from passing for it.
+func envEnd(tag string) string { return ": pats-env-end " + tag }
 
 // envLostCode and envLostMsg are the wrapper's exit and stderr line when
 // the script arrived short. the command never ran, so a caller may retry.
-const (
-	envLostCode = 120
-	envLostMsg  = "pats-env: the env script arrived short"
-)
+const envLostCode = 120
 
-// envLost is whether an exec ended because its env script arrived short:
-// the code alone could be the command's own.
-func envLost(code int, stderrTail []byte) bool {
-	return code == envLostCode && bytes.Contains(stderrTail, []byte(envLostMsg))
+func envLostMsg(tag string) string { return "pats-env: the env script arrived short " + tag }
+
+// newEnvTag is a fresh tag for one exec's wrapper and script: the command
+// it runs cannot know it, so cannot fake the wrapper's lost line.
+func newEnvTag() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("%x", b)
 }
 
 // envTries bounds the tries of an exec whose env script arrives short.
 const envTries = 3
 
-// retryEnvLost runs run again while its env script arrives short, up to
-// envTries, and makes the last such failure ErrLaunch.
-func retryEnvLost(stderr io.Writer, run func(stderr io.Writer) (int, error)) (int, error) {
+// retryEnvLost runs run, and again while the wrapper tagged tag says its
+// env script arrived short, up to envTries; the last such failure is
+// ErrLaunch. run sends the script anew each time. "" is no wrapper: run
+// runs once.
+func retryEnvLost(stderr io.Writer, tag string, run func(stderr io.Writer) (int, error)) (int, error) {
+	if tag == "" {
+		return run(stderr)
+	}
+	msg := []byte(envLostMsg(tag))
 	for i := 1; ; i++ {
-		t := &tailWriter{w: stderr, n: 4 * len(envLostMsg)}
+		t := &tailWriter{w: stderr, n: 2 * len(msg)}
 		code, err := run(t)
-		if err != nil || !envLost(code, t.buf) {
+		if err != nil || code != envLostCode || !bytes.Contains(t.buf, msg) {
 			return code, err
 		}
 		if i == envTries {
@@ -133,10 +142,10 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 // stdin closed (/dev/null), as an exec with no stdin had it. the script is
 // read with the shell's own read, so the image needs no cat, and a script
 // that arrived short or does not apply stops the command rather than
-// running it without.
-func envArgv(argv []string) []string {
+// running it without. tag is envScript's.
+func envArgv(argv []string, tag string) []string {
 	read := `s=; e=; while IFS= read -r l || [ -n "$l" ]; do s="$s$l
-"; e=$l; done; [ "$e" = '` + envEnd + `' ] || { echo '` + envLostMsg + `' >&2; exit ` + strconv.Itoa(envLostCode) + `; }; eval "$s" || exit 126; exec "$@" </dev/null`
+"; e=$l; done; [ "$e" = '` + envEnd(tag) + `' ] || { echo '` + envLostMsg(tag) + `' >&2; exit ` + strconv.Itoa(envLostCode) + `; }; eval "$s" || exit 126; exec "$@" </dev/null`
 	return append([]string{"/bin/sh", "-c", read, "pats-env"}, argv...)
 }
 

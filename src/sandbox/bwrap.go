@@ -605,7 +605,7 @@ func (s *bwrapSession) argv(c Cmd, extra ...string) []string {
 	if s.net == netProxy {
 		a = append(a, bwrapPats, "egress", "forward", "--listen", bwrapListen, "--socket", bwrapEgressDir+"/proxy.sock", "--")
 	}
-	return append(a, envArgv(c.Argv)...)
+	return append(a, envArgv(c.Argv, "")...)
 }
 
 // execEnv is what a command gets: the image's Env, the session's, then its
@@ -655,7 +655,7 @@ func (s *bwrapSession) exec(ctx context.Context, c Cmd, stdout, stderr io.Writer
 		s.cancel = nil
 		s.closeMu.Unlock()
 	}()
-	x, err := s.d.r.Start(envScript(s.execEnv(c)), stdout, stderr, s.argv(c, extra...)...)
+	x, err := s.d.r.Start(envScript(s.execEnv(c), ""), stdout, stderr, s.argv(c, extra...)...)
 	if err != nil {
 		return -1, fmt.Errorf("%w: bwrap: %w", ErrLaunch, err)
 	}
