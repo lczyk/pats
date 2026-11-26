@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os/exec"
 	"strings"
@@ -80,4 +81,59 @@ func TestEnvArgvFailsClosed(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.That(t, err != nil, "the wrapper exited 0: %s", out)
 	assert.That(t, !strings.Contains(string(out), "ran"), "the command ran: %s", out)
+}
+
+// an env script that arrives empty or cut short, as lxc exec can deliver
+// it, stops the command with envLostCode before it runs, a cut inside a
+// value included.
+func TestEnvArgvRefusesShortScript(t *testing.T) {
+	full, err := io.ReadAll(envScript(map[string]string{"A": "1", "B": "two\nlines", "PATS_PROMPT_FILE": "/p"}))
+	require.NoError(t, err)
+	for _, n := range []int{0, 1, 12, len(full) / 2, len(full) - 2} {
+		cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", "echo ran"})[1:]...)
+		cmd.Stdin = strings.NewReader(string(full[:n]))
+		out, err := cmd.CombinedOutput()
+		var x *exec.ExitError
+		require.That(t, errors.As(err, &x), "cut at %d: the wrapper exited 0: %s", n, out)
+		assert.Equal(t, x.ExitCode(), envLostCode)
+		assert.That(t, envLost(x.ExitCode(), out), "cut at %d: no lost marker: %s", n, out)
+		assert.That(t, !strings.Contains(string(out), "ran"), "cut at %d: the command ran: %s", n, out)
+	}
+	// the whole script without its last newline still applies.
+	cmd := exec.Command("/bin/sh", envArgv([]string{"sh", "-c", `printf %s "$A"`})[1:]...)
+	cmd.Stdin = strings.NewReader(strings.TrimSuffix(string(full), "\n"))
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, string(out), "1")
+}
+
+// an exec whose env arrives short runs again; one that keeps arriving
+// short is a launch error, not an exit code. the command's own exit with
+// the same code is its own.
+func TestRetryEnvLost(t *testing.T) {
+	lost := func(short int) func(io.Writer) (int, error) {
+		n := 0
+		return func(w io.Writer) (int, error) {
+			n++
+			if n <= short {
+				_, _ = io.WriteString(w, envLostMsg+"\n")
+				return envLostCode, nil
+			}
+			return 0, nil
+		}
+	}
+	var errb strings.Builder
+	code, err := retryEnvLost(&errb, lost(envTries-1))
+	require.NoError(t, err)
+	assert.Equal(t, code, 0)
+	assert.That(t, strings.Contains(errb.String(), envLostMsg), "the lost line did not reach stderr")
+
+	_, err = retryEnvLost(io.Discard, lost(envTries))
+	assert.That(t, errors.Is(err, ErrLaunch), "want ErrLaunch, got %v", err)
+
+	tries := 0
+	code, err = retryEnvLost(io.Discard, func(io.Writer) (int, error) { tries++; return envLostCode, nil })
+	require.NoError(t, err)
+	assert.Equal(t, code, envLostCode)
+	assert.Equal(t, tries, 1)
 }

@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -70,16 +73,70 @@ func envScript(env map[string]string) io.Reader {
 	for _, k := range keys {
 		b.WriteString("export " + k + "=" + shQuote(env[k]) + "\n")
 	}
+	b.WriteString(envEnd + "\n")
 	return strings.NewReader(b.String())
+}
+
+// envEnd closes every env script. lxc exec can deliver stdin empty or cut
+// short (seen against a remote lxd under load), and a script missing its
+// tail would still eval: the command would run without its env, or part of
+// it. the wrapper runs nothing unless this line came last.
+const envEnd = ": pats-env-end"
+
+// envLostCode and envLostMsg are the wrapper's exit and stderr line when
+// the script arrived short. the command never ran, so a caller may retry.
+const (
+	envLostCode = 120
+	envLostMsg  = "pats-env: the env script arrived short"
+)
+
+// envLost is whether an exec ended because its env script arrived short:
+// the code alone could be the command's own.
+func envLost(code int, stderrTail []byte) bool {
+	return code == envLostCode && bytes.Contains(stderrTail, []byte(envLostMsg))
+}
+
+// envTries bounds the tries of an exec whose env script arrives short.
+const envTries = 3
+
+// retryEnvLost runs run again while its env script arrives short, up to
+// envTries, and makes the last such failure ErrLaunch.
+func retryEnvLost(stderr io.Writer, run func(stderr io.Writer) (int, error)) (int, error) {
+	for i := 1; ; i++ {
+		t := &tailWriter{w: stderr, n: 4 * len(envLostMsg)}
+		code, err := run(t)
+		if err != nil || !envLost(code, t.buf) {
+			return code, err
+		}
+		if i == envTries {
+			return -1, fmt.Errorf("%w: the env script arrived short %d times in a row", ErrLaunch, envTries)
+		}
+	}
+}
+
+// tailWriter passes writes on to w and keeps their last n bytes.
+type tailWriter struct {
+	w   io.Writer
+	n   int
+	buf []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.n {
+		t.buf = t.buf[len(t.buf)-t.n:]
+	}
+	return t.w.Write(p)
 }
 
 // envArgv wraps argv to read its env from stdin first, then run with
 // stdin closed (/dev/null), as an exec with no stdin had it. the script is
 // read with the shell's own read, so the image needs no cat, and a script
-// that does not apply stops the command rather than running it without.
+// that arrived short or does not apply stops the command rather than
+// running it without.
 func envArgv(argv []string) []string {
-	const read = `s=; while IFS= read -r l || [ -n "$l" ]; do s="$s$l
-"; done; eval "$s" || exit 126; exec "$@" </dev/null`
+	read := `s=; e=; while IFS= read -r l || [ -n "$l" ]; do s="$s$l
+"; e=$l; done; [ "$e" = '` + envEnd + `' ] || { echo '` + envLostMsg + `' >&2; exit ` + strconv.Itoa(envLostCode) + `; }; eval "$s" || exit 126; exec "$@" </dev/null`
 	return append([]string{"/bin/sh", "-c", read, "pats-env"}, argv...)
 }
 

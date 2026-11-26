@@ -438,10 +438,10 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	// one in the cli's environment would change the cli.
 	args := []string{"exec", "-u", user, "-w", dir}
 	argv := cmd.Argv
-	var stdin io.Reader
-	if env := mergeEnv(s.env, cmd.Env); len(env) > 0 {
+	env := mergeEnv(s.env, cmd.Env)
+	if len(env) > 0 {
 		args = append(args, "-i")
-		argv, stdin = envArgv(argv), envScript(env)
+		argv = envArgv(argv)
 	}
 	args = append(args, s.id)
 	args = append(args, argv...)
@@ -449,7 +449,13 @@ func (s *containerSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.
 	// on ctx cancel (ctrl+C, the deadline) kill the container: ending the
 	// exec client leaves the process inside running.
 	kill := func() { _, _ = s.c.docker(context.Background(), "kill", s.id) }
-	return exitResult(s.c.p.execCancellable(ctx, s.c.r, stdin, stdout, stderr, kill, args...), s.c.driver+" exec failed")
+	return retryEnvLost(stderr, func(stderr io.Writer) (int, error) {
+		var stdin io.Reader
+		if len(env) > 0 {
+			stdin = envScript(env)
+		}
+		return exitResult(s.c.p.execCancellable(ctx, s.c.r, stdin, stdout, stderr, kill, args...), s.c.driver+" exec failed")
+	})
 }
 
 func (s *containerSession) Sync(ctx context.Context) error { return nil }

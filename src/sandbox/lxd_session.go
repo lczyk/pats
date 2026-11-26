@@ -392,8 +392,14 @@ func (s *lxdSession) execArgs(cmd Cmd, stdin io.Reader) ([]string, io.Reader) {
 }
 
 func (s *lxdSession) execIn(ctx context.Context, stdin io.Reader, cmd Cmd, stdout, stderr io.Writer) (int, error) {
-	args, in := s.execArgs(cmd, stdin)
-	return exitResult(s.l.exec(ctx, in, stdout, stderr, args...), "lxc exec")
+	if stdin != nil {
+		args, in := s.execArgs(cmd, stdin)
+		return exitResult(s.l.exec(ctx, in, stdout, stderr, args...), "lxc exec")
+	}
+	return retryEnvLost(stderr, func(stderr io.Writer) (int, error) {
+		args, in := s.execArgs(cmd, nil)
+		return exitResult(s.l.exec(ctx, in, stdout, stderr, args...), "lxc exec")
+	})
 }
 
 // Exec runs cmd; on ctx cancel the agent's processes are killed and the
@@ -411,8 +417,10 @@ func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 			_, _ = s.exec(bg, Cmd{Argv: []string{"pkill", "-KILL", "-u", s.uid}, Root: true, Dir: "/"}, io.Discard, io.Discard)
 		}
 	}
-	args, in := s.execArgs(cmd, nil)
-	return exitResult(s.l.p.execCancellable(ctx, s.l.r, in, stdout, stderr, cancel, args...), "lxc exec")
+	return retryEnvLost(stderr, func(stderr io.Writer) (int, error) {
+		args, in := s.execArgs(cmd, nil)
+		return exitResult(s.l.p.execCancellable(ctx, s.l.r, in, stdout, stderr, cancel, args...), "lxc exec")
+	})
 }
 
 // Close deletes the instance, then its bridge and acl, and says what it

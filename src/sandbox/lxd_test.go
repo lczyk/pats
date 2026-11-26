@@ -198,7 +198,7 @@ func TestLXDExecArgs(t *testing.T) {
 	wrap := strings.Join(envArgv(nil), " ")
 	assert.Equal(t, args, "exec srv:pats-x --project pats --force-noninteractive --user 1001 --group 1001 --cwd /workspace -- "+wrap+" run it")
 	script, _ := io.ReadAll(in)
-	assert.Equal(t, string(script), "export A='1'\nexport B='it'\\''s 3'\n")
+	assert.Equal(t, string(script), "export A='1'\nexport B='it'\\''s 3'\n"+envEnd+"\n")
 	argv, in = s.execArgs(Cmd{Argv: []string{"id"}, Root: true, Dir: "/"}, nil)
 	assert.Equal(t, strings.Join(argv, " "), "exec srv:pats-x --project pats --force-noninteractive --user 0 --group 0 --cwd / -- "+wrap+" id")
 	assert.That(t, in != nil, "no env on stdin")
