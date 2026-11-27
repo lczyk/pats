@@ -212,6 +212,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 			closed := closeFailure(sess)
 			var audit *agentFailure
 			if auditPath != "" {
+				// no request went out before the hand-over, so no key can have been misused.
 				audit, _ = keyProxyChecked(auditPath, false)
 			}
 			return failOf(audit, closed, failed(failPlace, fmt.Errorf("hand-over: %w", herr)))
