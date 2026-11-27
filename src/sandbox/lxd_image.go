@@ -421,7 +421,9 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	}
 	spec.step(log, "provisioning: %s", strings.Join(spec.Argv, " "))
 	if len(spec.Argv) > 0 {
-		wrapped := append([]string{"/bin/sh", "-c", `PATH="` + ProvisionMount + `/bin:$PATH"; export PATH; exec "$@"`, "provision"}, spec.Argv...)
+		// lxd puts /snap/bin on PATH only when it exists as the exec starts,
+		// so a provision that installs snapd could not then run a snap.
+		wrapped := append([]string{"/bin/sh", "-c", `PATH="` + ProvisionMount + `/bin:$PATH:/snap/bin"; export PATH; exec "$@"`, "provision"}, spec.Argv...)
 		code, err := s.exec(ctx, Cmd{Argv: wrapped, Root: true, Dir: "/"}, log, log)
 		if err != nil {
 			return "", err

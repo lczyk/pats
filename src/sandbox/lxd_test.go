@@ -865,8 +865,12 @@ func TestLXDImageBuild(t *testing.T) {
 	})
 
 	t.Run("ok", func(t *testing.T) {
-		_, steps, _, err := run(t, false, false)
+		f, steps, _, err := run(t, false, false)
 		require.NoError(t, err)
+		// lxd adds /snap/bin only when it exists as the exec starts.
+		assert.That(t, slices.ContainsFunc(f.all(), func(c string) bool {
+			return strings.Contains(c, ":/snap/bin\"; export PATH") && strings.Contains(c, "provision true")
+		}), "provisioning has no /snap/bin on PATH")
 		assert.Equal(t, len(steps), 4)
 		assert.ContainsString(t, steps[0], "building lxd image pats-img-")
 		assert.ContainsString(t, steps[1], "launching builder pats-build-")
