@@ -54,6 +54,3 @@ func readIdent(lease string) (string, error) {
 func removeIdent(lease string) {
 	_ = os.Remove(identPath(lease))
 }
-
-// identName is the identity file's base name for a run's token.
-func identName(token string) string { return leasePrefix + token + identSuffix }
