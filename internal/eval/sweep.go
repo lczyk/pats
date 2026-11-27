@@ -30,12 +30,15 @@ func sweepDead(ctx context.Context, cfg *config.Config, names []string, dryRun b
 	}
 	sctx, cancel := context.WithTimeout(ctx, sweepBound)
 	defer cancel()
-	unlock, err := machineLock(sctx)
-	if err != nil {
-		lg.warn("sweep: the machine lock: %v; pats clean removes what dead runs left", err)
-		return
+	// a dry run only lists, so it takes no lock and runs beside a live run.
+	if !dryRun {
+		unlock, err := machineLock(sctx)
+		if err != nil {
+			lg.warn("sweep: the machine lock: %v; pats clean removes what dead runs left", err)
+			return
+		}
+		defer unlock()
 	}
-	defer unlock()
 	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 	// one line a run, whatever places it was on: said at the end, cut short
 	// or not.

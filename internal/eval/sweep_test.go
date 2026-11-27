@@ -55,6 +55,16 @@ func TestSweepBound(t *testing.T) {
 sxx: {kind: sandbox, items: {sxx: {image: s}}}
 `), []string{"sxx"}, false, logw{w: &out})
 	assert.ContainsString(t, out.String(), "sweep: the machine lock")
+
+	// a dry run takes no lock, so the held one does not stop it.
+	oldOpen := openDriver
+	openDriver = func(o sandbox.Options) (sandbox.Driver, error) { return nil, errors.New("no daemon") }
+	t.Cleanup(func() { openDriver = oldOpen })
+	out.Reset()
+	sweepDead(t.Context(), parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+`), []string{"sxx"}, true, logw{w: &out})
+	assert.That(t, !strings.Contains(out.String(), "sweep: the machine lock"), "dry run waited on the lock: %s", out.String())
 }
 
 // hangingRuns is a place whose listing never answers.
