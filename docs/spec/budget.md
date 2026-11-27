@@ -85,8 +85,8 @@ the run keeps a ledger under one mutex: the finished spend, and the running pair
 
 under `--repeat` (`repeats.md`) the run cap is the budget of the whole invocation. the repeats overlap in one
 queue, so when it is reached more than one repeat may be under way: no further pair starts in any of them, and a
-repeat none of whose pairs started makes no run dir. the warning counts both, naming the repeats begun that have
-pairs not started: `budget $20.00 reached at $20.13: 14 pair(s) of runs 3-4/5 and 1 more run(s) not started`
+repeat none of whose pairs started makes no run dir. the warning counts both, naming the repeats begun that
+have pairs not started, and the repeats not begun with their pairs: `budget $20.00 reached at $20.13: 14 pair(s) of runs 3-4/5 and 1 more run(s) (10 pair(s)) not started`
 (`of run 3/5` for one). since a pair never starts before its copy in an earlier repeat, those repeats are always
 consecutive.
 
