@@ -1,6 +1,6 @@
 # transient lxd errors
 
-status: proposed.
+status: implemented.
 
 ## problem
 
