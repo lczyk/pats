@@ -358,6 +358,11 @@ func TestValidateErrors(t *testing.T) {
 		{"sudo under docker", base + "dxx: {kind: sandbox, items: {dxx: {sudo: true}}}\n", "sudo is lxd-only"},
 		{"image and base", base + "dxx: {kind: sandbox, items: {dxx: {image: i, base: ubuntu:26.04}}}\n", "image and base / provision are mutually exclusive"},
 		{"build under lxd", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, build: .}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "build is a dockerfile"},
+		{"nested vms on a container", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, nested: vms}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "nested: vms needs vm: true"},
+		{"nested bad value", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, nested: lots}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "nested \"lots\": want none, containers or vms"},
+		{"nested security.nesting on a vm", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, vm: true, nested: vms, config: {security.nesting: \"true\"}}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "lxd refuses it on a vm"},
+		{"nested contradicts security.nesting", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, nested: containers, config: {security.nesting: \"false\"}}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "contradicts config security.nesting"},
+		{"nested under docker", base + "dxx: {kind: sandbox, items: {dxx: {nested: containers}}}\n", "nested is lxd-only"},
 		{"raw config under lxd", base + "lxx: {kind: sandbox, items: {lxx: {driver: lxd, config: {raw.lxc: x}}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n", "config raw.lxc is refused"},
 		{"bad size", base + "dxx: {kind: sandbox, items: {dxx: {limits: {memory: lots}}}}\n", "limits.memory \"lots\" is not a size"},
 		{"task sudo under docker", base + "t3x: {kind: task, items: {t3x: {prompt: p, sudo: true}}}\nsu3: {kind: suite, items: {su3: {agents: axx, tasks: t3x, scorers: scx}}}\n", "task \"t3x\" sets sudo"},
@@ -409,6 +414,30 @@ su2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}
 	assert.Equal(t, lx.VM, true)
 }
 
+// nested takes the scalar (required) or the mapping; none is no
+// declaration at all.
+func TestValidateLXDNested(t *testing.T) {
+	for _, tc := range []struct {
+		src  string
+		want Nested
+	}{
+		{"vm: true, nested: vms", Nested{Run: "vms", Required: true}},
+		{"vm: true, nested: {run: vms, required: false}", Nested{Run: "vms"}},
+		{"nested: {run: containers}", Nested{Run: "containers", Required: true}},
+		{`nested: containers, config: {security.nesting: "true"}`, Nested{Run: "containers", Required: true}},
+		{"nested: none", Nested{}},
+		{"vm: true", Nested{}},
+	} {
+		c := parseT(t, base+"lxx: {kind: sandbox, items: {lxx: {driver: lxd, "+tc.src+"}}}\nlax: {kind: agent, items: {lax: {harness: opencode-openrouter, model: m, sandbox: lxx}}}\nsu2: {kind: suite, items: {su2: {agents: lax, tasks: txx, scorers: scx}}}\n")
+		require.NoError(t, c.Validate(), tc.src)
+		for _, sb := range c.Sandboxes {
+			if sb.Name == "lxx" {
+				assert.Equal(t, sb.Nested, tc.want, tc.src)
+			}
+		}
+	}
+}
+
 func TestValidateBwrapSandbox(t *testing.T) {
 	needDriver(t, "bwrap")
 	c := parseT(t, base+`bwx: {kind: sandbox, items: {bwx: {driver: bwrap, image: ghcr.io/x/y:1, max-parallel: 2, env: {A: b}, egress: {allow: [.ubuntu.com]}}}}
@@ -457,6 +486,16 @@ func TestValidateAccepts(t *testing.T) {
 			assert.NoError(t, c.Validate())
 		})
 	}
+}
+
+// a nested mapping's keys are checked by its own unmarshal, and it needs a run.
+func TestNestedParseErrors(t *testing.T) {
+	_, err := Parse([]byte("sxx: {kind: sandbox, items: {sxx: {driver: lxd, nested: {run: vms, needed: true}}}}\n"))
+	assert.Error(t, err, "nested: unknown field \"needed\"")
+	_, err = Parse([]byte("sxx: {kind: sandbox, items: {sxx: {driver: lxd, nested: {required: false}}}}\n"))
+	assert.Error(t, err, "run is missing")
+	_, err = Parse([]byte("sxx: {kind: sandbox, items: {sxx: {driver: lxd, nested: [vms]}}}\n"))
+	assert.Error(t, err, "want none, containers, vms or a mapping")
 }
 
 // an egress mapping's keys are checked by its own unmarshal (the loader's

@@ -32,6 +32,8 @@ type fakeLXC struct {
 	failOn  string
 	// cutPushes is how many pushes next get their stdin cut to nothing.
 	cutPushes int
+	// probeOut is what `pats nested-probe` prints; uname is uname -m's.
+	probeOut, uname string
 }
 
 func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
@@ -58,6 +60,10 @@ func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 	case args[0] == "query":
 		b, _ := json.Marshal(map[string]any{"expanded_devices": f.devices, "expanded_config": f.config})
 		stdout.Write(b)
+	case args[0] == "exec" && strings.HasSuffix(joined, " uname -m"):
+		io.WriteString(stdout, f.uname+"\n")
+	case args[0] == "exec" && strings.HasSuffix(joined, " nested-probe"):
+		io.WriteString(stdout, f.probeOut)
 	case args[0] == "exec" && strings.Contains(joined, "id -u pats"):
 		io.WriteString(stdout, "1001\n")
 	case args[0] == "exec" && strings.Contains(joined, "pats egress run"):

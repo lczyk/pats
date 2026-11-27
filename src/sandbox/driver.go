@@ -118,6 +118,11 @@ type BuildSpec struct {
 	// Force builds even when an image of the key exists, and points the
 	// key at the new one.
 	Force bool
+	// Limits and Nested are the sandbox's: an lxd vm builder for a
+	// sandbox with nested: vms runs under its limits and is probed before
+	// the provision step.
+	Limits Limits
+	Nested Nested
 	// Progress and Warn, when set, get each build step and warning as they
 	// happen; the log gets them too.
 	Progress func(msg string)
@@ -172,6 +177,7 @@ type SandboxOptions struct {
 	ProxyImage string
 	Profiles   []string          // lxd: in the pats project
 	Config     map[string]string // lxd: instance config, passed through
+	Nested     Nested            // what the agent may start inside (lxd)
 }
 
 // OpenTarget is the driver of the place a pin file's target names

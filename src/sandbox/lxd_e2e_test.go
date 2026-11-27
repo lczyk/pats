@@ -232,3 +232,49 @@ func TestLXDE2EImageCache(t *testing.T) {
 		assert.That(t, before[k] != "", "%s was not set at the publish", k)
 	}
 }
+
+// TestLXDNestedE2E drives nested: vms on a real lxd server that nests: the
+// builder is probed and provisions a nested lxd, the pair's vm is probed at
+// start, and a vm launched inside it answers lxc exec. it needs
+// PATS_LXD_E2E=1 and a server whose host kernel nests kvm.
+func TestLXDNestedE2E(t *testing.T) {
+	if os.Getenv("PATS_LXD_E2E") == "" {
+		t.Skip("set PATS_LXD_E2E=1 to drive a real lxd server")
+	}
+	ctx := context.Background()
+	defer Shutdown()
+	bin := filepath.Join(t.TempDir(), "pats")
+	build := exec.Command("go", "build", "-o", bin, "../../cmd/pats")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
+	if arch := os.Getenv("PATS_LXD_E2E_GOARCH"); arch != "" {
+		build.Env = append(build.Env, "GOARCH="+arch)
+	}
+	out, err := build.CombinedOutput()
+	require.NoError(t, err, "%v\n%s", err, out)
+	o := Options{Driver: "lxd", VM: true, ProxyBin: bin}.WithEnv()
+	d, err := Open(o)
+	require.NoError(t, err)
+	nested := Nested{Run: NestedVMs, Required: true}
+	limits := Limits{CPU: 4, Memory: "6GiB", Disk: "30GiB"}
+	var log bytes.Buffer
+	img, _, _, err := d.Build(ctx, BuildSpec{Base: "ubuntu:24.04", Limits: limits, Nested: nested,
+		Argv: []string{"sh", "-c", "snap wait system seed.loaded && snap install lxd && lxd waitready --timeout=120 && lxd init --auto"}}, &log)
+	require.NoError(t, err, "%v\n%s", err, log.String())
+	assert.ContainsString(t, log.String(), "probing nested vms")
+
+	sb, err := d.Sandbox(SandboxOptions{Image: img.Name, Limits: limits, Nested: nested})
+	require.NoError(t, err)
+	sess, err := sb.Start(ctx, Spec{Workdir: t.TempDir()})
+	require.NoError(t, err)
+	defer sess.Close()
+	r := sess.(NestedSession).Nested()
+	require.That(t, r != nil && r.OK() != nil && *r.OK(), "the probe: %+v", r)
+	var o2 bytes.Buffer
+	script := `lxc launch ubuntu:24.04 inner --vm -c limits.memory=2GiB -q || exit 1
+for i in $(seq 100); do lxc exec inner -- true 2>/dev/null && { lxc exec inner -- uname -n; exit 0; }; sleep 3; done
+exit 2`
+	code, err := sess.Exec(ctx, Cmd{Argv: []string{"bash", "-c", script}, Root: true}, &o2, &o2)
+	require.NoError(t, err)
+	assert.Equal(t, code, 0, "%s", o2.String())
+	assert.ContainsString(t, o2.String(), "inner")
+}

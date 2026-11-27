@@ -202,6 +202,7 @@ func runPair(
 	var budgetKind string // the cap of its agent's budget that stopped it
 	var budgetAt usage    // what the pair had reported when it did
 	var sess sandbox.Session
+	var nested *sandbox.NestedResult
 	// synced: the host copy of the agent's files is current, so collect
 	// can read it.
 	synced := false
@@ -215,8 +216,14 @@ func runPair(
 		switch {
 		case err != nil:
 			setupErr = fmt.Errorf("start: %w", err)
+			if ne := (*sandbox.NestedError)(nil); errors.As(err, &ne) {
+				nested = ne.Result
+			}
 		default:
 			defer sess.Close()
+			if ns, ok := sess.(sandbox.NestedSession); ok {
+				nested = ns.Nested()
+			}
 			if t.Prepare != "" {
 				env := prepareEnv(job, filepath.Base(runDir), h.paths)
 				prepared := lap(&tm.PrepareS)
@@ -376,6 +383,7 @@ func runPair(
 		Summary:    summarize(hd, filepath.Join(outDir, "stdout.log")),
 		Components: sb.Components,
 		Placed:     sb.Placed,
+		Nested:     nestedRecordOf(nested),
 	}
 	if sb.Driver == sandbox.LXDDriver {
 		meta.LXD = lxdProvenanceOf(ctx, sb)

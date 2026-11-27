@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -334,17 +335,26 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		args = append(args, "--vm", "-c", "agent.nic_config=true")
 	}
 	args = append(args, l.metaFlags()...)
-	if l.s.Limits.CPU > 0 {
-		args = append(args, "-c", "limits.cpu="+strconv.Itoa(l.s.Limits.CPU))
-	}
-	if l.s.Limits.Memory != "" {
-		args = append(args, "-c", "limits.memory="+l.s.Limits.Memory)
-	}
-	if l.s.Limits.Disk != "" {
-		args = append(args, "-d", "root,size="+l.s.Limits.Disk)
-	}
+	args = append(args, limitFlags(l.s.Limits)...)
 	for _, k := range sortedKeys(l.s.Config) {
 		args = append(args, "-c", k+"="+l.s.Config[k])
+	}
+	switch n := l.s.Nested; {
+	case n.Run == NestedNone:
+	case l.o.VM:
+		// a vm's kernel is its own: nothing to set. vms are probed once it
+		// is up.
+		if n.Run == NestedContainers {
+			s.nested = &NestedResult{Asked: n.Run, Required: n.Required}
+		}
+	default:
+		if n.Run == NestedVMs {
+			return fail(errors.New("nested: vms needs vm: true: a container would get the host's kvm and vsock (docs/spec/nested.md)"))
+		}
+		if _, set := l.s.Config["security.nesting"]; !set {
+			args = append(args, "-c", "security.nesting=true")
+		}
+		s.nested = &NestedResult{Asked: n.Run, Required: n.Required, Set: "security.nesting"}
 	}
 	if len(l.s.Profiles) > 0 {
 		for _, p := range l.s.Profiles {
@@ -380,6 +390,13 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 	// an open sandbox waits for its dhcp route; a proxied one has none.
 	if err := s.waitReady(ctx, !spec.Egress.None && !spec.Egress.Set); err != nil {
 		return fail(noRouteHint(err, s.bridge))
+	}
+	// before the binds' pushes: a sandbox that cannot costs a boot, no more.
+	if l.o.VM && l.s.Nested.Run == NestedVMs {
+		s.nested = s.probeNested(ctx, l.s.Nested)
+		if ok := s.nested.OK(); l.s.Nested.Required && (ok == nil || !*ok) {
+			return fail(&NestedError{Result: s.nested})
+		}
 	}
 	if spec.Egress.SelfTest && !spec.Egress.None && !spec.Egress.Set {
 		if err := s.reachesInternet(ctx); err != nil {
@@ -422,6 +439,21 @@ func (l *lxd) Start(ctx context.Context, spec Spec) (Session, error) {
 		return fail(err)
 	}
 	return s, nil
+}
+
+// limitFlags are an lxd init or launch's flags for lim.
+func limitFlags(lim Limits) []string {
+	var args []string
+	if lim.CPU > 0 {
+		args = append(args, "-c", "limits.cpu="+strconv.Itoa(lim.CPU))
+	}
+	if lim.Memory != "" {
+		args = append(args, "-c", "limits.memory="+lim.Memory)
+	}
+	if lim.Disk != "" {
+		args = append(args, "-d", "root,size="+lim.Disk)
+	}
+	return args
 }
 
 // deleteInstance removes an instance of the pats project for good. killing

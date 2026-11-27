@@ -19,6 +19,7 @@ import (
 	flags "github.com/jessevdk/go-flags"
 	"github.com/lczyk/pats/internal/config"
 	"github.com/lczyk/pats/internal/eval"
+	"github.com/lczyk/pats/internal/nestedprobe"
 	"github.com/lczyk/pats/internal/version"
 	"github.com/lczyk/pats/src/sandbox"
 	"golang.org/x/term"
@@ -42,6 +43,16 @@ type Options struct {
 	Harness HarnessCommand `command:"harness" description:"a harness's own tools: try its parse script on a log"`
 	Machine MachineCommand `command:"machine" description:"print the harness and cli tables this machine runs with, and where its own file is"`
 	Clean   CleanCommand   `command:"clean" description:"remove what dead runs left behind: containers, instances, networks, temp dirs"`
+
+	NestedProbe NestedProbeCommand `command:"nested-probe" hidden:"yes" description:"inside a sandbox: check the devices a nested lxd needs to run vms"`
+}
+
+// NestedProbeCommand is what a sandbox with nested: vms runs as root at
+// start. the verdicts go out as one line; its exit is 0 whatever they are.
+type NestedProbeCommand struct{}
+
+func (c *NestedProbeCommand) Execute(args []string) error {
+	return nestedprobe.Write(os.Stdout, nestedprobe.Run())
 }
 
 // CleanCommand sweeps leftovers of crashed runs.

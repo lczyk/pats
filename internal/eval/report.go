@@ -662,6 +662,15 @@ func report(w io.Writer, runDir string, r *ScoreReport, color bool, warn io.Writ
 	if len(advisory) > 0 {
 		fmt.Fprintf(w, "egress advisory (host driver, unsandboxed; an empty denied list is not clean): %s\n", strings.Join(advisory, ", "))
 	}
+	var short []string
+	for _, p := range pairs {
+		if p.meta.nestedShort() {
+			short = append(short, p.agent+"/"+p.task)
+		}
+	}
+	if len(short) > 0 {
+		fmt.Fprintf(w, "nested devices not ok (nested: vms, required: false; ran anyway): %s\n", strings.Join(short, ", "))
+	}
 	for _, p := range pairs {
 		if p.meta != nil && len(p.meta.KeyMisuse) > 0 {
 			fmt.Fprintf(w, "key misuse: %s/%s tried to spend a held key at %s\n", p.agent, p.task, strings.Join(p.meta.KeyMisuse, ", "))

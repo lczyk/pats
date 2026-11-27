@@ -146,7 +146,8 @@ func (l *lxd) Build(ctx context.Context, spec BuildSpec, log io.Writer) (Image, 
 		log = io.Discard
 	}
 	alias, fp, base, built, err := c.image(ctx, lxdImageSpec{Base: spec.Base, Material: spec.Material, Argv: spec.Argv, Stamp: spec.Stamp, Harness: spec.Harness,
-		Progress: spec.Progress, Warn: spec.Warn, Role: spec.Role, Sandbox: spec.Sandbox, Force: spec.Force}, log)
+		Progress: spec.Progress, Warn: spec.Warn, Role: spec.Role, Sandbox: spec.Sandbox, Force: spec.Force,
+		Limits: spec.Limits, Nested: spec.Nested}, log)
 	if err != nil {
 		return Image{}, "", false, err
 	}

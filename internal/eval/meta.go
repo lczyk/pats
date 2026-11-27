@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/lczyk/pats/internal/config"
+	"github.com/lczyk/pats/internal/nestedprobe"
+	"github.com/lczyk/pats/src/sandbox"
 	"github.com/lczyk/pats/src/sandbox/proxy"
 )
 
@@ -28,6 +30,70 @@ type egressRecord struct {
 	Enforced *bool `json:"enforced,omitempty"`
 	// KeysSubstituted counts the requests a key proxy put a real key in.
 	KeysSubstituted int `json:"keys_substituted,omitempty"`
+}
+
+// nestedRecord is a pair's nested object: for vms, the probe's verdicts
+// with ok true, false or null (the probe did not run); for containers, the
+// request and what pats set for it, nothing checked.
+type nestedRecord struct {
+	Asked         string  `json:"asked"`
+	Required      bool    `json:"required"`
+	Set           *string `json:"set"`
+	OK            *bool   `json:"ok"`
+	KVM           string  `json:"kvm,omitempty"`
+	VhostVsockCID string  `json:"vhost_vsock_cid,omitempty"`
+	Vsock         string  `json:"vsock,omitempty"`
+	VhostNet      string  `json:"vhost_net,omitempty"`
+	Reason        string  `json:"reason,omitempty"`
+}
+
+// MarshalJSON writes the shape of the record's kind.
+func (n nestedRecord) MarshalJSON() ([]byte, error) {
+	if n.Asked == sandbox.NestedContainers {
+		return json.Marshal(struct {
+			Asked string  `json:"asked"`
+			Set   *string `json:"set"`
+		}{n.Asked, n.Set})
+	}
+	type plain nestedRecord
+	p := plain(n)
+	p.Set = nil
+	return json.Marshal(struct {
+		plain
+		Set *string `json:"set,omitempty"`
+	}{plain: p})
+}
+
+func nestedRecordOf(r *sandbox.NestedResult) *nestedRecord {
+	if r == nil {
+		return nil
+	}
+	n := &nestedRecord{Asked: r.Asked, Required: r.Required}
+	if r.Asked == sandbox.NestedContainers {
+		if r.Set != "" {
+			s := r.Set
+			n.Set = &s
+		}
+		return n
+	}
+	p := r.Probe
+	if !r.Probed {
+		p = nestedprobe.Unknowns()
+	}
+	n.OK = r.OK()
+	n.KVM, n.VhostVsockCID, n.Vsock, n.VhostNet = p.KVM, p.VhostVsockCID, p.Vsock, p.VhostNet
+	// an optional check's failure (vhost-net) is in the verdicts, not a
+	// reason beside ok: true.
+	if n.OK == nil || !*n.OK {
+		n.Reason = r.Reason
+	}
+	return n
+}
+
+// nestedShort says whether the pair ran without the nested vms it asked
+// for: required: false, and the probe failed or did not run.
+func (m *pairMeta) nestedShort() bool {
+	return m != nil && m.Nested != nil && m.Nested.Asked == sandbox.NestedVMs && (m.Nested.OK == nil || !*m.Nested.OK)
 }
 
 // advisoryEgress says whether the pair's egress policy was advisory: what
@@ -119,6 +185,9 @@ type pairMeta struct {
 	// (docs/spec/key-proxy.md): the agent tried to spend a held key elsewhere.
 	KeyMisuse []string      `json:"key_misuse,omitempty"`
 	Egress    *egressRecord `json:"egress,omitempty"`
+	// Nested is what the sandbox's nested declaration found, absent when
+	// it made none (docs/spec/nested.md).
+	Nested *nestedRecord `json:"nested,omitempty"`
 	// per-harness digest parsed from the log: cost, tokens, turns, tools.
 	Summary *runSummary `json:"summary,omitempty"`
 	// the harness versions inside the image, as pats init stamped them.

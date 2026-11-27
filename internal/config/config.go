@@ -82,6 +82,7 @@ type Sandbox struct {
 	// lxd only.
 	Remote   string            `yaml:"remote"` // an lxc remote; "" -> the cli's current one
 	VM       bool              `yaml:"vm"`     // a virtual machine rather than a system container
+	Nested   Nested            `yaml:"nested"` // what the agent may start inside (docs/spec/nested.md)
 	Profiles []string          `yaml:"profiles"`
 	Config   map[string]string `yaml:"config"`
 	Egress   Egress            `yaml:"egress"` // outbound network policy (absent: open)
@@ -175,6 +176,59 @@ func (e *Egress) UnmarshalYAML(node *yaml.Node) error {
 	default:
 		return fmt.Errorf("line %d: egress: want none or a mapping", node.Line)
 	}
+}
+
+// Nested is what the agent may start inside its sandbox: none (the
+// default, no declaration), containers or vms. the scalar is required; the
+// mapping {run, required} lets a suite degrade on purpose.
+type Nested struct {
+	Run      string `yaml:"run"`
+	Required bool   `yaml:"required"`
+}
+
+// UnmarshalYAML accepts the scalar or the mapping, required by default.
+func (n *Nested) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var s string
+		if err := node.Decode(&s); err != nil {
+			return err
+		}
+		*n = Nested{Run: s, Required: true}
+	case yaml.MappingNode:
+		known := yamlKeys(reflect.TypeOf(nestedFields{}))
+		var errs errList
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if k := node.Content[i].Value; !known[k] {
+				errs.add("line %d: nested: unknown field %q", node.Content[i].Line, k)
+			}
+		}
+		if err := errs.err(); err != nil {
+			return err
+		}
+		f := nestedFields{Required: true}
+		if err := node.Decode(&f); err != nil {
+			return err
+		}
+		*n = Nested(f)
+	default:
+		return fmt.Errorf("line %d: nested: want none, containers, vms or a mapping", node.Line)
+	}
+	if n.Run == "" {
+		return fmt.Errorf("line %d: nested: run is missing", node.Line)
+	}
+	if n.Run == "none" {
+		*n = Nested{}
+	}
+	return nil
+}
+
+// nestedFields is Nested without its UnmarshalYAML.
+type nestedFields Nested
+
+// Driver is n for the driver: "" for none.
+func (n Nested) Driver() sandbox.Nested {
+	return sandbox.Nested{Run: n.Run, Required: n.Required}
 }
 
 // IsContainer reports whether the sandbox runs under a container driver.

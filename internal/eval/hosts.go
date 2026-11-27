@@ -97,12 +97,16 @@ func (s *stepLog) Write(p []byte) (int, error) {
 }
 
 // warnUnboxed says, once per sandbox and before the first pair, which of
-// the pairs' sandboxes run their agents on this machine itself.
+// the pairs' sandboxes run their agents on this machine itself, and which
+// carry a raw security.nesting their nested key already sets.
 func warnUnboxed(cfg *config.Config, pairs []config.TestPair, lg logw) {
 	used := usedSandboxes(cfg, pairs)
 	for _, sb := range cfg.Sandboxes {
 		if used[sb.Name] && sandbox.TraitsOf(sb.Driver).Unboxed {
 			lg.warn("sandbox %q runs agents on this machine, unsandboxed (sand-not-boxed); egress is advisory", sb.Name)
+		}
+		if _, raw := sb.Config["security.nesting"]; used[sb.Name] && raw && sb.Nested.Run != "" && !sb.VM {
+			lg.warn("sandbox %q: nested: %s sets security.nesting itself; the config key can go", sb.Name, sb.Nested.Run)
 		}
 	}
 }

@@ -102,7 +102,7 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, placed []sandbo
 	base, anyBuilt := sb.Base, false
 	if base == "" || len(placed) > 0 {
 		own := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "sandbox", Sandbox: sb.Name, Force: force,
-			Harness: placed, Stamp: clis}
+			Harness: placed, Stamp: clis, Limits: driverLimits(sb.Limits), Nested: sb.Nested.Driver()}
 		if base == "" {
 			material, argv, err := stageMaterial(sb.Driver, opts.ConfigDir, images.ProvisionSandbox, sandbox.ProvisionMount)
 			if err != nil {
@@ -120,7 +120,8 @@ func lxdImage(ctx context.Context, h builder, sb config.Sandbox, placed []sandbo
 		layers = append(layers, layer.ID)
 		img = layer
 	}
-	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.Name, Force: force, Stamp: clis}
+	spec := sandbox.BuildSpec{Base: base, Progress: progress, Warn: warn, Role: "project", Sandbox: sb.Name, Force: force, Stamp: clis,
+		Limits: driverLimits(sb.Limits), Nested: sb.Nested.Driver()}
 	if sb.Provision != "" {
 		material, argv, err := stageMaterial(sb.Driver, opts.ConfigDir, sb.Provision, sandbox.ProvisionMount)
 		if err != nil {
@@ -217,4 +218,9 @@ func proxyImageID(ctx context.Context, sb config.Sandbox) string {
 		return img.Repo + "@" + img.Digest
 	}
 	return img.ID
+}
+
+// driverLimits is a sandbox's limits as the driver takes them.
+func driverLimits(l config.Limits) sandbox.Limits {
+	return sandbox.Limits{CPU: l.CPU, Memory: l.Memory, Disk: l.Disk}
 }

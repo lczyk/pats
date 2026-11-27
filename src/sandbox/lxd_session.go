@@ -38,6 +38,7 @@ type lxdSession struct {
 	egress     *lxdEgress
 	uid        string
 	initGroups bool // the image has a setpriv that starts the agent with its groups
+	nested     *NestedResult
 	once       sync.Once
 	closeErr   error
 }

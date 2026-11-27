@@ -51,6 +51,9 @@ type lxdImageSpec struct {
 	// Force builds even when an image of the key exists, and points the
 	// key's alias at the new one.
 	Force bool
+	// Limits and Nested: see BuildSpec. no part of the key.
+	Limits Limits
+	Nested Nested
 	// Key, when set, stands for Argv and Material in the image key: what
 	// the image is, when its material holds bytes that do not matter (the
 	// proxy of a release, keyed on the version, not the binary).
@@ -376,8 +379,14 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 		from = remote + ":" + baseFP
 	}
 	args := []string{"launch", from, s.inst(), "--project", lxdProject, "--storage", l.pool, "-n", net}
+	nestedVMs := l.o.VM && spec.Nested.Run == NestedVMs
 	if l.o.VM {
 		args = append(args, "--vm")
+	}
+	if nestedVMs {
+		// lxd's vm default (1 cpu, 1 GiB) is too small for a provision
+		// that sets up a nested lxd.
+		args = append(args, limitFlags(spec.Limits)...)
 	}
 	args = append(args, l.metaFlags()...)
 	spec.step(log, "launching builder %s", name)
@@ -392,6 +401,16 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	}
 	if !s.online(ctx) {
 		return "", fmt.Errorf("lxd: the image builder on bridge %s does not reach the internet. %s. or set %s to a bridge that does (e.g. lxdbr0)", net, dockerBridgeHint, LXDUplinkEnv)
+	}
+	if nestedVMs {
+		spec.step(log, "probing nested vms")
+		r := s.probeNested(ctx, spec.Nested)
+		if ok := r.OK(); ok == nil || !*ok {
+			if spec.Nested.Required {
+				return "", &NestedError{Result: r}
+			}
+			spec.warn(log, "%s; building anyway (required: false)", nestedMessage(r))
+		}
 	}
 	// cloud-init may still be configuring the base on first boot.
 	_, _ = s.exec(ctx, Cmd{Argv: []string{"sh", "-c", "command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1; true"}, Root: true, Dir: "/"}, io.Discard, io.Discard)

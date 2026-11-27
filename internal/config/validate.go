@@ -202,6 +202,7 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 			}
 		}
 		validateEgress(add, s)
+		validateNested(add, s)
 		for _, k := range sortedKeys(s.Env) {
 			switch {
 			case !envName.MatchString(k):
@@ -214,6 +215,34 @@ func (c *Config) validateSandboxes(add func(string, ...any)) {
 				add("sandbox %q: env %s is read-only in a shell, which hands the env to the command", s.Name, k)
 			}
 		}
+	}
+}
+
+// validateNested checks the nested value and what it needs: vms needs a
+// vm, only lxd maps it so far, and raw security.nesting must agree.
+func validateNested(add func(string, ...any), s Sandbox) {
+	switch s.Nested.Run {
+	case "":
+		return
+	case sandbox.NestedContainers, sandbox.NestedVMs:
+	default:
+		add("sandbox %q: nested %q: want none, containers or vms", s.Name, s.Nested.Run)
+		return
+	}
+	if s.Driver != "lxd" {
+		add("sandbox %q: nested is lxd-only for now (driver %q): see docs/spec/nested.md", s.Name, s.Driver)
+		return
+	}
+	if s.Nested.Run == sandbox.NestedVMs && !s.VM {
+		add("sandbox %q: nested: vms needs vm: true: a container would get the host's kvm and vsock (docs/spec/nested.md)", s.Name)
+	}
+	raw, set := s.Config["security.nesting"]
+	switch {
+	case !set:
+	case s.VM:
+		add("sandbox %q: config security.nesting is a container key; lxd refuses it on a vm, and nested needs none there", s.Name)
+	case slices.Contains([]string{"false", "0", "no", "off"}, strings.ToLower(raw)):
+		add("sandbox %q: nested: %s contradicts config security.nesting: %q", s.Name, s.Nested.Run, raw)
 	}
 }
 

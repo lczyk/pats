@@ -107,6 +107,24 @@ func TestLXDImageBuild(t *testing.T) {
 		assert.Equal(t, calls[0].base, "ubuntu:24.04")
 		assert.That(t, built, "built is false")
 	})
+	t.Run("nested carries its limits to every layer", func(t *testing.T) {
+		var specs []sandbox.BuildSpec
+		h := &buildingHost{fakeHost: newFakeHost(), build: func(spec sandbox.BuildSpec, log io.Writer) (sandbox.Image, string, bool, error) {
+			specs = append(specs, spec)
+			return sandbox.Image{ID: "fp", Name: "pats-img-" + strconv.Itoa(len(specs))}, "fp", true, nil
+		}}
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "provision.sh"), []byte("true\n"), 0o755))
+		sb := config.Sandbox{Name: "box", Driver: "lxd", VM: true, Provision: "provision.sh",
+			Limits: config.Limits{CPU: 4, Memory: "6GiB"}, Nested: config.Nested{Run: "vms", Required: true}}
+		_, _, _, _, err := lxdImage(context.Background(), h, sb, nil, nil, Options{ConfigDir: dir, Out: io.Discard}, filepath.Join(t.TempDir(), "b.log"), false)
+		require.NoError(t, err)
+		require.Equal(t, len(specs), 2)
+		for _, s := range specs {
+			assert.Equal(t, s.Nested, sandbox.Nested{Run: "vms", Required: true})
+			assert.Equal(t, s.Limits, sandbox.Limits{CPU: 4, Memory: "6GiB"})
+		}
+	})
 	t.Run("a failed build", func(t *testing.T) {
 		_, _, _, _, _, err := run(t, config.Sandbox{Name: "box", Driver: "lxd", Provision: "provision.sh"}, true)
 		require.Error(t, err, "provisioning exited 1")
