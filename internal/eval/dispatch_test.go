@@ -61,11 +61,11 @@ func TestReadHistoryLenient(t *testing.T) {
 // never begun.
 func TestNotStartedText(t *testing.T) {
 	for want, reps := range map[string][]repeatRun{
-		"3 pair(s) of runs 1-2/3 and 1 more run(s)": {{dir: "a", notStarted: 1}, {dir: "b", notStarted: 2}, {}},
-		"2 pair(s) of run 2/3 and 1 more run(s)":    {{dir: "a"}, {dir: "b", notStarted: 2}, {}},
-		"2 pair(s) of run 3/3":                      {{dir: "a"}, {dir: "b"}, {dir: "c", notStarted: 2}},
-		"2 more run(s)":                             {{dir: "a"}, {}, {}},
-		"3 run(s)":                                  {{}, {}, {}},
+		"3 pair(s) of runs 1-2/3 and 1 more run(s) (2 pair(s))": {{dir: "a", notStarted: 1}, {dir: "b", notStarted: 2}, {notStarted: 2}},
+		"2 pair(s) of run 2/3 and 1 more run(s) (2 pair(s))":    {{dir: "a"}, {dir: "b", notStarted: 2}, {notStarted: 2}},
+		"2 pair(s) of run 3/3":                                  {{dir: "a"}, {dir: "b"}, {dir: "c", notStarted: 2}},
+		"2 more run(s) (4 pair(s))":                             {{dir: "a"}, {notStarted: 2}, {notStarted: 2}},
+		"3 run(s) (6 pair(s))":                                  {{notStarted: 2}, {notStarted: 2}, {notStarted: 2}},
 	} {
 		d := &dispatch{n: len(reps)}
 		for i := range reps {
@@ -406,7 +406,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	close(g.release)
 	// the dir's error wins; the cap the running pair passed is still said.
 	assert.Error(t, <-errc, "permission denied")
-	assert.ContainsString(t, out.String(), "WARN budget $1.00 reached at $1.00: 1 more run(s) not started")
+	assert.ContainsString(t, out.String(), "WARN budget $1.00 reached at $1.00: 1 more run(s) (2 pair(s)) not started")
 	names, err := sortedRunNames(runs)
 	require.NoError(t, err)
 	require.Len(t, names, 1)
@@ -449,7 +449,7 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: tvx}}}
 	assert.Len(t, runs, 3) // the past one and repeats 1 and 2
 	o := out.String()
 	assert.ContainsString(t, o, "reached at $")
-	assert.ContainsString(t, o, ": 2 pair(s) of runs 1-2/3 and 1 more run(s) not started")
+	assert.ContainsString(t, o, ": 2 pair(s) of runs 1-2/3 and 1 more run(s) (2 pair(s)) not started")
 	assert.ContainsString(t, o, "INFO run 1/3: 1 ok")
 	assert.ContainsString(t, o, "INFO run 2/3: 1 ok")
 	assert.That(t, !strings.Contains(o, "INFO run 3/3"), "repeat 3 logged:\n%s", o)

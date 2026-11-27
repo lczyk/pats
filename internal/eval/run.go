@@ -835,12 +835,13 @@ func (d *dispatch) runOne(ctx context.Context, t *pairTask, runDir string, stat 
 // notStartedText is what a budget stop left: the pairs of the repeats begun,
 // and the repeats never begun.
 func (d *dispatch) notStartedText() string {
-	pairs, unbegun := 0, 0
-	lo, hi := 0, 0 // the repeats begun with pairs not started
+	pairs, unbegun, later := 0, 0, 0 // later: the pairs of the repeats not begun
+	lo, hi := 0, 0                   // the repeats begun with pairs not started
 	for i, rr := range d.reps {
 		switch {
 		case rr.dir == "":
 			unbegun++
+			later += rr.notStarted
 		case rr.notStarted > 0:
 			pairs += rr.notStarted
 			if lo == 0 {
@@ -851,9 +852,9 @@ func (d *dispatch) notStartedText() string {
 	}
 	switch {
 	case pairs == 0 && unbegun == d.n:
-		return fmt.Sprintf("%d run(s)", unbegun) // a cap reached before the first
+		return fmt.Sprintf("%d run(s) (%d pair(s))", unbegun, later) // a cap reached before the first
 	case pairs == 0:
-		return fmt.Sprintf("%d more run(s)", unbegun)
+		return fmt.Sprintf("%d more run(s) (%d pair(s))", unbegun, later)
 	}
 	what := fmt.Sprintf("%d pair(s)", pairs)
 	switch {
@@ -864,7 +865,7 @@ func (d *dispatch) notStartedText() string {
 		what += fmt.Sprintf(" of runs %d-%d/%d", lo, hi, d.n)
 	}
 	if unbegun > 0 {
-		what += fmt.Sprintf(" and %d more run(s)", unbegun)
+		what += fmt.Sprintf(" and %d more run(s) (%d pair(s))", unbegun, later)
 	}
 	return what
 }
