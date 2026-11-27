@@ -111,6 +111,7 @@ type RunCommand struct {
 	JSON    bool     `long:"json" description:"with -n: the list as one json object a line on stdout, the log on stderr"`
 	Repeat  int      `long:"repeat" short:"N" default:"1" description:"run the selection this many times, one run after another, each its own run dir"`
 	Budget  string   `long:"budget" value-name:"<usd|kind=value,...>" description:"stop starting pairs once a cap is reached, across every repeat: a cost in us dollars, or cost=, tokens= (e.g. 50M), tools=, turns=, time= (e.g. 2h, after preflight)"`
+	Strict  bool     `long:"strict-preflight" description:"fail the run when any agent fails its preflight, in place of running the others"`
 }
 
 func (r *RunCommand) Execute(args []string) error {
@@ -133,20 +134,21 @@ func (r *RunCommand) Execute(args []string) error {
 		out = os.Stderr
 	}
 	_, err = eval.Run(cfg, eval.Options{
-		ConfigDir: filepath.Dir(opts.Config),
-		Now:       time.Now(),
-		Out:       out,
-		DryRun:    r.DryRun,
-		Repeat:    r.Repeat,
-		Budget:    budget,
-		JSON:      r.JSON,
-		JSONOut:   os.Stdout,
-		Jobs:      r.Jobs,
-		Agents:    r.Agents,
-		Tasks:     r.Tasks,
-		Suites:    r.Suites,
-		Offline:   r.Offline,
-		Verbose:   len(opts.Verbose),
+		ConfigDir:       filepath.Dir(opts.Config),
+		Now:             time.Now(),
+		Out:             out,
+		DryRun:          r.DryRun,
+		Repeat:          r.Repeat,
+		Budget:          budget,
+		StrictPreflight: r.Strict,
+		JSON:            r.JSON,
+		JSONOut:         os.Stdout,
+		Jobs:            r.Jobs,
+		Agents:          r.Agents,
+		Tasks:           r.Tasks,
+		Suites:          r.Suites,
+		Offline:         r.Offline,
+		Verbose:         len(opts.Verbose),
 	})
 	return err
 }

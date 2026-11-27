@@ -276,8 +276,14 @@ func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs 
 		go func() { upstream <- checkUpstream(ctx, checks, upstreamBudget) }()
 	}
 	lg.detail("preflight: checking judge credentials")
-	if err := Preflight(ctx, cfg, ro, judgePairs, judged...); err != nil {
+	// a judge that failed is not dropped: its judgements would keep an
+	// earlier run's scores, read as fresh.
+	failures, err := Preflight(ctx, cfg, ro, judgePairs, judged...)
+	if err != nil {
 		return err
+	}
+	if len(failures) > 0 {
+		return preflightErr(failures)
 	}
 	for _, w := range <-upstream {
 		lg.warn("%s", w)

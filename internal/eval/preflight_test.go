@@ -62,7 +62,7 @@ func TestPreflightBudgets(t *testing.T) {
 	cfg := parseCfg(t, "boxes: {kind: sandbox, items: {bxx: {image: x}}}\n"+
 		"agents: {kind: agent, defaults: {harness: opencode-openrouter, model: m}, items: {axx: {sandbox: bxx}}}\n")
 	var out bytes.Buffer
-	require.NoError(t, Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}}))
+	require.NoError(t, preflightAll(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}}))
 	assert.That(t, box.start > preflightTimeout && box.start <= setupTimeout, "start budget %s", box.start)
 	assert.That(t, box.exec > 0 && box.exec <= preflightTimeout, "exec budget %s", box.exec)
 }
@@ -80,18 +80,27 @@ func TestPreflightHearsAnError(t *testing.T) {
 	cfg := parseCfg(t, "boxes: {kind: sandbox, items: {bxx: {image: x}}}\n"+
 		"agents: {kind: agent, defaults: {harness: pi-openrouter, model: m}, items: {axx: {sandbox: bxx}}}\n")
 	var out bytes.Buffer
-	err := Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}})
+	err := preflightAll(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}})
 	assert.Error(t, err, "harness reported an error")
 	assert.Error(t, err, "User not found")
 
 	box.say = piLog
-	require.NoError(t, Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}}))
+	require.NoError(t, preflightAll(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}}))
 
 	// a non-zero exit shows what the harness said too, in place of the end
 	// of its output.
 	box.say, box.code = piFailed, 1
-	err = Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}})
+	err = preflightAll(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx"}})
 	assert.Error(t, err, "harness exited 1")
 	assert.Error(t, err, "\n401: {")
 	assert.That(t, !strings.Contains(err.Error(), "stopReason"), "the raw output is in the error: %v", err)
+}
+
+// preflightAll is Preflight with any agent's failure as its error.
+func preflightAll(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair) error {
+	failures, err := Preflight(ctx, cfg, opts, pairs)
+	if err == nil && len(failures) > 0 {
+		err = preflightErr(failures)
+	}
+	return err
 }

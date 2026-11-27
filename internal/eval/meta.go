@@ -229,10 +229,16 @@ var failedReasons = map[string]bool{"revoked": true, "dial": true, "key-scrub": 
 // readEgressAudit folds an audit log; a missing file is the zero value (no
 // proxy ran). lines that are not json (there should be none) are skipped.
 func readEgressAudit(auditPath string) egressAudit {
+	a, _ := readEgressAuditErr(auditPath)
+	return a
+}
+
+// readEgressAuditErr is readEgressAudit with the error reading the file.
+func readEgressAuditErr(auditPath string) (egressAudit, error) {
 	var a egressAudit
 	data, err := os.ReadFile(auditPath)
 	if err != nil {
-		return a
+		return a, err
 	}
 	seen := map[string]bool{}
 	for line := range bytes.SplitSeq(data, []byte("\n")) {
@@ -284,7 +290,7 @@ func readEgressAudit(auditPath string) egressAudit {
 			*list = append(*list, target)
 		}
 	}
-	return a
+	return a, nil
 }
 
 // lxdProvenance is what a pair's metadata records of the lxd server and

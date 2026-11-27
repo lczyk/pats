@@ -3,6 +3,7 @@ package eval
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -257,4 +258,49 @@ func TestRepairJudgement(t *testing.T) {
 	mk(asideDir(dir))
 	require.NoError(t, repairJudgement(dir))
 	assert.That(t, exists(dir) && !exists(asideDir(dir)), "old set not removed")
+}
+
+// a judge whose preflight fails stops the judging: no scores move.
+func TestJudgePreflightFails(t *testing.T) {
+	fake := &fakeSandbox{preflightCode: 1}
+	useFake(t, fake)
+	dir, run, cfg := judgeFixture(t)
+	before, _ := os.ReadFile(filepath.Join(run, "scores.json"))
+	err := Judge(cfg, JudgeOptions{ConfigDir: dir, Out: io.Discard, Offline: true})
+	require.That(t, errors.Is(err, ErrPreflight), "not ErrPreflight: %v", err)
+	after, _ := os.ReadFile(filepath.Join(run, "scores.json"))
+	assert.Equal(t, string(after), string(before))
+	assert.Equal(t, fake.calls, 1) // the preflight alone
+}
+
+// of two judges, one failing its preflight stops both: the other's
+// judgements are not made either.
+func TestJudgePreflightOneOfTwo(t *testing.T) {
+	ok, bad := &fakeSandbox{stdout: opencodeReply("SCORE: 1")}, &fakeSandbox{preflightCode: 1}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		if s.Image == "s2" {
+			return bad, nil
+		}
+		return ok, nil
+	}
+	t.Cleanup(func() { newSandbox = old })
+	dir, run, _ := judgeFixture(t)
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+s2x: {kind: sandbox, items: {s2x: {image: s2}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+jxx: {kind: agent, items: {jxx: {harness: opencode-openrouter, model: jm, sandbox: sxx}}}
+kxx: {kind: agent, items: {kxx: {harness: opencode-openrouter, model: km, sandbox: s2x}}}
+tasks: {kind: task, defaults: {prompt: p}, items: {t1x: ~, t2x: ~, t3x: ~}}
+scorers: {kind: scorer, items: {jud: {agent: jxx, prompt: grade it}, jud2: {agent: kxx, prompt: grade}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: [t1x, t2x, t3x], scorers: [jud, jud2]}}}
+`)
+	pinAll(t, dir, cfg)
+	before, _ := os.ReadFile(filepath.Join(run, "scores.json"))
+	err := Judge(cfg, JudgeOptions{ConfigDir: dir, Out: io.Discard, Offline: true})
+	require.That(t, errors.Is(err, ErrPreflight), "not ErrPreflight: %v", err)
+	after, _ := os.ReadFile(filepath.Join(run, "scores.json"))
+	assert.Equal(t, string(after), string(before))
+	assert.Equal(t, ok.calls, 1) // the passing judge's preflight alone
 }

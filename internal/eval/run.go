@@ -33,12 +33,15 @@ type Options struct {
 	Now       time.Time // wall clock, for the run-dir slug (injectable for tests)
 	Out       io.Writer // progress + host script output
 	Jobs      int       // max concurrent pairs; 0 -> serial (1), negative -> auto (see resolveJobs)
-	Color     bool      // colour log tags (set internally from Out's tty-ness)
-	Verbose   int       // -v count: 1 adds detail lines, 2 streams host scripts and the agent's stderr
-	Agents    []string  // filter the pairs to these agents (empty -> all)
-	Tasks     []string  // filter the pairs to these tasks (empty -> all)
-	Suites    []string  // only expand these suites (empty -> all)
-	Offline   bool      // skip the upstream checks, for a machine without a network
+	// StrictPreflight fails the run on any agent's failed preflight, in
+	// place of leaving that agent's pairs out.
+	StrictPreflight bool
+	Color           bool     // colour log tags (set internally from Out's tty-ness)
+	Verbose         int      // -v count: 1 adds detail lines, 2 streams host scripts and the agent's stderr
+	Agents          []string // filter the pairs to these agents (empty -> all)
+	Tasks           []string // filter the pairs to these tasks (empty -> all)
+	Suites          []string // only expand these suites (empty -> all)
+	Offline         bool     // skip the upstream checks, for a machine without a network
 	// DryRun lists the pairs with a cost estimate and stops before the first
 	// sandbox; JSON (with DryRun only) writes that list as json lines to
 	// JSONOut, while Out takes the log.
@@ -173,7 +176,12 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 
 	// fail fast on bad/expired creds before spinning per-pair containers.
 	lg.detail("preflight: checking agent credentials")
-	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
+	failures, err := Preflight(ctx, cfg, opts, pairs)
+	if err != nil {
+		return "", err
+	}
+	pairs, dropped, err := dropFailed(pairs, failures, opts.StrictPreflight)
+	if err != nil {
 		return "", err
 	}
 	// the budget spans every repeat: the invocation's. its clock starts
@@ -190,20 +198,78 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 	n := max(opts.Repeat, 1)
 	d := newDispatch(cfg, opts, lg, pairs, n, jobs, agents, tasks, sandboxes, hist)
 	runDir, dirErr := d.run(ctx)
-	if ctx.Err() != nil {
-		return runDir, ErrInterrupted
+	// every stop is said, whichever error the run returns.
+	if len(failures) > 0 {
+		lg.warn("%s", droppedText(failures, dropped*n, n))
 	}
 	// a run dir's error wins, but a cap reached is still said.
 	if d.budgetStop || (dirErr != nil && opts.ledger.reached()) {
 		lg.warn("%s: %s not started", opts.ledger.reachedAt(), d.notStartedText())
+	}
+	if ctx.Err() != nil {
+		return runDir, ErrInterrupted
 	}
 	switch {
 	case dirErr != nil:
 		return runDir, dirErr
 	case d.budgetStop:
 		return runDir, ErrBudget
+	case len(failures) > 0:
+		return runDir, preflightErr(failures)
 	}
 	return runDir, nil
+}
+
+// ErrPreflight is a run that left out the pairs of agents whose preflight
+// failed (docs/spec/preflight-per-agent.md).
+var ErrPreflight = errors.New("preflight failed")
+
+// preflightErr is ErrPreflight with every failure under it.
+func preflightErr(failures []agentFailure) error {
+	errs := make([]error, len(failures))
+	for i, f := range failures {
+		errs[i] = f
+	}
+	return fmt.Errorf("%w: %w", ErrPreflight, errors.Join(errs...))
+}
+
+// dropFailed takes the pairs of the agents whose preflight failed out of
+// the selection, and says how many it took. a failure of the invocation's,
+// any failure under strict, or every agent failing fails the run instead.
+func dropFailed(pairs []config.TestPair, failures []agentFailure, strict bool) ([]config.TestPair, int, error) {
+	if len(failures) == 0 {
+		return pairs, 0, nil
+	}
+	out := map[string]bool{}
+	fatal := strict
+	for _, f := range failures {
+		out[f.agent] = true
+		fatal = fatal || f.kind == failInvocation
+	}
+	var kept []config.TestPair
+	for _, p := range pairs {
+		if !out[p.Agent] {
+			kept = append(kept, p)
+		}
+	}
+	if fatal || len(kept) == 0 {
+		return nil, 0, preflightErr(failures)
+	}
+	return kept, len(pairs) - len(kept), nil
+}
+
+// droppedText is the closing line for the agents a failed preflight left
+// out: n is every repeat's count of their pairs.
+func droppedText(failures []agentFailure, n, repeats int) string {
+	var names []string
+	for _, f := range failures {
+		names = append(names, fmt.Sprintf("%s (%s)", f.agent, f.kind))
+	}
+	s := fmt.Sprintf("preflight failed for %s: %d pair(s) not started", strings.Join(names, ", "), n)
+	if repeats > 1 {
+		s += fmt.Sprintf(" over %d runs", repeats)
+	}
+	return s
 }
 
 // ErrInterrupted is a run stopped by ctrl-c or sigterm.

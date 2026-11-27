@@ -275,6 +275,10 @@ type fakeSandbox struct {
 	// and preflightEnv the env that exec got.
 	preflightOut string
 	preflightEnv map[string]string
+	// preflightCode is the preflight harness's exit; preflightStartErr
+	// fails the preflight's start.
+	preflightCode     int
+	preflightStartErr error
 	// syncErr fails the pair's sync, handOverErr its hand-over.
 	syncErr, handOverErr error
 }
@@ -290,6 +294,9 @@ func (f *fakeSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Ses
 	preflight := strings.HasPrefix(filepath.Base(spec.Workdir), "pats-preflight-")
 	if preflight {
 		f.preflights++
+		if f.preflightStartErr != nil {
+			return nil, f.preflightStartErr
+		}
 	}
 	if f.startErr != nil && !preflight {
 		return nil, f.startErr
@@ -346,7 +353,7 @@ func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr 
 	if s.preflight {
 		f.preflightEnv = cmd.Env
 		io.WriteString(stdout, f.preflightOut)
-		return 0, nil
+		return f.preflightCode, nil
 	}
 	if f.onRun != nil {
 		spec := s.spec
