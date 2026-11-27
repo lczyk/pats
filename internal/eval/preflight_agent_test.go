@@ -108,11 +108,15 @@ func TestPreflightDroppedRepeats(t *testing.T) {
 // a budget stop and a dropped agent: both lines, the budget's error.
 func TestPreflightDroppedAndBudget(t *testing.T) {
 	fakes := threeFakes()
+	for _, f := range fakes {
+		f.preRun = steps(1, 1)
+	}
 	fakes["a2"].preflightCode = 1
-	_, err, log := runAgents(t, fakes, Options{Budget: config.Budget{Time: time.Nanosecond}})
+	_, err, log := runAgents(t, fakes, Options{Jobs: 1, Repeat: 3, Budget: config.Budget{Cost: 3}})
 	require.That(t, errors.Is(err, ErrBudget), "not ErrBudget: %v", err)
-	assert.ContainsString(t, log, "preflight failed for a2")
-	assert.ContainsString(t, log, "not started")
+	// 3 ran (a1, a3 of run 1, a1 of run 2), and 3 + 1 + 2 of the 9 did not.
+	assert.ContainsString(t, log, "preflight failed for a2 (harness): 3 pair(s) not started over 3 runs")
+	assert.ContainsString(t, log, "1 pair(s) of run 2/3 and 1 more run(s) not started")
 }
 
 // the invocation's failure fails the run; within one check the worst kind
