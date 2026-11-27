@@ -454,10 +454,10 @@ func scoreColor(s float64) string {
 
 // statusMarks marks a pair that did not end ok; "?" is a pair with scores
 // but no readable metadata.json.
-var statusMarks = map[string]string{"nonzero": "!", "timeout": "T", "budget": "B", "error": "E"}
+var statusMarks = map[string]string{"nonzero": "!", "timeout": "T", "budget": "B", "infra": "I", "error": "E"}
 
 // markLegend is the legend's order; it names only the marks a report shows.
-var markLegend = []struct{ mark, status string }{{"!", "nonzero"}, {"T", "timeout"}, {"B", "budget"}, {"E", "error"}, {"?", "no metadata"}}
+var markLegend = []struct{ mark, status string }{{"!", "nonzero"}, {"T", "timeout"}, {"B", "budget"}, {"I", "infra"}, {"E", "error"}, {"?", "no metadata"}}
 
 // statusMark is a pair's mark, "" when it ended ok.
 func statusMark(r pairRecord) string {

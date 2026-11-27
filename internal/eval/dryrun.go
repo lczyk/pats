@@ -261,7 +261,7 @@ func readHistory(base string, want map[historyKey]bool, strict bool, lg logw) (m
 				if m.Summary != nil && m.Summary.HasCost {
 					p.costs = append(p.costs, m.Summary.CostUSD)
 				}
-				if m.Status != "error" && m.Status != "" {
+				if m.Status != "error" && m.Status != "infra" && m.Status != "" {
 					p.durations = append(p.durations, m.DurationS)
 				}
 			}

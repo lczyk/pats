@@ -140,6 +140,10 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 		return err
 	}
 
+	lw := logw{opts.Out, opts.Color, opts.Verbose}
+	lw.info("preflight: %s: starting sandbox", a.Name)
+	h.spec.Progress = func(m string) { lw.info("preflight: %s: %s", a.Name, m) }
+	t0 := time.Now()
 	sctx, scancel := context.WithTimeout(ctx, setupTimeout)
 	sess, err := h.box.Start(sctx, h.spec)
 	if err == nil {
@@ -150,6 +154,7 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	if err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
+	lw.info("preflight: %s: sandbox up (%.1fs), running the harness", a.Name, time.Since(t0).Seconds())
 	// stdout and stderr land in one buffer, for the error's tail. stdout is
 	// also read as a pair's is, for what it says of cost, so the two are no
 	// longer one writer and the buffer takes a lock.
@@ -182,7 +187,6 @@ func preflightAgent(ctx context.Context, cfg *config.Config, opts Options, a con
 	// asks for no tool call, so for tools only a harness with no parse
 	// script is known to report none. it always takes a turn, so a harness
 	// that counted none here reports none.
-	lw := logw{opts.Out, opts.Color, opts.Verbose}
 	if (a.Budget.Cost > 0 || opts.Budget.Cost > 0) && !stat.costSeen.Load() {
 		lw.warn("agent %s reports no cost: its budget has nothing to check", a.Name)
 	}

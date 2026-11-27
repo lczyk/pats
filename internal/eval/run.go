@@ -366,7 +366,7 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 	// has ended by now, so one still waiting to say so does not rank as
 	// running at the next pick.
 	back := func(e ended) {
-		ok := e.stat.status != "" && e.stat.status != "error"
+		ok := e.stat.status != "" && e.stat.status != "error" && e.stat.status != "infra"
 		d.s.Done(e.t, time.Duration(e.stat.agentDur*float64(time.Second)), ok)
 		rr := d.reps[e.t.Value.rep-1]
 		rr.stats = append(rr.stats, e.stat)
@@ -670,7 +670,7 @@ func runTotals(stats []*pairStat, wall time.Duration) string {
 		cost += s.cost
 	}
 	var parts []string
-	for _, st := range []string{"ok", "nonzero", "timeout", "budget", "error"} {
+	for _, st := range []string{"ok", "nonzero", "timeout", "budget", "infra", "error"} {
 		if counts[st] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
 		}

@@ -211,6 +211,7 @@ func runPair(
 		sctx, scancel := context.WithTimeout(ctx, setupTimeout)
 		var err error
 		started := lap(&tm.StartS)
+		h.spec.Progress = func(m string) { logw{opts.Out, opts.Color, opts.Verbose}.detail("%s %s", job.label, m) }
 		sess, err = h.box.Start(sctx, h.spec)
 		started()
 		switch {
@@ -309,6 +310,9 @@ func runPair(
 		if syncErr != nil {
 			errStr += fmt.Sprintf("; sync: %v", syncErr)
 		}
+	case r.err != nil && errors.Is(r.err, sandbox.ErrPlace):
+		// the place failed, not what ran in it (docs/spec/lxd-retry.md).
+		status, errStr = "infra", r.err.Error()
 	case r.err != nil:
 		status, errStr = "error", r.err.Error()
 	case r.code != 0:

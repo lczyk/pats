@@ -40,6 +40,7 @@ func TestReadHistoryLenient(t *testing.T) {
 	}
 	write("001-20261101-a-b", "a", "x", `{"agent":"a","task":"x","status":"ok","duration_s":12}`)
 	write("001-20261101-a-b", "a", "y", `{"agent":"a","task":"y","status":"error","duration_s":0}`)
+	write("003-20261101-e-f", "a", "y", `{"agent":"a","task":"y","status":"infra","duration_s":3}`)
 	write("002-20261101-c-d", "a", "x", `{not json`)
 	write("003-20261101-e-f", "a", "x", `{"agent":"a","task":"x","status":"timeout","duration_s":30}`)
 	require.NoError(t, os.MkdirAll(filepath.Join(base, "004-20261101-g-h", "a", "x", "metadata.json"), 0o755)) // unreadable as a file

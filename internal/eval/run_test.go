@@ -275,6 +275,8 @@ type fakeSandbox struct {
 	// and preflightEnv the env that exec got.
 	preflightOut string
 	preflightEnv map[string]string
+	// syncErr fails the pair's sync, handOverErr its hand-over.
+	syncErr, handOverErr error
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr io.Writer) (int, error) {
@@ -310,9 +312,19 @@ func (s *fakeSession) Push(ctx context.Context, hostPath, path string) error {
 
 func (s *fakeSession) Pull(ctx context.Context, path, hostDir string) error { return nil }
 
-func (s *fakeSession) HandOver(ctx context.Context, paths ...string) error { return nil }
+func (s *fakeSession) HandOver(ctx context.Context, paths ...string) error {
+	if s.preflight {
+		return nil
+	}
+	return s.f.handOverErr
+}
 
-func (s *fakeSession) Sync(ctx context.Context) error { return nil }
+func (s *fakeSession) Sync(ctx context.Context) error {
+	if s.preflight {
+		return nil
+	}
+	return s.f.syncErr
+}
 
 func (s *fakeSession) Close() error {
 	if s.f.onClose != nil && !s.preflight {
@@ -1548,4 +1560,46 @@ harnesses:
 	m := readMeta(t, runDir, "axx", "txx")
 	assert.Equal(t, m.Placed["tool"]["version"], "1.2.3")
 	assert.Equal(t, m.Components["tool"], "1.2.3")
+}
+
+// a pair whose place failed (a start or a sync that lost the server) ends
+// infra, which the tallies count apart; a timeout then a failed sync stays
+// the agent's timeout.
+func TestRunPairInfra(t *testing.T) {
+	place := fmt.Errorf("%w: lxc init: connection reset by peer: %w", sandbox.ErrLaunch, sandbox.ErrPlace)
+	for name, c := range map[string]struct {
+		box  *fakeSandbox
+		want string
+	}{
+		"start":           {&fakeSandbox{startErr: place}, `"status": "infra"`},
+		"sync":            {&fakeSandbox{syncErr: fmt.Errorf("pull: %w", sandbox.ErrPlace)}, `"status": "infra"`},
+		"hand-over":       {&fakeSandbox{handOverErr: fmt.Errorf("push: %w", sandbox.ErrPlace)}, `"status": "infra"`},
+		"timeout, sync":   {&fakeSandbox{blockUntilDone: true, syncErr: fmt.Errorf("pull: %w", sandbox.ErrPlace)}, `"status": "timeout"`},
+		"the agent's own": {&fakeSandbox{code: 1, stdout: "Error: read: connection reset by peer\n"}, `"status": "nonzero"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			old := newSandbox
+			newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return c.box, nil }
+			defer func() { newSandbox = old }()
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("p"), 0o644))
+			cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt-file: prompt.txt, timeout: 30ms}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+			var out bytes.Buffer
+			pinAll(t, dir, cfg)
+			runDir, _ := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+			meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
+			require.NoError(t, err)
+			assert.ContainsString(t, string(meta), c.want)
+			if c.want == `"status": "infra"` {
+				tally, _ := runStatusTally(runDir)
+				assert.Equal(t, tally, "1 infra")
+				assert.ContainsString(t, runTotals([]*pairStat{{status: "infra"}, {status: "ok"}}, time.Second), "1 ok, 1 infra")
+			}
+		})
+	}
 }

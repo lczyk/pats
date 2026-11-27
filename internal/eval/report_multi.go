@@ -101,7 +101,7 @@ func attempts(runDir string, rep *ScoreReport, warn io.Writer) []pairRecord {
 
 // statusRank orders statuses worst first for a cell's mark; unknown is a
 // pair with no readable metadata.
-var statusRank = map[string]int{"error": 5, "timeout": 4, "budget": 3, "nonzero": 2, "unknown": 1, "ok": 0}
+var statusRank = map[string]int{"error": 6, "infra": 5, "timeout": 4, "budget": 3, "nonzero": 2, "unknown": 1, "ok": 0}
 
 func recStatus(r pairRecord) string {
 	if r.meta == nil {
@@ -290,7 +290,7 @@ func pivotMulti(w io.Writer, doc *multiDoc, statuses map[string][]string, color 
 	if len(agents) == 0 {
 		return
 	}
-	markOf := map[string]string{"error": "E", "timeout": "T", "budget": "B", "nonzero": "!", "unknown": "?"}
+	markOf := map[string]string{"error": "E", "infra": "I", "timeout": "T", "budget": "B", "nonzero": "!", "unknown": "?"}
 	cell := func(k string) string {
 		p, ok := byKey[k]
 		if !ok {
