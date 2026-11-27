@@ -231,11 +231,23 @@ func (l *lxd) copyImage(ctx context.Context, ref string, force bool) (string, bo
 	return fp, true, nil
 }
 
+// vmNetplan replaces the netplan cloud-init wrote on the builder's first
+// boot, which dhcps on the builder's own nic name (enp5s0): a pair's vm runs
+// with agent.nic_config, which names its nic eth0, so it would get no
+// address. with cloud-init disabled nothing writes another.
+const vmNetplan = `if [ -d /etc/netplan ]; then rm -f /etc/netplan/50-cloud-init.yaml; ` +
+	`printf 'network:\n  version: 2\n  ethernets:\n    pats-any:\n      match: {name: "e*"}\n      dhcp4: true\n' > /etc/netplan/50-pats.yaml; ` +
+	`chmod 600 /etc/netplan/50-pats.yaml; fi`
+
 // imageKey digests every input of a provisioned image.
 func imageKey(fp string, spec lxdImageSpec, vm bool) (string, error) {
 	h := sha256.New()
 	// the pats version too: a layer on a custom base inherits no other.
 	fmt.Fprintf(h, "provisioner=%s\nbase=%s\nvm=%v\npats=%s\n", provisionerVersion, fp, vm, version.Info.Version)
+	if vm {
+		// a vm image built before vmNetplan has no address in a pair.
+		fmt.Fprintf(h, "vmnet=1\n")
+	}
 	if spec.Key != "" {
 		fmt.Fprintf(h, "key=%s\n", spec.Key)
 		return hex.EncodeToString(h.Sum(nil))[:24], nil
@@ -408,6 +420,9 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	// what pats needs of every image: the agent user, and no cloud-init to
 	// rerun first-boot setup on each launch.
 	epilogue := `rm -rf ` + ProvisionMount + `; id -u ` + lxdAgentUser + ` >/dev/null 2>&1 || useradd -m -s /bin/bash ` + lxdAgentUser + `; mkdir -p /etc/cloud && touch /etc/cloud/cloud-init.disabled`
+	if l.o.VM {
+		epilogue += "; " + vmNetplan
+	}
 	var out bytes.Buffer
 	if code, err := s.exec(ctx, Cmd{Argv: []string{"sh", "-c", epilogue}, Root: true, Dir: "/"}, &out, &out); err != nil || code != 0 {
 		return "", fmt.Errorf("provisioning epilogue: %v %s", err, strings.TrimSpace(out.String()))
