@@ -48,6 +48,9 @@ func TestJudge(t *testing.T) {
 		{"held, stale", RunRecord{Token: "x", Held: true, Lease: old, Resources: res(young)}, dead},
 		{"held, no marker, young", RunRecord{Token: "x", Held: true, Resources: res(young)}, alive},
 		{"held, no marker, old", RunRecord{Token: "x", Held: true, Resources: res(old)}, dead},
+		{"held, fresh, its pid gone here", RunRecord{Token: "aa03", Held: true, Lease: young, Resources: res(young)}, dead},
+		{"held, fresh, its pid here", RunRecord{Token: "aa02", Held: true, Lease: young, Resources: res(old)}, alive},
+		{"held, fresh, another host's pid", RunRecord{Token: "aa04", Held: true, Lease: young, Resources: res(old)}, alive},
 		{"file, fresh", RunRecord{Token: "aa01", Owner: "other", Resources: res(old)}, alive},
 		{"file, stale, its pid here", RunRecord{Token: "aa02", Owner: "me", Resources: res(young)}, alive},
 		{"file, stale, another host's", RunRecord{Token: "aa05", Owner: "me", Resources: res(young)}, dead},
@@ -350,4 +353,12 @@ func TestCachedImageIDNeedsTag(t *testing.T) {
 	other := image("sha256:other", []string{buildTag("h")}, "g", "l9")
 	r, _ = fakeImageDaemon(t, []daemonImage{other}, nil)
 	assert.Equal(t, cachedImageID(context.Background(), r, "h"), "")
+}
+
+// a live run held by a server lease says when it goes stale.
+func TestCleanLiveStaleIn(t *testing.T) {
+	e := CleanEvent{Action: "leave", Kind: "live", Place: "lxd srv", Count: 1, StaleIn: 8 * time.Minute}
+	assert.Equal(t, e.String(), "lxd srv: left 1 live run(s) (the first goes stale in 8m0s unless its run renews it); pats clean --run <token> removes one")
+	e.StaleIn = 0
+	assert.Equal(t, e.String(), "lxd srv: left 1 live run(s); pats clean --run <token> removes one")
 }

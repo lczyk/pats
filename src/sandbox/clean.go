@@ -82,6 +82,9 @@ type CleanEvent struct {
 	Owner string `json:"owner,omitempty"`
 	Why   string `json:"why,omitempty"`
 	Count int    `json:"count,omitempty"`
+	// StaleIn is, for live runs, how soon the first one's lease goes stale
+	// unless renewed: 0 when none can (a lease file whose process lives).
+	StaleIn time.Duration `json:"stale_in_ns,omitempty"`
 }
 
 // String is the event as a log line, without the level.
@@ -120,7 +123,11 @@ func (e CleanEvent) String() string {
 			return fmt.Sprintf("left legacy cache dir %s: it holds only an old client id; remove it once no older pats is installed", name)
 		}
 		if e.Kind == "live" {
-			return fmt.Sprintf("%s: left %d live run(s); pats clean --run <token> removes one", e.Place, e.Count)
+			stale := ""
+			if e.StaleIn > 0 {
+				stale = fmt.Sprintf(" (the first goes stale in %s unless its run renews it)", e.StaleIn)
+			}
+			return fmt.Sprintf("%s: left %d live run(s)%s; pats clean --run <token> removes one", e.Place, e.Count, stale)
 		}
 		return fmt.Sprintf("%s: left %d run(s) this clean cannot judge (another user, machine or cache dir); --all removes them", e.Place, e.Count)
 	case "skip":
@@ -170,6 +177,13 @@ func (p *process) judge(r RunRecord, now time.Time) (verdict, string) {
 		return false
 	}
 	if r.Held {
+		// a lease file of this host whose process is gone ends the run now,
+		// not once the server's lease has gone stale.
+		if l, ok, err := p.readLease(r.Token); err == nil && ok {
+			if live, local := l.local(); local && !live {
+				return dead, "its process is gone"
+			}
+		}
 		switch {
 		case !r.Lease.IsZero() && r.Lease.Before(stale):
 			return dead, "its lease is stale"
@@ -242,6 +256,7 @@ func (p *process) clean(ctx context.Context, d Driver, o CleanOptions) (map[stri
 	gone := map[string]bool{} // "<kind> <name>" this clean removes, or would
 	var errs []error
 	live, foreign := 0, 0
+	var staleIn time.Duration // the soonest a live run's server lease goes stale
 	for _, r := range runs {
 		listed[r.Token] = true
 		var v verdict
@@ -270,6 +285,11 @@ func (p *process) clean(ctx context.Context, d Driver, o CleanOptions) (map[stri
 			why = "alive, forced"
 		case v == alive:
 			live++
+			if r.Held && !r.Lease.IsZero() {
+				if d := r.Lease.Add(p.t.leaseStale).Sub(now); d > 0 && (staleIn == 0 || d < staleIn) {
+					staleIn = d
+				}
+			}
 			continue
 		case v == unknown && !o.All:
 			foreign++
@@ -320,7 +340,7 @@ func (p *process) clean(ctx context.Context, d Driver, o CleanOptions) (map[stri
 		}
 	}
 	if live > 0 {
-		o.report(CleanEvent{Action: "leave", Kind: "live", Count: live})
+		o.report(CleanEvent{Action: "leave", Kind: "live", Count: live, StaleIn: staleIn.Round(time.Second)})
 	}
 	if foreign > 0 {
 		o.report(CleanEvent{Action: "leave", Kind: "unknown", Count: foreign})
