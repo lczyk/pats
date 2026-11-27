@@ -2,7 +2,7 @@
 class Pats < Formula
   desc "Score-based testing framework for agent tasks"
   homepage "https://github.com/lczyk/pats"
-  version "1.3.1"
+  version "1.4.0"
   license "MIT"
 
   on_macos do
