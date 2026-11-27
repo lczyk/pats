@@ -1,6 +1,6 @@
 # a run removes the sandboxes dead runs of this machine left
 
-status: proposed. `lxd.md` has the lease and the marker acl, `lxd-retry.md` the deletes retried at shutdown.
+status: implemented. `lxd.md` has the lease and the marker acl, `lxd-retry.md` the deletes retried at shutdown.
 
 ## problem
 
