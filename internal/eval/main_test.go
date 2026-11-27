@@ -21,6 +21,8 @@ func TestMain(m *testing.M) {
 	os.Setenv("XDG_CACHE_HOME", dir)
 	// nor does a test read the user's machine file.
 	os.Setenv("XDG_CONFIG_HOME", dir)
+	// no test lists a real place for dead runs; the sweep's own tests do, on fakes.
+	os.Setenv(NoSweepEnv, "1")
 	// no test fetches a harness cli: the artefact is where the cache would
 	// have it, unread.
 	fetchArtefact = func(_ context.Context, a sandbox.Artefact, _ *http.Client) (string, error) {

@@ -82,9 +82,12 @@ func roundDur(d time.Duration) time.Duration {
 // what running ones have so far. a nil ledger counts nothing and admits
 // everything.
 type ledger struct {
-	mu         sync.Mutex
-	limit      config.Budget // zero: no run-wide cap
-	start      time.Time     // the time cap's clock starts here
+	mu    sync.Mutex
+	limit config.Budget // zero: no run-wide cap
+	start time.Time     // the time cap's clock starts here
+	// unstarted is a ledger whose clock has not started: no time cap is
+	// checked until startClock (a run's, at its preflight gate).
+	unstarted  bool
 	now        func() time.Time
 	finished   usage
 	live       map[*pairStat]usage
@@ -98,6 +101,23 @@ type ledger struct {
 
 func newLedger(limit config.Budget) *ledger {
 	return &ledger{limit: limit, start: time.Now(), now: time.Now, live: map[*pairStat]usage{}}
+}
+
+// newUnstartedLedger is a ledger whose time clock waits for startClock.
+func newUnstartedLedger(limit config.Budget) *ledger {
+	l := newLedger(limit)
+	l.unstarted = true
+	return l
+}
+
+// startClock starts the time cap's clock at at.
+func (l *ledger) startClock(at time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.start, l.unstarted = at, false
 }
 
 // reachedLocked says whether a cap is reached, and latches the first.
@@ -115,7 +135,7 @@ func (l *ledger) reachedLocked() bool {
 		l.hit = "tools"
 	case l.limit.Turns > 0 && u.turns >= l.limit.Turns:
 		l.hit = "turns"
-	case l.limit.Time > 0:
+	case l.limit.Time > 0 && !l.unstarted:
 		if el := l.now().Sub(l.start); el >= l.limit.Time {
 			l.hit, l.hitAt = "time", el
 		}

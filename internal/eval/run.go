@@ -33,12 +33,15 @@ type Options struct {
 	Now       time.Time // wall clock, for the run-dir slug (injectable for tests)
 	Out       io.Writer // progress + host script output
 	Jobs      int       // max concurrent pairs; 0 -> serial (1), negative -> auto (see resolveJobs)
-	Color     bool      // colour log tags (set internally from Out's tty-ness)
-	Verbose   int       // -v count: 1 adds detail lines, 2 streams host scripts and the agent's stderr
-	Agents    []string  // filter the pairs to these agents (empty -> all)
-	Tasks     []string  // filter the pairs to these tasks (empty -> all)
-	Suites    []string  // only expand these suites (empty -> all)
-	Offline   bool      // skip the upstream checks, for a machine without a network
+	// StrictPreflight fails the run on any agent's failed preflight, in
+	// place of leaving that agent's pairs out.
+	StrictPreflight bool
+	Color           bool     // colour log tags (set internally from Out's tty-ness)
+	Verbose         int      // -v count: 1 adds detail lines, 2 streams host scripts and the agent's stderr
+	Agents          []string // filter the pairs to these agents (empty -> all)
+	Tasks           []string // filter the pairs to these tasks (empty -> all)
+	Suites          []string // only expand these suites (empty -> all)
+	Offline         bool     // skip the upstream checks, for a machine without a network
 	// DryRun lists the pairs with a cost estimate and stops before the first
 	// sandbox; JSON (with DryRun only) writes that list as json lines to
 	// JSONOut, while Out takes the log.
@@ -148,6 +151,9 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 			lg.warn("%s", w)
 		}
 	}
+	// what dead runs of this machine left on these places goes first: a
+	// server held by a killed run's sandbox has less room for this one.
+	sweepDead(ctx, cfg, sweepNames(cfg, pairs), opts.DryRun, lg)
 	if opts.DryRun {
 		return "", dryRun(cfg, opts, pairs, lg)
 	}
@@ -171,39 +177,160 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 		go func() { upstream <- checkUpstream(ctx, checks, upstreamBudget) }()
 	}
 
-	// fail fast on bad/expired creds before spinning per-pair containers.
-	lg.detail("preflight: checking agent credentials")
-	if err := Preflight(ctx, cfg, opts, pairs); err != nil {
+	// the step sandboxes' check first and alone: seconds, and a pair's stage
+	// may run in one.
+	if err := checkStepBoxes(ctx, cfg, opts, pairs); err != nil {
 		return "", err
 	}
-	// the budget spans every repeat: the invocation's. its clock starts
-	// here, at the end of preflight.
-	opts.ledger = newLedger(opts.Budget)
-	for _, w := range <-upstream {
-		lg.warn("%s", w)
-	}
-
+	// the credential checks run at once with each other and with the first
+	// pairs' setup; no agent starts until every check has settled
+	// (docs/spec/preflight-overlap.md). the budget spans every repeat: the
+	// invocation's. it admits pairs from the start, and its clock starts at
+	// the gate.
+	lg.detail("preflight: checking agent credentials")
+	opts.ledger = newUnstartedLedger(opts.Budget)
+	g := newPreflightGate()
 	jobs := resolveJobs(opts.Jobs, func() int { return autoCPUs(ctx, cfg, pairs) })
 
 	// the repeats (docs/spec/repeats.md): each an ordinary run with its own
 	// run dir, all through one queue; what is above happens once for all.
 	n := max(opts.Repeat, 1)
 	d := newDispatch(cfg, opts, lg, pairs, n, jobs, agents, tasks, sandboxes, hist)
+	d.gate = g
+	d.openBar()
+	// the checks log beside the pairs: through the dispatcher's own writer.
+	pre := opts
+	pre.Out = d.writer()
+	plg := logw{pre.Out, pre.Color, pre.Verbose}
+	type checked struct {
+		failures []agentFailure
+		dropped  int
+		fatal    error
+	}
+	settled := make(chan checked, 1)
+	go func() {
+		var c checked
+		failures, err := checkAgents(ctx, cfg, pre, pairs, true)
+		if err != nil {
+			// interrupted: the gate never opens, and every pair waiting at
+			// it is discarded as its context ends.
+			settled <- c
+			return
+		}
+		c.failures = failures
+		_, c.dropped, c.fatal = dropFailed(pairs, failures, opts.StrictPreflight)
+		out := map[string]bool{}
+		for _, f := range failures {
+			out[f.agent] = true
+		}
+		now := time.Now()
+		if c.fatal == nil {
+			opts.ledger.startClock(now)
+		}
+		g.settle(out, c.fatal != nil, now)
+		for _, w := range <-upstream {
+			plg.warn("%s", w)
+		}
+		settled <- c
+	}()
+
 	runDir, dirErr := d.run(ctx)
-	if ctx.Err() != nil {
-		return runDir, ErrInterrupted
+	c := <-settled
+	d.closeBar()
+	// said once, now that the pairs they stopped have stopped; a fatal
+	// one's error names them all.
+	if c.fatal == nil {
+		for _, f := range c.failures {
+			lg.error("%v", f)
+		}
+	}
+	failures := c.failures
+	if c.fatal != nil {
+		if ctx.Err() != nil {
+			return runDir, ErrInterrupted
+		}
+		if dirErr != nil {
+			return runDir, dirErr
+		}
+		return runDir, c.fatal
+	}
+	// every stop is said, whichever error the run returns.
+	if len(failures) > 0 {
+		out := map[string]bool{}
+		for _, f := range failures {
+			out[f.agent] = true
+		}
+		d.uncount(out)
+		lg.warn("%s", droppedText(failures, c.dropped*n, n))
 	}
 	// a run dir's error wins, but a cap reached is still said.
 	if d.budgetStop || (dirErr != nil && opts.ledger.reached()) {
 		lg.warn("%s: %s not started", opts.ledger.reachedAt(), d.notStartedText())
+	}
+	if ctx.Err() != nil {
+		return runDir, ErrInterrupted
 	}
 	switch {
 	case dirErr != nil:
 		return runDir, dirErr
 	case d.budgetStop:
 		return runDir, ErrBudget
+	case len(failures) > 0:
+		return runDir, preflightErr(failures)
 	}
 	return runDir, nil
+}
+
+// ErrPreflight is a run that left out the pairs of agents whose preflight
+// failed (docs/spec/preflight-per-agent.md).
+var ErrPreflight = errors.New("preflight failed")
+
+// preflightErr is ErrPreflight with every failure under it.
+func preflightErr(failures []agentFailure) error {
+	errs := make([]error, len(failures))
+	for i, f := range failures {
+		errs[i] = f
+	}
+	return fmt.Errorf("%w: %w", ErrPreflight, errors.Join(errs...))
+}
+
+// dropFailed takes the pairs of the agents whose preflight failed out of
+// the selection, and says how many it took. a failure of the invocation's,
+// any failure under strict, or every agent failing fails the run instead.
+func dropFailed(pairs []config.TestPair, failures []agentFailure, strict bool) ([]config.TestPair, int, error) {
+	if len(failures) == 0 {
+		return pairs, 0, nil
+	}
+	out := map[string]bool{}
+	fatal := strict
+	for _, f := range failures {
+		out[f.agent] = true
+		fatal = fatal || f.kind == failInvocation
+	}
+	var kept []config.TestPair
+	for _, p := range pairs {
+		if !out[p.Agent] {
+			kept = append(kept, p)
+		}
+	}
+	if fatal || len(kept) == 0 {
+		return nil, 0, preflightErr(failures)
+	}
+	return kept, len(pairs) - len(kept), nil
+}
+
+// droppedText is the closing line for the agents a failed preflight left
+// out: n is every repeat's count of their pairs.
+func droppedText(failures []agentFailure, n, repeats int) string {
+	var names []string
+	for _, f := range failures {
+		names = append(names, fmt.Sprintf("%s (%s)", f.agent, f.kind))
+	}
+	s := fmt.Sprintf("preflight failed for %s: %d pair(s) not started", strings.Join(names, ", "), n)
+	if repeats > 1 {
+		s += fmt.Sprintf(" over %d runs", repeats)
+	}
+	return s
 }
 
 // ErrInterrupted is a run stopped by ctrl-c or sigterm.
@@ -211,11 +338,15 @@ var ErrInterrupted = errors.New("interrupted")
 
 // repeatRun is one repeat as the dispatcher runs it.
 type repeatRun struct {
-	dir         string // made when its first pair starts; "" before
-	pending     int    // its pairs not yet settled: queued or running
-	notStarted  int    // its pairs a stop left in the queue
-	stats       []*pairStat
-	first, last time.Time
+	dir        string // made when its first pair starts; "" before
+	kept       int    // its pairs recorded: not discarded at the gate
+	pending    int    // its pairs not yet settled: queued or running
+	notStarted int    // its pairs a stop left in the queue
+	// stoppedAgents are the agents of those pairs, so a gate that settles
+	// after the stop can take its dropped agents' back: the preflight's.
+	stoppedAgents []string
+	stats         []*pairStat
+	first, last   time.Time
 }
 
 // repeatPair is a pair of one repeat: what the scheduler's tasks carry.
@@ -247,6 +378,55 @@ type dispatch struct {
 	lastDir string
 
 	budgetStop bool // a reached budget left pairs in the queue
+
+	barOpen bool // openBar ran
+
+	// gate holds each pair between its setup and its agent until the
+	// credential checks settle; nil for none.
+	gate *preflightGate
+	// localErr is the first error of the run dir's own: a discarded pair's
+	// dir not removed, a write a discarded pair met.
+	localMu  sync.Mutex
+	localErr error
+}
+
+// writer is a writer of whole lines beside the dispatcher's own: above the
+// bar when there is one, else under its lock.
+func (d *dispatch) writer() io.Writer { return sayWriter{d} }
+
+type sayWriter struct{ d *dispatch }
+
+func (w sayWriter) Write(b []byte) (int, error) {
+	d := w.d
+	if d.bar != nil {
+		d.bar.log(strings.TrimRight(string(b), "\n"))
+		return len(b), nil
+	}
+	d.outMu.Lock()
+	defer d.outMu.Unlock()
+	return d.opts.Out.Write(b)
+}
+
+// uncount takes the pairs of agents the gate dropped out of what a stop
+// counted as not started: the preflight's line counts them.
+func (d *dispatch) uncount(dropped map[string]bool) {
+	for _, rr := range d.reps {
+		for _, a := range rr.stoppedAgents {
+			if dropped[a] {
+				rr.notStarted--
+			}
+		}
+		rr.stoppedAgents = nil
+	}
+}
+
+// local keeps the first of the run dir's own errors.
+func (d *dispatch) local(err error) {
+	d.localMu.Lock()
+	defer d.localMu.Unlock()
+	if d.localErr == nil {
+		d.localErr = err
+	}
 }
 
 // ended is a started pair coming back to the dispatcher.
@@ -338,24 +518,73 @@ func (d *dispatch) say(lv level, detail bool, format string, args ...any) {
 // run starts every pair it can and waits for every started one to end. it
 // returns the newest run dir made, and the error a run dir that could not
 // be made stopped it with.
-func (d *dispatch) run(ctx context.Context) (string, error) {
-	// on a tty, draw a sticky progress region (total bar + a live line per
-	// in-flight pair); otherwise (pipe/ci/tee) print plain per-pair lines.
+// openBar draws the progress region on a tty (total bar + a live line per
+// in-flight pair); otherwise (pipe/ci/tee) per-pair lines are plain. it is
+// up before anything writes beside the pairs, and closeBar takes it down
+// once nothing does.
+func (d *dispatch) openBar() {
+	if d.barOpen {
+		return
+	}
+	d.barOpen = true
 	if total := d.s.Queued(); isProgressTTY(d.opts.Out) {
 		d.bar = newProgress(d.opts.Out, total, d.labelW)
-		defer d.bar.close()
 	} else if d.jobs > 1 {
 		d.lg.detail("running %d pairs, up to %d in parallel", total, d.jobs)
+	}
+}
+
+func (d *dispatch) closeBar() {
+	if d.bar != nil {
+		d.bar.close()
+	}
+}
+
+func (d *dispatch) run(ctx context.Context) (string, error) {
+	if !d.barOpen {
+		d.openBar()
+		defer d.closeBar()
+	}
+	// each agent's pairs run under a context of its own: the gate dropping
+	// the agent ends its setups where they are.
+	agentCtx := map[string]context.Context{}
+	var cancels []context.CancelFunc
+	cancelOf := map[string]context.CancelFunc{}
+	defer func() {
+		for _, c := range cancels {
+			c()
+		}
+	}()
+	ctxOf := func(agent string) context.Context {
+		if c, ok := agentCtx[agent]; ok {
+			return c
+		}
+		c, cancel := context.WithCancel(ctx)
+		agentCtx[agent], cancelOf[agent] = c, cancel
+		cancels = append(cancels, cancel)
+		return c
 	}
 
 	done := make(chan ended)
 	stopped := false
 	var dirErr error
+	gs := d.gate.settled()
+	var onSettle func()
 	stop := func() {
+		// a gate that has settled takes its dropped agents' pairs first:
+		// they are the preflight's to count, not the budget's.
+		if gs != nil {
+			select {
+			case <-gs:
+				onSettle()
+			default:
+			}
+		}
 		stopped = true
 		dropped := d.s.Drop(d.now())
 		for _, t := range dropped {
 			d.reps[t.Value.rep-1].notStarted++
+			d.reps[t.Value.rep-1].stoppedAgents = append(d.reps[t.Value.rep-1].stoppedAgents, t.Value.pair.Agent)
 			d.settle(t.Value.rep)
 		}
 		if d.bar != nil {
@@ -366,12 +595,43 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 	// has ended by now, so one still waiting to say so does not rank as
 	// running at the next pick.
 	back := func(e ended) {
+		rr := d.reps[e.t.Value.rep-1]
+		if e.stat.discarded {
+			// its slot goes back; nothing of it is learnt or counted.
+			d.s.Done(e.t, 0, false)
+			d.settle(e.t.Value.rep)
+			return
+		}
 		ok := e.stat.status != "" && e.stat.status != "error" && e.stat.status != "infra"
 		d.s.Done(e.t, time.Duration(e.stat.agentDur*float64(time.Second)), ok)
-		rr := d.reps[e.t.Value.rep-1]
+		rr.kept++
 		rr.stats = append(rr.stats, e.stat)
 		rr.last = d.now()
 		d.settle(e.t.Value.rep)
+	}
+	// the gate settling takes the queued pairs of the agents it dropped out,
+	// or every queued pair when it is fatal: not started, and no budget's.
+	onSettle = func() {
+		gs = nil
+		g := d.gate
+		for agent, cancel := range cancelOf {
+			if !g.passes(agent) {
+				cancel()
+			}
+		}
+		var dropped []*pairTask
+		if g.fatal {
+			stopped = true
+			dropped = d.s.Drop(d.now())
+		} else {
+			dropped = d.s.DropIf(func(t *pairTask) bool { return g.dropped[t.Value.pair.Agent] })
+		}
+		for _, t := range dropped {
+			d.settle(t.Value.rep)
+		}
+		if d.bar != nil {
+			d.bar.drop(len(dropped))
+		}
 	}
 	drain := func() {
 		for {
@@ -385,6 +645,14 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 	}
 	for {
 		for !stopped {
+			if gs != nil {
+				select {
+				case <-gs:
+					onSettle()
+					continue
+				default:
+				}
+			}
 			drain()
 			if ctx.Err() != nil {
 				d.say(lvWarn, false, "interrupted -- stopping")
@@ -404,7 +672,7 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 			rep := t.Value.rep
 			rr := d.reps[rep-1]
 			if rr.dir == "" {
-				dir, err := nextRunDir(filepath.Join(d.opts.ConfigDir, runsSubdir), d.opts.Now)
+				dir, err := makeRunDir(filepath.Join(d.opts.ConfigDir, runsSubdir), d.opts.Now)
 				if err != nil {
 					d.opts.ledger.finish(stat)
 					dirErr = err
@@ -424,8 +692,12 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 				d.opts.ledger.finish(stat)
 				break
 			}
+			actx := ctxOf(t.Value.pair.Agent)
+			if d.gate == nil {
+				actx = ctx
+			}
 			go func() {
-				d.runOne(ctx, t, rr.dir, stat)
+				d.runOne(actx, t, rr.dir, stat)
 				done <- ended{t, stat}
 			}()
 		}
@@ -434,10 +706,20 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 		}
 		var e ended
 		if stopped {
-			e = <-done
+			// a stop still waits on the gate: its settling cancels the
+			// setups of the agents it drops.
+			select {
+			case e = <-done:
+			case <-gs:
+				onSettle()
+				continue
+			}
 		} else {
 			select {
 			case e = <-done:
+			case <-gs:
+				onSettle()
+				continue
 			case <-ctx.Done():
 				d.say(lvWarn, false, "interrupted -- stopping")
 				stop()
@@ -445,6 +727,25 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 			}
 		}
 		back(e)
+	}
+	// a repeat whose every pair was discarded leaves no dir: the next run
+	// takes its number.
+	d.lastDir = ""
+	for _, rr := range d.reps {
+		if rr.dir == "" {
+			continue
+		}
+		if rr.kept == 0 {
+			if err := os.RemoveAll(rr.dir); err != nil {
+				d.local(fmt.Errorf("remove run dir %s, where no agent started: %w", rr.dir, err))
+				d.lastDir = rr.dir
+			}
+			continue
+		}
+		d.lastDir = rr.dir
+	}
+	if dirErr == nil {
+		dirErr = d.localErr
 	}
 	return d.lastDir, dirErr
 }
@@ -454,7 +755,7 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 func (d *dispatch) settle(rep int) {
 	rr := d.reps[rep-1]
 	rr.pending--
-	if rr.pending > 0 || rr.dir == "" {
+	if rr.pending > 0 || rr.dir == "" || rr.kept == 0 {
 		return
 	}
 	sum := runTotals(rr.stats, rr.last.Sub(rr.first))
@@ -494,8 +795,30 @@ func (d *dispatch) runOne(ctx context.Context, t *pairTask, runDir string, stat 
 		d.bar.start(label, stat, egressPath, d.cfg.HarnessOf(a).Parser() != nil)
 	}
 	job := taskJob(runDir, p, a, d.tasks[p.Task])
-	job.label = label
-	if err := runPair(ctx, d.cfg, po, runDir, job, d.sandboxes, stat); err != nil {
+	job.label, job.gate = label, d.gate
+	err := runPair(ctx, d.cfg, po, runDir, job, d.sandboxes, stat)
+	discard := errors.Is(err, errDiscard)
+	// a pair that failed before the gate is recorded only once its agent
+	// passed it; a write of the run dir's own that failed is the run's
+	// error either way.
+	if err != nil && !discard && !d.gate.pass(ctx, p.Agent) {
+		discard = true
+	}
+	if discard && errors.Is(err, errLocal) {
+		d.local(fmt.Errorf("%s: %w", label, err))
+	}
+	if discard {
+		stat.discarded = true
+		if rerr := os.RemoveAll(job.outDir); rerr != nil {
+			d.local(fmt.Errorf("%s: remove its pair dir: %w", label, rerr))
+		}
+		_ = os.Remove(filepath.Dir(job.outDir)) // the agent's dir, once empty
+		if d.bar != nil {
+			d.bar.discard(label)
+		}
+		return
+	}
+	if err != nil {
 		logw{po.Out, d.opts.Color, d.opts.Verbose}.error("%s %v", label, err)
 		pairFailed(ctx, d.cfg, job, d.sandboxes, stat, err)
 	}
@@ -512,12 +835,13 @@ func (d *dispatch) runOne(ctx context.Context, t *pairTask, runDir string, stat 
 // notStartedText is what a budget stop left: the pairs of the repeats begun,
 // and the repeats never begun.
 func (d *dispatch) notStartedText() string {
-	pairs, unbegun := 0, 0
-	lo, hi := 0, 0 // the repeats begun with pairs not started
+	pairs, unbegun, later := 0, 0, 0 // later: the pairs of the repeats not begun
+	lo, hi := 0, 0                   // the repeats begun with pairs not started
 	for i, rr := range d.reps {
 		switch {
 		case rr.dir == "":
 			unbegun++
+			later += rr.notStarted
 		case rr.notStarted > 0:
 			pairs += rr.notStarted
 			if lo == 0 {
@@ -528,9 +852,9 @@ func (d *dispatch) notStartedText() string {
 	}
 	switch {
 	case pairs == 0 && unbegun == d.n:
-		return fmt.Sprintf("%d run(s)", unbegun) // a cap reached before the first
+		return fmt.Sprintf("%d run(s) (%d pair(s))", unbegun, later) // a cap reached before the first
 	case pairs == 0:
-		return fmt.Sprintf("%d more run(s)", unbegun)
+		return fmt.Sprintf("%d more run(s) (%d pair(s))", unbegun, later)
 	}
 	what := fmt.Sprintf("%d pair(s)", pairs)
 	switch {
@@ -541,7 +865,7 @@ func (d *dispatch) notStartedText() string {
 		what += fmt.Sprintf(" of runs %d-%d/%d", lo, hi, d.n)
 	}
 	if unbegun > 0 {
-		what += fmt.Sprintf(" and %d more run(s)", unbegun)
+		what += fmt.Sprintf(" and %d more run(s) (%d pair(s))", unbegun, later)
 	}
 	return what
 }
@@ -698,6 +1022,9 @@ func relToCwd(p string) string {
 	}
 	return p
 }
+
+// makeRunDir is nextRunDir, or a test's stand-in.
+var makeRunDir = nextRunDir
 
 // nextRunDir creates and returns base/<nnn>-<yyyymmdd>-<adj>-<noun>: a
 // globally monotonic counter (highest existing + 1), the date, and a friendly

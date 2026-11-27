@@ -1,6 +1,6 @@
 # a run removes the sandboxes dead runs of this machine left
 
-status: proposed. `lxd.md` has the lease and the marker acl, `lxd-retry.md` the deletes retried at shutdown.
+status: implemented. `lxd.md` has the lease and the marker acl, `lxd-retry.md` the deletes retried at shutdown.
 
 ## problem
 
@@ -46,7 +46,7 @@ runs that are dead for certain, on the places this invocation is about to use. e
   one warning, and the run goes on. the sweep is a courtesy, and the run's own work does not need it.
 - **bounded**: 60s for the whole sweep, on its own context, and every list and remove takes that context. a sweep
   cut short says how far it got, as a warning.
-- **`--dry-run`** sweeps nothing, and lists what it would remove under `-v`.
+- **`--dry-run`** sweeps nothing, takes no lock, and lists what it would remove under `-v`.
 - **opting out**: `PATS_NO_SWEEP=1`, for a user who wants to keep a dead run's sandbox to look at. no flag, b/c it
   is rarely wanted and a flag on every run command is surface for little.
 

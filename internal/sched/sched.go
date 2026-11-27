@@ -159,6 +159,23 @@ func (s *Scheduler[K, V]) Drop(now time.Time) []*Task[K, V] {
 	return q
 }
 
+// DropIf takes the queued tasks pred matches out of the queue and returns
+// them, in queue order.
+func (s *Scheduler[K, V]) DropIf(pred func(*Task[K, V]) bool) []*Task[K, V] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out, keep []*Task[K, V]
+	for _, t := range s.queue {
+		if pred(t) {
+			out = append(out, t)
+		} else {
+			keep = append(keep, t)
+		}
+	}
+	s.queue = keep
+	return out
+}
+
 // Queued is how many tasks wait; Running how many run.
 func (s *Scheduler[K, V]) Queued() int {
 	s.mu.Lock()

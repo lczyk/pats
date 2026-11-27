@@ -248,7 +248,7 @@ longer has (`retired` in the single-run document) is in no mean, and so not here
 - the same agent/task in two repeats at once gets two run dirs, two workdirs and `PATS_RUN_NAME`s of its own in
   stage and collect.
 - a budget reached during repeat 2 of 3, with repeat 1's last pair still running: no third run dir, repeat 1's
-  totals line after that pair ends, the warning `of runs 1-2/3 and 1 more run(s)`, the bar's total dropped by the
+  totals line after that pair ends, the warning `of runs 1-2/3 and 1 more run(s) (n pair(s))`, the bar's total dropped by the
   refused pairs.
 - a ctrl-c and a `time` cap each arriving between admission and the run dir: the admitted pair is started (and ends
   interrupted on ctrl-c), and nothing after it starts.

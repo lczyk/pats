@@ -1,6 +1,6 @@
 # a failed preflight drops its agent, not the run
 
-status: proposed. `model-preflight.md` is the model check before it, `step-sandbox.md` the step sandboxes' own
+status: implemented. `model-preflight.md` is the model check before it, `step-sandbox.md` the step sandboxes' own
 preflight, `budget.md` the "not started" this reuses, `preflight-overlap.md` the gate this changes, and
 `lxd-retry.md` the retries under a preflight's start.
 

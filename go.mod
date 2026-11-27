@@ -12,6 +12,7 @@ require (
 	go.starlark.net v0.0.0-20261021141710-4f4267fb140d
 	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.63.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 	oras.land/oras-go/v2 v2.7.0
@@ -20,6 +21,5 @@ require (
 require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 )

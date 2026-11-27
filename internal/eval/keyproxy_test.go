@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lczyk/assert"
 	"github.com/lczyk/assert/require"
@@ -31,6 +33,9 @@ type keyBox struct {
 	envs  []map[string]string
 	audit string // what a closing session's proxy leaves in its audit
 	noLog bool   // the proxy leaves no audit at all
+	code  int    // the harness's exit
+	// closeErr fails the session's close.
+	closeErr error
 }
 
 func (b *keyBox) Run(context.Context, sandbox.Spec, io.Writer, io.Writer) (int, error) { return 0, nil }
@@ -59,7 +64,7 @@ func (s *keySession) Close() error {
 			_ = os.WriteFile(p, []byte(s.b.audit), 0o644)
 		}
 	})
-	return nil
+	return s.b.closeErr
 }
 
 func (s *keySession) Exec(_ context.Context, cmd sandbox.Cmd, stdout, _ io.Writer) (int, error) {
@@ -67,7 +72,7 @@ func (s *keySession) Exec(_ context.Context, cmd sandbox.Cmd, stdout, _ io.Write
 	s.b.envs = append(s.b.envs, cmd.Env)
 	s.b.mu.Unlock()
 	_, _ = io.WriteString(stdout, piLog)
-	return 0, nil
+	return s.b.code, nil
 }
 
 const substituted = `{"ev":"req","host":"openrouter.ai","kind":"mitm","allowed":true,"rule":"POST openrouter.ai/api/v1/chat/completions","method":"POST","url":"openrouter.ai/api/v1/chat/completions","status":200,"key":"substituted"}` + "\n"
@@ -181,7 +186,7 @@ func TestKeyProxyPreflight(t *testing.T) {
 	cfg := keyCfg(t, "true")
 	pre := func() error {
 		var out bytes.Buffer
-		return Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx", Task: "txx"}})
+		return preflightAll(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx", Task: "txx"}})
 	}
 
 	box.audit = substituted
@@ -192,6 +197,25 @@ func TestKeyProxyPreflight(t *testing.T) {
 	assert.Error(t, pre(), "never authenticated")
 	box.noLog = true
 	assert.Error(t, pre(), "the preflight's audit")
+
+	// within one check the worst kind wins: an audit missing is the
+	// invocation's even after the harness failed; a close that failed is the
+	// place's over the harness's.
+	failures := func() []agentFailure {
+		var out bytes.Buffer
+		f, err := Preflight(context.Background(), cfg, Options{ConfigDir: dir, Out: &out}, []config.TestPair{{Agent: "axx", Task: "txx"}})
+		require.NoError(t, err)
+		require.Len(t, f, 1)
+		return f
+	}
+	box.code = 1
+	assert.Equal(t, failures()[0].kind, failInvocation)
+	box.noLog, box.audit = false, substituted
+	box.closeErr = errors.New("gone")
+	assert.Equal(t, failures()[0].kind, failPlace)
+	box.closeErr = nil
+	assert.Equal(t, failures()[0].kind, failAgent)
+	box.code = 0
 
 	// with no key to hold there is nothing to have gone out.
 	t.Setenv("OPENROUTER_API_KEY", "")
@@ -255,4 +279,43 @@ func TestHostEnvironDrops(t *testing.T) {
 	env := strings.Join(hostEnviron(t.TempDir(), nil, []string{"OPENROUTER_API_KEY"}), "\n")
 	assert.That(t, !strings.Contains(env, "OPENROUTER_API_KEY="), "kept the key")
 	assert.ContainsString(t, env, "KEEP_ME=y")
+}
+
+// an invocation failure (the key proxy's audit missing) among others: every
+// agent is still checked, then the run fails before any pair, naming each.
+func TestPreflightInvocationAmongOthers(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", fixtureKey)
+	key := &keyBox{noLog: true}
+	plain := &fakeSandbox{code: 1}
+	old := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		if s.Image == "k" {
+			return key, nil
+		}
+		return plain, nil
+	}
+	defer func() { newSandbox = old }()
+	plain.preflightCode = 1
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+kxx: {kind: sandbox, items: {kxx: {image: k, egress: {key-proxy: true, allow: [x.test]}}}}
+pxx: {kind: sandbox, items: {pxx: {image: p}}}
+agents: {kind: agent, items: {
+  a1x: {harness: opencode-openrouter, model: m, sandbox: pxx},
+  a2x: {harness: pi-openrouter, model: m, sandbox: kxx},
+  a3x: {harness: opencode-openrouter, model: n, sandbox: pxx}}}
+txx: {kind: task, items: {txx: {prompt: p}}}
+sux: {kind: suite, items: {sux: {agents: agents, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	var out bytes.Buffer
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out})
+	require.That(t, errors.Is(err, ErrPreflight), "not ErrPreflight: %v", err)
+	for _, a := range []string{`"a1x"`, `"a2x"`, `"a3x"`} {
+		assert.ContainsString(t, err.Error(), a)
+	}
+	assert.ContainsString(t, err.Error(), "(invocation)")
+	assert.Equal(t, runDir, "")
+	assert.Equal(t, plain.preflights, 2)
+	assert.Equal(t, plain.calls, 2) // the two preflights, no pair
 }

@@ -59,6 +59,11 @@ type pairStat struct {
 	net     int64 // egress requests, from the proxy audit log
 	netSeen int32 // 1 once egress.log was readable (i.e. proxy mode) -> show net
 
+	// waiting is set while the pair waits at the preflight gate; discarded
+	// once it was dropped there, nothing of it recorded.
+	waiting   atomic.Bool
+	discarded bool
+
 	// timings is what the pair has timed so far, its total up to the call:
 	// nil until runPair starts.
 	timings func() *pairTimings
@@ -117,6 +122,9 @@ func (s *pairStat) addUsage(d usage) {
 // cols renders the counter columns "out [tool] [net]" -- tool only when the harness
 // has a parser (showTools), net only once the proxy audit log was seen.
 func (s *pairStat) cols(showTools bool) string {
+	if s.waiting.Load() {
+		return "waiting for the preflight"
+	}
 	parts := []string{fmt.Sprintf("%5d out", atomic.LoadInt64(&s.out))}
 	if showTools {
 		parts = append(parts, fmt.Sprintf("%3d tool", atomic.LoadInt64(&s.tools)))
@@ -211,6 +219,21 @@ func (p *progress) finish(label, log string) {
 	}
 	p.done++
 	p.emitLocked(log)
+}
+
+// discard takes an in-flight pair that was dropped at the preflight gate
+// off the bar and the total: it never started.
+func (p *progress) discard(label string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, a := range p.active {
+		if a.label == label {
+			p.active = append(p.active[:i], p.active[i+1:]...)
+			break
+		}
+	}
+	p.total--
+	p.redraw()
 }
 
 // drop takes k pairs that will not start off the total.

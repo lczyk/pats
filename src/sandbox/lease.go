@@ -59,6 +59,10 @@ func (p *process) holdLease() error {
 		if err == nil {
 			err = p.writeLease(path)
 		}
+		if err == nil {
+			// best effort: a run with no identity is only never swept.
+			_ = writeIdent(path)
+		}
 		if err != nil {
 			x.err = fmt.Errorf("run lease: %w", err)
 			return
@@ -98,6 +102,7 @@ func (p *process) renewLease(t ticker, last time.Time) {
 			}
 			if err := os.Chtimes(x.path, now, now); errors.Is(err, fs.ErrNotExist) {
 				_ = p.writeLease(x.path) // a clean took it: the run is alive
+				_ = writeIdent(x.path)
 			}
 			last = now
 		}
@@ -113,6 +118,7 @@ func (p *process) endLease() {
 	close(x.stop)
 	<-x.done
 	_ = os.Remove(x.path)
+	removeIdent(x.path)
 	x.stop = nil
 }
 

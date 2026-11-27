@@ -162,7 +162,7 @@ new pair or judge job starts, and the ones running finish.
   run ends, for time the clock when the cap latched.
   - `budget $20.00 reached at $20.13: 14 pair(s) not started` (unchanged)
   - `budget tokens 50000000 reached at 50213456: 14 pair(s) not started`
-  - `budget time 2h0m0s reached at 2h0m0s: 14 pair(s) of run 3/5 and 2 more run(s) not started`
+  - `budget time 2h0m0s reached at 2h0m0s: 14 pair(s) of run 3/5 and 2 more run(s) (20 pair(s)) not started`
   - `budget tools 2000 reached at 2013: 3 judge job(s) not started`
 - **judges** are admitted per sample: under `-N 3` one score is three judge jobs, and the count in the warning is
   of jobs. what a judgement with samples held back does is as under a cost cap now: one with none started keeps
