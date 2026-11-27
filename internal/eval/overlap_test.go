@@ -216,3 +216,36 @@ func TestOverlapInterruptAfterGate(t *testing.T) {
 	_, serr := os.Stat(filepath.Join(runDir, "a1", "txx", "metadata.json"))
 	assert.NoError(t, serr)
 }
+
+// a stop before the gate settles still cancels a dropped agent's setup
+// when it does: a run dir that cannot be made does not hold the run.
+func TestOverlapStopBeforeGate(t *testing.T) {
+	old := makeRunDir
+	var made atomic.Int32
+	makeRunDir = func(base string, now time.Time) (string, error) {
+		if made.Add(1) > 1 {
+			return "", errors.New("no room")
+		}
+		return old(base, now)
+	}
+	t.Cleanup(func() { makeRunDir = old })
+	hold := make(chan struct{})
+	fakes := threeFakes()
+	for _, f := range fakes {
+		f.preflightHold = hold
+	}
+	fakes["a2"].preflightCode = 1
+	fakes["a2"].startBlock = true
+	go func() { time.Sleep(100 * time.Millisecond); close(hold) }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err, _ := runAgents(t, fakes, Options{Jobs: 6, Repeat: 2})
+		assert.That(t, err != nil && strings.Contains(err.Error(), "no room"), "not the run dir's error: %v", err)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a dropped setup held the stopped run")
+	}
+}

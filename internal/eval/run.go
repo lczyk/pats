@@ -672,7 +672,7 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 			rep := t.Value.rep
 			rr := d.reps[rep-1]
 			if rr.dir == "" {
-				dir, err := nextRunDir(filepath.Join(d.opts.ConfigDir, runsSubdir), d.opts.Now)
+				dir, err := makeRunDir(filepath.Join(d.opts.ConfigDir, runsSubdir), d.opts.Now)
 				if err != nil {
 					d.opts.ledger.finish(stat)
 					dirErr = err
@@ -706,7 +706,14 @@ func (d *dispatch) run(ctx context.Context) (string, error) {
 		}
 		var e ended
 		if stopped {
-			e = <-done
+			// a stop still waits on the gate: its settling cancels the
+			// setups of the agents it drops.
+			select {
+			case e = <-done:
+			case <-gs:
+				onSettle()
+				continue
+			}
 		} else {
 			select {
 			case e = <-done:
@@ -1014,6 +1021,9 @@ func relToCwd(p string) string {
 	}
 	return p
 }
+
+// makeRunDir is nextRunDir, or a test's stand-in.
+var makeRunDir = nextRunDir
 
 // nextRunDir creates and returns base/<nnn>-<yyyymmdd>-<adj>-<noun>: a
 // globally monotonic counter (highest existing + 1), the date, and a friendly
