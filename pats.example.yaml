@@ -37,6 +37,8 @@ sandbox:
       # `limits: {cpu: 4, memory: 8GiB}` caps resources; `max-parallel: 2` caps this sandbox's concurrent pairs.
     # an lxd sandbox: a system container (or `vm: true`) on the server an lxc remote names. with no `base` it is
     # provisioned with the pats sandbox's tools; `sudo: true` lets the agent sudo, `config:` and `profiles:` pass through.
+    # `nested: containers` lets the agent start containers inside; `nested: vms` (with `vm: true`) vms too, checked at
+    # start by a probe in the vm. `nested: {run: vms, required: false}` runs and records a sandbox that cannot.
     # lxd:
     #   driver: lxd
     #   remote: my-server
