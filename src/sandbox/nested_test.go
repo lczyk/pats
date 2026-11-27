@@ -80,15 +80,19 @@ func TestLXDNestedVMsProbeFails(t *testing.T) {
 func TestLXDNestedVMsProbeMismatch(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "pats")
 	require.NoError(t, os.WriteFile(bin, nil, 0o755))
-	for _, out := range []string{"error: unknown command nested-probe\n", "pats-nested-probe 0 {}\n"} {
+	for _, c := range []struct {
+		out  string
+		code int
+	}{{"error: unknown command nested-probe\n", 0}, {"pats-nested-probe 0 {}\n", 0}, {"Unknown command `nested-probe'\n", 1}} {
 		l, f := fakeLXD(t, Options{Driver: "lxd", VM: true, ProxyBin: bin}, SandboxOptions{Image: "img", Nested: Nested{Run: NestedVMs, Required: true}})
-		f.uname, f.probeOut = "x86_64", out
+		f.uname, f.probeOut, f.probeCode = "x86_64", c.out, c.code
 		_, err := l.Start(context.Background(), Spec{Workdir: t.TempDir(), Egress: Egress{None: true}})
 		var ne *NestedError
 		require.That(t, errors.As(err, &ne), "want a NestedError, got %v", err)
 		assert.That(t, ne.Result.OK() == nil, "ok is not null")
 		assert.ContainsString(t, err.Error(), "does not match")
 		assert.ContainsString(t, err.Error(), LXDProxyBinEnv)
+		assert.ContainsString(t, err.Error(), "from "+bin)
 	}
 	// a vm of an arch pats has no build for never fetches.
 	l, f := fakeLXD(t, Options{Driver: "lxd", VM: true, ProxyBin: bin}, SandboxOptions{Image: "img", Nested: Nested{Run: NestedVMs, Required: true}})

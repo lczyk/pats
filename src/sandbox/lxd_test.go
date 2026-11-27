@@ -34,6 +34,8 @@ type fakeLXC struct {
 	cutPushes int
 	// probeOut is what `pats nested-probe` prints; uname is uname -m's.
 	probeOut, uname string
+	// probeCode is the probe's exit code.
+	probeCode int
 }
 
 func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
@@ -64,6 +66,9 @@ func (f *fakeLXC) run(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 		io.WriteString(stdout, f.uname+"\n")
 	case args[0] == "exec" && strings.HasSuffix(joined, " nested-probe"):
 		io.WriteString(stdout, f.probeOut)
+		if f.probeCode != 0 {
+			return exitStatus(f.probeCode)
+		}
 	case args[0] == "exec" && strings.Contains(joined, "id -u pats"):
 		io.WriteString(stdout, "1001\n")
 	case args[0] == "exec" && strings.Contains(joined, "pats egress run"):

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/lczyk/pats/internal/nestedprobe"
@@ -150,22 +151,36 @@ func (s *lxdSession) probeNested(ctx context.Context, n Nested) *NestedResult {
 	}
 	var stdout, stderr bytes.Buffer
 	code, err = s.exec(ctx, Cmd{Argv: []string{dst, "nested-probe"}, Root: true, Dir: "/"}, &stdout, &stderr)
-	if err == nil && code != 0 {
-		err = fmt.Errorf("exited %d: %s", code, strings.TrimSpace(stderr.String()+stdout.String()))
-	}
 	if err != nil {
 		return fail(fmt.Errorf("run the probe: %w", err))
 	}
 	res, err := nestedprobe.Parse(stdout.String())
+	var mm *nestedprobe.ErrMismatch
+	if errors.As(err, &mm) {
+		// a binary that predates the probe exits nonzero on the unknown command.
+		return fail(fmt.Errorf("%w, from %s (exit %d: %s); set %s to a matching linux pats",
+			err, s.probeSource(arch), code, strings.TrimSpace(stderr.String()+stdout.String()), LXDProxyBinEnv))
+	}
+	if err == nil && code != 0 {
+		err = fmt.Errorf("run the probe: exited %d: %s", code, strings.TrimSpace(stderr.String()+stdout.String()))
+	}
 	if err != nil {
-		var mm *nestedprobe.ErrMismatch
-		if errors.As(err, &mm) {
-			err = fmt.Errorf("%w (set %s to a matching linux pats)", err, LXDProxyBinEnv)
-		}
 		return fail(err)
 	}
 	r.Probed, r.Probe, r.Reason = true, res, res.Reason
 	return r
+}
+
+// probeSource names where proxyBinary takes the probe binary from.
+func (s *lxdSession) probeSource(arch string) string {
+	if s.l.o.ProxyBin != "" {
+		return s.l.o.ProxyBin
+	}
+	if runtime.GOOS == "linux" && runtime.GOARCH == arch {
+		return "this pats binary"
+	}
+	img, _ := ProxyImage("")
+	return img
 }
 
 // Nested is what the session found of its nested declaration.
