@@ -249,3 +249,32 @@ func TestOverlapStopBeforeGate(t *testing.T) {
 		t.Fatal("a dropped setup held the stopped run")
 	}
 }
+
+// neither the setup's timeout nor the task's covers the wait at the gate:
+// a preflight longer than both times out nothing.
+func TestOverlapTimeoutsExcludeGate(t *testing.T) {
+	old := setupTimeout
+	setupTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { setupTimeout = old })
+	hold := make(chan struct{})
+	fake := &fakeSandbox{preflightHold: hold}
+	oldBox := newSandbox
+	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) { return fake, nil }
+	t.Cleanup(func() { newSandbox = oldBox })
+	dir := t.TempDir()
+	cfg := parseCfg(t, `
+sxx: {kind: sandbox, items: {sxx: {image: s}}}
+axx: {kind: agent, items: {axx: {harness: opencode-openrouter, model: m, sandbox: sxx}}}
+txx: {kind: task, items: {txx: {prompt: p, prepare: "true", timeout: 100ms}}}
+sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
+`)
+	pinAll(t, dir, cfg)
+	go func() { time.Sleep(300 * time.Millisecond); close(hold) }()
+	var out strings.Builder
+	runDir, err := Run(cfg, Options{ConfigDir: dir, Now: time.Now(), Out: &out, Jobs: 1})
+	require.NoError(t, err)
+	meta, err := os.ReadFile(filepath.Join(runDir, "axx", "txx", "metadata.json"))
+	require.NoError(t, err)
+	assert.ContainsString(t, string(meta), `"status": "ok"`)
+	assert.ContainsString(t, string(meta), `"gate_s"`)
+}

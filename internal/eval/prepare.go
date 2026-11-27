@@ -17,7 +17,7 @@ import (
 
 // setupTimeout bounds bringing a pair's sandbox up and preparing it: start,
 // push, the in-sandbox prepare. the task's timeout covers the agent only.
-const setupTimeout = 10 * time.Minute
+var setupTimeout = 10 * time.Minute
 
 // syncTimeout bounds bringing the agent's files home after it ran.
 const syncTimeout = 10 * time.Minute
