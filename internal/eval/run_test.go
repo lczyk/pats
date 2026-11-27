@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -249,10 +250,15 @@ func TestStderrTail(t *testing.T) {
 // fakeSandbox lets Run's orchestration execute without docker: it records the
 // spec and plays back a canned exit code / output per agent id.
 type fakeSandbox struct {
-	code   int
-	stdout string
-	err    error
-	calls  int
+	mu sync.Mutex // preflights run at once
+	// starts and agents count the pairs' sessions and agent execs, closes
+	// their closes; startBlock holds a pair's start until its ctx ends.
+	starts, agents, closes int
+	startBlock             bool
+	code                   int
+	stdout                 string
+	err                    error
+	calls                  int
 	// blockUntilDone waits for the run's ctx to be cancelled (the task's
 	// timeout firing) before returning code/err -- simulates a task that's
 	// still running when the deadline hits, real docker's SIGTERM-then-exit.
@@ -275,6 +281,8 @@ type fakeSandbox struct {
 	// and preflightEnv the env that exec got.
 	preflightOut string
 	preflightEnv map[string]string
+	// preflightHold, when set, holds the preflight's harness until closed.
+	preflightHold chan struct{}
 	// preflightCode is the preflight harness's exit; preflightStartErr
 	// fails the preflight's start.
 	preflightCode     int
@@ -293,10 +301,21 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.Spec, stdout, stderr
 func (f *fakeSandbox) Start(ctx context.Context, spec sandbox.Spec) (sandbox.Session, error) {
 	preflight := strings.HasPrefix(filepath.Base(spec.Workdir), "pats-preflight-")
 	if preflight {
+		f.mu.Lock()
 		f.preflights++
+		f.mu.Unlock()
 		if f.preflightStartErr != nil {
 			return nil, f.preflightStartErr
 		}
+	}
+	if !preflight {
+		f.mu.Lock()
+		f.starts++
+		f.mu.Unlock()
+	}
+	if f.startBlock && !preflight {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	if f.startErr != nil && !preflight {
 		return nil, f.startErr
@@ -334,6 +353,11 @@ func (s *fakeSession) Sync(ctx context.Context) error {
 }
 
 func (s *fakeSession) Close() error {
+	if !s.preflight {
+		s.f.mu.Lock()
+		s.f.closes++
+		s.f.mu.Unlock()
+	}
 	if s.f.onClose != nil && !s.preflight {
 		s.f.onClose(s.spec)
 	}
@@ -349,12 +373,23 @@ func (s *fakeSession) Exec(ctx context.Context, cmd sandbox.Cmd, stdout, stderr 
 		}
 		return 0, nil
 	}
+	if s.preflight && f.preflightHold != nil {
+		select {
+		case <-f.preflightHold:
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		}
+	}
+	f.mu.Lock()
 	f.calls++
 	if s.preflight {
 		f.preflightEnv = cmd.Env
+		f.mu.Unlock()
 		io.WriteString(stdout, f.preflightOut)
 		return f.preflightCode, nil
 	}
+	f.agents++
+	f.mu.Unlock()
 	if f.onRun != nil {
 		spec := s.spec
 		spec.Argv, spec.Env = cmd.Argv, cmd.Env
@@ -716,8 +751,11 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 // sandbox pinned to this version.
 func TestRunDefaultSandboxImage(t *testing.T) {
 	var image string
+	var mu sync.Mutex // the preflight and the pair open sandboxes at once
 	old := newSandbox
 	newSandbox = func(o sandbox.Options, s sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		mu.Lock()
+		defer mu.Unlock()
 		image = s.Image
 		return &fakeSandbox{}, nil
 	}
@@ -1609,4 +1647,18 @@ sux: {kind: suite, items: {sux: {agents: axx, tasks: txx}}}
 			}
 		})
 	}
+}
+
+// agentRuns is how many pair agents the fake ran.
+func (f *fakeSandbox) agentRuns() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.agents
+}
+
+// startCount is how many pair sessions the fake started.
+func (f *fakeSandbox) startCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.starts
 }

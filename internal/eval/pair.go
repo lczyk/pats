@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -44,6 +45,8 @@ type pairJob struct {
 	// stepRO are host dirs a step box binds read-only beside the pair's
 	// own (a judge's scored pair).
 	stepRO []string
+	// gate holds the pair between its setup and its agent; nil for none.
+	gate *preflightGate
 }
 
 // taskJob is pair p of a run: its agent on its task, into the pair dir.
@@ -73,7 +76,7 @@ func runPair(
 	}
 	stat.price = opts.prices[a.Name]
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
+		return local(err)
 	}
 	workDir, err := sandbox.MkTemp("pats-work-")
 	if err != nil {
@@ -181,12 +184,12 @@ func runPair(
 
 	stdoutF, err := os.Create(filepath.Join(outDir, "stdout.log"))
 	if err != nil {
-		return err
+		return local(err)
 	}
 	defer stdoutF.Close()
 	stderrF, err := os.Create(filepath.Join(outDir, "stderr.log"))
 	if err != nil {
-		return err
+		return local(err)
 	}
 	defer stderrF.Close()
 
@@ -216,6 +219,11 @@ func runPair(
 		started()
 		switch {
 		case err != nil:
+			// a file of the pair dir the start could not write (the proxy's
+			// audit) is the run dir's own failure, not the sandbox's.
+			if pe := (*fs.PathError)(nil); errors.As(err, &pe) && strings.HasPrefix(pe.Path, outDir+string(filepath.Separator)) {
+				err = local(err)
+			}
 			setupErr = fmt.Errorf("start: %w", err)
 			if ne := (*sandbox.NestedError)(nil); errors.As(err, &ne) {
 				nested = ne.Result
@@ -245,6 +253,24 @@ func runPair(
 			}
 		}
 		scancel()
+	}
+	// the setup, ok or not, waits at the gate: a pair of an agent whose
+	// preflight failed leaves nothing. neither the setup's timeout nor the
+	// task's covers the wait.
+	if job.gate != nil && !job.gate.open(job.agentName) {
+		stat.waiting.Store(true)
+		if opts.Verbose >= 2 {
+			logw{opts.Out, opts.Color, opts.Verbose}.detail("%s waiting for the preflight", job.label)
+		}
+		waited := lap(&tm.GateS)
+		ok := job.gate.pass(ctx, job.agentName)
+		waited()
+		stat.waiting.Store(false)
+		if !ok {
+			return discarded(setupErr)
+		}
+	} else if job.gate != nil && !job.gate.passes(job.agentName) {
+		return discarded(setupErr)
 	}
 	if setupErr != nil {
 		r = harnessRun{code: -1, err: setupErr}
@@ -497,19 +523,52 @@ func pairFailed(ctx context.Context, cfg *config.Config, job pairJob, sandboxes 
 	}
 }
 
+// discarded is a pair dropped at the gate: its session closes as runPair
+// returns, and a failed write of the run dir's own in its setup goes with
+// it, for the run to report.
+func discarded(setupErr error) error {
+	if errors.Is(setupErr, errLocal) {
+		return fmt.Errorf("%w: %w", errDiscard, setupErr)
+	}
+	return errDiscard
+}
+
 // runLogged runs f with its output written to logPath and, when tee is set,
 // to tee too.
 func runLogged(logPath string, tee io.Writer, f func(io.Writer) error) error {
 	lf, err := os.Create(logPath)
 	if err != nil {
-		return err
+		return local(err)
 	}
-	defer lf.Close()
-	var w io.Writer = lf
+	lw := &errWriter{w: lf}
+	var w io.Writer = lw
 	if tee != nil {
-		w = io.MultiWriter(lf, tee)
+		w = io.MultiWriter(lw, tee)
 	}
-	return f(w)
+	err = f(w)
+	cerr := lf.Close()
+	// the log not written is the run dir's own failure, whatever the step's.
+	if lw.err != nil || cerr != nil {
+		return errors.Join(err, local(errors.Join(lw.err, cerr)))
+	}
+	return err
+}
+
+// errWriter keeps the first error of its writes, and takes no more after.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	if e.err != nil {
+		return 0, e.err
+	}
+	n, err := e.w.Write(p)
+	if err != nil {
+		e.err = err
+	}
+	return n, err
 }
 
 // taskPrompt is the prompt handed to the agent: the literal prompt, the
@@ -557,8 +616,10 @@ func beforeBox(ctx context.Context, opts Options, sp *stepPlace, job pairJob, t 
 		return nil, fmt.Errorf("stage: %w", err)
 	}
 	defer func() {
-		if cerr := box.close(job.outDir); cerr != nil && err == nil {
-			err = fmt.Errorf("stage: move the step logs in: %w", cerr)
+		// the logs not moved in are the run dir's own failure, kept beside
+		// the step's.
+		if cerr := box.close(job.outDir); cerr != nil {
+			err = errors.Join(err, local(fmt.Errorf("stage: move the step logs in: %w", cerr)))
 		}
 	}()
 	if stage := (step{script: t.Stage, dir: taskDir}); stage.set() {

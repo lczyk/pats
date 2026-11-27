@@ -32,12 +32,17 @@ const preflightTimeout = 90 * time.Second
 // an earlier one found, and its failures come back in selection order
 // (docs/spec/preflight-per-agent.md). err is also ctx's, once it ends.
 func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair, judged ...config.Scorer) ([]agentFailure, error) {
-	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
-	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
+	if err := checkStepBoxes(ctx, cfg, opts, pairs, judged...); err != nil {
+		return nil, err
+	}
+	return checkAgents(ctx, cfg, opts, pairs, false)
+}
 
-	// each step sandbox the tasks name starts once, with its checks, and
-	// runs a step: a box that cannot see the tree fails here, not mid-run,
-	// and before the credential checks, since it needs none.
+// checkStepBoxes starts each step sandbox the tasks name once, with its
+// checks, and runs a step: a box that cannot see the tree fails here, not
+// mid-run, and before the credential checks, since it needs none.
+func checkStepBoxes(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair, judged ...config.Scorer) error {
+	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
 	tasks := index(cfg.Tasks, func(t config.Task) string { return t.Name })
 	var placed []config.Task
 	for _, p := range pairs {
@@ -50,7 +55,7 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 	for _, t := range placed {
 		sp, err := stepPlaceOf(cfg, sandboxes, t.StepSandbox, t.StepEnv)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if sp == nil || done[sp.sb.Name] {
 			continue
@@ -58,31 +63,70 @@ func Preflight(ctx context.Context, cfg *config.Config, opts Options, pairs []co
 		done[sp.sb.Name] = true
 		t0 := time.Now()
 		if err := preflightSteps(ctx, opts, sp); err != nil {
-			return nil, fmt.Errorf("step sandbox %q failed preflight: %w", sp.sb.Name, err)
+			return fmt.Errorf("step sandbox %q failed preflight: %w", sp.sb.Name, err)
 		}
 		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: step sandbox %s ok (%.1fs)", sp.sb.Name, time.Since(t0).Seconds())
 	}
-	var failed []agentFailure
+	return nil
+}
+
+// checkAgents checks every distinct agent of pairs, whatever an earlier one
+// found, one after another or all at once, and returns the failures in
+// selection order. one after another, it logs each as found; at once, the
+// caller logs them, once the pairs they stop have stopped. err is ctx's,
+// once it ends.
+func checkAgents(ctx context.Context, cfg *config.Config, opts Options, pairs []config.TestPair, atOnce bool) ([]agentFailure, error) {
+	agents := index(cfg.Agents, func(a config.Agent) string { return a.Name })
+	sandboxes := index(cfg.Sandboxes, func(s config.Sandbox) string { return s.Name })
+	var names []string
 	seen := map[string]bool{}
 	for _, p := range pairs {
-		if seen[p.Agent] {
-			continue
+		if !seen[p.Agent] {
+			seen[p.Agent] = true
+			names = append(names, p.Agent)
 		}
-		seen[p.Agent] = true
-		if ctx.Err() != nil {
-			return failed, ctx.Err()
-		}
+	}
+	lw := logw{opts.Out, opts.Color, opts.Verbose}
+	results := make([]*agentFailure, len(names))
+	check := func(i int) {
 		t0 := time.Now()
-		if f := preflightAgent(ctx, cfg, opts, agents[p.Agent], sandboxes); f != nil {
-			if ctx.Err() != nil {
-				return failed, ctx.Err()
-			}
-			f.agent = p.Agent
-			logw{opts.Out, opts.Color, opts.Verbose}.error("%v", f)
-			failed = append(failed, *f)
-			continue
+		f := preflightAgent(ctx, cfg, opts, agents[names[i]], sandboxes)
+		if ctx.Err() != nil {
+			return
 		}
-		logw{opts.Out, opts.Color, opts.Verbose}.detail("preflight: %s ok (%.1fs)", p.Agent, time.Since(t0).Seconds())
+		if f != nil {
+			f.agent = names[i]
+			results[i] = f
+			if !atOnce {
+				lw.error("%v", f)
+			}
+			return
+		}
+		lw.detail("preflight: %s ok (%.1fs)", names[i], time.Since(t0).Seconds())
+	}
+	if atOnce {
+		var wg sync.WaitGroup
+		for i := range names {
+			wg.Add(1)
+			go func() { defer wg.Done(); check(i) }()
+		}
+		wg.Wait()
+	} else {
+		for i := range names {
+			if ctx.Err() != nil {
+				break
+			}
+			check(i)
+		}
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	var failed []agentFailure
+	for _, f := range results {
+		if f != nil {
+			failed = append(failed, *f)
+		}
 	}
 	return failed, nil
 }

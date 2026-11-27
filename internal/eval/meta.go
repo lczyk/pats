@@ -120,6 +120,7 @@ type pairTimings struct {
 	SyncS    float64 `json:"sync_s,omitempty"`    // the agent's files coming home
 	CloseS   float64 `json:"close_s,omitempty"`   // the sandbox and its proxy going away
 	CollectS float64 `json:"collect_s,omitempty"` // collect, with its step sandbox
+	GateS    float64 `json:"gate_s,omitempty"`    // the wait at the preflight gate, between setup and the agent
 	TotalS   float64 `json:"total_s"`             // the pair up to this record: the agent's run included, the workdir's removal not
 }
 
@@ -132,7 +133,7 @@ func lap(d *float64) func() {
 
 // rounded is t as metadata.json records it.
 func (t pairTimings) rounded() *pairTimings {
-	for _, f := range []*float64{&t.StageS, &t.StartS, &t.PrepareS, &t.SyncS, &t.CloseS, &t.CollectS, &t.TotalS} {
+	for _, f := range []*float64{&t.StageS, &t.StartS, &t.PrepareS, &t.SyncS, &t.CloseS, &t.CollectS, &t.GateS, &t.TotalS} {
 		*f = round2(*f)
 	}
 	return &t

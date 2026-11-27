@@ -5,6 +5,7 @@ package eval
 import (
 	"bytes"
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,8 +61,11 @@ sux: {kind: suite, items: {all: {agents: agx, tasks: txx}}}
 	h := &treeHost{fakeHost: newFakeHost(), trees: map[string]bool{}}
 	useHost(t, h)
 	var got []sandbox.SandboxOptions // the agent's sandbox, and each step's
+	var mu sync.Mutex                // the preflight and the pair open sandboxes at once
 	old := newSandbox
 	newSandbox = func(_ sandbox.Options, o sandbox.SandboxOptions) (sandbox.Sandbox, error) {
+		mu.Lock()
+		defer mu.Unlock()
 		got = append(got, o)
 		return &fakeSandbox{}, nil
 	}
