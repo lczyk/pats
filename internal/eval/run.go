@@ -151,6 +151,9 @@ func Run(cfg *config.Config, opts Options) (_ string, err error) {
 			lg.warn("%s", w)
 		}
 	}
+	// what dead runs of this machine left on these places goes first: a
+	// server held by a killed run's sandbox has less room for this one.
+	sweepDead(ctx, cfg, sweepNames(cfg, pairs), opts.DryRun, lg)
 	if opts.DryRun {
 		return "", dryRun(cfg, opts, pairs, lg)
 	}

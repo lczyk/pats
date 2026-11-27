@@ -275,6 +275,7 @@ func judgeSetup(ctx context.Context, cfg *config.Config, ro Options, judgePairs 
 		}
 		go func() { upstream <- checkUpstream(ctx, checks, upstreamBudget) }()
 	}
+	sweepDead(ctx, cfg, sweepNames(cfg, judgePairs, judged...), false, lg)
 	lg.detail("preflight: checking judge credentials")
 	// a judge that failed is not dropped: its judgements would keep an
 	// earlier run's scores, read as fresh.

@@ -104,6 +104,8 @@ func (e CleanEvent) String() string {
 			return act + " temp dir " + name
 		case "lease":
 			return act + " lease " + name
+		case "ident":
+			return act + " identity file " + name
 		case "owner":
 			return act + " owner file " + name
 		case "artefact":
@@ -324,10 +326,12 @@ func (p *process) clean(ctx context.Context, d Driver, o CleanOptions) (map[stri
 		if !r.Held && r.Token != "" && !failed {
 			if path, err := p.leaseFound(r.Token); err == nil {
 				if _, err := os.Stat(path); err == nil {
+					label := leaseLabel(path)
 					if !o.DryRun {
 						_ = os.Remove(path)
+						removeIdent(path)
 					}
-					o.report(CleanEvent{Action: "remove", Kind: "lease", Name: path, Run: r.Token, Why: why})
+					o.report(CleanEvent{Action: "remove", Kind: "lease", Name: path, Label: label, Run: r.Token, Why: why})
 				}
 			}
 		}
@@ -666,6 +670,32 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 		if live, local := l.local(); !force && (live && local || !l.at.Before(now.Add(-p.t.leaseStale))) {
 			continue
 		}
+		label := leaseLabel(path)
+		if !dryRun {
+			if err := os.Remove(path); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			removeIdent(path)
+		}
+		gone[path] = true
+		o.report(CleanEvent{Action: "remove", Kind: "lease", Name: path, Label: label})
+	}
+	// an identity file whose lease is gone (an older pats removed the lease
+	// alone) goes once old; one whose lease this clean takes went with it.
+	idents, _ := filepath.Glob(filepath.Join(dir, leasePrefix+"*"+identSuffix))
+	for _, path := range idents {
+		lease := strings.TrimSuffix(path, identSuffix) + leaseSuffix
+		if gone[lease] {
+			continue
+		}
+		if _, err := os.Stat(lease); err == nil || !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || (!force && now.Sub(info.ModTime()) < olderThan) {
+			continue
+		}
 		if !dryRun {
 			if err := os.Remove(path); err != nil {
 				errs = append(errs, err)
@@ -673,9 +703,18 @@ func (p *process) cleanTempIn(dir string, o CleanOptions, listed map[string]bool
 			}
 		}
 		gone[path] = true
-		o.report(CleanEvent{Action: "remove", Kind: "lease", Name: path})
+		o.report(CleanEvent{Action: "remove", Kind: "ident", Name: path})
 	}
 	return gone, errors.Join(errs...)
+}
+
+// leaseLabel is how a lease's removal names it: with its identity file
+// when it has one, which goes with it.
+func leaseLabel(path string) string {
+	if _, err := os.Stat(identPath(path)); err == nil {
+		return path + " and its identity file"
+	}
+	return ""
 }
 
 // sweepTemps removes the dead runs' dirs of one temp root, adding the runs
