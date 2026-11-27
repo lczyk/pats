@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/lczyk/pats/internal/version"
 )
@@ -115,10 +116,32 @@ func (l *lxd) image(ctx context.Context, spec lxdImageSpec, log io.Writer) (alia
 	}
 	alias = "pats-img-" + key
 	if !spec.Force {
-		if fp, err := l.fingerprint(ctx, alias); err == nil {
+		// one lookup, reconcile and build of a key at a time in the process:
+		// a reconcile removes the builder another may be using.
+		unlock := l.p.lxd.lockKey(l.o.Remote + " " + alias)
+		defer unlock()
+		// only a "not found" is a miss: a lookup that failed may hide an
+		// image that is there, and a build would publish over it.
+		fp, err := l.fingerprint(ctx, alias)
+		if err == nil {
+			// another run claimed it: no build of this key follows, and a
+			// private alias of ours that lands late is pats clean's.
+			l.setDoubtful(alias, false)
 			return alias, fp, base, false, nil
+		} else if !lxdMissing(err) {
+			return "", "", "", false, fmt.Errorf("image %s: %w", alias, err)
+		}
+		if l.doubtful(alias) {
+			fp, ok, err := l.reconcile(ctx, alias)
+			if err != nil {
+				return "", "", "", false, err
+			}
+			if ok {
+				return alias, fp, base, true, nil
+			}
 		}
 		fp, failed, err := l.importCached(ctx, alias, builtAs(key))
+		var unknown *aliasUnknown
 		switch {
 		case failed != nil:
 			spec.warn(log, "%v; another init has made %s meanwhile", failed, alias)
@@ -126,6 +149,8 @@ func (l *lxd) image(ctx context.Context, spec lxdImageSpec, log io.Writer) (alia
 		case err == nil:
 			spec.step(log, "imported lxd image %s from %s", alias, l.o.ImageCache)
 			return alias, fp, base, false, nil
+		case errors.As(err, &unknown):
+			return "", "", "", false, err
 		case !errors.Is(err, errNoCached):
 			spec.warn(log, "%v; building it", err)
 		}
@@ -136,9 +161,93 @@ func (l *lxd) image(ctx context.Context, spec lxdImageSpec, log io.Writer) (alia
 	}
 	fp, err = l.build(ctx, spec, base, alias, log)
 	if err != nil {
+		if !spec.Force && errors.Is(err, ErrPlace) {
+			// a publish whose answer was lost may still be running.
+			l.setDoubtful(alias, true)
+		}
 		return "", "", "", false, err
 	}
+	l.setDoubtful(alias, false)
 	return alias, fp, base, true, nil
+}
+
+// builderName is the instance a build of alias provisions in.
+func (l *lxd) builderName(alias string) string {
+	return "pats-build-" + l.p.token + "-" + strings.TrimPrefix(alias, "pats-img-")[:8]
+}
+
+// lockKey holds the key's lock until the returned func is called.
+func (x *lxdProcess) lockKey(key string) func() {
+	x.doubtMu.Lock()
+	if x.keyLocks == nil {
+		x.keyLocks = map[string]*sync.Mutex{}
+	}
+	m := x.keyLocks[key]
+	if m == nil {
+		m = &sync.Mutex{}
+		x.keyLocks[key] = m
+	}
+	x.doubtMu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
+// doubtful says whether a build of alias in this process failed on a lost
+// link: its publish may have landed, under the run-private alias alone.
+func (l *lxd) doubtful(alias string) bool {
+	x := &l.p.lxd
+	x.doubtMu.Lock()
+	defer x.doubtMu.Unlock()
+	return x.doubtful[l.o.Remote+" "+alias]
+}
+
+func (l *lxd) setDoubtful(alias string, on bool) {
+	x := &l.p.lxd
+	x.doubtMu.Lock()
+	defer x.doubtMu.Unlock()
+	if x.doubtful == nil {
+		x.doubtful = map[string]bool{}
+	}
+	if on {
+		x.doubtful[l.o.Remote+" "+alias] = true
+	} else {
+		delete(x.doubtful, l.o.Remote+" "+alias)
+	}
+}
+
+// reconcile settles a doubtful key before it is built again: it waits out
+// the old builder's operations (a publish still running), claims an image
+// published under the run-private alias, and otherwise removes the old
+// builder, confirmed gone, and says to build. a lookup or a wait that fails
+// fails the start and keeps the key doubtful: the link going down here must
+// not hide a published image.
+func (l *lxd) reconcile(ctx context.Context, alias string) (fp string, claimed bool, err error) {
+	builder := l.builderName(alias)
+	wctx, cancel := context.WithTimeout(ctx, l.p.t.instanceGone)
+	defer cancel()
+	for l.instanceBusy(wctx, builder) {
+		select {
+		case <-wctx.Done():
+			return "", false, final(&placeErr{cause: fmt.Errorf("image %s: the earlier build's operations, or the query for them, outlived %s", alias, l.p.t.instanceGone), tries: 1})
+		case <-l.p.clock.After(l.p.t.deleteRetry):
+		}
+	}
+	private := alias + "-" + l.p.token
+	fp, err = l.fingerprint(ctx, private)
+	switch {
+	case err == nil:
+		if fp, err = l.claim(ctx, alias, private, fp, false); err != nil {
+			return "", false, final(err)
+		}
+		l.setDoubtful(alias, false)
+		return fp, true, nil
+	case !lxdMissing(err):
+		return "", false, final(fmt.Errorf("image %s: %w", private, err))
+	}
+	if err := l.deleteGone(builder); err != nil {
+		return "", false, final(&placeErr{cause: fmt.Errorf("image %s: the earlier builder: %w", alias, err), tries: 1})
+	}
+	return "", false, nil
 }
 
 // poolSpace is the pats pool's free and total bytes, when the server says.
@@ -336,16 +445,20 @@ func (l *lxd) uplink(ctx context.Context) (string, error) {
 	if l.o.Uplink != "" {
 		return l.o.Uplink, nil
 	}
-	if _, err := l.lxc(ctx, "network", "show", l.ref(lxdUplink), "--project", "default"); err == nil {
+	if _, err := l.lxcIdem(ctx, "network", "show", l.ref(lxdUplink), "--project", "default"); err == nil {
 		return lxdUplink, nil
+	} else if errors.Is(err, ErrPlace) {
+		return "", err
 	}
-	if _, err := l.lxc(ctx, "network", "create", l.ref(lxdUplink), "--project", "default",
+	// the uplink is every run's: one there after a lost answer is the one wanted.
+	if err := l.createByName(ctx, "network", "create", l.ref(lxdUplink), "--project", "default",
 		"ipv4.address=auto", "ipv4.nat=true", "ipv6.address=none"); err != nil {
 		// another pats may have made it meanwhile.
-		if _, serr := l.lxc(ctx, "network", "show", l.ref(lxdUplink), "--project", "default"); serr == nil {
+		_, serr := l.lxcIdem(ctx, "network", "show", l.ref(lxdUplink), "--project", "default")
+		if serr == nil {
 			return lxdUplink, nil
 		}
-		return "", err
+		return "", fmt.Errorf("%w (and reading it: %w)", err, serr)
 	}
 	return lxdUplink, nil
 }
@@ -359,10 +472,10 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 	if err != nil {
 		return "", err
 	}
-	name := "pats-build-" + l.p.token + "-" + strings.TrimPrefix(alias, "pats-img-")[:8]
+	name := l.builderName(alias)
 	s := &lxdSession{l: l, name: name}
 	defer func() {
-		derr := l.deleteInstance(name)
+		derr := l.deleteGone(name)
 		if derr == nil {
 			return
 		}
@@ -493,6 +606,10 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 		if err == nil {
 			return
 		}
+		if !spec.Force && errors.Is(err, ErrPlace) {
+			// the key goes doubtful: its reconcile reads the private alias.
+			return
+		}
 		bg := context.Background()
 		if mine != "" {
 			theirs, ferr := l.fingerprint(bg, alias)
@@ -500,11 +617,11 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 				return
 			}
 			if theirs == mine {
-				_, _ = l.lxc(bg, "image", "alias", "delete", l.ref(private), "--project", lxdProject)
+				_, _ = l.lxcIdem(bg, "image", "alias", "delete", l.ref(private), "--project", lxdProject)
 				return
 			}
 		}
-		_, _ = l.lxc(bg, "image", "delete", l.ref(private), "--project", lxdProject)
+		_, _ = l.lxcIdem(bg, "image", "delete", l.ref(private), "--project", lxdProject)
 	}()
 	said, perr := l.lxc(ctx, append(slices.Clone(pub), "--compression", publishCompression)...)
 	if why := lastLine(said); perr != nil && noCompression(why) {
@@ -519,15 +636,21 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 		return "", err
 	}
 	mine = fp
+	return l.claim(ctx, alias, private, fp, spec.Force)
+}
+
+// claim points alias at fp, the image a build published under private, and
+// drops private. an alias another run claimed first wins, and fp goes.
+func (l *lxd) claim(ctx context.Context, alias, private, fp string, force bool) (string, error) {
 	// a claim the client saw fail may have landed: what the alias names
 	// then says whose it is, and an image it names is never deleted.
 	if _, err := l.lxc(ctx, "image", "alias", "create", l.ref(alias), fp, "--project", lxdProject); err != nil {
 		theirs, ferr := l.fingerprint(ctx, alias)
 		switch {
 		case ferr != nil:
-			return "", err
+			return "", fmt.Errorf("%w (and reading the alias: %w)", err, ferr)
 		case theirs == fp:
-		case spec.Force:
+		case force:
 			// a forced build replaces what the alias named, in one call: the
 			// alias is never missing. pins elsewhere keep the old image.
 			body, _ := json.Marshal(map[string]string{"target": fp, "description": ""})
@@ -539,10 +662,10 @@ func (l *lxd) build(ctx context.Context, spec lxdImageSpec, baseFP, alias string
 			}
 		default:
 			// another run built it first: use theirs.
-			_, _ = l.lxc(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)
+			_, _ = l.lxcIdem(context.Background(), "image", "delete", l.ref(private), "--project", lxdProject)
 			return theirs, nil
 		}
 	}
-	_, _ = l.lxc(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
+	_, _ = l.lxcIdem(context.Background(), "image", "alias", "delete", l.ref(private), "--project", lxdProject)
 	return fp, nil
 }

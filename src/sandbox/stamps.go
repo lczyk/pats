@@ -166,7 +166,7 @@ func (l *lxd) runStamp(ctx context.Context, fp string, clis []string) (stamps ma
 	defer cancel()
 	s := &lxdSession{l: l, name: "pats-stamp-" + l.p.token + "-" + fp[:min(12, len(fp))]}
 	defer func() {
-		if derr := l.deleteInstance(s.name); derr != nil && err == nil {
+		if derr := l.deleteGone(s.name); derr != nil && err == nil {
 			err = fmt.Errorf("stamp instance %s was left behind: %w", s.name, derr)
 		}
 	}()

@@ -35,6 +35,7 @@ type lxdSession struct {
 	machineEnv map[string]string
 	created    bool
 	bridge     string // the pair's bridge and its acl, "" under egress none
+	try        int    // the start's try this session was made by, from 1
 	egress     *lxdEgress
 	uid        string
 	initGroups bool // the image has a setpriv that starts the agent with its groups
@@ -50,10 +51,11 @@ func (s *lxdSession) inst() string { return s.l.ref(s.name) }
 // boundary, which is exactly where the server's lan and other instances are.
 func (s *lxdSession) openNetwork(ctx context.Context) error {
 	l := s.l
-	s.bridge = l.bridgeName(s.name)
+	s.bridge = l.bridgeName(s.name, s.try)
 	acl := s.bridge
 	aclArgs := append([]string{"network", "acl", "create", l.ref(acl), "--project", "default"}, l.meta()...)
-	if _, err := l.lxc(ctx, aclArgs...); err != nil {
+	if err := l.createOwned(ctx, "network-acls", acl, aclArgs...); err != nil {
+		s.disown(err)
 		return err
 	}
 	ranges, err := l.openRejects(ctx)
@@ -70,7 +72,8 @@ func (s *lxdSession) openNetwork(ctx context.Context) error {
 		"security.acls.default.egress.action=allow",
 		"security.acls.default.ingress.action=reject"}
 	netArgs = append(netArgs, l.meta()...)
-	if _, err := l.lxc(ctx, netArgs...); err != nil {
+	if err := l.createOwned(ctx, "networks", s.bridge, netArgs...); err != nil {
+		s.disown(err)
 		return err
 	}
 	_, err = l.lxc(ctx, "config", "device", "add", s.inst(), "eth0", "nic", "--project", lxdProject,
@@ -82,7 +85,7 @@ func (s *lxdSession) openNetwork(ctx context.Context) error {
 // included, carries a nic other than the one pats gave it. checked while it is
 // stopped: a nic up at boot is in use before anything could look.
 func (s *lxdSession) checkDevices(ctx context.Context, allowed map[string]bool) error {
-	out, err := s.l.lxc(ctx, "query", s.queryPath("/1.0/instances/"+s.name+"?project="+lxdProject))
+	out, err := s.l.lxcIdem(ctx, "query", s.queryPath("/1.0/instances/"+s.name+"?project="+lxdProject))
 	if err != nil {
 		return err
 	}
@@ -454,7 +457,7 @@ func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 		bg, done := context.WithTimeout(context.Background(), s.l.p.t.cliCleanup)
 		defer done()
 		if cmd.Root {
-			_, _ = s.l.lxc(bg, "stop", s.inst(), "--project", lxdProject, "--force")
+			_, _ = s.l.lxcIdem(bg, "stop", s.inst(), "--project", lxdProject, "--force")
 		} else {
 			_, _ = s.exec(bg, Cmd{Argv: []string{"pkill", "-KILL", "-u", s.uid}, Root: true, Dir: "/"}, io.Discard, io.Discard)
 		}
@@ -471,20 +474,94 @@ func (s *lxdSession) Exec(ctx context.Context, cmd Cmd, stdout, stderr io.Writer
 func (s *lxdSession) Close() error {
 	s.once.Do(func() {
 		errs := []error{s.closeEgress()}
+		gaveUp := false
 		if s.created {
-			errs = append(errs, s.l.deleteInstance(s.name))
+			ctx, done := context.WithTimeout(context.Background(), s.l.p.t.instanceGone)
+			err := s.l.deleteInstance(ctx, s.name)
+			done()
+			gaveUp = err != nil
+			errs = append(errs, err)
 		}
+		bridgeErr := false
 		if s.bridge != "" {
 			bg, done := context.WithTimeout(context.Background(), s.l.p.t.cliCleanup)
 			defer done()
-			_, err := s.l.lxc(bg, "network", "delete", s.l.ref(s.bridge), "--project", "default")
+			_, err := s.l.lxcIdem(bg, "network", "delete", s.l.ref(s.bridge), "--project", "default")
+			if err != nil && notFound(err) {
+				err = nil
+			}
+			bridgeErr = err != nil
 			errs = append(errs, err)
-			_, err = s.l.lxc(bg, "network", "acl", "delete", s.l.ref(s.bridge), "--project", "default")
+			_, err = s.l.lxcIdem(bg, "network", "acl", "delete", s.l.ref(s.bridge), "--project", "default")
+			if err != nil && notFound(err) {
+				err = nil
+			}
+			bridgeErr = bridgeErr || err != nil
 			errs = append(errs, err)
+		}
+		// shutdown tries once more: a link that is back by then leaves
+		// nothing for pats clean. the bridge goes with an instance that
+		// stayed, whatever its own delete said ("in use" clears with it).
+		switch {
+		case gaveUp:
+			s.l.deferDelete(s.name, s.bridge)
+		case bridgeErr:
+			s.l.deferDelete("", s.bridge)
 		}
 		s.closeErr = errors.Join(errs...)
 	})
 	return s.closeErr
+}
+
+// disown forgets the bridge when err says its name is not known to be this
+// run's, so nothing deletes it by that name. an acl this try made under it
+// carries the run's token, and pats clean takes it.
+func (s *lxdSession) disown(err error) {
+	if errors.Is(err, errNotOurs) {
+		s.bridge = ""
+	}
+}
+
+// removeForRetry removes what a failed try at Start made, under
+// launchCleanup, so the next try begins from nothing: the proxy instance and
+// the instance, each confirmed gone, then the bridge and acl, best effort
+// and deferred, since a create whose answer was lost may still land. it
+// fails when either instance may still be there.
+func (s *lxdSession) removeForRetry() error {
+	ctx, cancel := context.WithTimeout(context.Background(), s.l.p.t.launchCleanup)
+	defer cancel()
+	var errs []error
+	if e := s.egress; e != nil {
+		if err := s.l.deleteInstance(ctx, e.proxy); err != nil {
+			s.l.deferDelete(e.proxy, "")
+			errs = append(errs, err)
+		}
+		if e.run != nil {
+			e.run.stop(s.l.p.clock, s.l.p.t.followerGrace)
+		}
+		if e.auditF != nil {
+			_ = e.auditF.Close()
+		}
+		if e.m != nil {
+			e.m.cleanup()
+		}
+		s.egress = nil
+	}
+	if s.created {
+		if err := s.l.deleteInstance(ctx, s.name); err != nil {
+			errs = append(errs, err)
+			s.l.deferDelete(s.name, s.bridge)
+			s.bridge = ""
+		}
+		s.created = false
+	}
+	if s.bridge != "" {
+		_, _ = s.l.lxcIdem(ctx, "network", "delete", s.l.ref(s.bridge), "--project", "default")
+		_, _ = s.l.lxcIdem(ctx, "network", "acl", "delete", s.l.ref(s.bridge), "--project", "default")
+		s.l.deferDelete("", s.bridge)
+		s.bridge = ""
+	}
+	return errors.Join(errs...)
 }
 
 // readOnlyHeld refuses a read-only bind the agent user could swap out: a

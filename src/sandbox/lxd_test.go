@@ -615,7 +615,9 @@ func TestLXDName(t *testing.T) {
 	long := lxdName("/x/" + strings.Repeat("a", 80))
 	assert.That(t, len(long) <= 63, "name too long: %d", len(long))
 	l := newLXD(newProcess(wallClock{}, defaultTimings), nil, Options{})
-	assert.That(t, len(l.bridgeName("pats-work-123")) <= 15, "bridge name too long")
+	one, two := l.bridgeName("pats-work-123", 1), l.bridgeName("pats-work-123", 2)
+	assert.That(t, len(one) <= 15 && len(two) <= 15, "bridge name too long")
+	assert.That(t, one != two, "two tries share a bridge name")
 }
 
 // a proxied sandbox: an addressless bridge with a reject acl, the agent on it
@@ -830,6 +832,7 @@ func TestLXDImageBuild(t *testing.T) {
 					io.WriteString(stdout, `{"target":"def"}`) // the run-private alias, published
 					return nil
 				}
+				io.WriteString(stderr, "Error: Image alias not found")
 				return &fakeExit{}
 			case strings.Contains(joined, "/storage-pools/default/resources"):
 				f.record(args)
@@ -926,7 +929,7 @@ func TestLXDDeleteInstanceWaitsForCreate(t *testing.T) {
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
 	})
-	require.NoError(t, l.deleteInstance("pats-x"))
+	require.NoError(t, l.deleteGone("pats-x"))
 	deletes := 0
 	for _, c := range f.all() {
 		if strings.HasPrefix(c, "delete ") {
@@ -967,7 +970,7 @@ func TestLXDDeleteInstanceCreateFinishesBetween(t *testing.T) {
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
 	})
-	require.NoError(t, l.deleteInstance("pats-x"))
+	require.NoError(t, l.deleteGone("pats-x"))
 	assert.That(t, !present, "instance left behind")
 }
 
@@ -1001,7 +1004,7 @@ func TestLXDDeleteInstanceQueryFails(t *testing.T) {
 		}
 		return inner(ctx, stdin, stdout, stderr, args...)
 	})
-	require.NoError(t, l.deleteInstance("pats-x"))
+	require.NoError(t, l.deleteGone("pats-x"))
 	assert.That(t, !present, "instance left behind")
 }
 
@@ -1023,6 +1026,7 @@ func TestLXDProxyImageProgress(t *testing.T) {
 				io.WriteString(stdout, `{"target":"def"}`) // the run-private alias, published
 				return nil
 			}
+			io.WriteString(stderr, "Error: Image alias not found")
 			return &fakeExit{}
 		case joined == "query srv:/1.0":
 			io.WriteString(stdout, `{"environment":{"architectures":["x86_64"]}}`)

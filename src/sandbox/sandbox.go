@@ -44,6 +44,15 @@ type Spec struct {
 	Mounts  []Mount           // extra host->container binds (e.g. creds, home)
 	Egress  Egress            // outbound network policy (zero value = open)
 	Sudo    bool              // the agent may sudo (lxd only)
+	// Progress, when set, gets a line for each step of a start worth
+	// saying: a try that failed and is made again.
+	Progress func(msg string)
+}
+
+func (s Spec) progress(format string, a ...any) {
+	if s.Progress != nil {
+		s.Progress(fmt.Sprintf(format, a...))
+	}
 }
 
 // Egress is the outbound network policy for one run. see the package doc for

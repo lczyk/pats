@@ -62,15 +62,17 @@ type lxdEgress struct {
 // is running and has passed the canary.
 func (s *lxdSession) startEgressNetwork(ctx context.Context) error {
 	l := s.l
-	s.bridge = l.bridgeName(s.name)
+	s.bridge = l.bridgeName(s.name, s.try)
 	aclArgs := append([]string{"network", "acl", "create", l.ref(s.bridge), "--project", "default"}, l.meta()...)
-	if _, err := l.lxc(ctx, aclArgs...); err != nil {
+	if err := l.createOwned(ctx, "network-acls", s.bridge, aclArgs...); err != nil {
+		s.disown(err)
 		return err
 	}
 	netArgs := append([]string{"network", "create", l.ref(s.bridge), "--project", "default",
 		"ipv4.address=none", "ipv6.address=none", "security.acls=" + s.bridge,
 		"security.acls.default.egress.action=reject", "security.acls.default.ingress.action=reject"}, l.meta()...)
-	if _, err := l.lxc(ctx, netArgs...); err != nil {
+	if err := l.createOwned(ctx, "networks", s.bridge, netArgs...); err != nil {
+		s.disown(err)
 		return err
 	}
 	_, err := l.lxc(ctx, "config", "device", "add", s.inst(), "pats0", "nic", "--project", lxdProject,
@@ -130,7 +132,8 @@ func (s *lxdSession) startProxy(ctx context.Context, spec Spec) error {
 
 	img, _, err := l.proxyImage(ctx, false, nil)
 	if err != nil {
-		return fmt.Errorf("egress proxy image: %w", err)
+		// a build is not the pair's: it ends in a publish, never repeated.
+		return fmt.Errorf("egress proxy image: %w", final(err))
 	}
 	uplink, err := l.uplink(ctx)
 	if err != nil {
@@ -351,7 +354,7 @@ func cutAddr(p netip.Prefix, a netip.Addr) []netip.Prefix {
 // entry and try out. the bridge has no address and its acl rejects, so this
 // must fail.
 func (s *lxdSession) hostileProbe(ctx context.Context) error {
-	out, err := s.l.lxc(ctx, "query", s.queryPath("/1.0/networks/"+s.bridge+"/state?project=default"))
+	out, err := s.l.lxcIdem(ctx, "query", s.queryPath("/1.0/networks/"+s.bridge+"/state?project=default"))
 	if err != nil {
 		return err
 	}
@@ -376,7 +379,12 @@ func (s *lxdSession) closeEgress() error {
 	// the proxy instance goes first: its exec stream then ends on its own,
 	// and the audit lines still in flight reach the file, as for docker's
 	// follower. killing the lxc client first could drop the denied-host tail.
-	err := s.l.deleteInstance(e.proxy)
+	ctx, done := context.WithTimeout(context.Background(), s.l.p.t.instanceGone)
+	err := s.l.deleteInstance(ctx, e.proxy)
+	done()
+	if err != nil {
+		s.l.deferDelete(e.proxy, "")
+	}
 	if e.run != nil {
 		e.run.stop(s.l.p.clock, s.l.p.t.followerGrace)
 	}
@@ -461,7 +469,7 @@ mkdir -p /etc/netplan /etc/pats && cp ` + ProvisionMount + `/60-pats-uplink.yaml
 
 // serverArch is the lxd server's architecture as a go arch.
 func (l *lxd) serverArch(ctx context.Context) (string, error) {
-	out, err := l.lxc(ctx, "query", l.o.Remote+":/1.0")
+	out, err := l.lxcIdem(ctx, "query", l.o.Remote+":/1.0")
 	if err != nil {
 		return "", err
 	}

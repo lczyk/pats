@@ -87,7 +87,7 @@ func (l *lxd) remoteFingerprint(ctx context.Context, ref string) (string, error)
 	if l.o.VM {
 		kind = "virtual-machine"
 	}
-	out, err := l.lxc(ctx, "image", "list", remote+":", alias, "--format=json")
+	out, err := l.lxcIdem(ctx, "image", "list", remote+":", alias, "--format=json")
 	if err != nil {
 		return "", err
 	}

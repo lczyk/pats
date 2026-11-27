@@ -117,11 +117,25 @@ func (l *lxd) importCached(ctx context.Context, alias string, check func(props m
 		err = fmt.Errorf("%s: %w", path, err)
 	}
 	err = fmt.Errorf("image cache: %w", err)
-	if theirs, aerr := l.fingerprint(ctx, alias); aerr == nil {
+	theirs, aerr := l.fingerprint(ctx, alias)
+	switch {
+	case aerr == nil:
 		return theirs, err, nil
+	case !lxdMissing(aerr):
+		// not known whether the alias is there: no build may follow.
+		return "", nil, &aliasUnknown{err: err, check: aerr}
 	}
 	return "", nil, err
 }
+
+// aliasUnknown is a failed import whose check of the alias failed too.
+type aliasUnknown struct{ err, check error }
+
+func (e *aliasUnknown) Error() string {
+	return fmt.Sprintf("%v; and the alias could not be checked: %v", e.err, e.check)
+}
+
+func (e *aliasUnknown) Unwrap() []error { return []error{e.err, e.check} }
 
 // importFile imports a cache file when the server lacks its image, and
 // makes alias on it. the alias is created, never set by the import: lxc
@@ -188,7 +202,7 @@ func (l *lxd) resolve(ctx context.Context, ref string) (string, error) {
 	case cerr == nil:
 		return cached, nil
 	case !errors.Is(cerr, errNoCached):
-		return "", fmt.Errorf("%w (%v)", err, cerr)
+		return "", fmt.Errorf("%w (%w)", err, cerr)
 	case l.cached(ref):
 		return "", fmt.Errorf("%w (and no file for it in the image cache %s)", err, l.o.ImageCache)
 	}

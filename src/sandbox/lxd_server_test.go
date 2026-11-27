@@ -251,9 +251,11 @@ func sweep(t *testing.T, entry func(t *testing.T, f *fakeServer, ctx context.Con
 			p.shutdown()
 			hit, call := f.faults.reached()
 			left := f.leftovers(p.token)
-			if len(left) > 0 && isRemoval(call) {
-				// a removal that fails leaves what it removes: the next
-				// clean, once the run is dead, is what takes it.
+			markerOnly := len(left) == 1 && left[0] == "acl pats-run-"+p.token
+			if len(left) > 0 && (isRemoval(call) || markerOnly) {
+				// a removal that fails leaves what it removes, and a setup
+				// that fails leaves its marker: the next clean, once the run
+				// is dead, is what takes it.
 				cleanLater(t, f)
 				left = f.leftovers(p.token)
 			}

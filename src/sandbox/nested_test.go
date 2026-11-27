@@ -165,6 +165,7 @@ func TestLXDImageBuildNested(t *testing.T) {
 					io.WriteString(stdout, `{"target":"def"}`)
 					return nil
 				}
+				io.WriteString(stderr, "Error: Image alias not found")
 				return &fakeExit{}
 			}
 			return inner(ctx, stdin, stdout, stderr, args...)

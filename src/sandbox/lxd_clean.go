@@ -215,15 +215,15 @@ func (l *lxd) Remove(ctx context.Context, r Resource) error {
 	var err error
 	switch r.Kind {
 	case "sandbox":
-		_, err = c.lxc(ctx, "delete", c.ref(r.Name), "--project", lxdProject, "--force")
+		_, err = c.lxcIdem(ctx, "delete", c.ref(r.Name), "--project", lxdProject, "--force")
 	case "network":
-		_, err = c.lxc(ctx, "network", "delete", c.ref(r.Name), "--project", "default")
+		_, err = c.lxcIdem(ctx, "network", "delete", c.ref(r.Name), "--project", "default")
 	case "acl", "marker":
-		_, err = c.lxc(ctx, "network", "acl", "delete", c.ref(r.Name), "--project", "default")
+		_, err = c.lxcIdem(ctx, "network", "acl", "delete", c.ref(r.Name), "--project", "default")
 	case "image":
-		_, err = c.lxc(ctx, "image", "delete", c.ref(r.Name), "--project", lxdProject)
+		_, err = c.lxcIdem(ctx, "image", "delete", c.ref(r.Name), "--project", lxdProject)
 	case "alias":
-		_, err = c.lxc(ctx, "image", "alias", "delete", c.ref(r.Name), "--project", lxdProject)
+		_, err = c.lxcIdem(ctx, "image", "alias", "delete", c.ref(r.Name), "--project", lxdProject)
 	}
 	if err != nil && notFound(err) {
 		return nil
@@ -232,7 +232,7 @@ func (l *lxd) Remove(ctx context.Context, r Resource) error {
 }
 
 func (l *lxd) query(ctx context.Context, path string, v any) error {
-	out, err := l.lxc(ctx, "query", l.o.Remote+":"+path)
+	out, err := l.lxcIdem(ctx, "query", l.o.Remote+":"+path)
 	if err != nil {
 		return err
 	}

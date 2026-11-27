@@ -102,11 +102,13 @@ func (s *lxdSession) pushOnce(ctx context.Context, hostPath, path string, o push
 	if lerr := <-local; lerr != nil && !errors.Is(lerr, io.ErrClosedPipe) {
 		return 0, fmt.Errorf("push %s: %w (in the instance: %s)", hostPath, lerr, strings.TrimSpace(out.String()))
 	}
+	// a lost stream is lxc's own exit, never the script's 120 or 121.
+	lost := code != pushLostCode && code != pushTarCode && transientTarLine(out.String())
 	if err != nil {
-		return 0, fmt.Errorf("push %s: %w", hostPath, err)
+		return 0, asPlace(fmt.Errorf("push %s: %w", hostPath, err), lost)
 	}
 	if code != 0 {
-		return code, fmt.Errorf("push %s: exited %d: %s", hostPath, code, strings.TrimSpace(out.String()))
+		return code, asPlace(fmt.Errorf("push %s: exited %d: %s", hostPath, code, strings.TrimSpace(out.String())), lost)
 	}
 	return 0, nil
 }
@@ -324,6 +326,7 @@ func (s *lxdSession) Pull(ctx context.Context, path, hostDir string) error {
 		if err == nil && code != 0 {
 			err = fmt.Errorf("tar exited %d: %s", code, strings.TrimSpace(errb.String()))
 		}
+		err = asPlace(err, transientTarLine(errb.String()))
 		pw.CloseWithError(err)
 		done <- err
 	}()
@@ -332,7 +335,9 @@ func (s *lxdSession) Pull(ctx context.Context, path, hostDir string) error {
 	// stops at; drain it so the writer does not fail on a closed pipe.
 	_, _ = io.Copy(io.Discard, pr)
 	pr.Close()
-	if perr := <-done; perr != nil && err == nil {
+	// a stream cut mid-entry fails readTar too, with a text that hides the
+	// reset: the exec's transient failure wins.
+	if perr := <-done; perr != nil && (err == nil || placeTries(perr) > 0) {
 		err = perr
 	}
 	if err != nil {
@@ -538,12 +543,25 @@ func (s *lxdSession) Sync(ctx context.Context) error {
 }
 
 func (s *lxdSession) syncBind(ctx context.Context, b bind) error {
-	fresh, err := os.MkdirTemp(filepath.Dir(b.host), "."+filepath.Base(b.host)+".sync-")
+	// each try into a dir of its own: a cut stream never leaves a mix of two.
+	var fresh string
+	defer func() {
+		if fresh != "" {
+			os.RemoveAll(fresh)
+		}
+	}()
+	err := s.l.retry(ctx, func() error {
+		if fresh != "" {
+			os.RemoveAll(fresh)
+		}
+		var err error
+		if fresh, err = os.MkdirTemp(filepath.Dir(b.host), "."+filepath.Base(b.host)+".sync-"); err != nil {
+			fresh = ""
+			return err
+		}
+		return s.Pull(ctx, b.path, fresh)
+	})
 	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(fresh)
-	if err := s.Pull(ctx, b.path, fresh); err != nil {
 		return err
 	}
 	if err := clearDir(b.host); err != nil {

@@ -40,7 +40,7 @@ func (l *lxd) Target(ctx context.Context) (Target, error) {
 			return Target{}, err
 		}
 	}
-	out, err := l.lxc(ctx, "query", remote+":/1.0")
+	out, err := l.lxcIdem(ctx, "query", remote+":/1.0")
 	if err != nil {
 		return Target{}, err
 	}
@@ -62,7 +62,7 @@ func (l *lxd) CPUs(ctx context.Context) int {
 	if l.o.Remote != "" {
 		p = l.o.Remote + ":" + p
 	}
-	out, err := l.lxc(ctx, "query", p)
+	out, err := l.lxcIdem(ctx, "query", p)
 	if err != nil {
 		return 0
 	}
@@ -187,7 +187,7 @@ func (l *lxd) RemoveImage(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.lxc(ctx, "image", "delete", c.ref(id), "--project", lxdProject); err != nil && !notFound(err) {
+	if _, err := c.lxcIdem(ctx, "image", "delete", c.ref(id), "--project", lxdProject); err != nil && !notFound(err) {
 		return err
 	}
 	return nil
