@@ -93,7 +93,8 @@ small nor quite parsable:
   `failed`, `na`, `samples`, `cost_usd`, `output_tokens`, `duration_s`), as new fields of version 1.
 - **`timings`** -- on each pair, where its wall time went beside `duration_s`, which is the agent's own run. seconds,
   as `metadata.json` has them: `stage_s` (stage and `prompt-cmd`, with the step sandbox they ran in), `start_s` (the
-  sandbox coming up), `prepare_s`, `sync_s`, `close_s`, `collect_s`, and `total_s`, the whole pair up to its record.
+  sandbox coming up), `prepare_s`, `gate_s` (the wait for the credential preflight, between setup and the agent), `sync_s`, `close_s`,
+  `collect_s`, and `total_s`, the whole pair up to its record.
   a step that did not run, or took under a hundredth of a second, is left out. `null` on a pair from before the
   field. a new field of version 1.
 
